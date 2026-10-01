@@ -4,10 +4,12 @@ just-board running on itself: PRs on `basehub-ai/just-board` and two BaseHub Sla
 channels sync through the board deployed at https://just-board.vercel.app/api/board.
 
 ```bash
+# from apps/software-factory; just-board isn't on npm yet, so use the workspace's bin
+# (`npx jb` would run an unrelated npm package named jb)
 export JUST_BOARD_URL=https://just-board.vercel.app/api/board
-npx jb read prs          # PRs, with state and review labels
-npx jb tail firehose     # live
-npx jb inbox github      # raw GitHub events, for debugging sync
+pnpm exec jb read prs          # PRs and issues, with state and review labels
+pnpm exec jb tail firehose     # live
+pnpm exec jb inbox github      # raw GitHub events, for debugging sync
 ```
 
 ## Pieces
