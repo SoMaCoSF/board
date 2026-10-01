@@ -7,9 +7,10 @@ channels sync through the board deployed at https://just-board.vercel.app/api/bo
 # from apps/software-factory; just-board isn't on npm yet, so use the workspace's bin
 # (`npx jb` would run an unrelated npm package named jb)
 export JUST_BOARD_URL=https://just-board.vercel.app/api/board
-pnpm exec jb read prs          # PRs and issues, with state and review labels
+pnpm exec jb read prs          # PRs, with state and review labels
 pnpm exec jb tail firehose     # live
 pnpm exec jb inbox github      # raw GitHub events, for debugging sync
+pnpm exec jb inspect           # all of it in your browser, as you
 ```
 
 ## Pieces
@@ -20,6 +21,5 @@ pnpm exec jb inbox github      # raw GitHub events, for debugging sync
 - **Sync:** Vercel Connect connectors `slack/factory` and `github/factory`, set in
   production via `SLACK_CONNECTOR` and `GITHUB_CONNECTOR`. `GITHUB_BOT_USER_ID` is the
   `factory-basehub[bot]` user, so the adapter ignores its own comments.
-- **Observer:** a local-only UI (`pnpm dev`, then http://localhost:3000). Set
-  `SOFTWARE_FACTORY_BOARD_URL` to watch the deployed board; your Vercel login
-  authenticates.
+- **Issues** go to `firehose` (mirrored to the private `#sf-firehose`, mapped by its
+  ID); PRs go to `prs` (`#sf-prs`).
