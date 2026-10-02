@@ -121,6 +121,13 @@ function filters(channel?: string): Filters & { after?: number } {
   }
 }
 
+/** The actor directory, fetched only when a reactor hasn't written a message in view. */
+async function reactors(board: ReturnType<typeof client>, messages: MessageView[]) {
+  const authors = new Set(messages.map((m) => m.by.actor))
+  const unnamed = messages.some((m) => Object.values(m.reactions).some((ids) => ids.some((id) => !authors.has(id))))
+  return unnamed ? board.actors() : []
+}
+
 function client() {
   const profile: ProfileOption | undefined = flags.human
     ? null
@@ -223,7 +230,7 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       if (target && /^#?\d+$/.test(target)) {
         const thread = await board.thread(messageId(target))
         if (flags.json) return [thread.message, ...thread.replies].forEach(printJson), 0
-        out(formatThreads([thread.message, ...thread.replies]))
+        out(formatThreads([thread.message, ...thread.replies], await reactors(board, [thread.message, ...thread.replies])))
         return 0
       }
       const page = await board.messages({
@@ -232,7 +239,7 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       })
       if (flags.json) return page.messages.forEach(printJson), 0
       out(`${target ?? 'all channels'} · cursor ${page.cursor}\n`)
-      out(page.messages.length ? formatThreads(page.messages) : 'no messages')
+      out(page.messages.length ? formatThreads(page.messages, await reactors(board, page.messages)) : 'no messages')
       return 0
     }
 

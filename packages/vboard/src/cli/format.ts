@@ -54,9 +54,13 @@ export function formatMessage(message: MessageView, options: { reply?: boolean; 
   return [head, body, ...(reacted ? [`${pad}${reacted}`] : []), ...undelivered].join('\n')
 }
 
-/** Threads in order, each root followed by its replies. */
-export function formatThreads(messages: MessageView[]): string {
-  const names = new Map(messages.map((m) => [m.by.actor, authorName(m)]))
+/**
+ * Threads in order, each root followed by its replies. `actors` (the board's
+ * directory) names reactors who haven't written a message in view.
+ */
+export function formatThreads(messages: MessageView[], actors: { id: string; name: string }[] = []): string {
+  const names = new Map(actors.map((a) => [a.id, a.name]))
+  for (const m of messages) names.set(m.by.actor, authorName(m))
   const byRoot = new Map<number, MessageView[]>()
   const roots: MessageView[] = []
   const orphans: MessageView[] = []
