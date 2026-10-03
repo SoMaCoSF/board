@@ -28,6 +28,8 @@ export type SyncPlatform = {
   isRoot(thread: string, messageId: string): boolean
   /** Short context for a message, e.g. the file and line of a review comment. */
   context(message: ChatMessage): string | null
+  /** A mention of one of its own users (`slack:user:U0456` → `U0456`), as the platform writes it: `<@U0456>`. Without it, mentions render as names. */
+  mention?(userId: string, handle: string): string
   /** A message's text as markdown, the board's format. */
   markdown(message: ChatMessage): string
   /** Its author's avatar, when the platform can tell. Best effort: null otherwise. */

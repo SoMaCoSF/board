@@ -158,6 +158,7 @@ export function github(options: {
       const url = raw?.comment?.user?.avatar_url ?? raw?.user?.avatar_url
       return typeof url === 'string' ? url : null
     },
+    mention: (_userId, login) => `@${login}`,
     context(message: ChatMessage) {
       const raw = message.raw as { path?: string; line?: number; comment?: { path?: string; line?: number } } | null
       const path = raw?.path ?? raw?.comment?.path

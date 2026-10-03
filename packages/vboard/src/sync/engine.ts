@@ -33,6 +33,7 @@ import {
   type WriteContext,
 } from '../server/writes.ts'
 import { externalAuthor, type SyncPlatform } from './types.ts'
+import { replaceMentions } from '../contract/mentions.ts'
 
 export type BoardBinding = {
   session: BoardSession
@@ -379,8 +380,29 @@ export function createSyncEngine(options: {
     return chat
   }
 
-  /** A board message as markdown for a platform, which converts it to its own format. */
-  function render(message: Message, actors: ActorsState, quote?: Message): { markdown: string } {
+  /**
+   * A message's text with its mentions as the target platform writes them: its own users
+   * natively (`<@U0456>` in Slack, `@login` on GitHub), anyone else by name. A mention
+   * the message didn't resolve stays as written.
+   */
+  function renderMentions(message: Message, actors: ActorsState, key: string): string {
+    if (message.mentions.length === 0) return message.text
+    const platform = platformOf(key)
+    const own = `${platform.platform}:user:`
+    return replaceMentions(message.text, (token) => {
+      const id =
+        token.kind === 'actor'
+          ? message.mentions.find((m) => m === token.actor)
+          : message.mentions.find((m) => actors.byId[m]?.handle.toLowerCase() === token.handle)
+      if (id === undefined) return null
+      const actor = actors.byId[id]
+      if (platform.mention && id.startsWith(own)) return platform.mention(id.slice(own.length), actor?.handle ?? id.slice(own.length))
+      return actor?.name ?? actor?.handle ?? id
+    })
+  }
+
+  /** A board message as markdown for a platform (`key`), which converts it to its own format. */
+  function render(message: Message, actors: ActorsState, key: string, quote?: Message): { markdown: string } {
     const actor = actors.byId[message.by.actor]
     let name = actor?.name ?? message.by.actor
     if (message.by.profile && actor?.handle.includes('/')) name = `${actor.name} via ${actor.handle.split('/')[0]}`
@@ -388,7 +410,7 @@ export function createSyncEngine(options: {
     const quoted = quote
       ? `> ↪ ${actors.byId[quote.by.actor]?.name ?? 'someone'}${quote.origin?.context ? ` on ${quote.origin.context}` : ''}: ${quote.text.slice(0, 140).replace(/\n/g, ' ')}\n\n`
       : ''
-    return { markdown: `${quoted}**${name}**: ${message.text}` }
+    return { markdown: `${quoted}**${name}**: ${renderMentions(message, actors, key)}` }
   }
 
   type Ctx<K extends keyof BoardEvents> = HandlerContext<BoardEvents, K>
@@ -415,7 +437,7 @@ export function createSyncEngine(options: {
     const inSubthread = replyCopy !== undefined && replyCopy.thread !== externalThread
     const place = inSubthread ? replyCopy.thread : externalThread
     const chat = await chatFor(keyOf(target))
-    const sent = await chat.thread(toChat(place)).post(render(message, state.actors, inSubthread ? undefined : replyTo))
+    const sent = await chat.thread(toChat(place)).post(render(message, state.actors, keyOf(target), inSubthread ? undefined : replyTo))
     await ctx.session.append(`receipt:${message.id}:${target}`, {
       type: 'message.synced',
       payload: { id: message.id, thread: message.thread, target, external: { thread: place, message: sent.id } },
@@ -461,7 +483,7 @@ export function createSyncEngine(options: {
     if (!externalThread) {
       try {
         const chat = await chatFor(keyOf(target))
-        const sent = await chat.channel(toChat(target)).post(render(root, state.actors))
+        const sent = await chat.channel(toChat(target)).post(render(root, state.actors, keyOf(target)))
         externalThread = toExternal(keyOf(target), sent.threadId)
         await ctx.session.append(`receipt:${root.id}:${target}`, {
           type: 'message.synced',
@@ -523,7 +545,7 @@ export function createSyncEngine(options: {
       try {
         const adapter = (await chatFor(keyOf(target))).getAdapter(platformOf(keyOf(target)).adapter.name)
         const chatThread = toChat(copy.thread)
-        if (event.type === 'message.edited' && message) await adapter.editMessage(chatThread, copy.message, render(message, state.actors))
+        if (event.type === 'message.edited' && message) await adapter.editMessage(chatThread, copy.message, render(message, state.actors, keyOf(target)))
         else if (event.type === 'message.deleted') await adapter.deleteMessage(chatThread, copy.message)
         else if (event.type === 'reaction.added') await adapter.addReaction(chatThread, copy.message, canonicalEmoji(event.payload.emoji))
         else if (event.type === 'reaction.removed') await adapter.removeReaction(chatThread, copy.message, canonicalEmoji(event.payload.emoji))

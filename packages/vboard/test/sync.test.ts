@@ -162,6 +162,25 @@ describe('sync', () => {
     expect(messages[0]!.mentions).toEqual(['vercel:user:u_julian'])
   })
 
+  it("renders mentions natively on the mentioned actor's own platform, and as names elsewhere", async () => {
+    const { board, s, g, webhook } = setup()
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+
+    // ada on Slack and octo on GitHub, in a PR thread that GitHub and Slack's #C2 both carry.
+    await webhook('slack', { type: 'message', threadId: 'slack:C1:100', id: '100', text: 'hi', user: 'U_ADA', name: 'ada' })
+    await webhook('github', { type: 'message', threadId: 'github:basehub-ai/vboard:3', id: 'c1', text: 'ptal', user: '99', name: 'octo' })
+    await vi.waitFor(async () => expect(await read(julian, 'prs')).toHaveLength(1))
+    await vi.waitFor(() => expect(s.channelPosts.map((p) => p.channelId)).toContain('slack:C2'))
+    const [pr] = await read(julian, 'prs')
+
+    const reply = await julian('POST', '/messages', { re: pr!.id, text: '@ada and @[github:user:99], see `@ada` here' })
+    expect(reply.body.message.mentions).toEqual(['slack:user:U_ADA', 'github:user:99'])
+    await vi.waitFor(() => expect(s.posts).toHaveLength(1))
+    await vi.waitFor(() => expect(g.posts).toHaveLength(1))
+    expect(JSON.parse(s.posts[0]!.text)).toEqual({ markdown: '**julian**: <@U_ADA> and octo, see `@ada` here' })
+    expect(JSON.parse(g.posts[0]!.text)).toEqual({ markdown: '**julian**: ada and @octo, see `@ada` here' })
+  })
+
   it("runs watchers on Slack's messages, and syncs their replies back to Slack", async () => {
     const seen: string[] = []
     const { board, s, webhook } = setup({

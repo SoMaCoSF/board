@@ -187,6 +187,7 @@ export function slack(options: {
     // A Slack thread is named by its root message's ts.
     isRoot: (thread, messageId) => thread.slice(thread.lastIndexOf(':') + 1) === messageId,
     context: () => null,
+    mention: (userId) => `<@${userId}>`,
     handlerArgs(event: ExternalEvent, raw, board) {
       if (event.kind !== 'message') return { message: null, board }
       const message: SlackMessage = {
