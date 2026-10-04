@@ -34,6 +34,37 @@ describe('attachments', () => {
     expect(new Uint8Array(await file.arrayBuffer())).toEqual(PNG)
   })
 
+  it('opens a signed link without a token, and only a link this board signed', async () => {
+    const secret = 'a'.repeat(32)
+    const { board, client } = await setup({ attachmentLinks: { secret } })
+    const shot = await client.upload({ data: PNG, name: 'after.png', type: 'image/png' })
+    const { attachmentLink } = await import('../src/server/blob.ts')
+    const link = attachmentLink({ url: BOARD_URL, secret }, shot.id)
+    expect(link).toMatch(new RegExp(`^${BOARD_URL}/attachments/${shot.id}\\?sig=[A-Za-z0-9_-]{43}$`))
+
+    const opened = await board.fetch(new Request(link))
+    expect(opened.status).toBe(200)
+    expect(opened.headers.get('content-security-policy')).toContain('sandbox')
+    expect(new Uint8Array(await opened.arrayBuffer())).toEqual(PNG)
+
+    // Another file's signature, another board's, or no signature at all: refused.
+    const other = await client.upload({ data: PNG, name: 'other.png', type: 'image/png' })
+    const sig = new URL(link).searchParams.get('sig')!
+    expect((await board.fetch(new Request(`${BOARD_URL}/attachments/${other.id}?sig=${sig}`))).status).toBe(401)
+    expect((await board.fetch(new Request(attachmentLink({ url: BOARD_URL, secret: 'b'.repeat(32) }, shot.id)))).status).toBe(401)
+    expect((await board.fetch(new Request(`${BOARD_URL}/attachments/${shot.id}`))).status).toBe(401)
+
+    // A board without links refuses every signature.
+    const { board: plain, client: plainClient } = await setup()
+    const there = await plainClient.upload({ data: PNG, name: 'after.png', type: 'image/png' })
+    expect((await plain.fetch(new Request(attachmentLink({ url: BOARD_URL, secret }, there.id)))).status).toBe(401)
+  })
+
+  it('needs a long secret and a url for links', () => {
+    expect(() => testBoard({ attachmentLinks: { secret: 'short' } })).toThrow(/at least 32/)
+    expect(() => testBoard({ url: undefined, attachmentLinks: { secret: 'a'.repeat(32) } })).toThrow(/needs a `url`/)
+  })
+
   it('downloads what a browser could run, and needs a token to read', async () => {
     const { board, client } = await setup()
     const page = await client.upload({ data: new TextEncoder().encode('<script>alert(1)</script>'), name: 'x.svg', type: 'image/svg+xml' })

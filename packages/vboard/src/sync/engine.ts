@@ -22,7 +22,7 @@ import {
 } from '../contract/reducers.ts'
 import { fileSize } from '../contract/files.ts'
 import { MESSAGE_TEXT_MAX } from '../contract/schemas.ts'
-import { readAttachmentData, type BlobStore } from '../server/blob.ts'
+import { attachmentLink, readAttachmentData, type AttachmentLinks, type BlobStore } from '../server/blob.ts'
 import type { Principal } from '../server/auth.ts'
 import type { BoardSession } from '../server/board.ts'
 import { badRequest, notFound } from '../server/errors.ts'
@@ -49,6 +49,9 @@ const clampText = (text: string) => {
   return trimmed.length > MESSAGE_TEXT_MAX ? `${trimmed.slice(0, MESSAGE_TEXT_MAX - 1)}…` : trimmed
 }
 
+/** Images a platform can show inline from a link: the ones the board serves inline. */
+const INLINE_IMAGE = /^image\/(png|jpeg|gif|webp|avif)$/
+
 const jsonSafe = (value: unknown): unknown => {
   try {
     return JSON.parse(JSON.stringify(value ?? null))
@@ -70,6 +73,8 @@ export function createSyncEngine(options: {
   scheduler?: A2Scheduler | undefined
   /** Where attachments' bytes are, for platforms that take uploads. */
   blob?: BlobStore | null
+  /** Signed links for files a platform doesn't get, when the board has them. */
+  links?: AttachmentLinks | null
 }) {
   const entries = options.entries
   let binding: BoardBinding | null = null
@@ -402,9 +407,21 @@ export function createSyncEngine(options: {
     return { markdown: `${quoted}**${name}**: ${message.text}` }
   }
 
-  /** What a platform shows for files it didn't get: one line each, so a reader knows they're on the board. */
-  const attachmentNotes = (message: Message) =>
-    message.attachments.map((a) => `\n📎 ${a.name} (${fileSize(a.size)}, on the board: #${message.id})`).join('')
+  /**
+   * What a platform shows for files it didn't get: one line each, so a reader
+   * knows they're on the board. With signed links, each links its file, and on a
+   * platform that takes no uploads at all (GitHub), images show inline.
+   */
+  const attachmentNotes = (key: string, message: Message) =>
+    message.attachments
+      .map((a) => {
+        if (!options.links) return `\n📎 ${a.name} (${fileSize(a.size)}, on the board: #${message.id})`
+        const link = attachmentLink(options.links, a.id)
+        const name = a.name.replace(/[[\]\\]/g, '\\$&')
+        if (INLINE_IMAGE.test(a.type) && !platformOf(key).uploadFiles) return `\n![${name}](${link})`
+        return `\n📎 [${name}](${link}) (${fileSize(a.size)})`
+      })
+      .join('')
 
   /**
    * `render`, with a line per file where the files won't follow: on a platform
@@ -413,7 +430,7 @@ export function createSyncEngine(options: {
   const renderFor = (key: string, message: Message, actors: ActorsState, quote?: Message, noted = false) => {
     const { markdown } = render(message, actors, quote)
     const lines = message.attachments.length > 0 && (noted || !platformOf(key).uploadFiles || !options.blob)
-    return { markdown: lines ? `${markdown}\n${attachmentNotes(message)}` : markdown }
+    return { markdown: lines ? `${markdown}\n${attachmentNotes(key, message)}` : markdown }
   }
 
   type Ctx<K extends keyof BoardEvents> = HandlerContext<BoardEvents, K>

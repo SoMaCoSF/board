@@ -42,6 +42,11 @@ export const { GET, POST, scheduler } = board({
   // Attachments (Pi's proof of work) in the project's private Blob store, `vboard-attachments`.
   // Every deployment shares it: a file's ID is random, and only its board can name it.
   blob: env ? vercelBlob() : undefined,
+  // GitHub can't take files, so its comments link them, signed (images show inline).
+  // Every environment links production's board: it shares the Blob store and the secret.
+  attachmentLinks: process.env.VBOARD_LINK_SECRET
+    ? { secret: process.env.VBOARD_LINK_SECRET, url: "https://vboard-basehub.vercel.app/api/board" }
+    : undefined,
   scheduler: vercelQueues({ topic: "vboard" }),
   sync: {
     slack: slack({

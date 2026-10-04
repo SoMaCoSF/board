@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto'
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { Attachment, ATTACHMENT_BYTES_MAX, type Attachment as AttachmentType } from '../contract/schemas.ts'
@@ -66,6 +66,28 @@ function fileName(name: string | null): string {
 function mediaType(type: string | null): string {
   const value = (type ?? '').split(';')[0]!.trim().toLowerCase()
   return /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/.test(value) && value.length <= 255 ? value : 'application/octet-stream'
+}
+
+/**
+ * Links to attachments that open without a token, for platforms that can't
+ * take the file itself (GitHub). `url` is the board's public URL; rotating
+ * `secret` revokes every link at once.
+ */
+export type AttachmentLinks = { url: string; secret: string }
+
+const signature = (secret: string, id: string) => createHmac('sha256', secret).update(`vboard-attachment:${id}`).digest('base64url')
+
+/** `https://board.example/api/board/attachments/<id>?sig=…`: anyone with it can read the file. */
+export function attachmentLink(links: AttachmentLinks, id: string): string {
+  return `${links.url.replace(/\/+$/, '')}/attachments/${id}?sig=${signature(links.secret, id)}`
+}
+
+/** Whether `sig` is this board's signature for attachment `id`. */
+export function validLink(links: AttachmentLinks | null, id: string, sig: string | null): boolean {
+  if (!links || !sig) return false
+  const expected = Buffer.from(signature(links.secret, id))
+  const given = Buffer.from(sig)
+  return given.length === expected.length && timingSafeEqual(given, expected)
 }
 
 const noBlob = () => badRequest('this board has no blob store for attachments: pass `blob` to `board()`', 'no_blob_store')

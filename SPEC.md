@@ -31,6 +31,11 @@ import { vercelBlob } from 'vboard/blob'
 export const { GET, POST } = board({ store, blob: vercelBlob() })
 ```
 
+`attachmentLinks: { secret, url? }` gives platforms that can't take files
+(GitHub) [signed links](#attachments) to them instead of a plain line. `url`
+is where the links point, by default the board's `url`. `secret` is at least
+32 characters.
+
 ```bash
 export VBOARD_URL=https://www.example.com/api/board
 vboard post errors-www "deploy failed on a1b2c3"
@@ -403,6 +408,12 @@ vb download nXHY2NjUHuzE5F1QpXyBdQ
   an upload is one request. A message carries at most 10.
 - **Reading one takes a token,** like every read. The board serves it
   sandboxed, so a file can't run as a page on the board's origin.
+- **A signed link opens one file without a token,** for platforms that can't
+  take files: `/attachments/<id>?sig=<HMAC-SHA256 of the ID>`, keyed by the
+  board's `attachmentLinks.secret`. Links don't expire, because GitHub's image
+  proxy and people's bookmarks fetch them later. So anyone who has a link can
+  read that file, and rotating the secret revokes every link at once. A board
+  without `attachmentLinks` refuses every `sig`.
 - **Deleting a message hides its attachments, but doesn't revoke them.** The
   board stops listing them, and the bytes stay in the store: an ID's bytes
   never change, and another message may carry the same file. Anyone who has an
@@ -665,7 +676,7 @@ status.
 | GET | `/messages/:id` | One message, plus its thread and sync targets when it is a root |
 | POST | `/messages` | Post or reply: `{ channel?, re?, text, labels?, attachments?: AttachmentId[], sync?: ExternalTarget[], noSync?: true, id? }`. A post needs `channel`; a reply needs `re` |
 | POST | `/attachments` | Upload one file: the body is the file, `content-type` its type, `x-board-filename` its name (URI-encoded). At most 4 MB. Answers `{ attachment: { id, name, type, size } }` |
-| GET | `/attachments/:id` | The file, with a token like any read. Sandboxed (`content-security-policy: sandbox`); only images, MP4/WebM video, and plain text display inline, everything else downloads |
+| GET | `/attachments/:id` | The file, with a token like any read, or `?sig=` from a signed link and no token. Sandboxed (`content-security-policy: sandbox`); only images, MP4/WebM video, and plain text display inline, everything else downloads |
 | POST | `/messages/:id/edit` | `{ text }` |
 | POST | `/messages/:id/delete` | `{}` |
 | POST | `/messages/:id/reactions` | `{ emoji, remove?: true }` |
@@ -1112,7 +1123,11 @@ written".
   the board deletes the files on Slack too. If Slack refuses files (say, the
   app lacks `files:write`), the text is edited to add a line per file
   (`📎 after.png (17 KB, on the board: #812)`), and later edits keep them.
-  GitHub has no upload API, so it always gets those lines. Files that arrive
+  GitHub has no upload API, so it always gets those lines. With
+  `attachmentLinks`, each line links its file with a signed link, and on a
+  platform that takes no uploads at all (GitHub) an image shows inline:
+  `![after.png](https://…/attachments/<id>?sig=…)`. GitHub's image proxy
+  fetches the link without a token. Files that arrive
   from platforms aren't brought in yet.
 - **Echoes are skipped.** The bot's own messages are skipped on the way in, so
   nothing echoes back. On GitHub, set the adapter's `botUserId`; its docs warn

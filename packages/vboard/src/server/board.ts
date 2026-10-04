@@ -32,7 +32,7 @@ import {
 } from './auth.ts'
 import { KNOWN_AGENTS, resolveActor } from './actors.ts'
 import { avatarSvg } from './avatars.ts'
-import { attachmentResponse, defaultBlob, readAttachment, writeUpload, type BlobStore } from './blob.ts'
+import { attachmentResponse, defaultBlob, readAttachment, validLink, writeUpload, type AttachmentLinks, type BlobStore } from './blob.ts'
 import { badRequest, forbidden, HttpError, json, notFound, toErrorResponse, unauthorized } from './errors.ts'
 import { compileFilter, liveFeed, pollFeed, view } from './feed.ts'
 import { discoveryIdentity, ownProjectId } from './identity.ts'
@@ -74,6 +74,14 @@ export type BoardOptions = {
    * in tests, `.a2/attachments` in development, and no uploads in production.
    */
   blob?: BlobStore
+  /**
+   * Signed links to attachments, for platforms that can't take files (GitHub):
+   * their messages link each file, and images show inline. Anyone with a link can
+   * read that file, without a token; rotating `secret` revokes them all. `url` is
+   * the board's public URL, where the links point (default: `url` above).
+   * Omitted: those platforms get a plain line per file.
+   */
+  attachmentLinks?: { secret: string; url?: string }
 }
 
 const boardServer = (options: BoardOptions) =>
@@ -197,12 +205,22 @@ async function readCapped(request: Request, max: number): Promise<Uint8Array> {
   return body
 }
 
+function attachmentLinksOf(options: BoardOptions): AttachmentLinks | null {
+  const links = options.attachmentLinks
+  if (!links) return null
+  const url = links.url ?? options.url
+  if (!url) throw new Error('vboard: `attachmentLinks` needs a `url` (or the board\'s `url`): it\'s where the links point')
+  if (links.secret.length < 32) throw new Error('vboard: `attachmentLinks.secret` must be at least 32 characters')
+  return { url, secret: links.secret }
+}
+
 /** Mounts a board: one log in one route. Create it once, at module scope. */
 export function board(options: BoardOptions = {}) {
   const blob = options.blob ?? defaultBlob()
+  const links = attachmentLinksOf(options)
   const engine =
     options.sync && Object.keys(options.sync).length > 0
-      ? createSyncEngine({ entries: options.sync, store: options.store, scheduler: options.scheduler, blob })
+      ? createSyncEngine({ entries: options.sync, store: options.store, scheduler: options.scheduler, blob, links })
       : null
   const watchers =
     options.watch && Object.keys(options.watch).length > 0
@@ -293,6 +311,15 @@ export function board(options: BoardOptions = {}) {
         }
         case 'openapi':
           return json(openapi())
+        case 'attachment': {
+          // A signed link opens without a token; anything else needs one, below.
+          const sig = url.searchParams.get('sig')
+          if (sig !== null) {
+            if (!validLink(links, match.param!, sig)) throw unauthorized('this attachment link is not valid')
+            return await attachmentResponse(blob, match.param!)
+          }
+          break
+        }
         case 'webhook':
           // Platforms can't send a board token: the adapter verifies the request.
           if (!engine) throw notFound('this board has no sync configured')

@@ -270,6 +270,48 @@ describe('sync', () => {
     expect(g.posts[0]!.text).not.toContain('"files"')
   })
 
+  it('links files on GitHub with signed links when the board has them, and shows images inline', async () => {
+    const secret = 's'.repeat(32)
+    const g = fakePlatform('github')
+    const board = testBoard({
+      attachmentLinks: { secret },
+      sync: { github: github({ adapter: g.adapter, repos: { 'basehub-ai/vboard': 'prs' } }) },
+    })
+    const julian = caller(board.fetch, await personToken())
+    await board.fetch(
+      new Request(`${BOARD_URL}/webhooks/github`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'message', threadId: 'github:basehub-ai/vboard:9', id: 'c1', text: 'review please', user: 'octo' }),
+      }),
+    )
+    await vi.waitFor(async () => expect(await read(julian, 'prs')).toHaveLength(1))
+    const [pr] = await read(julian, 'prs')
+    const upload = async (name: string, type: string, body: string) =>
+      ((await (
+        await board.fetch(
+          new Request(`${BOARD_URL}/attachments`, {
+            method: 'POST',
+            headers: { authorization: `Bearer ${await personToken()}`, 'content-type': type, 'x-board-filename': name },
+            body,
+          }),
+        )
+      ).json()) as { attachment: { id: string } }).attachment.id
+    const shot = await upload('after.png', 'image/png', 'png')
+    const log = await upload('run [1].log', 'text/plain', 'ok')
+    await julian('POST', '/messages', { re: pr!.id, text: 'fixed', attachments: [shot, log] })
+    await vi.waitFor(() => expect(g.posts).toHaveLength(1))
+    const text = g.posts[0]!.text
+    const image = new RegExp(`!\\[after\\.png\\]\\((${BOARD_URL}/attachments/${shot}\\?sig=[A-Za-z0-9_-]+)\\)`).exec(text)
+    expect(image).not.toBeNull()
+    // Brackets in a name are escaped, so the link stays a link.
+    expect(JSON.parse(text).markdown).toMatch(/📎 \[run \\\[1\\\]\.log\]\(http:\/\/board\.test\/api\/board\/attachments\/[\w-]{22}\?sig=[\w-]{43}\) \(2 B\)/)
+    // The link opens without a token, as GitHub's image proxy fetches it.
+    const opened = await board.fetch(new Request(image![1]!))
+    expect(opened.status).toBe(200)
+    expect(await opened.text()).toBe('png')
+  })
+
   it('notes the files in the text when Slack refuses them, and retries any other failure without posting the text twice', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
