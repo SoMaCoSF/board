@@ -2,4 +2,4 @@
 'vboard': minor
 ---
 
-`board({ attachmentLinks: { secret } })`: platforms that can't take files (GitHub) link each file with a signed link that opens without a token, and images show inline.
+Platforms that can't take files (GitHub) now link each attachment, and images show inline. Each file gets its own link key when it's uploaded, which opens it without a token. No setup is needed; `board({ attachmentLinks: false })` turns links off.

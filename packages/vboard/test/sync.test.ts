@@ -266,15 +266,40 @@ describe('sync', () => {
     const [pr] = await read(julian, 'prs')
     const proof = (await julian('POST', '/messages', { re: pr!.id, text: '', attachments: [await upload('proof.png')] })).body.message
     await vi.waitFor(() => expect(g.posts).toHaveLength(1))
-    expect(g.posts[0]!.text).toContain(`📎 proof.png (3 B, on the board: #${proof.id})`)
+    expect(g.posts[0]!.text).toMatch(/!\[proof\.png\]\(http:\/\/board\.test\/api\/board\/attachments\/[\w-]{22}\?key=[\w-]{22}\)/)
     expect(g.posts[0]!.text).not.toContain('"files"')
   })
 
-  it('links files on GitHub with signed links when the board has them, and shows images inline', async () => {
-    const secret = 's'.repeat(32)
+  it('notes files as plain lines with attachmentLinks: false', async () => {
+    const g = fakePlatform('github')
+    const board = testBoard({ attachmentLinks: false, sync: { github: github({ adapter: g.adapter, repos: { 'basehub-ai/vboard': 'prs' } }) } })
+    const julian = caller(board.fetch, await personToken())
+    await board.fetch(
+      new Request(`${BOARD_URL}/webhooks/github`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'message', threadId: 'github:basehub-ai/vboard:9', id: 'c1', text: 'review please', user: 'octo' }),
+      }),
+    )
+    await vi.waitFor(async () => expect(await read(julian, 'prs')).toHaveLength(1))
+    const [pr] = await read(julian, 'prs')
+    const uploaded = await board.fetch(
+      new Request(`${BOARD_URL}/attachments`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${await personToken()}`, 'content-type': 'image/png', 'x-board-filename': 'after.png' },
+        body: 'png',
+      }),
+    )
+    const { attachment } = (await uploaded.json()) as { attachment: { id: string } }
+    const { body } = await julian('POST', '/messages', { re: pr!.id, text: 'fixed', attachments: [attachment.id] })
+    await vi.waitFor(() => expect(g.posts).toHaveLength(1))
+    expect(g.posts[0]!.text).toContain(`📎 after.png (3 B, on the board: #${body.message.id})`)
+    expect(g.posts[0]!.text).not.toContain('key=')
+  })
+
+  it('links files on GitHub, and shows images inline', async () => {
     const g = fakePlatform('github')
     const board = testBoard({
-      attachmentLinks: { secret },
       sync: { github: github({ adapter: g.adapter, repos: { 'basehub-ai/vboard': 'prs' } }) },
     })
     const julian = caller(board.fetch, await personToken())
@@ -302,10 +327,10 @@ describe('sync', () => {
     await julian('POST', '/messages', { re: pr!.id, text: 'fixed', attachments: [shot, log] })
     await vi.waitFor(() => expect(g.posts).toHaveLength(1))
     const text = g.posts[0]!.text
-    const image = new RegExp(`!\\[after\\.png\\]\\((${BOARD_URL}/attachments/${shot}\\?sig=[A-Za-z0-9_-]+)\\)`).exec(text)
+    const image = new RegExp(`!\\[after\\.png\\]\\((${BOARD_URL}/attachments/${shot}\\?key=[A-Za-z0-9_-]+)\\)`).exec(text)
     expect(image).not.toBeNull()
     // Brackets in a name are escaped, so the link stays a link.
-    expect(JSON.parse(text).markdown).toMatch(/📎 \[run \\\[1\\\]\.log\]\(http:\/\/board\.test\/api\/board\/attachments\/[\w-]{22}\?sig=[\w-]{43}\) \(2 B\)/)
+    expect(JSON.parse(text).markdown).toMatch(/📎 \[run \\\[1\\\]\.log\]\(http:\/\/board\.test\/api\/board\/attachments\/[\w-]{22}\?key=[\w-]{22}\) \(2 B\)/)
     // The link opens without a token, as GitHub's image proxy fetches it.
     const opened = await board.fetch(new Request(image![1]!))
     expect(opened.status).toBe(200)
@@ -348,13 +373,13 @@ describe('sync', () => {
     })
     expect(s.posts).toHaveLength(1)
     expect(s.posts[0]!.text).not.toContain('📎')
-    expect(s.edits[0]).toMatchObject({ messageId: s.posts[0]!.id, text: expect.stringContaining('📎 repro.log') })
+    expect(s.edits[0]).toMatchObject({ messageId: s.posts[0]!.id, text: expect.stringMatching(/📎 \[repro\.log\]\(http:\/\/board\.test\/[^)]+\?key=[\w-]{22}\)/) })
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("won't take"))
 
     // An edit keeps the notes, since the files never went.
     await julian('POST', `/messages/${body.message.id}/edit`, { text: 'logs, again' })
     await vi.waitFor(() => expect(s.edits).toHaveLength(2))
-    expect(s.edits[1]!.text).toContain('📎 repro.log')
+    expect(s.edits[1]!.text).toContain('📎 [repro.log](')
     warn.mockRestore()
     error.mockRestore()
   })

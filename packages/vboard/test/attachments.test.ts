@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createBoardClient } from '../src/client/client.ts'
+import { attachmentLink, memoryBlob } from '../src/server/blob.ts'
 import { BOARD_URL, caller, personToken, testBoard } from './harness.ts'
 
 // A 1×1 PNG.
@@ -34,35 +35,35 @@ describe('attachments', () => {
     expect(new Uint8Array(await file.arrayBuffer())).toEqual(PNG)
   })
 
-  it('opens a signed link without a token, and only a link this board signed', async () => {
-    const secret = 'a'.repeat(32)
-    const { board, client } = await setup({ attachmentLinks: { secret } })
+  it('gives each file a link that opens it without a token, and only that file', async () => {
+    const blob = memoryBlob()
+    const { board, client } = await setup({ blob })
     const shot = await client.upload({ data: PNG, name: 'after.png', type: 'image/png' })
-    const { attachmentLink } = await import('../src/server/blob.ts')
-    const link = attachmentLink({ url: BOARD_URL, secret }, shot.id)
-    expect(link).toMatch(new RegExp(`^${BOARD_URL}/attachments/${shot.id}\\?sig=[A-Za-z0-9_-]{43}$`))
+    const link = (await attachmentLink(blob, shot.id))!
+    expect(link).toMatch(new RegExp(`^${BOARD_URL}/attachments/${shot.id}\\?key=[A-Za-z0-9_-]{22}$`))
+    // The key is the board's alone: never in what the API answers.
+    expect(JSON.stringify(shot)).not.toContain(new URL(link).searchParams.get('key')!)
+    expect(JSON.stringify(await client.messages({ channel: 'x' }).catch(() => null))).not.toContain(new URL(link).searchParams.get('key')!)
 
     const opened = await board.fetch(new Request(link))
     expect(opened.status).toBe(200)
     expect(opened.headers.get('content-security-policy')).toContain('sandbox')
     expect(new Uint8Array(await opened.arrayBuffer())).toEqual(PNG)
 
-    // Another file's signature, another board's, or no signature at all: refused.
+    // Another file's key, a made-up key, or no key and no token: refused.
     const other = await client.upload({ data: PNG, name: 'other.png', type: 'image/png' })
-    const sig = new URL(link).searchParams.get('sig')!
-    expect((await board.fetch(new Request(`${BOARD_URL}/attachments/${other.id}?sig=${sig}`))).status).toBe(401)
-    expect((await board.fetch(new Request(attachmentLink({ url: BOARD_URL, secret: 'b'.repeat(32) }, shot.id)))).status).toBe(401)
+    const key = new URL(link).searchParams.get('key')!
+    expect((await board.fetch(new Request(`${BOARD_URL}/attachments/${other.id}?key=${key}`))).status).toBe(401)
+    expect((await board.fetch(new Request(`${BOARD_URL}/attachments/${shot.id}?key=${'A'.repeat(22)}`))).status).toBe(401)
     expect((await board.fetch(new Request(`${BOARD_URL}/attachments/${shot.id}`))).status).toBe(401)
-
-    // A board without links refuses every signature.
-    const { board: plain, client: plainClient } = await setup()
-    const there = await plainClient.upload({ data: PNG, name: 'after.png', type: 'image/png' })
-    expect((await plain.fetch(new Request(attachmentLink({ url: BOARD_URL, secret }, there.id)))).status).toBe(401)
   })
 
-  it('needs a long secret and a url for links', () => {
-    expect(() => testBoard({ attachmentLinks: { secret: 'short' } })).toThrow(/at least 32/)
-    expect(() => testBoard({ url: undefined, attachmentLinks: { secret: 'a'.repeat(32) } })).toThrow(/needs a `url`/)
+  it('makes no links with attachmentLinks: false, and opens none', async () => {
+    const blob = memoryBlob()
+    const { board, client } = await setup({ blob, attachmentLinks: false })
+    const shot = await client.upload({ data: PNG, name: 'after.png', type: 'image/png' })
+    expect(await attachmentLink(blob, shot.id)).toBeNull()
+    expect((await board.fetch(new Request(`${BOARD_URL}/attachments/${shot.id}?key=${'A'.repeat(22)}`))).status).toBe(401)
   })
 
   it('downloads what a browser could run, and needs a token to read', async () => {

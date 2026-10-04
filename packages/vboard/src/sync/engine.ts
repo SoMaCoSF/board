@@ -22,7 +22,7 @@ import {
 } from '../contract/reducers.ts'
 import { fileSize } from '../contract/files.ts'
 import { MESSAGE_TEXT_MAX } from '../contract/schemas.ts'
-import { attachmentLink, readAttachmentData, type AttachmentLinks, type BlobStore } from '../server/blob.ts'
+import { attachmentLink, readAttachmentData, type BlobStore } from '../server/blob.ts'
 import type { Principal } from '../server/auth.ts'
 import type { BoardSession } from '../server/board.ts'
 import { badRequest, notFound } from '../server/errors.ts'
@@ -73,8 +73,10 @@ export function createSyncEngine(options: {
   scheduler?: A2Scheduler | undefined
   /** Where attachments' bytes are, for platforms that take uploads. */
   blob?: BlobStore | null
-  /** Signed links for files a platform doesn't get, when the board has them. */
-  links?: AttachmentLinks | null
+  /** Whether files a platform doesn't get are linked (`attachmentLinks`). */
+  links?: boolean
+  /** The board's URL, when it's configured: where links to files brought in from platforms point. */
+  url?: string | null
 }) {
   const entries = options.entries
   let binding: BoardBinding | null = null
@@ -409,28 +411,30 @@ export function createSyncEngine(options: {
 
   /**
    * What a platform shows for files it didn't get: one line each, so a reader
-   * knows they're on the board. With signed links, each links its file, and on a
-   * platform that takes no uploads at all (GitHub), images show inline.
+   * knows they're on the board. A file with a link links it, and on a platform
+   * that takes no uploads at all (GitHub), an image shows inline.
    */
-  const attachmentNotes = (key: string, message: Message) =>
-    message.attachments
-      .map((a) => {
-        if (!options.links) return `\n📎 ${a.name} (${fileSize(a.size)}, on the board: #${message.id})`
-        const link = attachmentLink(options.links, a.id)
-        const name = a.name.replace(/[[\]\\]/g, '\\$&')
-        if (INLINE_IMAGE.test(a.type) && !platformOf(key).uploadFiles) return `\n![${name}](${link})`
-        return `\n📎 [${name}](${link}) (${fileSize(a.size)})`
-      })
-      .join('')
+  const attachmentNotes = async (key: string, message: Message) =>
+    (
+      await Promise.all(
+        message.attachments.map(async (a) => {
+          const link = options.links && options.blob ? await attachmentLink(options.blob, a.id) : null
+          if (!link) return `\n📎 ${a.name} (${fileSize(a.size)}, on the board: #${message.id})`
+          const name = a.name.replace(/[[\]\\]/g, '\\$&')
+          if (INLINE_IMAGE.test(a.type) && !platformOf(key).uploadFiles) return `\n![${name}](${link})`
+          return `\n📎 [${name}](${link}) (${fileSize(a.size)})`
+        }),
+      )
+    ).join('')
 
   /**
    * `render`, with a line per file where the files won't follow: on a platform
    * that takes no uploads, or one that refused them (`noted`).
    */
-  const renderFor = (key: string, message: Message, actors: ActorsState, quote?: Message, noted = false) => {
+  const renderFor = async (key: string, message: Message, actors: ActorsState, quote?: Message, noted = false) => {
     const { markdown } = render(message, actors, quote)
     const lines = message.attachments.length > 0 && (noted || !platformOf(key).uploadFiles || !options.blob)
-    return { markdown: lines ? `${markdown}\n${attachmentNotes(key, message)}` : markdown }
+    return { markdown: lines ? `${markdown}\n${await attachmentNotes(key, message)}` : markdown }
   }
 
   type Ctx<K extends keyof BoardEvents> = HandlerContext<BoardEvents, K>
@@ -457,7 +461,7 @@ export function createSyncEngine(options: {
     const inSubthread = replyCopy !== undefined && replyCopy.thread !== externalThread
     const place = inSubthread ? replyCopy.thread : externalThread
     const chat = await chatFor(keyOf(target))
-    const sent = await chat.thread(toChat(place)).post(renderFor(keyOf(target), message, state.actors, inSubthread ? undefined : replyTo))
+    const sent = await chat.thread(toChat(place)).post(await renderFor(keyOf(target), message, state.actors, inSubthread ? undefined : replyTo))
     const external = { thread: place, message: sent.id }
     await ctx.session.append(`receipt:${message.id}:${target}`, {
       type: 'message.synced',
@@ -487,7 +491,7 @@ export function createSyncEngine(options: {
       console.warn(`[vboard] ${target} won't take #${message.id}'s files (${describe(error)}); noting them in its text`)
       ids = null
       const adapter = (await chatFor(keyOf(target))).getAdapter(platform.adapter.name)
-      await adapter.editMessage(toChat(copy.thread), copy.message, renderFor(keyOf(target), message, actors, undefined, true)).catch((edit: unknown) =>
+      await adapter.editMessage(toChat(copy.thread), copy.message, await renderFor(keyOf(target), message, actors, undefined, true)).catch((edit: unknown) =>
         console.warn(`[vboard] couldn't note #${message.id}'s files on ${target}:`, describe(edit)),
       )
     }
@@ -537,7 +541,7 @@ export function createSyncEngine(options: {
     if (!externalThread) {
       try {
         const chat = await chatFor(keyOf(target))
-        const sent = await chat.channel(toChat(target)).post(renderFor(keyOf(target), root, state.actors))
+        const sent = await chat.channel(toChat(target)).post(await renderFor(keyOf(target), root, state.actors))
         externalThread = toExternal(keyOf(target), sent.threadId)
         const external = { thread: externalThread, message: sent.id }
         await ctx.session.append(`receipt:${root.id}:${target}`, {
@@ -611,7 +615,7 @@ export function createSyncEngine(options: {
         const adapter = (await chatFor(keyOf(target))).getAdapter(platformOf(keyOf(target)).adapter.name)
         const chatThread = toChat(copy.thread)
         if (event.type === 'message.edited' && message)
-          await adapter.editMessage(chatThread, copy.message, renderFor(keyOf(target), message, state.actors, undefined, copy.files === null))
+          await adapter.editMessage(chatThread, copy.message, await renderFor(keyOf(target), message, state.actors, undefined, copy.files === null))
         else if (event.type === 'message.deleted') {
           await adapter.deleteMessage(chatThread, copy.message)
           // The files went as a message of their own.

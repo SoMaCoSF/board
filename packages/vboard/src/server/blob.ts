@@ -1,8 +1,8 @@
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { Attachment, ATTACHMENT_BYTES_MAX, type Attachment as AttachmentType } from '../contract/schemas.ts'
-import { badRequest, HttpError, notFound } from './errors.ts'
+import { badRequest, HttpError, notFound, unauthorized } from './errors.ts'
 
 /**
  * Where attachments' bytes live. The board writes each file once, under a key
@@ -68,34 +68,18 @@ function mediaType(type: string | null): string {
   return /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/.test(value) && value.length <= 255 ? value : 'application/octet-stream'
 }
 
-/**
- * Links to attachments that open without a token, for platforms that can't
- * take the file itself (GitHub). `url` is the board's public URL; rotating
- * `secret` revokes every link at once.
- */
-export type AttachmentLinks = { url: string; secret: string }
-
-const signature = (secret: string, id: string) => createHmac('sha256', secret).update(`vboard-attachment:${id}`).digest('base64url')
-
-/** `https://board.example/api/board/attachments/<id>?sig=…`: anyone with it can read the file. */
-export function attachmentLink(links: AttachmentLinks, id: string): string {
-  return `${links.url.replace(/\/+$/, '')}/attachments/${id}?sig=${signature(links.secret, id)}`
-}
-
-/** Whether `sig` is this board's signature for attachment `id`. */
-export function validLink(links: AttachmentLinks | null, id: string, sig: string | null): boolean {
-  if (!links || !sig) return false
-  const expected = Buffer.from(signature(links.secret, id))
-  const given = Buffer.from(sig)
-  return given.length === expected.length && timingSafeEqual(given, expected)
-}
-
 const noBlob = () => badRequest('this board has no blob store for attachments: pass `blob` to `board()`', 'no_blob_store')
 
 /** Stores an upload under a fresh ID, with its metadata beside it. */
 export async function writeUpload(
   blob: BlobStore | null,
-  input: { data: Uint8Array; name: string | null; type: string | null },
+  input: {
+    data: Uint8Array
+    name: string | null
+    type: string | null
+    /** The board's URL, for a [link](#attachmentLink) that opens the file without a token. Null: no link. */
+    linkUrl?: string | null
+  },
 ): Promise<AttachmentType> {
   if (!blob) throw noBlob()
   if (input.data.byteLength === 0) throw badRequest('the file is empty')
@@ -108,7 +92,10 @@ export async function writeUpload(
     size: input.data.byteLength,
   }
   await blob.put(dataKey(attachment.id), input.data, attachment.type)
-  await blob.put(metaKey(attachment.id), new TextEncoder().encode(JSON.stringify(attachment)), 'application/json')
+  // The link's key lives only here, beside the file: never in the log or an API answer.
+  const link: Link | undefined = input.linkUrl ? { url: input.linkUrl.replace(/\/+$/, ''), key: randomBytes(16).toString('base64url') } : undefined
+  const meta = { ...attachment, ...(link ? { link } : {}) }
+  await blob.put(metaKey(attachment.id), new TextEncoder().encode(JSON.stringify(meta)), 'application/json')
   return attachment
 }
 
@@ -116,12 +103,41 @@ async function bytes(data: ReadableStream<Uint8Array> | Uint8Array): Promise<Uin
   return data instanceof Uint8Array ? data : new Uint8Array(await new Response(data).arrayBuffer())
 }
 
-/** An upload's metadata, as the board recorded it: never what a request says. */
-export async function readAttachment(blob: BlobStore | null, id: string): Promise<AttachmentType> {
+/** Where a file's link points, and the 128-bit key that opens it. */
+type Link = { url: string; key: string }
+
+async function readMeta(blob: BlobStore | null, id: string): Promise<{ attachment: AttachmentType; link: Link | null }> {
   if (!blob) throw noBlob()
   const found = Attachment.shape.id.safeParse(id).success ? await blob.get(metaKey(id)) : null
   if (!found) throw notFound(`no attachment: ${id}`, 'attachment_not_found')
-  return Attachment.parse(JSON.parse(new TextDecoder().decode(await bytes(found.data))))
+  const meta = JSON.parse(new TextDecoder().decode(await bytes(found.data))) as { link?: Link }
+  const link = meta.link && typeof meta.link.url === 'string' && typeof meta.link.key === 'string' ? meta.link : null
+  return { attachment: Attachment.parse(meta), link }
+}
+
+/** An upload's metadata, as the board recorded it: never what a request says. */
+export async function readAttachment(blob: BlobStore | null, id: string): Promise<AttachmentType> {
+  return (await readMeta(blob, id)).attachment
+}
+
+/**
+ * `https://board.example/api/board/attachments/<id>?key=…`: opens the file
+ * without a token, for platforms that can't take the file itself (GitHub). Each
+ * file has its own key, made when it was uploaded; null for a file made without one.
+ */
+export async function attachmentLink(blob: BlobStore | null, id: string): Promise<string | null> {
+  const { link } = await readMeta(blob, id).catch(() => ({ link: null }))
+  return link ? `${link.url}/attachments/${id}?key=${link.key}` : null
+}
+
+/** The file, if `key` is its link's key. */
+export async function openLink(blob: BlobStore | null, id: string, key: string): Promise<Response> {
+  const { link } = await readMeta(blob, id)
+  const expected = Buffer.from(link?.key ?? '')
+  const given = Buffer.from(key)
+  if (!link || given.length !== expected.length || !timingSafeEqual(given, expected))
+    throw unauthorized('this attachment link is not valid')
+  return attachmentResponse(blob, id)
 }
 
 /** An attachment's bytes. */

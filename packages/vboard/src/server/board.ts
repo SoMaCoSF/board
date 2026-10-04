@@ -32,7 +32,7 @@ import {
 } from './auth.ts'
 import { KNOWN_AGENTS, resolveActor } from './actors.ts'
 import { avatarSvg } from './avatars.ts'
-import { attachmentResponse, defaultBlob, readAttachment, validLink, writeUpload, type AttachmentLinks, type BlobStore } from './blob.ts'
+import { attachmentResponse, defaultBlob, openLink, readAttachment, writeUpload, type BlobStore } from './blob.ts'
 import { badRequest, forbidden, HttpError, json, notFound, toErrorResponse, unauthorized } from './errors.ts'
 import { compileFilter, liveFeed, pollFeed, view } from './feed.ts'
 import { discoveryIdentity, ownProjectId } from './identity.ts'
@@ -75,13 +75,12 @@ export type BoardOptions = {
    */
   blob?: BlobStore
   /**
-   * Signed links to attachments, for platforms that can't take files (GitHub):
-   * their messages link each file, and images show inline. Anyone with a link can
-   * read that file, without a token; rotating `secret` revokes them all. `url` is
-   * the board's public URL, where the links point (default: `url` above).
-   * Omitted: those platforms get a plain line per file.
+   * Links to attachments, for platforms that can't take files (GitHub): their
+   * messages link each file, and images show inline. Each file gets its own
+   * link when it's uploaded, which opens it without a token. Default: on. With
+   * `false`, those platforms get a plain line per file and no file has a link.
    */
-  attachmentLinks?: { secret: string; url?: string }
+  attachmentLinks?: boolean
 }
 
 const boardServer = (options: BoardOptions) =>
@@ -205,22 +204,13 @@ async function readCapped(request: Request, max: number): Promise<Uint8Array> {
   return body
 }
 
-function attachmentLinksOf(options: BoardOptions): AttachmentLinks | null {
-  const links = options.attachmentLinks
-  if (!links) return null
-  const url = links.url ?? options.url
-  if (!url) throw new Error('vboard: `attachmentLinks` needs a `url` (or the board\'s `url`): it\'s where the links point')
-  if (links.secret.length < 32) throw new Error('vboard: `attachmentLinks.secret` must be at least 32 characters')
-  return { url, secret: links.secret }
-}
-
 /** Mounts a board: one log in one route. Create it once, at module scope. */
 export function board(options: BoardOptions = {}) {
   const blob = options.blob ?? defaultBlob()
-  const links = attachmentLinksOf(options)
+  const links = options.attachmentLinks !== false
   const engine =
     options.sync && Object.keys(options.sync).length > 0
-      ? createSyncEngine({ entries: options.sync, store: options.store, scheduler: options.scheduler, blob, links })
+      ? createSyncEngine({ entries: options.sync, store: options.store, scheduler: options.scheduler, blob, links, url: options.url ?? null })
       : null
   const watchers =
     options.watch && Object.keys(options.watch).length > 0
@@ -312,11 +302,11 @@ export function board(options: BoardOptions = {}) {
         case 'openapi':
           return json(openapi())
         case 'attachment': {
-          // A signed link opens without a token; anything else needs one, below.
-          const sig = url.searchParams.get('sig')
-          if (sig !== null) {
-            if (!validLink(links, match.param!, sig)) throw unauthorized('this attachment link is not valid')
-            return await attachmentResponse(blob, match.param!)
+          // A link opens its file without a token; anything else needs one, below.
+          const key = url.searchParams.get('key')
+          if (key !== null) {
+            if (!links) throw unauthorized('this board has no attachment links')
+            return await openLink(blob, match.param!, key)
           }
           break
         }
@@ -438,6 +428,7 @@ export function board(options: BoardOptions = {}) {
             data: await readCapped(request, ATTACHMENT_BYTES_MAX),
             name: decoded,
             type: request.headers.get('content-type'),
+            linkUrl: links ? boardUrl : null,
           })
           return json({ attachment }, 201)
         }
