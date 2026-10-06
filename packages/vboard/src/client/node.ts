@@ -217,11 +217,11 @@ export function createClient(options: NodeClientOptions = {}): BoardClient {
   const url = (options.url ?? process.env.VBOARD_URL ?? projectUrl() ?? savedUrl())?.replace(/\/+$/, '')
   if (!url)
     throw new BoardError('no_board', 'no board URL: run `vboard link <url>`, set VBOARD_URL, or run `vboard use <url>`', 0)
-  const doFetch = options.fetch ?? globalThis.fetch
+  const doFetch = throughProtection(url, options.fetch ?? globalThis.fetch)
 
   let discovery: Promise<Discovery> | undefined
   const discover = () =>
-    (discovery ??= doFetch(url, { headers: bypassHeaders() }).then(async (response) => {
+    (discovery ??= doFetch(url).then(async (response) => {
       if (!response.ok) throw new BoardError('no_board', `no board at ${url} (${response.status})`, response.status)
       return (await response.json()) as Discovery
     }))
@@ -287,18 +287,171 @@ export function createClient(options: NodeClientOptions = {}): BoardClient {
             await token()
             return cached ? { name: cached.name ?? null, avatar: cached.avatar ?? null } : null
           },
-    headers: async () => ({
-      ...bypassHeaders(),
-      ...(options.headers ? await (typeof options.headers === 'function' ? options.headers() : options.headers) : {}),
-    }),
+    ...(options.headers !== undefined ? { headers: options.headers } : {}),
     fetch: doFetch,
   })
 }
 
 export { BoardError, type BoardClient, type ClientOptions, type ProfileOption } from './client.ts'
 
-/** Gets past Vercel Deployment Protection on a protected board. */
-function bypassHeaders(): Record<string, string> {
-  const secret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET
-  return secret ? { 'x-vercel-protection-bypass': secret } : {}
+/**
+ * Gets past Vercel Deployment Protection on a protected board, the way
+ * `vercel curl` does: with `VERCEL_AUTOMATION_BYPASS_SECRET`, or else the
+ * project's automation bypass secret, which your Vercel login reads (creating
+ * it if the project has none) and which is cached on disk per board host.
+ */
+function throughProtection(url: string, doFetch: typeof globalThis.fetch): typeof globalThis.fetch {
+  const host = new URL(url).host
+  let secret: Promise<string | null> | undefined
+  const send = (input: RequestInfo | URL, init: RequestInit | undefined, bypass: string | null) => {
+    if (!bypass) return doFetch(input, init)
+    const headers = new Headers(init?.headers)
+    headers.set('x-vercel-protection-bypass', bypass)
+    return doFetch(input, { ...init, headers })
+  }
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const fromEnv = process.env.VERCEL_AUTOMATION_BYPASS_SECRET || null
+    const used = fromEnv ?? (await (secret ??= readBypass(host)))
+    const response = await send(input, init, used)
+    if (!isProtected(response)) return response
+    if (fromEnv)
+      throw new BoardError(
+        'protected',
+        `the board at ${url} is behind Vercel Deployment Protection and rejected VERCEL_AUTOMATION_BYPASS_SECRET`,
+        response.status,
+      )
+    // The cached secret (or none) didn't get through: ask Vercel, once per client.
+    if ((await secret) === used) {
+      const fresh = bypassSecret(url, host, doFetch).then(async (found) => {
+        await writeBypass(host, found).catch(() => {})
+        return found
+      })
+      fresh.catch(() => {
+        if (secret === fresh) secret = undefined
+      })
+      secret = fresh
+    }
+    const retried = await send(input, init, (await secret) ?? null)
+    if (!isProtected(retried)) return retried
+    throw new BoardError(
+      'protected',
+      `the board at ${url} is behind Vercel Deployment Protection and its bypass secret didn't get through: set VERCEL_AUTOMATION_BYPASS_SECRET`,
+      retried.status,
+    )
+  }) as typeof globalThis.fetch
+}
+
+const isVercel = (hostname: string) => hostname === 'vercel.com' || hostname.endsWith('.vercel.com')
+
+/** Vercel Authentication answers with a redirect to vercel.com's login, which fetch follows to an HTML page. */
+function isProtected(response: Response): boolean {
+  try {
+    if (response.redirected && isVercel(new URL(response.url).hostname)) return true
+    const location = response.headers.get('location')
+    if (response.status >= 300 && response.status < 400 && location && isVercel(new URL(location).hostname)) return true
+  } catch {}
+  return response.status === 401 && !!response.headers.get('content-type')?.includes('text/html')
+}
+
+const bypassFile = (host: string) =>
+  join(configDir(), 'bypass', `${createHash('sha256').update(host).digest('hex').slice(0, 32)}.json`)
+
+async function readBypass(host: string): Promise<string | null> {
+  try {
+    return (JSON.parse(await readFile(bypassFile(host), 'utf8')) as { secret?: string }).secret || null
+  } catch {
+    return null
+  }
+}
+
+async function writeBypass(host: string, secret: string) {
+  await mkdir(join(configDir(), 'bypass'), { recursive: true, mode: 0o700 })
+  await writeFile(bypassFile(host), JSON.stringify({ host, secret }), { mode: 0o600 })
+}
+
+type Bypasses = Record<string, { scope?: string }> | undefined
+const automationBypass = (bypasses: Bypasses) =>
+  Object.entries(bypasses ?? {}).find(([, value]) => value.scope === 'automation-bypass')?.[0] ?? null
+
+/** The board's project's automation bypass secret, as `vercel curl` finds it. */
+async function bypassSecret(url: string, host: string, doFetch: typeof globalThis.fetch): Promise<string> {
+  const blocked = (why: string) =>
+    new BoardError(
+      'protected',
+      `the board at ${url} is behind Vercel Deployment Protection: ${why}, or set VERCEL_AUTOMATION_BYPASS_SECRET`,
+      401,
+    )
+  let api: VercelApi
+  try {
+    const token = await getVercelToken()
+    api = async (method, path) => {
+      const response = await doFetch(`https://api.vercel.com${path}`, {
+        method,
+        headers: { authorization: `Bearer ${token}`, ...(method === 'GET' ? {} : { 'content-type': 'application/json' }) },
+        ...(method === 'GET' ? {} : { body: '{}' }),
+      })
+      return response.ok ? await response.json() : null
+    }
+  } catch {
+    api = vercelCliApi
+  }
+
+  const project = await findProject(api, host)
+  if (!project) throw blocked("your Vercel account can't see its project (run `vercel login`, or ask for access)")
+  const team = project.ownerId.startsWith('team_') ? `?teamId=${project.ownerId}` : ''
+  const details = (await api('GET', `/v9/projects/${project.projectId}${team}`)) as { protectionBypass?: Bypasses } | null
+  const existing = automationBypass(details?.protectionBypass)
+  if (existing) return existing
+  const created = (await api('PATCH', `/v1/projects/${project.projectId}/protection-bypass${team}`)) as {
+    protectionBypass?: Bypasses
+  } | null
+  const secret = automationBypass(created?.protectionBypass)
+  if (!secret) throw blocked("your Vercel account can't read or create its project's automation bypass")
+  return secret
+}
+
+type VercelApi = (method: 'GET' | 'PATCH', path: string) => Promise<unknown>
+
+/** The deployment, or else the alias, behind the board's host: in your own scope, then each of your teams. */
+async function findProject(api: VercelApi, host: string): Promise<{ projectId: string; ownerId: string } | null> {
+  const lookup = async (team: string | null) => {
+    const query = team ? `?teamId=${team}` : ''
+    const deployment = (await api('GET', `/v13/deployments/${encodeURIComponent(host)}${query}`).catch(() => null)) as {
+      projectId?: string
+      ownerId?: string
+      team?: { id?: string }
+    } | null
+    const owner = deployment?.ownerId ?? deployment?.team?.id ?? team
+    if (deployment?.projectId && owner) return { projectId: deployment.projectId, ownerId: owner }
+    const alias = (await api('GET', `/now/aliases/${encodeURIComponent(host)}${query}`).catch(() => null)) as {
+      projectId?: string
+      ownerId?: string
+    } | null
+    const aliasOwner = alias?.ownerId ?? team
+    if (alias?.projectId && aliasOwner) return { projectId: alias.projectId, ownerId: aliasOwner }
+    return null
+  }
+  const own = await lookup(null)
+  if (own) return own
+  const { teams } = ((await api('GET', '/v2/teams?limit=100').catch(() => null)) ?? {}) as { teams?: { id: string }[] }
+  for (const team of teams ?? []) {
+    const found = await lookup(team.id)
+    if (found) return found
+  }
+  return null
+}
+
+/** When credentials live in the keychain, the Vercel CLI makes the API call itself. */
+const vercelCliApi: VercelApi = async (method, path) => {
+  const args = ['api', path, '-X', method, '--raw']
+  if (method !== 'GET') args.push('--input', '-')
+  try {
+    const run = promisify(execFile)('vercel', args, { timeout: 30_000 })
+    run.child.stdin?.end(method === 'GET' ? '' : '{}')
+    return JSON.parse((await run).stdout)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+      throw new BoardError('not_logged_in', 'not signed in to Vercel: run `vercel login`', 0)
+    return null
+  }
 }
