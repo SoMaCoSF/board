@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, realpathSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { appendFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, delimiter, join } from 'node:path'
 import { parseArgs } from 'node:util'
@@ -18,12 +18,13 @@ import {
   decideStop,
   installedHook,
   installHook,
+  logHook,
   markPosted,
   REMINDER,
   takeUpdate,
-  turnsDir,
   uninstallHook,
   workOf,
+  workRootId,
   type HookAgent,
 } from './hooks.ts'
 
@@ -52,7 +53,7 @@ usage: vboard <command> [options]      (also installed as \`vb\`)
   inbox <key> [channel] [--limit N]        raw platform events, for debugging sync
   download <attachment> [path]             save an attachment (its name, here, by default; - for stdout)
 
-  update ["<text>"] [--attach <file>]...   post a summary to this branch's work thread (channel \`work\`); --skip if there's none
+  update ["<text>"] [--attach <file>]...   post a summary to this branch's work thread (channel \`work\`)
   hooks [install|uninstall|status] [claude|codex|cursor]...
                                            after a turn that didn't update the board, the agent is asked to (linked projects only)
 
@@ -89,7 +90,6 @@ const { values: flags, positionals } = (() => {
         'no-sync': { type: 'boolean' },
         sync: { type: 'string', multiple: true },
         attach: { type: 'string', multiple: true },
-        skip: { type: 'boolean' },
         channel: { type: 'string' },
         agent: { type: 'string' },
         remove: { type: 'boolean' },
@@ -252,7 +252,7 @@ async function postUpdate(board: ReturnType<typeof client>, content: string, fil
       labels: { work: work.key, repo: work.repo, branch: work.branch },
       noSync: true,
       // One root per person and branch: a second agent creating it at the same moment gets a conflict, not a twin.
-      id: `work:${me.principal}:${work.key}`,
+      id: workRootId(me.principal, work.key),
     })
   let root = await find()
   if (!root)
@@ -438,11 +438,6 @@ async function run(command: string | undefined, args: string[]): Promise<number>
     }
 
     case 'update': {
-      if (flags.skip) {
-        wrote()
-        out('skipped: nothing to share this turn')
-        return 0
-      }
       const board = client()
       const content = args[0] === undefined && flags.attach?.length ? '' : await text(args[0])
       const message = await postUpdate(board, content, await attachments(board))
@@ -463,7 +458,7 @@ async function run(command: string | undefined, args: string[]): Promise<number>
           out(`${AGENTS[agent].name}: ${uninstallHook(agent) ? `removed the turn-end hook from ${AGENTS[agent].file()}` : 'not installed'}`)
         return 0
       }
-      if (action !== 'install') throw new UsageError('usage: vboard hooks [install|uninstall|status] [claude|codex]...')
+      if (action !== 'install') throw new UsageError(`usage: vboard hooks [install|uninstall|status] [${Object.keys(AGENTS).join('|')}]...`)
       const { command: cli, note } = cliCommand()
       for (const agent of agents) {
         const changed = installHook(agent, cli, flags.channel ? ` --channel ${flags.channel}` : '')
@@ -485,10 +480,7 @@ async function run(command: string | undefined, args: string[]): Promise<number>
           const board = createClient({ ...(flags.url ? { url: flags.url } : {}), profile: agent, session: process.env.VBOARD_HOOK_SESSION ?? null })
           await postUpdate(board, process.env.VBOARD_HOOK_UPDATE ?? '')
         } catch (error) {
-          try {
-            mkdirSync(turnsDir(), { recursive: true, mode: 0o700 })
-            appendFileSync(join(turnsDir(), 'hooks.log'), `${new Date().toISOString()} ${agent}: couldn't post an update: ${(error as Error).message}\n`)
-          } catch {}
+          logHook(`${agent}: couldn't post an update: ${(error as Error).message}`)
         }
         return 0
       }

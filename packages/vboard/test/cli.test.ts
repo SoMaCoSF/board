@@ -47,18 +47,6 @@ function vb(args: string[], extra: NodeJS.ProcessEnv = {}, stdin?: string, cwd?:
   })
 }
 
-function vb_in(cwd: string, args: string[], extra: NodeJS.ProcessEnv = {}) {
-  return new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
-    const child = spawn(process.execPath, [CLI, ...args], { cwd, env: { ...env, ...extra } })
-    let stdout = ''
-    let stderr = ''
-    child.stdout.on('data', (d) => (stdout += d))
-    child.stderr.on('data', (d) => (stderr += d))
-    child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }))
-    child.stdin.end()
-  })
-}
-
 describe('cli', () => {
   it('links a checkout from a subdirectory, ignores the link, and reads it from other subdirectories', async () => {
     const root = await mkdtemp(join(TEMP, 'vboard-link-'))
@@ -312,9 +300,9 @@ describe('cli', () => {
     expect(await asks(stop(s1, 'Read the file.\nBoard update: skip'))).toBeNull()
     expect(await asks(stop(s1, 'Asked a question.'))).not.toBeNull()
     expect(await asks(stop(s1, 'Asked a question.', true))).toBeNull()
-    const ran = await vb_in(repo, ['update', 'Picked it up in Codex; tests pass.'], { CODEX_THREAD_ID: 't1' })
+    const ran = await vb(['update', 'Picked it up in Codex; tests pass.'], { CODEX_THREAD_ID: 't1' }, undefined, repo)
     expect(ran).toMatchObject({ code: 0, stderr: '' })
-    await vb_in(repo, ['update', 'Wrote the docs.'], { CLAUDE_CODE_SESSION_ID: s1 })
+    await vb(['update', 'Wrote the docs.'], { CLAUDE_CODE_SESSION_ID: s1 }, undefined, repo)
     expect(await asks(stop(s1, 'Wrote the docs.'))).toBeNull()
     expect((await work()).slice(1).map((m) => [m.by.profile, m.text])).toEqual([
       ['claude', 'Added the turn-end hook; tests next.'],
@@ -333,7 +321,7 @@ describe('cli', () => {
       expect(posted.status).toBe(201)
     }
     // From another session, so the root's stable id can't stand in for finding it.
-    expect(await vb_in(repo, ['update', 'Still the same thread.'], { CODEX_THREAD_ID: `t2-${Date.now()}` })).toMatchObject({ code: 0, stderr: '' })
+    expect(await vb(['update', 'Still the same thread.'], { CODEX_THREAD_ID: `t2-${Date.now()}` }, undefined, repo)).toMatchObject({ code: 0, stderr: '' })
     const { stdout } = await vb(['read', String(rootId), '--json'])
     const thread = stdout.trim().split('\n').map((line) => JSON.parse(line) as { re: number | null; text: string })
     expect(thread).toHaveLength(1 + 3 + 501 + 1) // the root, three updates, the notes, and this one

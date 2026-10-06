@@ -869,7 +869,7 @@ round it out. Codex asks the user to approve a new hook once in `/hooks`.
   `branch` in the `work` channel (`--channel` to choose), created on first use,
   with each update a reply. Every agent's updates on a branch land in one
   thread, so work started in Codex and continued in Claude Code reads as one.
-  The root has a stable ID (`work:<principal>:<repo>@<branch>`), so two agents
+  The root has a stable ID (a hash of the principal, repo, and branch), so two agents
   starting it at once make one, and finding it pages back past busy threads.
   Updates are board-only (`noSync`). `vboard update "<summary>"` posts one
   directly, with `--attach` for proof.
@@ -879,7 +879,7 @@ round it out. Codex asks the user to approve a new hook once in `/hooks`.
 ```
 vboard whoami                                   who am I, on which board, and when my token expires
 vboard link <url>                               link this project to a board (.vboard/config.json)
-vboard update ["<text>"] [--attach <file>]...   post a summary to this branch's work thread; --skip when there's none
+vboard update ["<text>"] [--attach <file>]...   post a summary to this branch's work thread
 vboard hooks [install|uninstall|status] [agent]... the turn-end hook for Claude Code, Codex, and Cursor
 vboard use <url>                                save the default board
 

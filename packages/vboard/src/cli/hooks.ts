@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 
@@ -112,19 +113,17 @@ export function installedHook(agent: HookAgent): string | null {
 export const UPDATE_LINE = 'Board update:'
 
 /**
- * The update an agent wrote: everything after the last `Board update:` that
- * starts a line (bold or quoted is fine), `skip` when it has nothing to share,
- * or null when the reply has none.
+ * The update an agent wrote: the rest of its reply's last line, when that
+ * line starts with `Board update:` (bold or quoted is fine); `skip` when it
+ * has nothing to share; else null. Only that line ever leaves the machine,
+ * so a reply that merely mentions the syntax posts nothing.
  */
 export function boardUpdate(reply: string): string | 'skip' | null {
-  const last = [...reply.matchAll(/(?:^|\n)[ \t>*_`-]*board update[*_`]*[ \t]*:[*_`]*[ \t]*/gi)].at(-1)
-  if (!last) return null
-  const text = reply
-    .slice(last.index! + last[0].length)
-    .trim()
-    .replace(/[*_`]+$/, '')
-    .trim()
-  if (!text) return null
+  const line = reply.trimEnd().split('\n').at(-1)!
+  const match = /^[ \t>*_`-]*board update[*_`]*[ \t]*:[*_`]*(.*?)[*_`]*$/i.exec(line)
+  const text = match?.[1]!.trim()
+  // `<summary>` and the like: the syntax, quoted, not an update.
+  if (!text || /^<[^>]*>$/.test(text)) return null
   return /^skip\.?$/i.test(text) ? 'skip' : text.slice(0, 1500)
 }
 
@@ -139,7 +138,7 @@ type Turns = { posted?: number; asked?: number; settled?: number; last?: string 
  * system clears it with the rest of its temp files. `XDG_RUNTIME_DIR`, where
  * there is one, is the user's own.
  */
-export const turnsDir = () => join(process.env.XDG_RUNTIME_DIR || tmpdir(), `vboard-turns-${process.getuid?.() ?? 'user'}`)
+const turnsDir = () => join(process.env.XDG_RUNTIME_DIR || tmpdir(), `vboard-turns-${process.getuid?.() ?? 'user'}`)
 const turnsFile = (session: string) => join(turnsDir(), `${session.replace(/[^A-Za-z0-9_.-]/g, '_')}.json`)
 
 function readTurns(session: string): Turns {
@@ -163,6 +162,13 @@ function ownTurnsDir(): string {
 function writeTurns(session: string, turns: Turns) {
   ownTurnsDir()
   writeFileSync(turnsFile(session), JSON.stringify(turns))
+}
+
+/** Where a background post that failed says why: nobody is waiting on it. Best effort. */
+export function logHook(line: string) {
+  try {
+    appendFileSync(join(ownTurnsDir(), 'hooks.log'), `${new Date().toISOString()} ${line}\n`)
+  } catch {}
 }
 
 /** A write to the board from an agent session: this turn needs no reminder. Best effort: the write already happened. */
@@ -236,3 +242,10 @@ export function workOf(cwd: string): { repo: string; branch: string; key: string
   // Label filters split values on `|`, which a branch name may hold.
   return { repo, branch, key: `${repo}@${branch}`.replace(/\|/g, '%7C').slice(0, 256) }
 }
+
+/**
+ * The work thread root's stable ID, so two agents starting it at once make one.
+ * Hashed: a long branch name would push the principal and key past the ID limit.
+ */
+export const workRootId = (principal: string, key: string) =>
+  `work:${createHash('sha256').update(`${principal}\0${key}`).digest('base64url').slice(0, 32)}`
