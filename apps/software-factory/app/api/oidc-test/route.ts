@@ -1,6 +1,6 @@
 // TEMPORARY (board #1559): checks that the factory's Vercel App signs in with the deployment's
 // OIDC token and that its token reads logs, the way PR #89 hands it to Pi. Preview only; delete before merging.
-import { vercelAppToken } from "../board/[[...path]]/agent";
+import { vercelToken } from "../board/[[...path]]/vercel";
 
 export const maxDuration = 300;
 
@@ -12,7 +12,7 @@ const page = (body: string) =>
     `<!doctype html><meta charset=utf-8><title>OIDC → Vercel API test</title>
 <body style="font:14px ui-monospace,monospace;max-width:900px;margin:2rem auto;padding:0 1rem">
 <h1 style="font-size:18px">Can the Vercel App's token (from OIDC) read the factory's logs?</h1>
-<p>Trades this deployment's OIDC token for the Vercel App's token (neither is shown), then:</p>
+<p>Gets the Vercel App's token the way Pi does (authorize it first at <a href=/api/vercel-auth>/api/vercel-auth</a>; no token is shown), then:</p>
 <ol><li>this function calls <code>api.vercel.com</code> directly with it</li>
 <li>a fresh Vercel Sandbox runs <code>vercel logs</code> with a placeholder token, and its network policy swaps in the app's, exactly as PR #89 does for Pi (~1 min)</li></ol>
 <form method=post><button style="font:inherit;padding:.4rem 1rem">Run the checks</button></form>
@@ -36,7 +36,9 @@ export async function POST() {
   const out: string[] = [];
   let token: string;
   try {
-    token = await vercelAppToken(await getVercelOidcToken());
+    const minted = await vercelToken({ oidc: await getVercelOidcToken() });
+    if (!minted) return page(block("app token: none yet", "Nobody has authorized the app on this deployment. Open /api/vercel-auth first, then run the checks again."));
+    token = minted;
     const claims = token.split(".").length === 3 ? JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString()) : null;
     out.push(block("app token: minted ✓", claims ? JSON.stringify({ ...claims, jti: undefined }, null, 2) : `opaque, ${token.length} chars`));
   } catch (error) {

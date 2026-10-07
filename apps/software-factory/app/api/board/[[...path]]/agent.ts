@@ -20,32 +20,6 @@ const VBOARD = "0.4.0";
 const SANDBOX_MS = 45 * 60_000;
 const SNAPSHOT_MS = 7 * 24 * 60 * 60_000;
 
-/**
- * The factory's Vercel App. The API won't take a deployment's OIDC token as a bearer, but the app
- * signs in with it (no client secret) and gets an access token that `vercel` accepts.
- */
-export const VERCEL_APP = "cl_9xSOKjNw4cBZlR0fIUkhl2uIwsCJrFLp";
-const VERCEL_TOKEN_URL = "https://api.vercel.com/login/oauth/token";
-
-/** Trades the deployment's OIDC token for the Vercel App's access token (client_credentials, OIDC as the client assertion). */
-export async function vercelAppToken(oidc: string, fetcher: typeof fetch = fetch) {
-  const res = await fetcher(VERCEL_TOKEN_URL, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "client_credentials",
-      client_id: VERCEL_APP,
-      client_assertion_type: "urn:vercel:params:oauth:client-assertion-type:oidc-bearer",
-      client_assertion: oidc,
-    }),
-  });
-  const body = (await res.json().catch(() => ({}))) as { access_token?: string; error?: string; error_description?: string };
-  if (!res.ok || !body.access_token) {
-    throw new Error(`vercel app token: ${res.status} ${body.error ?? ""} ${body.error_description ?? ""}`.trim());
-  }
-  return body.access_token;
-}
-
 /** Commits are the factory GitHub App's, under its bot account's noreply address. */
 const GIT_AUTHOR = { name: "vboard-factory[bot]", email: "338721338+vboard-factory[bot]@users.noreply.github.com" };
 
@@ -91,7 +65,7 @@ When you reply to a person, mention them by the handle they wrote under (author.
 You hear about every reply in your threads, but most aren't for you. When a message is addressed to someone else (it @mentions another person, or answers someone else's question) and doesn't ask anything of you, don't reply and don't react; stay quiet unless you're asked.
 Board replies are read on Slack by busy people: keep each to a few lines. Lead with the outcome (the PR link, the answer, the one question you need answered), skip background they already know, and use a short list only when there are real options to pick from. No "What I ran" lists, and no recaps of the thread, including messages synced from GitHub (PR descriptions, reviews and comments, yours too): point at them instead, and say each thing once; the attachments and the PR carry the detail.`;
 
-/** Pi reads the factory's own logs with the Vercel App's token, minted per message from the deployment's OIDC token. */
+/** Pi reads the factory's own logs with the Vercel App's read-only token (vercel.ts). */
 const LOGS = `To see what the factory itself did (watchers, sync, why something was slow or failed), read its runtime logs: vercel logs --project vboard-factory --scope vercel-internal-playground --since 1h (add --query, --level error, --json). Only read with it: never deploy, or change env vars or settings. If vercel says you're not logged in or not allowed, say so in the thread rather than guessing.`;
 
 const DIRECTION = `Your initial task is a starting point. People can redirect you in the thread at any time; follow their latest instructions even when they change the task, including fixing code, pushing changes, approving, marking a draft ready, merging, or closing a PR.
@@ -150,7 +124,7 @@ cd ~ && exec flock ~/.pi/lock pi -p --provider vercel-ai-gateway --model "$MODEL
 /**
  * Real credentials on the way out: the deployment's OIDC token, and the factory GitHub App's.
  * On the board, the policy also sets who Pi is, so nothing in the sandbox can post as anyone else.
- * The Vercel API gets the Vercel App's token (minted from the OIDC token), so `vercel logs` works with no stored secret.
+ * The Vercel API gets the Vercel App's token (see vercel.ts) once someone has authorized it, so `vercel logs` works.
  */
 export function policy(
   thread: number,
@@ -250,7 +224,8 @@ export async function tellPi({
     getToken("github/vboard-factory", { subject: { type: "app" } }),
   ]);
   // Logs are a nice-to-have: if the app won't sign in, Pi works on without them.
-  const vercel = await vercelAppToken(vercelOidc).catch((error) => {
+  const { vercelToken } = await import("./vercel");
+  const vercel = await vercelToken({ oidc: vercelOidc }).catch((error) => {
     console.warn(error);
     return undefined;
   });

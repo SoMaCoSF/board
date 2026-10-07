@@ -90,22 +90,3 @@ test("vercel logs: the Vercel API gets the app's token when there is one, and Pi
     assert.match(INSTRUCTIONS[task], /never deploy/);
   }
 });
-
-test("vercelAppToken: client_credentials with the OIDC token as the client assertion", async () => {
-  const { vercelAppToken, VERCEL_APP } = await import("../app/api/board/[[...path]]/agent.ts");
-  let sent;
-  const ok = async (url, init) => {
-    sent = { url, body: Object.fromEntries(new URLSearchParams(init.body)) };
-    return new Response(JSON.stringify({ access_token: "app-token" }));
-  };
-  assert.equal(await vercelAppToken("oidc", ok), "app-token");
-  assert.equal(sent.url, "https://api.vercel.com/login/oauth/token");
-  assert.deepEqual(sent.body, {
-    grant_type: "client_credentials",
-    client_id: VERCEL_APP,
-    client_assertion_type: "urn:vercel:params:oauth:client-assertion-type:oidc-bearer",
-    client_assertion: "oidc",
-  });
-  const refused = async () => new Response(JSON.stringify({ error: "invalid_client", error_description: "nope" }), { status: 401 });
-  await assert.rejects(vercelAppToken("oidc", refused), /401 invalid_client nope/);
-});
