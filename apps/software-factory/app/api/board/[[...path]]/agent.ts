@@ -128,14 +128,14 @@ cd ~ && exec flock ~/.pi/lock pi -p --provider vercel-ai-gateway --model "$MODEL
  */
 export function policy(
   thread: number,
-  tokens: { gateway: string; board: string; github: string },
+  tokens: { vercelOidc: string; board: string; github: string },
 ): NetworkPolicy {
   const basic = Buffer.from(`x-access-token:${tokens.github}`).toString("base64");
   return {
     allow: {
       // Pi speaks the Anthropic messages API to AI Gateway, which reads x-api-key.
       "ai-gateway.vercel.sh": [
-        { transform: [{ headers: { "x-api-key": tokens.gateway, authorization: `Bearer ${tokens.gateway}` } }] },
+        { transform: [{ headers: { "x-api-key": tokens.vercelOidc, authorization: `Bearer ${tokens.vercelOidc}` } }] },
       ],
       [new URL(BOARD).host]: [
         {
@@ -155,7 +155,7 @@ export function policy(
       ],
       "github.com": [{ transform: [{ headers: { authorization: `Basic ${basic}` } }] }],
       "api.github.com": [{ transform: [{ headers: { authorization: `Bearer ${tokens.github}` } }] }],
-      "api.vercel.com": [{ transform: [{ headers: { authorization: `Bearer ${tokens.gateway}` } }] }],
+      "api.vercel.com": [{ transform: [{ headers: { authorization: `Bearer ${tokens.vercelOidc}` } }] }],
       "*": [],
     },
   };
@@ -216,12 +216,12 @@ export async function tellPi({
   // Every turn, so a sandbox picks up a new pinned vb; before the policy, so no credential is in place yet.
   await sh(sandbox, SETUP);
   // Fresh tokens with every message, so a thread can pick up again days later.
-  const [gateway, board, github] = await Promise.all([
+  const [vercelOidc, board, github] = await Promise.all([
     getVercelOidcToken(),
     getVercelOidcToken({ audience: BOARD }),
     getToken("github/vboard-factory", { subject: { type: "app" } }),
   ]);
-  await sandbox.update({ networkPolicy: policy(thread, { gateway, board, github }) });
+  await sandbox.update({ networkPolicy: policy(thread, { vercelOidc, board, github }) });
   // A message landing late in a session (say, one started by an earlier turn) still gets a full SANDBOX_MS.
   const extend = extension(sandbox.expiresAt, Date.now());
   if (extend > 0) await sandbox.extendTimeout(extend);

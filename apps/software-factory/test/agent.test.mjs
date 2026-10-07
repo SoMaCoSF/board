@@ -80,7 +80,7 @@ test("review: the review reaches the board on its own, so the board reply doesn'
 
 test("vercel logs: the Vercel API gets the deployment's OIDC token, and Pi only reads with it", async () => {
   const { policy } = await import("../app/api/board/[[...path]]/agent.ts");
-  assert.deepEqual(policy(1, { gateway: "oidc", board: "b", github: "h" }).allow["api.vercel.com"], [
+  assert.deepEqual(policy(1, { vercelOidc: "oidc", board: "b", github: "h" }).allow["api.vercel.com"], [
     { transform: [{ headers: { authorization: "Bearer oidc" } }] },
   ]);
   for (const task of ["thread", "review"]) {
