@@ -8,6 +8,12 @@ for (const task of ["thread", "review"]) {
     assert.match(INSTRUCTIONS[task], /don't reply/i);
   });
 
+  test(`${task}: Pi talks like a teammate, without putting on slang`, () => {
+    assert.match(INSTRUCTIONS[task], /Sound like a teammate in the channel, not a report/);
+    assert.match(INSTRUCTIONS[task], /Don't put on a casual voice/);
+    assert.match(INSTRUCTIONS[task], /not a preamble/);
+  });
+
   test(`${task}: board replies are tight, with no "what I ran" list`, () => {
     assert.doesNotMatch(INSTRUCTIONS[task], /list of what you ran/);
     assert.match(INSTRUCTIONS[task], /no "What I ran"/i);
