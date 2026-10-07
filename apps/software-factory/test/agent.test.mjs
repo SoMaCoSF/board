@@ -19,3 +19,9 @@ test("review: detail goes in GitHub review comments, not the board", () => {
   assert.match(INSTRUCTIONS.review, /gh api .*pulls\/<N>\/reviews/);
   assert.match(INSTRUCTIONS.review, /file:line/);
 });
+
+test("review: COMMENT on the factory's own PRs, which GitHub won't let it approve or block", () => {
+  assert.match(INSTRUCTIONS.review, /--input/);
+  assert.match(INSTRUCTIONS.review, /own PRs, so on a PR it opened use COMMENT/);
+  assert.match(INSTRUCTIONS.review, /lines the diff touches/);
+});
