@@ -78,16 +78,13 @@ test("review: the review reaches the board on its own, so the board reply doesn'
   assert.match(INSTRUCTIONS.review, /Always put the verdict in the body/);
 });
 
-test("vercel logs: the API gets the factory's Vercel token only when there is one, and Pi hears about it only then", async () => {
-  const { policy, instructions } = await import("../app/api/board/[[...path]]/agent.ts");
-  const tokens = { gateway: "g", board: "b", github: "h" };
-  assert.equal(policy(1, tokens).allow["api.vercel.com"], undefined);
-  assert.deepEqual(policy(1, { ...tokens, vercel: "v" }).allow["api.vercel.com"], [
-    { transform: [{ headers: { authorization: "Bearer v" } }] },
+test("vercel logs: the Vercel API gets the deployment's OIDC token, and Pi only reads with it", async () => {
+  const { policy } = await import("../app/api/board/[[...path]]/agent.ts");
+  assert.deepEqual(policy(1, { gateway: "oidc", board: "b", github: "h" }).allow["api.vercel.com"], [
+    { transform: [{ headers: { authorization: "Bearer oidc" } }] },
   ]);
   for (const task of ["thread", "review"]) {
-    assert.doesNotMatch(instructions(task, { logs: false }), /vercel logs/);
-    assert.match(instructions(task, { logs: true }), /vercel logs --project vboard-factory --scope vercel-internal-playground/);
-    assert.match(instructions(task, { logs: true }), /never deploy/);
+    assert.match(INSTRUCTIONS[task], /vercel logs --project vboard-factory --scope vercel-internal-playground/);
+    assert.match(INSTRUCTIONS[task], /never deploy/);
   }
 });
