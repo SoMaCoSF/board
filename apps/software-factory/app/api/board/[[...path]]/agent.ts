@@ -20,14 +20,6 @@ const VBOARD = "0.4.0";
 const SANDBOX_MS = 45 * 60_000;
 const SNAPSHOT_MS = 7 * 24 * 60 * 60_000;
 
-/**
- * Pi's read-only Vercel login, for `vercel logs`. The Vercel API won't take a deployment's OIDC
- * token for logs, so a person signed in once through a Vercel Connect connector (Custom OAuth on
- * vercel.com), granting Deployments: Read Only on this project. Connect keeps that grant fresh; the
- * board asks it for a token for that user, the same way it gets the GitHub App's.
- */
-const VERCEL_LOGS: { connector: string; user: string } | null = null;
-
 /** Commits are the factory GitHub App's, under its bot account's noreply address. */
 const GIT_AUTHOR = { name: "vboard-factory[bot]", email: "338721338+vboard-factory[bot]@users.noreply.github.com" };
 
@@ -73,8 +65,11 @@ When you reply to a person, mention them by the handle they wrote under (author.
 You hear about every reply in your threads, but most aren't for you. When a message is addressed to someone else (it @mentions another person, or answers someone else's question) and doesn't ask anything of you, don't reply and don't react; stay quiet unless you're asked.
 Board replies are read on Slack by busy people: keep each to a few lines. Lead with the outcome (the PR link, the answer, the one question you need answered), skip background they already know, and use a short list only when there are real options to pick from. No "What I ran" lists, and no recaps of the thread, including messages synced from GitHub (PR descriptions, reviews and comments, yours too): point at them instead, and say each thing once; the attachments and the PR carry the detail.`;
 
-/** Pi reads the factory's own logs with its read-only Vercel login (VERCEL_LOGS), when there is one. */
-const LOGS = `To see what the factory itself did (watchers, sync, why something was slow or failed), read its runtime logs: vercel logs --project vboard-factory --scope vercel-internal-playground --since 1h (add --query, --level error, --json). Only read with it: never deploy, or change env vars or settings. If vercel says you're not logged in or not allowed, say so in the thread rather than guessing.`;
+/** The factory's team and project, so `vercel` needs no link or --scope (a project-scoped token can't look up the team). */
+const VERCEL_PROJECT = { org: "team_TtmJZYmD3tcLBLqWOhoVawd1", project: "prj_Cu5qMQq8MGIQUIyWGOqgZgJPBG4z" };
+
+/** Pi reads the factory's own logs with FACTORY_VERCEL_TOKEN, a token scoped to this project, when it's set. */
+const LOGS = `To see what the factory itself did (watchers, sync, why something was slow or failed), read its runtime logs: vercel logs --since 1h (add --query, --level error, --json; your vercel is already pointed at the vboard-factory project). Only read with it: never deploy, or change env vars or settings. If vercel says you're not logged in or not allowed, say so in the thread rather than guessing.`;
 
 const DIRECTION = `Your initial task is a starting point. People can redirect you in the thread at any time; follow their latest instructions even when they change the task, including fixing code, pushing changes, approving, marking a draft ready, merging, or closing a PR.
 A person's :shipit: reaction is a request to complete the merge. Inspect the PR, resolve the blockers you can, mark it ready if needed, and merge it when GitHub's checks and review requirements allow. Carry that intent through without requiring another reaction. If you need someone else's action, ask them in the thread and explain what's still blocking it.
@@ -132,7 +127,7 @@ cd ~ && exec flock ~/.pi/lock pi -p --provider vercel-ai-gateway --model "$MODEL
 /**
  * Real credentials on the way out: the deployment's OIDC token, and the factory GitHub App's.
  * On the board, the policy also sets who Pi is, so nothing in the sandbox can post as anyone else.
- * With Pi's read-only Vercel login (VERCEL_LOGS), the Vercel API gets it too, so `vercel logs` works.
+ * With FACTORY_VERCEL_TOKEN (a token scoped to this project), the Vercel API gets it too, so `vercel logs` works.
  */
 export function policy(
   thread: number,
@@ -235,13 +230,8 @@ export async function tellPi({
     getToken("github/vboard-factory", { subject: { type: "app" } }),
   ]);
   // Logs are a nice-to-have: if the app won't sign in, Pi works on without them.
-  // Logs are a nice-to-have: without the Connect grant, Pi works on without them.
-  const vercel = VERCEL_LOGS
-    ? await getToken(VERCEL_LOGS.connector, { subject: { type: "user", id: VERCEL_LOGS.user } }).catch((error: unknown) => {
-        console.warn("vercel logs token:", error);
-        return undefined;
-      })
-    : undefined;
+  // A Vercel token scoped to this project only (the API won't take the OIDC token for logs).
+  const vercel = process.env.FACTORY_VERCEL_TOKEN;
   await sandbox.update({ networkPolicy: policy(thread, { vercelOidc, board, github, vercel }) });
   // A message landing late in a session (say, one started by an earlier turn) still gets a full SANDBOX_MS.
   const extend = extension(sandbox.expiresAt, Date.now());
@@ -257,6 +247,8 @@ export async function tellPi({
       MESSAGE: message,
       // Here too, since a sandbox's own env is fixed when it's created: `vercel` reads it, and rejects a token with "-".
       VERCEL_TOKEN: "fromthenetworkpolicy",
+      VERCEL_ORG_ID: VERCEL_PROJECT.org,
+      VERCEL_PROJECT_ID: VERCEL_PROJECT.project,
       // Over any git config Pi writes: otherwise it picks an identity, and GitHub credits a stranger.
       GIT_AUTHOR_NAME: GIT_AUTHOR.name,
       GIT_AUTHOR_EMAIL: GIT_AUTHOR.email,

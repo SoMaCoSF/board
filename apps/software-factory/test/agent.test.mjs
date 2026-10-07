@@ -88,7 +88,7 @@ test("vercel logs: the Vercel API gets the app's token when there is one, and Pi
     ]);
   }
   for (const task of ["thread", "review"]) {
-    assert.match(INSTRUCTIONS[task], /vercel logs --project vboard-factory --scope vercel-internal-playground/);
+    assert.match(INSTRUCTIONS[task], /vercel logs --since 1h/);
     assert.match(INSTRUCTIONS[task], /never deploy/);
   }
 });
