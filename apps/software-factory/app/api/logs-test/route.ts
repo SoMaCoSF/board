@@ -42,17 +42,14 @@ export async function POST() {
     const probe = `
 A=https://api.vercel.com; Q="teamId=${ORG}"
 show() { echo "== $1"; curl -s --max-time 10 -w '\\nHTTP %{http_code}' "$2" | tail -c 600; echo; }
-show "project" "$A/v9/projects/${PROJECT}?$Q"
-show "deployments" "$A/v6/deployments?projectId=${PROJECT}&$Q&limit=1&target=production"
 DPL=$(curl -s "$A/v6/deployments?projectId=${PROJECT}&$Q&limit=1&target=production" | sed -n 's/.*"uid":"\\(dpl_[^"]*\\)".*/\\1/p' | head -1)
 echo "deployment: $DPL"
-[ -n "$DPL" ] && show "runtime-logs (streams, 10s)" "$A/v1/projects/${PROJECT}/deployments/$DPL/runtime-logs?format=lines&$Q"
+echo "== runtime-logs (streams for 25s; headers first, then whatever lines arrive)"
+[ -n "$DPL" ] && curl -sN --max-time 25 -D - "$A/v1/projects/${PROJECT}/deployments/$DPL/runtime-logs?format=lines&$Q" | head -c 2500; echo
 NOW=$(( $(date +%s) * 1000 )); FROM=$(( NOW - 3600000 ))
-show "request-logs + teamId" "https://vercel.com/api/logs/request-logs?projectId=${PROJECT}&ownerId=${ORG}&$Q&page=0&startDate=$FROM&endDate=$NOW"
+show "request-logs" "https://vercel.com/api/logs/request-logs?projectId=${PROJECT}&ownerId=${ORG}&$Q&page=0&startDate=$FROM&endDate=$NOW"
 `;
     for (const cmd of [
-      "vercel whoami",
-      "vercel logs --since 1h --limit 5",
       probe,
     ]) {
       const run = await sandbox.runCommand({
