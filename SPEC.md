@@ -1636,6 +1636,15 @@ make the board listen to it: inbound events still only come from configured
 channels and synced threads. Because the app's token reads more than the caller
 might, it needs full access, like `vb inbox`.
 
+It's **off by default**: the Slack entry opts in with `read: true` (any public
+channel the app is in) or `read: ['#project-x', 'C0123']` (only those); until
+then every read is 403 `not_enabled`, and a channel off the list 403
+`not_allowed`. Full access is broad (Vercel team members with a dev token for
+the board's project, its deployments, and `trustedSources` without `can`), which
+is why it's opt-in. What's read can still end up wherever the caller writes next
+(a thread synced to a public GitHub repo, say), and it reaches an agent's
+context as untrusted text.
+
 **Rendering.** Messages use the common author-prefixed body by default.
 Configure `render` to change it; credentials and sender-account authorization
 remain separate from presentation.

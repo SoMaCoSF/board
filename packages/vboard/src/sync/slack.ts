@@ -9,7 +9,7 @@ import { stringifyMarkdown } from 'chat'
 import { LINKS_PER_MESSAGE_MAX, type ExternalLink } from '../contract/contract.ts'
 import { MESSAGE_TEXT_MAX } from '../contract/schemas.ts'
 
-type SlackChannel = { id?: string; name?: string; is_member?: boolean; is_private?: boolean; is_im?: boolean; is_mpim?: boolean; is_ext_shared?: boolean }
+type SlackChannel = { id?: string; name?: string; is_member?: boolean; is_private?: boolean; is_im?: boolean; is_mpim?: boolean; is_ext_shared?: boolean; is_pending_ext_shared?: boolean }
 export type SlackClient = {
   conversations: {
     list(args: Record<string, unknown>): Promise<{
@@ -129,6 +129,12 @@ export type SlackOptions = {
   render?: (input: RenderInput) => string
   client?: () => Promise<SlackClient>
   channels: Record<string, EventMapping<SlackEvent>>
+  /**
+   * What `vb sources <key> read` may read on demand, without syncing: `true` for any
+   * public channel the app is in, or a list of channels (`'#name'` or `'C0123'`).
+   * Off by default: the app's token reads more than some full-access callers can see.
+   */
+  read?: boolean | string[]
 }
 
 /**
@@ -368,11 +374,15 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
           createdAt: tsTime(found.ts), files: filesOf(found.files),
         } }
       },
-      // A channel or thread read on demand (`vb sources <key> read`), with the same limits as a link:
-      // public channels the app is already in. It never joins (that would announce the
-      // app, and Slack would start sending the channel's events), and nothing it reads
-      // is stored; the board still only listens to the channels it's configured with.
+      // A channel or thread read on demand (`vb sources <key> read`). Off unless the board
+      // opts in with `read`, and then with the same limits as a link: public channels the
+      // app is already in. It never joins (that would announce the app, and Slack would
+      // start sending the channel's events), and nothing it reads is stored; the board
+      // still only listens to the channels it's configured with.
       async read(target, { limit }): Promise<SourceRead> {
+        const allowed = options.read
+        if (!allowed || (Array.isArray(allowed) && allowed.length === 0))
+          throw new UnreadableError('not_enabled', "reading Slack on demand is off for this board: set `read` on its slack() entry (true, or the channels it may read)")
         const web = await client()
         if (!web) throw new UnreadableError('no_client', 'no Slack client to read it with')
         let channel: string
@@ -398,10 +408,12 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
           if (!info) throw new UnreadableError('channel_not_found', `no Slack channel ${channel}`)
           name = info.name ?? null
           const label = name ? `#${name}` : channel
+          if (Array.isArray(allowed) && !allowed.some((entry) => entry === channel || (name !== null && entry === `#${name}`)))
+            throw new UnreadableError('not_allowed', `${label} isn't one of the channels this board may read on demand (its slack() entry's \`read\`)`)
           if (info.is_private || info.is_im || info.is_mpim)
             throw new UnreadableError('private_channel', `${label} is private: the board only reads public channels on demand`)
           // Slack Connect: another organization's people write here, so it isn't ours to read on demand.
-          if (info.is_ext_shared)
+          if (info.is_ext_shared || info.is_pending_ext_shared)
             throw new UnreadableError('shared_channel', `${label} is shared with another organization: the board doesn't read those on demand`)
           if (!info.is_member)
             throw new UnreadableError('not_in_channel', `the app isn't in ${label}: someone needs to add it (it won't join on its own)`)

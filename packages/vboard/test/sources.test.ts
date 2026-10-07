@@ -17,7 +17,7 @@ const CHANNELS: Record<string, Channel> = {
   CEXT: { id: 'CEXT', name: 'shared-with-acme', is_member: true, is_ext_shared: true },
 }
 
-function setup() {
+function setup(read: boolean | string[] | null = true) {
   const history = vi.fn(async ({ limit }: { channel: string; limit: number }) => ({
     messages: [
       { ts: '1791399999.000002', user: 'U_JB', text: 'latest' },
@@ -50,7 +50,7 @@ function setup() {
   const s = fakePlatform('slack', withSlackClient(web, false))
   const board = testBoard({
     trustedSources: [githubActions({ repository: 'basehub-ai/www', workflow: '.github/workflows/deploy.yml', can: ['post'] })],
-    sync: { slack: slack({ adapter: s.adapter, client: async () => web as unknown as SlackClient, channels: { C1: 'firehose' } }) },
+    sync: { slack: slack({ adapter: s.adapter, client: async () => web as unknown as SlackClient, channels: { C1: 'firehose' }, ...(read === null ? {} : { read }) }) },
   })
   const webhook = (body: unknown) =>
     board.fetch(new Request(`${BOARD_URL}/webhooks/slack`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }))
@@ -134,6 +134,26 @@ describe('reading a platform on demand (vb sources <key> read)', () => {
     const nonsense = await read(julian, 'not a channel')
     expect(nonsense.status).toBe(400)
     expect(nonsense.body.error.code).toBe('invalid_target')
+  })
+
+  it('is off unless the board opts in, and then reads only the channels it lists', async () => {
+    for (const off of [null, false, []]) {
+      const { board, history, replies } = setup(off)
+      const julian = caller(board.fetch, await personToken())
+      for (const target of ['#project-vercel-kit', PERMALINK]) {
+        const denied = await read(julian, target)
+        expect([denied.status, denied.body.error.code]).toEqual([403, 'not_enabled'])
+      }
+      expect(history).not.toHaveBeenCalled()
+      expect(replies).not.toHaveBeenCalled()
+    }
+    const { board } = setup(['#project-vercel-kit'])
+    const julian = caller(board.fetch, await personToken())
+    expect((await read(julian, 'CKIT')).status).toBe(200)
+    expect((await read(julian, '#project-vercel-kit')).status).toBe(200)
+    expect((await read(julian, PERMALINK)).status).toBe(200)
+    const other = await read(julian, 'CEXT')
+    expect([other.status, other.body.error.code]).toEqual([403, 'not_allowed'])
   })
 
   it('stores nothing, and the board still only listens to configured channels', async () => {

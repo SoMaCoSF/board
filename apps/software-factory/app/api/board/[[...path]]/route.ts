@@ -61,6 +61,8 @@ export const { GET, POST, scheduler } = board({
       channels: {
         C0C6MNT9LLC: "dev",
       },
+      // Read on demand (`vb sources slack read`), never synced: #project-vercel-kit (#876).
+      read: ["C0C2U8DPU7K"],
     }),
     github: github({
       adapter: createGitHubAdapter({
