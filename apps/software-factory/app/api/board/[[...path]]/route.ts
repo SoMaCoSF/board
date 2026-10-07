@@ -13,6 +13,8 @@ import { vercelQueues } from "experimental-a2/scheduler-vercel";
 import { byPi, tellPi } from "./agent";
 import { classifyThread } from "./classify";
 import { shipit } from "./shipit";
+import { todo } from "./todo";
+import { pi } from "./pi";
 import { renderForSlack } from "./render";
 
 /** The kinds of thread Pi acts on, and how it's told about one. Noise it ignores. */
@@ -21,8 +23,6 @@ const PI_TASKS = {
   feature: "a feature request",
   question: "a question",
 } as const;
-const PI_KINDS = Object.keys(PI_TASKS) as (keyof typeof PI_TASKS)[];
-const isPiKind = (kind: string): kind is keyof typeof PI_TASKS => kind in PI_TASKS;
 
 // The software factory: vboard running on its own repo and Vercel's Slack. Locally
 // there's no VERCEL_ENV, so the log is SQLite at .a2/dev.db and attachments are
@@ -75,6 +75,8 @@ export const { GET, POST, scheduler } = board({
   },
   watch: {
     shipit: shipit({ tellPi }),
+    // :todo: parks a thread for later: labeled todo=yes, and Pi leaves it alone until the reaction goes.
+    todo: todo({ tellPi, kinds: PI_TASKS }),
     // Every non-PR dev thread gets a kind, judged from all of it,
     // so a chat that turns into a bug report becomes kind=bug. Bugs get 🐛 in Slack too.
     "triage-gpt": {
@@ -107,38 +109,8 @@ export const { GET, POST, scheduler } = board({
         }
       },
     },
-    // Pi watches every thread worth acting on (bugs, features, questions; not noise): it
-    // gets the thread once triage gives it one of those kinds, is told again if the kind
-    // changes, and hears when anyone else replies, then reads what's new itself.
-    pi: {
-      tail: `dev --label kind=${PI_KINDS.join("|")}`,
-      run: async ({ event }) => {
-        const message = event.message;
-        if (!message) {
-          return;
-        }
-        const kind = event.type === "labels.changed" ? event.payload.set.kind : undefined;
-        if (kind && isPiKind(kind) && message.re === null) {
-          await tellPi({
-            task: "thread",
-            thread: message.id,
-            key: `kind-${kind}`,
-            message: `There's ${PI_TASKS[kind]} in board thread #${message.id}.`,
-          });
-        } else if (
-          event.type === "message.posted" &&
-          message.re !== null &&
-          !byPi(message.re, message.by)
-        ) {
-          await tellPi({
-            task: "thread",
-            thread: message.re,
-            key: `news-${message.id}`,
-            message: `There's new activity in board thread #${message.re}.`,
-          });
-        }
-      },
-    },
+    // Pi works bugs, features and questions (not noise), unless they're parked as todos.
+    pi: pi({ tellPi, byPi, kinds: PI_TASKS }),
     // Pi reviews PRs: a PR's thread opens in `dev` when it's opened or marked ready, and
     // Pi hears when anyone but a bot (Vercel's deploy comments, CI) replies there. Only PR
     // threads: `--label pr` matches a reply by its root's labels too.
