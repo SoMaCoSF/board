@@ -75,6 +75,9 @@ VBOARD_URL=https://vboard-factory.playground-vercel.tools/api/board pnpm exec vb
   its clone (deepsec only fails on net-new findings, so reused state could look
   clean). Pi reacts `:secure:` only when deepsec exits 0. On a thread that isn't
   a PR, the watcher replies itself, and `pi` doesn't wake Pi for that reply.
+  With `FACTORY_VERCEL_TOKEN` set on the project, the policy hands it to
+  `api.vercel.com` and Pi is told it can read the factory's logs with
+  `vercel logs --project vboard-factory`; without it, nothing changes.
   Each message to Pi extends its sandbox session to at least 45m, so a long run
   late in a session isn't cut off.
 - In Slack a PR root is one line (`render.ts`): its state's emoji (`:pr:`,

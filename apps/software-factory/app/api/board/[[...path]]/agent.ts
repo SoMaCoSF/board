@@ -65,6 +65,9 @@ When you reply to a person, mention them by the handle they wrote under (author.
 You hear about every reply in your threads, but most aren't for you. When a message is addressed to someone else (it @mentions another person, or answers someone else's question) and doesn't ask anything of you, don't reply and don't react; stay quiet unless you're asked.
 Board replies are read on Slack by busy people: keep each to a few lines. Lead with the outcome (the PR link, the answer, the one question you need answered), skip background they already know, and use a short list only when there are real options to pick from. No "What I ran" lists, and no recaps of the thread, including messages synced from GitHub (PR descriptions, reviews and comments, yours too): point at them instead, and say each thing once; the attachments and the PR carry the detail.`;
 
+/** When the factory has a Vercel token for Pi (FACTORY_VERCEL_TOKEN), Pi can read the factory's own logs. */
+const LOGS = `To see what the factory itself did (watchers, sync, why something was slow or failed), read its runtime logs: vercel logs --project vboard-factory --scope vercel-internal-playground --since 1h (add --query, --level error, --json). Only read with it: never deploy, or change env vars or settings.`;
+
 const DIRECTION = `Your initial task is a starting point. People can redirect you in the thread at any time; follow their latest instructions even when they change the task, including fixing code, pushing changes, approving, marking a draft ready, merging, or closing a PR.
 A person's :shipit: reaction is a request to complete the merge. Inspect the PR, resolve the blockers you can, mark it ready if needed, and merge it when GitHub's checks and review requirements allow. Carry that intent through without requiring another reaction. If you need someone else's action, ask them in the thread and explain what's still blocking it.
 A person's :security: reaction on a PR is a request for a deepsec review of its diff. React :secure: on the root only when deepsec exits 0.`;
@@ -91,9 +94,15 @@ For a pull request (its board thread's root has a pr=owner/repo#N label):
 3. Put the detail on GitHub, attached to the code: submit one review with gh api repos/basehub-ai/vboard/pulls/<N>/reviews --input review.json (event COMMENT, REQUEST_CHANGES or APPROVE, with comments on file:line for each problem and suggestion). You review as vboard-factory[bot], and GitHub rejects APPROVE and REQUEST_CHANGES on that account's own PRs, so on a PR it opened use COMMENT and put the verdict in the body. Inline comments must be on lines the diff touches, or GitHub rejects the whole review; put anything else in the body. Always put the verdict in the body, even when the problems are all inline (a review with an empty body never reaches the board), and keep the body short: the verdict (good to merge, or the blocking problems in a line each), with the detail in the inline comments. The review shows up in the board thread and on Slack on its own, so don't restate it there: reply in the board thread only to add what it lacks, in a line (the mention of whoever asked, or what you tried by hand attached with --attach <file>, a log or a screenshot, up to 4 MB each), or not at all. vb read lists files people attached as 📎 lines; vb download <id> saves one.
 When you're told there's new activity in a thread, read it, see what's new since you last replied, and act on it if it's for you: answer questions, and review again if new commits landed (gh pr view <N> --json commits).`;
 
+/** What Pi is told for a task; it hears about the logs only when it can read them. */
+export function instructions(task: Task, { logs = Boolean(process.env.FACTORY_VERCEL_TOKEN) } = {}) {
+  const base = task === "thread" ? THREAD : REVIEW;
+  return [base, ...(logs ? [LOGS] : []), PRESENCE, DIRECTION].join("\n");
+}
+
 export const INSTRUCTIONS: Record<Task, string> = {
-  thread: `${THREAD}\n${PRESENCE}\n${DIRECTION}`,
-  review: `${REVIEW}\n${PRESENCE}\n${DIRECTION}`,
+  thread: instructions("thread", { logs: false }),
+  review: instructions("review", { logs: false }),
 };
 
 const SETUP = `set -e
@@ -104,7 +113,8 @@ command -v gh >/dev/null || {
   v=$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest | sed -n 's/.*"tag_name": *"v\\([^"]*\\)".*/\\1/p')
   curl -fsSL "https://github.com/cli/cli/releases/download/v$v/gh_\${v}_linux_amd64.tar.gz" | tar xz -C /tmp
   install "/tmp/gh_\${v}_linux_amd64/bin/gh" /usr/local/bin/gh
-}`;
+}
+command -v vercel >/dev/null || npm install -g vercel >/dev/null 2>&1`;
 
 /**
  * One message, once: KEY marks it delivered, so a retried watcher doesn't send it
@@ -120,8 +130,12 @@ cd ~ && exec flock ~/.pi/lock pi -p --provider vercel-ai-gateway --model "$MODEL
 /**
  * Real credentials on the way out: the deployment's OIDC token, and the factory GitHub App's.
  * On the board, the policy also sets who Pi is, so nothing in the sandbox can post as anyone else.
+ * With a Vercel token (FACTORY_VERCEL_TOKEN), the Vercel API gets it too, so `vercel logs` works.
  */
-function policy(thread: number, tokens: { gateway: string; board: string; github: string }): NetworkPolicy {
+export function policy(
+  thread: number,
+  tokens: { gateway: string; board: string; github: string; vercel?: string | undefined },
+): NetworkPolicy {
   const basic = Buffer.from(`x-access-token:${tokens.github}`).toString("base64");
   return {
     allow: {
@@ -147,6 +161,9 @@ function policy(thread: number, tokens: { gateway: string; board: string; github
       ],
       "github.com": [{ transform: [{ headers: { authorization: `Basic ${basic}` } }] }],
       "api.github.com": [{ transform: [{ headers: { authorization: `Bearer ${tokens.github}` } }] }],
+      ...(tokens.vercel
+        ? { "api.vercel.com": [{ transform: [{ headers: { authorization: `Bearer ${tokens.vercel}` } }] }] }
+        : {}),
       "*": [],
     },
   };
@@ -195,6 +212,7 @@ export async function tellPi({
       VBOARD_URL: BOARD,
       VBOARD_TOKEN: "from-the-network-policy",
       GH_TOKEN: "from-the-network-policy",
+      VERCEL_TOKEN: "from-the-network-policy",
     },
   } as const;
   let sandbox = await Sandbox.getOrCreate(settings);
@@ -211,7 +229,7 @@ export async function tellPi({
     getVercelOidcToken({ audience: BOARD }),
     getToken("github/vboard-factory", { subject: { type: "app" } }),
   ]);
-  await sandbox.update({ networkPolicy: policy(thread, { gateway, board, github }) });
+  await sandbox.update({ networkPolicy: policy(thread, { gateway, board, github, vercel: process.env.FACTORY_VERCEL_TOKEN }) });
   // A message landing late in a session (say, one started by an earlier turn) still gets a full SANDBOX_MS.
   const extend = extension(sandbox.expiresAt, Date.now());
   if (extend > 0) await sandbox.extendTimeout(extend);
@@ -221,9 +239,11 @@ export async function tellPi({
     env: {
       MODEL,
       SESSION: piSession(thread),
-      INSTRUCTIONS: INSTRUCTIONS[task],
+      INSTRUCTIONS: instructions(task),
       KEY: key,
       MESSAGE: message,
+      // Here too, since a sandbox's own env is fixed when it's created: `vercel` reads it.
+      VERCEL_TOKEN: "from-the-network-policy",
       // Over any git config Pi writes: otherwise it picks an identity, and GitHub credits a stranger.
       GIT_AUTHOR_NAME: GIT_AUTHOR.name,
       GIT_AUTHOR_EMAIL: GIT_AUTHOR.email,
