@@ -204,7 +204,7 @@ export async function tellPi({
       VBOARD_URL: BOARD,
       VBOARD_TOKEN: "from-the-network-policy",
       GH_TOKEN: "from-the-network-policy",
-      VERCEL_TOKEN: "from-the-network-policy",
+      VERCEL_TOKEN: "fromthenetworkpolicy",
     },
   } as const;
   let sandbox = await Sandbox.getOrCreate(settings);
@@ -234,8 +234,8 @@ export async function tellPi({
       INSTRUCTIONS: INSTRUCTIONS[task],
       KEY: key,
       MESSAGE: message,
-      // Here too, since a sandbox's own env is fixed when it's created: `vercel` reads it.
-      VERCEL_TOKEN: "from-the-network-policy",
+      // Here too, since a sandbox's own env is fixed when it's created: `vercel` reads it, and rejects a token with "-".
+      VERCEL_TOKEN: "fromthenetworkpolicy",
       // Over any git config Pi writes: otherwise it picks an identity, and GitHub credits a stranger.
       GIT_AUTHOR_NAME: GIT_AUTHOR.name,
       GIT_AUTHOR_EMAIL: GIT_AUTHOR.email,
