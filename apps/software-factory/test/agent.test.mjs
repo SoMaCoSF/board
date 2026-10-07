@@ -82,9 +82,11 @@ test("vercel logs: the Vercel API gets the app's token when there is one, and Pi
   const { policy } = await import("../app/api/board/[[...path]]/agent.ts");
   const tokens = { vercelOidc: "oidc", board: "b", github: "h" };
   assert.equal(policy(1, tokens).allow["api.vercel.com"], undefined);
-  assert.deepEqual(policy(1, { ...tokens, vercel: "app" }).allow["api.vercel.com"], [
-    { transform: [{ headers: { authorization: "Bearer app" } }] },
-  ]);
+  for (const host of ["api.vercel.com", "vercel.com"]) {
+    assert.deepEqual(policy(1, { ...tokens, vercel: "app" }).allow[host], [
+      { transform: [{ headers: { authorization: "Bearer app" } }] },
+    ]);
+  }
   for (const task of ["thread", "review"]) {
     assert.match(INSTRUCTIONS[task], /vercel logs --project vboard-factory --scope vercel-internal-playground/);
     assert.match(INSTRUCTIONS[task], /never deploy/);

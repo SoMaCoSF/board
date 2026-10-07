@@ -76,12 +76,11 @@ VBOARD_URL=https://vboard-factory.playground-vercel.tools/api/board pnpm exec vb
   clean). Pi reacts `:secure:` only when deepsec exits 0. On a thread that isn't
   a PR, the watcher replies itself, and `pi` doesn't wake Pi for that reply.
   Pi reads the factory's own logs with `vercel logs --project vboard-factory`
-  through the factory's Vercel App (`vercel.ts`). Someone authorizes it once at
-  `/api/vercel-auth` (read-only permissions); the board keeps the rotating
-  refresh token in Redis and trades it for access tokens, signing in as the app
-  with its OIDC token, so the stored token is useless outside this project. The
-  policy hands the access token to `api.vercel.com`. Unauthorized, or 30 days
-  idle, Pi just has no logs.
+  through a read-only Vercel login held by Vercel Connect (`VERCEL_LOGS` in
+  `agent.ts`): a person signed in once through a Custom OAuth connector on
+  vercel.com, granting Deployments: Read Only, and the board asks Connect for
+  that user's token each message. The API won't take the project OIDC token for
+  logs. Without the grant, Pi just has no logs.
   Each message to Pi extends its sandbox session to at least 45m, so a long run
   late in a session isn't cut off.
 - In Slack a PR root is one line (`render.ts`): its state's emoji (`:pr:`,

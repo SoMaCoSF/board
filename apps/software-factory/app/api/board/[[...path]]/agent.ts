@@ -20,6 +20,14 @@ const VBOARD = "0.4.0";
 const SANDBOX_MS = 45 * 60_000;
 const SNAPSHOT_MS = 7 * 24 * 60 * 60_000;
 
+/**
+ * Pi's read-only Vercel login, for `vercel logs`. The Vercel API won't take a deployment's OIDC
+ * token for logs, so a person signed in once through a Vercel Connect connector (Custom OAuth on
+ * vercel.com), granting Deployments: Read Only on this project. Connect keeps that grant fresh; the
+ * board asks it for a token for that user, the same way it gets the GitHub App's.
+ */
+const VERCEL_LOGS: { connector: string; user: string } | null = null;
+
 /** Commits are the factory GitHub App's, under its bot account's noreply address. */
 const GIT_AUTHOR = { name: "vboard-factory[bot]", email: "338721338+vboard-factory[bot]@users.noreply.github.com" };
 
@@ -65,7 +73,7 @@ When you reply to a person, mention them by the handle they wrote under (author.
 You hear about every reply in your threads, but most aren't for you. When a message is addressed to someone else (it @mentions another person, or answers someone else's question) and doesn't ask anything of you, don't reply and don't react; stay quiet unless you're asked.
 Board replies are read on Slack by busy people: keep each to a few lines. Lead with the outcome (the PR link, the answer, the one question you need answered), skip background they already know, and use a short list only when there are real options to pick from. No "What I ran" lists, and no recaps of the thread, including messages synced from GitHub (PR descriptions, reviews and comments, yours too): point at them instead, and say each thing once; the attachments and the PR carry the detail.`;
 
-/** Pi reads the factory's own logs with the Vercel App's read-only token (vercel.ts). */
+/** Pi reads the factory's own logs with its read-only Vercel login (VERCEL_LOGS), when there is one. */
 const LOGS = `To see what the factory itself did (watchers, sync, why something was slow or failed), read its runtime logs: vercel logs --project vboard-factory --scope vercel-internal-playground --since 1h (add --query, --level error, --json). Only read with it: never deploy, or change env vars or settings. If vercel says you're not logged in or not allowed, say so in the thread rather than guessing.`;
 
 const DIRECTION = `Your initial task is a starting point. People can redirect you in the thread at any time; follow their latest instructions even when they change the task, including fixing code, pushing changes, approving, marking a draft ready, merging, or closing a PR.
@@ -124,7 +132,7 @@ cd ~ && exec flock ~/.pi/lock pi -p --provider vercel-ai-gateway --model "$MODEL
 /**
  * Real credentials on the way out: the deployment's OIDC token, and the factory GitHub App's.
  * On the board, the policy also sets who Pi is, so nothing in the sandbox can post as anyone else.
- * The Vercel API gets the Vercel App's token (see vercel.ts) once someone has authorized it, so `vercel logs` works.
+ * With Pi's read-only Vercel login (VERCEL_LOGS), the Vercel API gets it too, so `vercel logs` works.
  */
 export function policy(
   thread: number,
@@ -155,8 +163,11 @@ export function policy(
       ],
       "github.com": [{ transform: [{ headers: { authorization: `Basic ${basic}` } }] }],
       "api.github.com": [{ transform: [{ headers: { authorization: `Bearer ${tokens.github}` } }] }],
+      // `vercel logs` reads vercel.com/api/logs; the rest of the CLI talks to api.vercel.com.
       ...(tokens.vercel
-        ? { "api.vercel.com": [{ transform: [{ headers: { authorization: `Bearer ${tokens.vercel}` } }] }] }
+        ? Object.fromEntries(
+            ["api.vercel.com", "vercel.com"].map((host) => [host, [{ transform: [{ headers: { authorization: `Bearer ${tokens.vercel}` } }] }]]),
+          )
         : {}),
       "*": [],
     },
@@ -224,11 +235,13 @@ export async function tellPi({
     getToken("github/vboard-factory", { subject: { type: "app" } }),
   ]);
   // Logs are a nice-to-have: if the app won't sign in, Pi works on without them.
-  const { vercelToken } = await import("./vercel");
-  const vercel = await vercelToken({ oidc: vercelOidc }).catch((error) => {
-    console.warn(error);
-    return undefined;
-  });
+  // Logs are a nice-to-have: without the Connect grant, Pi works on without them.
+  const vercel = VERCEL_LOGS
+    ? await getToken(VERCEL_LOGS.connector, { subject: { type: "user", id: VERCEL_LOGS.user } }).catch((error: unknown) => {
+        console.warn("vercel logs token:", error);
+        return undefined;
+      })
+    : undefined;
   await sandbox.update({ networkPolicy: policy(thread, { vercelOidc, board, github, vercel }) });
   // A message landing late in a session (say, one started by an earlier turn) still gets a full SANDBOX_MS.
   const extend = extension(sandbox.expiresAt, Date.now());
