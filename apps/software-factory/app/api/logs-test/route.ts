@@ -39,17 +39,28 @@ export async function POST() {
     out.push(block(`install vercel → exit ${setup.exitCode}`, (await setup.stdout()) + (await setup.stderr())));
     // #89's policy, with dummies for the credentials this test doesn't use.
     await sandbox.update({ networkPolicy: policy(0, { vercelOidc: "unused", board: "unused", github: "unused", vercel }) });
+    const probe = `
+A=https://api.vercel.com; Q="teamId=${ORG}"
+show() { echo "== $1"; curl -s --max-time 10 -w '\\nHTTP %{http_code}' "$2" | tail -c 600; echo; }
+show "project" "$A/v9/projects/${PROJECT}?$Q"
+show "deployments" "$A/v6/deployments?projectId=${PROJECT}&$Q&limit=1&target=production"
+DPL=$(curl -s "$A/v6/deployments?projectId=${PROJECT}&$Q&limit=1&target=production" | sed -n 's/.*"uid":"\\(dpl_[^"]*\\)".*/\\1/p' | head -1)
+echo "deployment: $DPL"
+[ -n "$DPL" ] && show "runtime-logs (streams, 10s)" "$A/v1/projects/${PROJECT}/deployments/$DPL/runtime-logs?format=lines&$Q"
+NOW=$(( $(date +%s) * 1000 )); FROM=$(( NOW - 3600000 ))
+show "request-logs + teamId" "https://vercel.com/api/logs/request-logs?projectId=${PROJECT}&ownerId=${ORG}&$Q&page=0&startDate=$FROM&endDate=$NOW"
+`;
     for (const cmd of [
       "vercel whoami",
       "vercel logs --since 1h --limit 5",
-      `curl -s -o /dev/stdout -w '\\nHTTP %{http_code}' "https://vercel.com/api/logs/request-logs?projectId=${PROJECT}&ownerId=${ORG}&page=0&startDate=$(( ($(date +%s) - 3600) * 1000 ))&endDate=$(( $(date +%s) * 1000 ))" | tail -c 800`,
+      probe,
     ]) {
       const run = await sandbox.runCommand({
         cmd: "bash",
         args: ["-c", `${cmd} 2>&1`],
         env: { VERCEL_TOKEN: "fromthenetworkpolicy", VERCEL_ORG_ID: ORG, VERCEL_PROJECT_ID: PROJECT, VERCEL_TELEMETRY_DISABLED: "1", NO_COLOR: "1" },
       });
-      out.push(block(`$ ${cmd.slice(0, 80)} → exit ${run.exitCode}`, (await run.stdout()).slice(-3000)));
+      out.push(block(`$ ${cmd === probe ? "API probes" : cmd} → exit ${run.exitCode}`, (await run.stdout()).slice(-3000)));
     }
   } catch (error) {
     out.push(block("sandbox failed", String((error as Error).stack ?? error)));
