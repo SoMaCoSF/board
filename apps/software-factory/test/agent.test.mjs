@@ -78,13 +78,34 @@ test("review: the review reaches the board on its own, so the board reply doesn'
   assert.match(INSTRUCTIONS.review, /Always put the verdict in the body/);
 });
 
-test("vercel logs: the Vercel API gets the deployment's OIDC token, and Pi only reads with it", async () => {
+test("vercel logs: the Vercel API gets the app's token when there is one, and Pi only reads with it", async () => {
   const { policy } = await import("../app/api/board/[[...path]]/agent.ts");
-  assert.deepEqual(policy(1, { vercelOidc: "oidc", board: "b", github: "h" }).allow["api.vercel.com"], [
-    { transform: [{ headers: { authorization: "Bearer oidc" } }] },
+  const tokens = { vercelOidc: "oidc", board: "b", github: "h" };
+  assert.equal(policy(1, tokens).allow["api.vercel.com"], undefined);
+  assert.deepEqual(policy(1, { ...tokens, vercel: "app" }).allow["api.vercel.com"], [
+    { transform: [{ headers: { authorization: "Bearer app" } }] },
   ]);
   for (const task of ["thread", "review"]) {
     assert.match(INSTRUCTIONS[task], /vercel logs --project vboard-factory --scope vercel-internal-playground/);
     assert.match(INSTRUCTIONS[task], /never deploy/);
   }
+});
+
+test("vercelAppToken: client_credentials with the OIDC token as the client assertion", async () => {
+  const { vercelAppToken, VERCEL_APP } = await import("../app/api/board/[[...path]]/agent.ts");
+  let sent;
+  const ok = async (url, init) => {
+    sent = { url, body: Object.fromEntries(new URLSearchParams(init.body)) };
+    return new Response(JSON.stringify({ access_token: "app-token" }));
+  };
+  assert.equal(await vercelAppToken("oidc", ok), "app-token");
+  assert.equal(sent.url, "https://api.vercel.com/login/oauth/token");
+  assert.deepEqual(sent.body, {
+    grant_type: "client_credentials",
+    client_id: VERCEL_APP,
+    client_assertion_type: "urn:vercel:params:oauth:client-assertion-type:oidc-bearer",
+    client_assertion: "oidc",
+  });
+  const refused = async () => new Response(JSON.stringify({ error: "invalid_client", error_description: "nope" }), { status: 401 });
+  await assert.rejects(vercelAppToken("oidc", refused), /401 invalid_client nope/);
 });
