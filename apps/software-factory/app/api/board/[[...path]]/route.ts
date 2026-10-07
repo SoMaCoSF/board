@@ -10,7 +10,7 @@ import {
 } from "@vercel/connect/chat";
 import { redisHttp } from "experimental-a2/store-redis-http";
 import { vercelQueues } from "experimental-a2/scheduler-vercel";
-import { byPi, taskMessage, tellPi } from "./agent";
+import { byPi, newsMessage, quote, sincePi, taskMessage, tellPi } from "./agent";
 import { classifyThread } from "./classify";
 import { isPiKind, PI_KINDS, piTask, scheduled, scheduledThread } from "./kinds";
 import { fromSecurity, security } from "./security";
@@ -117,7 +117,7 @@ export const { GET, POST, scheduler } = board({
     // changes, and hears when anyone else replies, then reads what's new itself.
     pi: {
       tail: `dev --label kind=${PI_KINDS.join("|")}`,
-      run: async ({ event }) => {
+      run: async ({ event, board }) => {
         const message = event.message;
         if (!message) {
           return;
@@ -129,11 +129,18 @@ export const { GET, POST, scheduler } = board({
               ? scheduledThread(message) ?? undefined
               : undefined;
         if (kind && isPiKind(kind) && message.re === null) {
+          // 👀 from the board right away: Pi's own would come after a sandbox boot and a model turn (~25s).
+          const ack = event.type === "labels.changed";
+          const [thread] = await Promise.all([
+            board.thread(message.id),
+            ack ? board.react(message.id, "eyes") : null,
+          ]);
           await tellPi({
             task: "thread",
             thread: message.id,
             key: `kind-${kind}`,
-            message: taskMessage(piTask(kind), message),
+            message: `${taskMessage(piTask(kind), message)}${ack ? " It already has your 👀." : ""}\n\n${quote([thread.message, ...thread.replies])}`,
+            since: event.createdAt,
           });
         } else if (
           event.type === "message.posted" &&
@@ -142,11 +149,13 @@ export const { GET, POST, scheduler } = board({
           !fromSecurity(message.by) &&
           message.by.actor !== CROSSPOST_ACTOR
         ) {
+          const thread = await board.thread(message.re);
           await tellPi({
             task: "thread",
             thread: message.re,
             key: `news-${message.id}`,
-            message: `There's new activity in board thread #${message.re}.`,
+            message: newsMessage(message.re, sincePi(message.re, [thread.message, ...thread.replies])),
+            since: event.createdAt,
           });
         }
       },
@@ -156,7 +165,7 @@ export const { GET, POST, scheduler } = board({
     // threads: `--label pr` matches a reply by its root's labels too.
     "review-pi": {
       tail: "dev --label pr",
-      run: async ({ event }) => {
+      run: async ({ event, board }) => {
         const message = event.message;
         if (event.type !== "message.posted" || !message) {
           return;
@@ -167,17 +176,20 @@ export const { GET, POST, scheduler } = board({
             thread: message.id,
             key: "pr",
             message: `There's a pull request to review in board thread #${message.id}.`,
+            since: event.createdAt,
           });
         } else if (
           (scheduled(message) || !byPi(message.re, message.by)) &&
           !message.author?.handle.endsWith("[bot]") &&
           message.by.actor !== CROSSPOST_ACTOR
         ) {
+          const thread = await board.thread(message.re);
           await tellPi({
             task: "review",
             thread: message.re,
             key: `news-${message.id}`,
-            message: `There's new activity in board thread #${message.re}.`,
+            message: newsMessage(message.re, sincePi(message.re, [thread.message, ...thread.replies])),
+            since: event.createdAt,
           });
         }
       },

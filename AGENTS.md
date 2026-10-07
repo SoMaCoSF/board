@@ -56,7 +56,11 @@ VBOARD_URL=https://vboard-factory.playground-vercel.tools/api/board pnpm exec vb
   `kind=feature`, `kind=question`, and `kind=task` threads (not `noise`) to Pi (`agent.ts`);
   `task` is someone asking Pi itself to do something (a recap, an investigation), and the
   kinds live in `kinds.ts`
-  and tells it when someone replies; Pi reads what's new itself. Before it plans
+  and tells it when someone replies, quoting what's new since Pi's last reply so its turn
+  starts without a `vb read`. The watcher reacts 👀 on a thread it hands over before
+  Pi's sandbox boots, and Pi's first turn clones and installs the repo at `~/vboard` in
+  the background. Each handoff logs a `{"pi":"told",…}` line with where its time went
+  (sandbox boot, setup, tokens, policy). Before it plans
   or builds, Pi searches earlier threads and PRs and builds on related work. For a bug, Pi
   reproduces it, then opens a PR from a `pi/<thread>` branch (its body opens
   with a line linking what triggered it: the Slack thread or GitHub issue, which

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { GITHUB_TOKEN, INSTRUCTIONS, byPi, piAvatar, piName, sourceLink, taskMessage } from "../app/api/board/[[...path]]/agent.ts";
+import { GITHUB_TOKEN, INSTRUCTIONS, byPi, newsMessage, piAvatar, piName, quote, sincePi, sourceLink, taskMessage } from "../app/api/board/[[...path]]/agent.ts";
 
 for (const task of ["thread", "review"]) {
   test(`${task}: Pi stays out of messages meant for someone else`, () => {
@@ -146,3 +146,52 @@ test("GITHUB_TOKEN: Pi never gets a cached GitHub token that dies before its ses
     globalThis.fetch = realFetch;
   }
 });
+
+const person = (id, text, extra = {}) => ({
+  id,
+  text,
+  by: { actor: "slack:user:U1", profile: null, session: null },
+  author: { handle: "martin", name: "Martin Sione" },
+  ...extra,
+});
+const pi = (id, thread, text) => ({
+  id,
+  text,
+  by: { actor: "vercel:project:p:production", profile: piName(thread), session: `thread-${thread}` },
+  author: { handle: piName(thread), name: piName(thread) },
+});
+
+test("quote: each message with the handle to mention, its files, and long text cut", () => {
+  assert.equal(quote([person(5, "it breaks")]), "#5 Martin Sione (@martin):\nit breaks");
+  assert.match(quote([person(5, "see the log", { attachments: [{}, {}] })]), /\[📎 2 attached: vb read 5 lists them\]$/);
+  const long = quote([person(5, "x".repeat(5000))]);
+  assert.ok(long.length < 4200);
+  assert.match(long, /… \(cut: vb read 5 for the rest\)$/);
+});
+
+test("news quotes what's new since Pi's last reply, so Pi needn't read the thread first", () => {
+  const thread = [person(10, "a bug"), pi(11, 10, "on it"), person(12, "also this"), person(13, "and that")];
+  const message = newsMessage(10, sincePi(10, thread));
+  assert.match(message, /^There's new activity in board thread #10\. Here's what's new since your last reply:/);
+  assert.match(message, /#12 Martin Sione \(@martin\):\nalso this\n\n#13 Martin Sione \(@martin\):\nand that$/);
+  assert.doesNotMatch(message, /on it|a bug/);
+  // Another thread's Pi isn't this one: its messages are news.
+  assert.equal(sincePi(10, [person(1, "x"), pi(2, 99, "elsewhere")]).length, 2);
+  assert.equal(newsMessage(10, []), "There's new activity in board thread #10.");
+});
+
+test("news quotes at most the last 10 messages, and says where the rest are", () => {
+  const thread = Array.from({ length: 14 }, (_, i) => person(i + 1, `m${i + 1}`));
+  const message = newsMessage(1, sincePi(1, thread));
+  assert.match(message, /\(the last 10; 4 before them: vb read 1\)/);
+  assert.doesNotMatch(message, /\nm4\b/);
+  assert.match(message, /\nm14$/);
+});
+
+for (const task of ["thread", "review"]) {
+  test(`${task}: Pi waits for the repo the board prepares instead of cloning it`, () => {
+    assert.match(INSTRUCTIONS[task], /~\/vboard/);
+    assert.match(INSTRUCTIONS[task], /until \[ -e ~\/\.pi\/repo-ready \]/);
+    assert.match(INSTRUCTIONS[task], /quotes what's new since your last reply/);
+  });
+}

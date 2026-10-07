@@ -10,7 +10,7 @@ import { TELL } from "../app/api/board/[[...path]]/agent.ts";
 const skip = spawnSync("flock", ["--version"]).error ? "needs flock" : false;
 
 // A sandbox home with a fake `pi` that records each turn it's asked to run.
-function sandbox() {
+function sandbox(extra = {}) {
   const home = mkdtempSync(join(tmpdir(), "tell-"));
   mkdirSync(join(home, "bin"));
   mkdirSync(join(home, ".pi"));
@@ -19,7 +19,7 @@ function sandbox() {
   const tell = (key) =>
     new Promise((resolve, reject) => {
       const child = spawn("bash", ["-c", TELL], {
-        env: { HOME: home, PATH: `${home}/bin:${process.env.PATH}`, KEY: key, MODEL: "m", SESSION: "s", INSTRUCTIONS: "i", MESSAGE: "There's new activity." },
+        env: { HOME: home, PATH: `${home}/bin:${process.env.PATH}`, KEY: key, MODEL: "m", SESSION: "s", INSTRUCTIONS: "i", MESSAGE: "There's new activity.", ...extra },
       });
       child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
     });
@@ -33,7 +33,7 @@ function sandbox() {
     while (!existsSync(ready)) await sleep(10);
     return () => new Promise((resolve) => { holder.on("exit", resolve); execFileSync("rm", [gate]); });
   };
-  return { tell, turns, busy };
+  return { home, tell, turns, busy };
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -71,4 +71,36 @@ test("a message is still delivered once: a retried watcher is a no-op", { skip }
   await tell("news-1");
   await tell("news-2");
   assert.deepEqual(turns(), ["news-1", "news-2"]);
+});
+
+// Fakes for the repo's prefetch: gh "clones" by making the directory, pnpm "installs" by leaving a mark.
+function fakeTools(home) {
+  writeFileSync(join(home, "bin", "gh"), `#!/bin/bash\necho "$@" >> "$HOME/gh-calls"\nmkdir -p "$4"\n`);
+  writeFileSync(join(home, "bin", "pnpm"), `#!/bin/bash\necho "$PWD $@" >> "$HOME/pnpm-calls"\n`);
+  chmodSync(join(home, "bin", "gh"), 0o755);
+  chmodSync(join(home, "bin", "pnpm"), 0o755);
+}
+
+const waitFor = async (path) => {
+  for (let i = 0; i < 100 && !existsSync(path); i++) await sleep(20);
+  return existsSync(path);
+};
+
+test("the repo is cloned and installed in the background, once per sandbox", { skip }, async () => {
+  const { home, tell, turns } = sandbox({ REPO: "basehub-ai/vboard" });
+  fakeTools(home);
+  await tell("kind-bug");
+  await tell("news-1");
+  assert.ok(await waitFor(join(home, ".pi", "repo-ready")), "repo-ready marks it done");
+  assert.deepEqual(turns(), ["kind-bug", "news-1"], "Pi doesn't wait for it");
+  assert.equal(readFileSync(join(home, "gh-calls"), "utf8"), `repo clone basehub-ai/vboard ${home}/vboard -- -q\n`);
+  assert.equal(readFileSync(join(home, "pnpm-calls"), "utf8"), `${home}/vboard install --frozen-lockfile\n`);
+});
+
+test("without a repo to prepare, nothing is cloned", { skip }, async () => {
+  const { home, tell } = sandbox();
+  fakeTools(home);
+  await tell("kind-bug");
+  await sleep(100);
+  assert.equal(existsSync(join(home, "gh-calls")), false);
 });

@@ -93,8 +93,64 @@ export function taskMessage(
   return `There's ${task} in board thread #${thread.id}${source ? `, posted${by} on ${source.platform}: ${source.url}` : ""}.`;
 }
 
+/** A message as Pi gets it quoted: enough to act on without a `vb read` first. */
+export type Quotable = {
+  id: number;
+  text: string;
+  by: { actor: string };
+  author?: { handle: string; name: string } | null;
+  attachments?: unknown[];
+};
+
+/** Quoted text past this is cut, and Pi reads the rest with `vb read`. */
+const QUOTE_MAX = 4000;
+
+/**
+ * Messages quoted into what Pi is told, so a turn can start on them instead of spending its
+ * first model round-trip (3–10s) on `vb read`. Each line has the handle to mention.
+ */
+export function quote(messages: Quotable[]) {
+  return messages
+    .map((m) => {
+      const who = m.author ? `${m.author.name} (@${m.author.handle})` : m.by.actor;
+      const text = m.text.length > QUOTE_MAX ? `${m.text.slice(0, QUOTE_MAX)}… (cut: vb read ${m.id} for the rest)` : m.text;
+      const files = m.attachments?.length ? `\n[📎 ${m.attachments.length} attached: vb read ${m.id} lists them]` : "";
+      return `#${m.id} ${who}:\n${text}${files}`;
+    })
+    .join("\n\n");
+}
+
+/**
+ * What Pi is told when a thread has news: the messages since its last reply there, quoted.
+ * Messages only it wrote aren't news, and an empty list means the news is something Pi
+ * already saw (a reply that landed while it was writing its own).
+ */
+export function newsMessage(thread: number, since: Quotable[]) {
+  if (since.length === 0) return `There's new activity in board thread #${thread}.`;
+  const shown = since.slice(-NEWS_MAX);
+  const earlier = since.length - shown.length;
+  const more = earlier > 0 ? ` (the last ${NEWS_MAX}; ${earlier} before them: vb read ${thread})` : "";
+  return `There's new activity in board thread #${thread}. Here's what's new since your last reply${more}:\n\n${quote(shown)}`;
+}
+
+/** At most this many messages are quoted in news: a thread Pi hasn't replied in yet can be long. */
+const NEWS_MAX = 10;
+
+/** The messages in a thread after the last one by `thread`'s Pi, for `newsMessage`. */
+export function sincePi<M extends Quotable & { by: { actor: string; profile: string | null; session: string | null } }>(
+  thread: number,
+  messages: M[],
+) {
+  const last = messages.findLastIndex((m) => byPi(thread, m.by));
+  return messages.slice(last + 1);
+}
+
 /** What Pi does in a thread: work a firehose thread (bug, feature, question, task), or review a pull request. */
 export type Task = "thread" | "review";
+
+/** Where the board puts the repo for Pi: TELL clones it and installs its dependencies while Pi reads the thread. */
+const REPO_DIR = "~/vboard";
+const REPO_READY = `A clone of basehub-ai/vboard with dependencies installed is being prepared at ${REPO_DIR} when your first turn starts: before you use it, wait for it with timeout 180 sh -c 'until [ -e ~/.pi/repo-ready ]; do sleep 1; done', then git fetch and work from origin/main (or the branch you need). If it isn't ready by then, clone it yourself with gh repo clone basehub-ai/vboard.`;
 
 /** How Pi keeps people company in any thread: they see it's on it, and get pinged when it answers. */
 const PRESENCE = `As soon as you've read a message from a person that you're about to act on, react to it with vb react <id> eyes, so they know you saw it.
@@ -112,7 +168,7 @@ A person's :security: reaction on a PR is a request for a deepsec review of its 
 
 const THREAD = `You own bug reports, feature requests, and questions for vboard (github.com/basehub-ai/vboard, private), a message board library and CLI.
 The board is how you talk to people. vb read <id> shows a thread, vb reply <id> "<text>" answers in it (and reaches Slack or GitHub when the thread is synced), vb label <id> k=v labels it. Run vb help for the rest.
-A thread's kind label (bug, feature, question, task) says what it is; judge it yourself from the whole thread too. Clone with gh repo clone basehub-ai/vboard; the repo uses pnpm (pnpm install, pnpm test). Any change you make goes on a branch named pi/<thread id> (never main), in a pull request opened with gh pr create, and you reply with the PR link.
+A thread's kind label (bug, feature, question, task) says what it is; judge it yourself from the whole thread too. ${REPO_READY} The repo uses pnpm (pnpm install, pnpm test). Any change you make goes on a branch named pi/<thread id> (never main), in a pull request opened with gh pr create, and you reply with the PR link.
 Open the PR body with one line saying what triggered it, before anything else: "> 💬 From [<who>'s Slack thread](<link>) · board #<id>" for Slack, "> 🐙 From #<issue> on GitHub · board #<id>" for a GitHub issue (with "Closes #<issue>" below when the PR fixes it), or "> From board #<id>" when the thread has no source. Your task message gives the source link and who posted it.
 Before you plan or build for a bug or feature, look for related work: search earlier threads with vb read dev --text <keywords> and pull requests with gh pr list --state all --search <keywords>. If a thread or PR already covers it, link it in your reply and build on it (comment there, push to its branch, or ask to merge it) instead of starting over with a duplicate.
 For a bug report:
@@ -124,17 +180,17 @@ For a question: answer it from the code and docs, pointing at the files. Don't o
 For a task (someone asks you to do something, like a recap or an investigation): do it with what the board, the repo and GitHub show you, and reply with the result.
 Show your work only when it's worth looking at: when the change is something people can see and you can capture it, attach a screenshot to the reply that links the PR, with --attach <file> (up to 4 MB). Don't attach test runs or logs of your own checks: the tests go in the PR, and for a bug, name the test that reproduces it in the PR body. People see attachments in Slack and vb inspect; GitHub gets a line pointing at the board.
 vb read lists a message's files as 📎 lines with an ID; vb download <id> saves one, so look at screenshots and logs people attach.
-When you're told there's new activity in a thread, read it, see what's new since you last replied, and act on it if it's for you.`;
+When you're told there's new activity in a thread, the message quotes what's new since your last reply: act on it if it's for you, and run vb read only when you need more of the thread.`;
 
 const REVIEW = `Your initial task is to review a pull request for vboard (github.com/basehub-ai/vboard, private), a message board library and CLI.
 The board is how you talk to people. vb read <id> shows a thread, vb reply <id> "<text>" answers in it (and reaches Slack and the PR on GitHub), vb label <id> k=v labels it. Run vb help for the rest.
 For a pull request (its board thread's root has a pr=owner/repo#N label):
 Before anything else, react to the PR thread's root with vb react <root id> looking-bunny, so people see a review is underway, also when you start reviewing again after new commits. Take it off with vb react <root id> looking-bunny --remove once you've labeled land in step 4.
-1. Clone with gh repo clone basehub-ai/vboard, then gh pr checkout <N>. Read gh pr view <N> and gh pr diff <N>, and SPEC.md and AGENTS.md for the parts it touches.
+1. ${REPO_READY} Then gh pr checkout <N>. Read gh pr view <N> and gh pr diff <N>, and SPEC.md and AGENTS.md for the parts it touches.
 2. Run pnpm install and pnpm check. Try the change where you can: a test that should fail without it, or the CLI by hand.
 3. Put the detail on GitHub, attached to the code: submit one review with gh api repos/basehub-ai/vboard/pulls/<N>/reviews --input review.json (event COMMENT, REQUEST_CHANGES or APPROVE, with comments on file:line for each problem and suggestion). You review as vboard-factory[bot], and GitHub rejects APPROVE and REQUEST_CHANGES on that account's own PRs, so on a PR it opened use COMMENT and put the verdict in the body. Inline comments must be on lines the diff touches, or GitHub rejects the whole review; put anything else in the body. Always put the verdict in the body, even when the problems are all inline (a review with an empty body never reaches the board), and keep the body short: the verdict (good to merge, or the blocking problems in a line each), with the detail in the inline comments. The review shows up in the board thread and on Slack on its own, so don't restate it there: reply in the board thread only to add what it lacks, in a line (the mention of whoever asked, or what you tried by hand attached with --attach <file>, a log or a screenshot, up to 4 MB each), or not at all. vb read lists files people attached as 📎 lines; vb download <id> saves one.
 4. After each review, say whether the PR could land without a person, in one command on the PR thread's root: vb label <root id> land=yes|no land.why="<one line>" land.sha=<the head SHA you reviewed>. Say yes only when all of these hold: it fixes a bug or does what a person clearly asked for (not something you or its author had to interpret); your review found nothing to fix; and it has no caveats, open questions, or negative tradeoffs (in its body, in the thread, or that you see). Otherwise say no, and land.why says which one failed. When unsure, say no. The board checks the rest itself: who opened it, CI, and whether it changes vboard core for users.
-When you're told there's new activity in a thread, read it, see what's new since you last replied, and act on it if it's for you: answer questions, and review again if new commits landed (gh pr view <N> --json commits), labeling land again.`;
+When you're told there's new activity in a thread, the message quotes what's new since your last reply: act on it if it's for you (run vb read only when you need more of the thread): answer questions, and review again if new commits landed (gh pr view <N> --json commits), labeling land again.`;
 
 export const INSTRUCTIONS: Record<Task, string> = {
   thread: `${THREAD}\n${PRESENCE}\n${PROGRESS}\n${DIRECTION}`,
@@ -162,6 +218,10 @@ command -v gh >/dev/null || {
 export const TELL = `mkdir -p ~/.pi/told
 [ -e ~/.pi/told/"$KEY" ] && exit 0
 touch ~/.pi/told/"$KEY"
+# Once per sandbox, in the background: the repo, cloned and installed while Pi's first turn reads the thread.
+if [ -n "$REPO" ] && mkdir ~/.pi/repo 2>/dev/null; then
+  ( gh repo clone "$REPO" ${REPO_DIR} -- -q && cd ${REPO_DIR} && pnpm install --frozen-lockfile && touch ~/.pi/repo-ready ) > ~/.pi/repo/log 2>&1 &
+fi
 case "$KEY" in news-*) echo "$KEY" > ~/.pi/news ;; esac
 cd ~ && exec flock ~/.pi/lock bash -c '
   case "$KEY" in news-*) [ "$(cat ~/.pi/news)" = "$KEY" ] || exit 0 ;; esac
@@ -225,12 +285,18 @@ export async function tellPi({
   thread,
   key,
   message,
+  since,
 }: {
   task: Task;
   thread: number;
   key: string;
   message: string;
+  /** When what Pi's told about happened (an event's `createdAt`), so the log shows the whole wait. */
+  since?: string;
 }) {
+  const start = Date.now();
+  const timings: Record<string, number> = {};
+  const mark = (phase: string) => (timings[phase] = Date.now() - start);
   const [{ Sandbox }, { getToken }, { getVercelOidcToken }] = await Promise.all([
     import("@vercel/sandbox"),
     import("@vercel/connect"),
@@ -249,21 +315,27 @@ export async function tellPi({
       GH_TOKEN: "from-the-network-policy",
     },
   } as const;
+  // Fresh tokens with every message, so a thread can pick up again days later: fetched while the sandbox boots.
+  const tokens = Promise.all([
+    getVercelOidcToken(),
+    getVercelOidcToken({ audience: BOARD }),
+    getToken("github/vboard-factory", GITHUB_TOKEN),
+  ]).finally(() => mark("tokens"));
+  // Not left unhandled if the sandbox fails first: that error is the one thrown.
+  tokens.catch(() => {});
   let sandbox = await Sandbox.getOrCreate(settings);
   // Stopped with nothing to resume (its snapshot expired): the thread starts over in a new one.
   if (sandbox.status === "stopped" && !sandbox.currentSnapshotId) {
     await sandbox.delete();
     sandbox = await Sandbox.create(settings);
   }
+  mark("sandbox");
   // Every turn, so a sandbox picks up a new pinned vb; before the policy, so no credential is in place yet.
   await sh(sandbox, SETUP);
-  // Fresh tokens with every message, so a thread can pick up again days later.
-  const [gateway, board, github] = await Promise.all([
-    getVercelOidcToken(),
-    getVercelOidcToken({ audience: BOARD }),
-    getToken("github/vboard-factory", GITHUB_TOKEN),
-  ]);
+  mark("setup");
+  const [gateway, board, github] = await tokens;
   await sandbox.update({ networkPolicy: policy(thread, { gateway, board, github }) });
+  mark("policy");
   // A message landing late in a session (say, one started by an earlier turn) still gets a full SANDBOX_MS.
   const extend = extension(sandbox.expiresAt, Date.now());
   if (extend > 0) await sandbox.extendTimeout(extend);
@@ -276,6 +348,7 @@ export async function tellPi({
       INSTRUCTIONS: `${INSTRUCTIONS[task]}\nOn the board you're ${piName(thread)}: the Pi for thread #${thread} only. Other threads have their own Pi, with names of their own.`,
       KEY: key,
       MESSAGE: message,
+      REPO: "basehub-ai/vboard",
       // Over any git config Pi writes: otherwise it picks an identity, and GitHub credits a stranger.
       GIT_AUTHOR_NAME: GIT_AUTHOR.name,
       GIT_AUTHOR_EMAIL: GIT_AUTHOR.email,
@@ -284,4 +357,15 @@ export async function tellPi({
     },
     detached: true,
   });
+  mark("told");
+  // One line per message in the function's logs: where the time before Pi's turn went.
+  console.log(
+    JSON.stringify({
+      pi: "told",
+      thread,
+      key,
+      ...(since ? { sinceEventMs: Date.now() - Date.parse(since) } : {}),
+      ...timings,
+    }),
+  );
 }
