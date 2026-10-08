@@ -19,6 +19,7 @@ import { autoland } from "./autoland";
 import { owner } from "./owner";
 import { crosspost } from "./crosspost";
 import { renderForSlack } from "./render";
+import { ownThreads, PREVIEW_CHANNEL, previewLog, slackConnector } from "./preview";
 
 // The software factory: vboard running on its own repo and Vercel's Slack. Locally
 // there's no VERCEL_ENV, so the log is SQLite at .a2/dev.db and attachments are
@@ -28,18 +29,25 @@ const env = process.env.VERCEL_ENV;
 // SSE streams close just before this, and clients reconnect from their cursor.
 export const maxDuration = 300;
 
-const slackCredentials = connectSlackAdapter("slack/vboard-factory");
+// A preview speaks as its branch's own bot, in #project-vboard-previews (`preview.ts`).
+const slackCredentials = connectSlackAdapter(slackConnector());
 const slackAdapter = createSlackAdapter(slackCredentials);
 const slackToken = slackCredentials.botToken;
+const slackClient = async () =>
+  slackAdapter.withBotToken(
+    typeof slackToken === "function" ? await slackToken() : slackToken,
+    () => slackAdapter.webClient,
+  );
 
 export const { GET, POST, scheduler } = board({
   store: env
     ? redisHttp({
         url: process.env.KV_REST_API_URL!,
         token: process.env.KV_REST_API_TOKEN!,
-        // One Redis serves every environment: a preview never touches production's log.
+        // One Redis serves every environment: a preview never touches production's log, and
+        // each branch's preview keeps its own, as it has its own Slack bot.
         // `-2` since A2 0.17 changed its Redis layout; the log under `vboard-factory` was copied over.
-        keyPrefix: env === "production" ? "vboard-factory-2" : `vboard-factory-2:${env}`,
+        keyPrefix: env === "production" ? "vboard-factory-2" : `vboard-factory-2:${previewLog()}`,
       })
     : undefined,
   // Attachments (Pi's proof of work) in the project's private Blob store, `vboard-factory-attachments`.
@@ -50,14 +58,11 @@ export const { GET, POST, scheduler } = board({
     slack: slack({
       adapter: slackAdapter,
       render: renderForSlack,
-      client: async () =>
-        slackAdapter.withBotToken(
-          typeof slackToken === "function" ? await slackToken() : slackToken,
-          () => slackAdapter.webClient,
-        ),
-      channels: {
-        C0C6MNT9LLC: "dev",
-      },
+      client: slackClient,
+      channels:
+        env === "preview"
+          ? { [PREVIEW_CHANNEL]: { channel: "dev", run: ownThreads(slackClient) } }
+          : { C0C6MNT9LLC: "dev" },
     }),
     github: github({
       adapter: createGitHubAdapter({

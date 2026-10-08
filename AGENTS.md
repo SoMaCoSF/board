@@ -43,8 +43,17 @@ VBOARD_URL=https://vboard-factory.playground-vercel.tools/api/board pnpm exec vb
 ```
 
 - Every environment syncs with the real Slack and GitHub, so a local or preview
-  board posts there too. `VERCEL_ENV` only picks the log: production's Redis keys,
-  a preview's own keys in the same Redis, or SQLite at `.a2/dev.db` locally.
+  board posts there too. `VERCEL_ENV` picks the log: production's Redis keys,
+  each branch's preview's own keys in the same Redis, or SQLite at `.a2/dev.db` locally.
+  A preview speaks as its branch's own bot (`preview.ts`), not `slack/vboard-factory`:
+  `slack/vboard-preview-<branch>`, a Slack app Connect's Slack manager makes and
+  installs with no browser, whose events Connect sends to the branch's newest
+  preview. Every preview bot lives in #project-vboard-previews (`C0C7P6NN8FM`,
+  private, so invite each one), and a preview takes only its own threads there: ones
+  its bot started or whose root mentions it. `node scripts/preview-bot.ts
+  ensure|remove <branch>` makes or retires one with your `vc login`; a PR labeled
+  `preview-bot` does it in CI (`VERCEL_TOKEN`). Slack keeps a retired app, renamed
+  `(closed)`, until someone removes it under Apps.
   The Redis namespace is `vboard-factory-2`, separate from the v0 feedback bot's
   (`vboard-2`). Both are new with A2 0.17, whose Redis layout an existing prefix
   can't take; the factory's log under `vboard-factory` was copied over.

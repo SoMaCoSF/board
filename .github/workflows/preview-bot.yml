@@ -1,0 +1,30 @@
+# A PR labeled `preview-bot` gets its own Slack bot for the factory's preview, in
+# #project-vboard-previews (apps/software-factory/scripts/preview-bot.ts). Closing the PR turns
+# it off. Opt-in, since Slack keeps every app made, and only a person can remove one.
+# Making a connector takes a Vercel user's token: the `VERCEL_TOKEN` secret.
+name: preview bot
+
+on:
+  pull_request:
+    types: [labeled, reopened, closed]
+
+concurrency:
+  group: preview-bot-${{ github.head_ref }}
+
+jobs:
+  bot:
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'preview-bot') &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event.action != 'labeled' || github.event.label.name == 'preview-bot')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: ${{ github.event.action == 'closed' && 'remove' || 'ensure' }}
+        working-directory: apps/software-factory
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: node scripts/preview-bot.ts ${{ github.event.action == 'closed' && 'remove' || 'ensure' }} "$GITHUB_HEAD_REF"
