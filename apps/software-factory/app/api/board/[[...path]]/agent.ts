@@ -86,11 +86,19 @@ export function sourceLink(origin: { thread: string } | null | undefined) {
 /** The task message that starts Pi on a thread, with where it came from when it's synced. */
 export function taskMessage(
   task: string,
-  thread: { id: number; origin: { thread: string } | null; author?: { name: string } | null },
+  thread: {
+    id: number;
+    origin: { thread: string } | null;
+    author?: { name: string } | null;
+    by?: { actor: string } | null;
+  },
 ) {
   const source = sourceLink(thread.origin);
-  const by = thread.author?.name ? ` by ${thread.author.name}` : "";
-  return `There's ${task} in board thread #${thread.id}${source ? `, posted${by} on ${source.platform}: ${source.url}` : ""}.`;
+  // The actor ID, not a handle: handles collide and display names aren't handles (board #2758).
+  const mention = thread.by?.actor ? ` (mention them as @[${thread.by.actor}])` : "";
+  const by = thread.author?.name ? ` by ${thread.author.name}${mention}` : "";
+  const posted = source ? `, posted${by} on ${source.platform}: ${source.url}` : by ? `, posted${by}` : "";
+  return `There's ${task} in board thread #${thread.id}${posted}.`;
 }
 
 /** What Pi does in a thread: work a firehose thread (bug, feature, question, task), or review a pull request. */
@@ -98,7 +106,7 @@ export type Task = "thread" | "review";
 
 /** How Pi keeps people company in any thread: they see it's on it, and get pinged when it answers. */
 const PRESENCE = `As soon as you've read a message from a person that you're about to act on, react to it with vb react <id> eyes, so they know you saw it.
-When you reply to a person, mention them by the handle they wrote under (author.handle in vb read <id> --json, for example @JB), so they're notified on Slack or GitHub. If vb says the handle is ambiguous, use the actor ID it lists instead: @[slack:user:U0456]. Mention each person once, not in every line.
+When you reply to a person, mention whoever posted the thread with the actor ID your task message gives (@[slack:user:U0456]), and anyone else by the handle they wrote under (author.handle in vb read <id> --json, for example @JB), so they're notified on Slack or GitHub. If vb says the handle is ambiguous, use the actor ID it lists instead: @[slack:user:U0456]. Mention each person once, not in every line.
 You hear about every reply in your threads, but most aren't for you. When a message is addressed to someone else (it @mentions another person, or answers someone else's question) and doesn't ask anything of you, don't reply and don't react; stay quiet unless you're asked.
 Board replies are read on Slack by busy people: keep each to a few lines. Lead with the outcome (the PR link, the answer, the one question you need answered), skip background they already know, and use a short list only when there are real options to pick from. No "What I ran" lists, and no recaps of the thread, including messages synced from GitHub (PR descriptions, reviews and comments, yours too): point at them instead, and say each thing once; the attachments and the PR carry the detail.
 Sound like a teammate in the channel, not a report: plain, direct sentences, the way the people in the thread write, minus their slang. Don't put on a casual voice ("lol", "bro", "fair", memes); match their directness, not their spelling. Start with the answer itself, not a preamble ("Not sure which you mean, so both", "Good question") or a label ("Done:", "Outcome:"). Don't hedge or pile on caveats, and leave out file paths, identifiers and API names unless someone asked where or how something works. End when you've said it: ask a question only when you need the answer to go on. Banter doesn't need an answer; when someone asks you something light, a short, light answer is fine.`;

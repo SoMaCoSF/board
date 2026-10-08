@@ -60,7 +60,8 @@ VBOARD_URL=https://vboard-factory.playground-vercel.tools/api/board pnpm exec vb
   or builds, Pi searches earlier threads and PRs and builds on related work. For a bug, Pi
   reproduces it, then opens a PR from a `pi/<thread>` branch (its body opens
   with a line linking what triggered it: the Slack thread or GitHub issue, which
-  `taskMessage` puts in Pi's first message), or labels the
+  `taskMessage` puts in Pi's first message, along with the poster's actor ID so
+  Pi mentions them by ID instead of guessing a handle), or labels the
   thread `reproduced=no` and says why. It builds clear features the same way
   (asking first when they're not), and answers questions in the thread.
   `review-pi` hands each new `dev --label pr` thread to Pi to review the PR (Pi wears `:looking-bunny:` on the PR root while it reviews), and tells it when

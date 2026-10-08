@@ -55,13 +55,35 @@ test("taskMessage: Pi's task names where the thread came from and who posted it"
       id: 1010,
       origin: { thread: "slack:C0C6MNT9LLC:1791394851.272189" },
       author: { name: "Martin Sione" },
+      by: { actor: "slack:user:U0AP7QRUM7E" },
     }),
-    "There's a feature request in board thread #1010, posted by Martin Sione on Slack: https://vercel.slack.com/archives/C0C6MNT9LLC/p1791394851272189.",
+    "There's a feature request in board thread #1010, posted by Martin Sione (mention them as @[slack:user:U0AP7QRUM7E]) on Slack: https://vercel.slack.com/archives/C0C6MNT9LLC/p1791394851272189.",
   );
   assert.equal(
     taskMessage("a bug report", { id: 7, origin: null, author: null }),
     "There's a bug report in board thread #7.",
   );
+});
+
+test("taskMessage: Pi gets the poster's actor ID, so it never guesses whom to mention", () => {
+  // Board #2758: with only a display name, Pi picked handles itself and sometimes pinged the wrong person.
+  assert.match(
+    taskMessage("a question", {
+      id: 2758,
+      origin: { thread: "slack:C0C6MNT9LLC:1791465208.291769" },
+      author: { name: "Martin Sione" },
+      by: { actor: "slack:user:U0AP7QRUM7E" },
+    }),
+    /@\[slack:user:U0AP7QRUM7E\]/,
+  );
+  assert.match(
+    taskMessage("a bug report", { id: 8, origin: null, author: { name: "JB" }, by: { actor: "github:user:jb" } }),
+    /^There's a bug report in board thread #8, posted by JB \(mention them as @\[github:user:jb\]\)\.$/,
+  );
+});
+
+test("Pi is told to mention a thread's poster by the ID in its task message", () => {
+  assert.match(INSTRUCTIONS.thread, /mention whoever posted the thread with the actor ID your task message gives/);
 });
 
 for (const task of ["thread", "review"]) {
