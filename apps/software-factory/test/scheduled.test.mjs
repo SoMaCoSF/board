@@ -19,6 +19,6 @@ test("only scheduled roots that carry a Pi kind count", () => {
 });
 
 test("scheduled tells a vb schedule's posts apart", () => {
-  assert.ok(scheduled({ schedule }));
+  assert.equal(scheduled({ schedule }), true);
   assert.equal(scheduled({}), false);
 });

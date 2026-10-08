@@ -143,8 +143,8 @@ describe('reading a platform on demand (vb sources <key> read)', () => {
     const julian = caller(board.fetch, await personToken())
     await read(julian, '#project-vercel-kit')
     await webhook({ type: 'message', threadId: `slack:CKIT:${ROOT}`, id: ROOT, text: 'should not sync', user: 'U_ADA' })
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    expect((await julian('GET', '/messages')).body.messages).toEqual([])
+    await webhook({ type: 'message', threadId: `slack:C1:${REPLY}`, id: REPLY, text: 'syncs', user: 'U_ADA' })
+    await vi.waitFor(async () => expect((await julian('GET', '/messages')).body.messages.map((m: { text: string }) => m.text)).toEqual(['syncs']))
     expect((await julian('GET', '/inbox/slack?channel=CKIT')).body.events ?? []).toEqual([])
   })
 

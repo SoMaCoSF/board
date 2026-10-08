@@ -81,7 +81,10 @@ describe("an agent's messages in Slack", () => {
     await provider.post(thread, 'thread', { markdown: '**Ada**: hi' })
     await provider.post(thread, 'thread', { markdown, as, files: [{ data: Buffer.from('x'), filename: 'a.txt' }] })
     expect(posted).toEqual([])
-    expect(viaAdapter).toHaveLength(2)
+    expect(viaAdapter.map((p) => p.message)).toEqual([
+      { markdown: '**Ada**: hi' },
+      { markdown, files: [{ data: Buffer.from('x'), filename: 'a.txt' }] },
+    ])
   })
 
   it('drop the label on an edit only when Slack shows the message under that name', async () => {

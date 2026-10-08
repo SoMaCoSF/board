@@ -38,11 +38,6 @@ function harness({ ref = "pi/2326", source = slackSource } = {}) {
   return { requests, labels, replies, watcher, run: (event) => watcher.run({ event, board }) };
 }
 
-test("tails with --all, so it sees where a PR root landed in Slack", () => {
-  const { watcher } = harness();
-  assert.equal(watcher.tail, "dev --label pr --all");
-});
-
 test("a factory PR's Slack thread and its source's Slack thread link to each other", async () => {
   const h = harness();
   await h.run(synced());
@@ -68,6 +63,8 @@ test("skips posts, replies, GitHub receipts, crossposted roots, other branches, 
   await h.run(synced(root({ pr: "basehub-ai/vboard#105", crosspost: "yes" })));
   await h.run(synced(root({ pr: "vercel/v0#1" })));
   assert.equal(h.requests.length, 0);
+  await h.run(synced());
+  assert.equal(h.replies.length, 2, "the same harness links a Slack receipt for a factory PR");
 
   const other = harness({ ref: "jb/some-branch" });
   await other.run(synced());

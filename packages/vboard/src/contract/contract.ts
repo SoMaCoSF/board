@@ -283,6 +283,13 @@ export const watchContract = contract({
       /** The board event, as `vb tail --json` prints it. */
       event: z.unknown(),
     }),
+    /** The watcher gave up on one match: `run` kept failing, and the thread's later events go on without it. */
+    'watch.failed': z.object({
+      /** The `watch.matched` event's ID. */
+      matched: z.string().min(1).max(200),
+      thread: ThreadKey,
+      error: z.string().min(1).max(500),
+    }),
   },
 })
 

@@ -63,4 +63,7 @@ it("ignores edits to the board's own comments, which it already has", async () =
   const send = setup()
   const own = { ...comment('from the board', '2026-10-07T19:53:10Z'), user: { id: 1, login: 'vboard-factory[bot]', type: 'Bot' } }
   expect(await send('issue_comment', { action: 'edited', comment: own, issue, repository, sender: own.user })).toEqual([])
+  const theirs = { ...own, user: vercel }
+  const [edited] = await send('issue_comment', { action: 'edited', comment: theirs, issue, repository, sender: vercel })
+  expect(edited?.event).toMatchObject({ kind: 'edited', message: '77', text: 'from the board' })
 })

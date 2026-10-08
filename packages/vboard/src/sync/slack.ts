@@ -29,7 +29,11 @@ export type SlackClient = {
   }
   files?: { delete(args: { file: string }): Promise<unknown> }
   /** Posts an agent's message under its own name; needs `chat:write.customize` for `username` and `icon_url`. */
-  chat?: { postMessage(args: SlackPost): Promise<{ ts?: string }> }
+  chat?: {
+    postMessage(args: SlackPost): Promise<{ ts?: string }>
+    /** A message's link, with the workspace's own host and a reply's `thread_ts`. */
+    getPermalink?(args: { channel: string; message_ts: string }): Promise<{ permalink?: string }>
+  }
   /** Says which scopes the app has (`response_metadata.scopes`, from Slack's `x-oauth-scopes`). */
   auth?: { test(): Promise<{ response_metadata?: { scopes?: string[] } }> }
 }
@@ -602,6 +606,27 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
       .replies({ channel, ts: message, oldest: message, latest: message, inclusive: true, limit: 1 })
       .then((page) => page.messages?.find((m) => m.ts === message), () => undefined)
     return found?.username === name.slice(0, 80)
+  }
+
+  /**
+   * Slack's link to the event's message, from `chat.getPermalink`, so it has the workspace's
+   * own host (Enterprise Grid included) and a reply's `thread_ts`. Null for an event without
+   * one message to link (a lifecycle event, or a deleted message Slack no longer has); throws
+   * when Slack won't say. It reads only the URL: nothing is synced or joined.
+   */
+  override async permalink(event: SlackEvent): Promise<string | null> {
+    if (event.kind === 'lifecycle' || event.kind === 'deleted') return null
+    const channel = event.channel.slice(event.key.length + 1)
+    const web = await this.web()
+    if (!web?.chat?.getPermalink) throw new Error('slack: no client with chat.getPermalink to link the message with')
+    let found: string | undefined
+    try {
+      found = (await web.chat.getPermalink({ channel, message_ts: event.message })).permalink
+    } catch (error) {
+      throw new Error(`slack: couldn't get the permalink for ${channel} ${event.message} (${slackError(error)})`)
+    }
+    if (!found) throw new Error('slack: chat.getPermalink returned no permalink')
+    return found
   }
 
   override eventId(key: string, input: ChatInput): string {

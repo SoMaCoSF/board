@@ -8,7 +8,7 @@ const MERGE_EMOJI = new Set(["shipit", "squirrel", "approved"]);
 export function shipit(options: GitHubOptions & { tellPi: typeof tellPi }): Watcher {
   return {
     tail: "--label pr",
-    run: async ({ event }) => {
+    run: async ({ event, board }) => {
       const root = event.message;
       if (
         event.type !== "reaction.added" ||
@@ -43,6 +43,7 @@ export function shipit(options: GitHubOptions & { tellPi: typeof tellPi }): Watc
         const emoji = event.payload.emoji === "approved" ? ":approved:" : ":shipit:";
         const reason = error instanceof Error ? error.message : String(error);
         await options.tellPi({
+          board,
           task: "review",
           thread: root.id,
           key: `shipit-${event.index}`,

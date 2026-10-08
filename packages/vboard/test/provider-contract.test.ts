@@ -131,6 +131,8 @@ function providerContract(name: string, fixture: typeof nativeFixture | typeof c
       expect((await test.send({ id: 'root', kind: 'message', text: 'forged' }, false)).status).toBe(401)
       expect(test.events).toEqual([])
       expect(await test.read()).toEqual([])
+      expect((await test.send({ id: 'root', kind: 'message', text: 'signed' })).status).toBe(200)
+      await vi.waitFor(async () => expect((await test.read()).map((message) => message.text)).toEqual(['signed']))
     })
 
     it('deduplicates native deliveries and exposes durable callback IDs', async () => {

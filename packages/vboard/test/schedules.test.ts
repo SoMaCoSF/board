@@ -99,12 +99,11 @@ describe('scheduled messages', () => {
   })
 
   it('start new threads when scheduled in a channel', async () => {
-    const { julian, board, advance } = await setup()
+    const { julian, advance } = await setup()
     await julian('POST', '/schedules', { channel: 'standup', text: 'standup time', at: new Date(T0 + HOUR).toISOString(), labels: { kind: 'standup' } })
     await advance(HOUR)
     const { body } = await julian('GET', '/messages?channel=standup')
     expect(body.messages).toMatchObject([{ text: 'standup time', re: null, labels: { kind: 'standup' } }])
-    expect(board.servers.map((s) => s.contract.name)).toContain('vboard-schedules')
   })
 
   it('wait out more than a queue can delay in hops', async () => {

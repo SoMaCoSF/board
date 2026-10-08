@@ -235,7 +235,7 @@ export function createClient(options: NodeClientOptions = {}): BoardClient {
 
   let discovery: Promise<Discovery> | undefined
   const discover = () =>
-    (discovery ??= doFetch(url, { headers: bypassHeaders() }).then(async (response) => {
+    (discovery ??= doFetch(url).then(async (response) => {
       if (!response.ok) throw new BoardError('no_board', `no board at ${url} (${response.status})`, response.status)
       return (await response.json()) as Discovery
     }))
@@ -301,66 +301,217 @@ export function createClient(options: NodeClientOptions = {}): BoardClient {
             await token()
             return cached ? { name: cached.name ?? null, avatar: cached.avatar ?? null } : null
           },
-    headers: async () => ({
-      ...bypassHeaders(),
-      ...(options.headers ? await (typeof options.headers === 'function' ? options.headers() : options.headers) : {}),
-    }),
+    ...(options.headers !== undefined ? { headers: options.headers } : {}),
     fetch: doFetch,
   })
 }
 
 export { BoardError, type BoardClient, type ClientOptions, type ProfileOption } from './client.ts'
 
+const WHERE = 'Project → Settings → Deployment Protection → Protection Bypass for Automation'
+
+class Wall extends Error {
+  readonly status: number
+  constructor(status: number) {
+    super('protected')
+    this.status = status
+  }
+}
+
 /**
- * A board's fetch that recognizes Vercel Deployment Protection: a redirect to
- * `/sso-api`, or an HTML page where the board answers JSON (on SAML teams, the
- * redirects end at the IdP's login page with a 200). Only a 2xx, 401, or 403
- * HTML page counts, so a 404 page keeps its own error; attachments, which may
- * be HTML, come with a `content-disposition`. Other redirects of a GET or HEAD
- * are followed as fetch would, dropping the token and bypass secret on the way
- * to another origin; a redirected POST comes back as its 3xx.
+ * A board's fetch that gets past Vercel Deployment Protection the way
+ * `vercel curl` does: with `VERCEL_AUTOMATION_BYPASS_SECRET` when it's set, or
+ * else the project's automation bypass secret, which your Vercel login reads
+ * (or creates, when there's none) the first time the board answers with the
+ * wall, and which is cached on disk per board host.
  */
 function guarded(url: string, doFetch: typeof fetch): typeof fetch {
-  const where = 'Project → Settings → Deployment Protection → Protection Bypass for Automation'
-  const wall = (status: number) =>
-    new BoardError(
-      'protected',
-      process.env.VERCEL_AUTOMATION_BYPASS_SECRET
-        ? `${url} is behind Vercel Deployment Protection and rejected VERCEL_AUTOMATION_BYPASS_SECRET; check it against ${where}`
-        : `${url} is behind Vercel Deployment Protection; set VERCEL_AUTOMATION_BYPASS_SECRET (${where})`,
-      status,
-    )
+  const host = new URL(url).host
+  let secret: Promise<string | null> | undefined
+  let looked: Promise<{ secret: string; created: boolean }> | undefined
   return async (input, init = {}) => {
-    let target = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
-    const method = (init.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase()
-    let headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined))
-    for (let hops = 0; ; hops++) {
-      const response = await doFetch(hops === 0 ? input : target, { ...init, headers, redirect: 'manual' })
-      const location = response.status >= 300 && response.status < 400 ? response.headers.get('location') : null
-      if (location) {
-        const next = new URL(location, target)
-        if (next.pathname.startsWith('/sso-api')) throw wall(response.status)
-        if (method === 'GET' || method === 'HEAD') {
-          if (hops >= 20) throw new BoardError('too_many_redirects', `too many redirects from ${url}`, response.status)
-          if (next.origin !== new URL(target).origin) {
-            headers = new Headers(headers)
-            headers.delete('authorization')
-            headers.delete('x-vercel-protection-bypass')
-          }
-          target = next.href
-          continue
-        }
-      }
-      const { status } = response
-      const page = /^text\/html\b/i.test(response.headers.get('content-type') ?? '') && !response.headers.has('content-disposition')
-      if (page && ((status >= 200 && status < 300) || status === 401 || status === 403)) throw wall(status)
-      return response
+    const fromEnv = process.env.VERCEL_AUTOMATION_BYPASS_SECRET
+    if (fromEnv)
+      return through(doFetch, input, init, fromEnv).catch((error) => {
+        throw error instanceof Wall
+          ? new BoardError('protected', `${url} is behind Vercel Deployment Protection and rejected VERCEL_AUTOMATION_BYPASS_SECRET; check it against ${WHERE}`, error.status)
+          : error
+      })
+    const used = await (secret ??= readBypass(host))
+    try {
+      return await through(doFetch, input, init, used)
+    } catch (error) {
+      if (!(error instanceof Wall)) throw error
+    }
+    // The cached secret (or none) didn't get through: ask Vercel, once per client.
+    looked ??= projectBypass(url, host, doFetch).then(async (found) => {
+      await writeBypass(host, found.secret).catch(() => {})
+      return found
+    })
+    const { secret: found, created } = await looked
+    secret = Promise.resolve(found)
+    try {
+      return await through(doFetch, input, init, found).catch(async (error) => {
+        if (!(error instanceof Wall) || !created) throw error
+        // Like `vercel curl`: a new secret takes a moment to reach the edge.
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+        return through(doFetch, input, init, found)
+      })
+    } catch (error) {
+      throw error instanceof Wall
+        ? new BoardError('protected', `${url} is behind Vercel Deployment Protection and its project's automation bypass didn't get through; set VERCEL_AUTOMATION_BYPASS_SECRET (${WHERE})`, error.status)
+        : error
     }
   }
 }
 
-/** Gets past Vercel Deployment Protection on a protected board. */
-function bypassHeaders(): Record<string, string> {
-  const secret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET
-  return secret ? { 'x-vercel-protection-bypass': secret } : {}
+/**
+ * One request that recognizes the wall: a redirect to `/sso-api`, or an HTML
+ * page where the board answers JSON (on SAML teams, the redirects end at the
+ * IdP's login page with a 200). Only a 2xx, 401, or 403 HTML page counts, so a
+ * 404 page keeps its own error; attachments, which may be HTML, come with a
+ * `content-disposition`. Other redirects of a GET or HEAD are followed as fetch
+ * would, dropping the token and bypass secret on the way to another origin; a
+ * redirected POST comes back as its 3xx.
+ */
+async function through(doFetch: typeof fetch, input: RequestInfo | URL, init: RequestInit, bypass: string | null): Promise<Response> {
+  let target = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+  const method = (init.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase()
+  let headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined))
+  if (bypass) headers.set('x-vercel-protection-bypass', bypass)
+  for (let hops = 0; ; hops++) {
+    const response = await doFetch(hops === 0 ? input : target, { ...init, headers, redirect: 'manual' })
+    const location = response.status >= 300 && response.status < 400 ? response.headers.get('location') : null
+    if (location) {
+      const next = new URL(location, target)
+      if (next.pathname.startsWith('/sso-api')) throw new Wall(response.status)
+      if (method === 'GET' || method === 'HEAD') {
+        if (hops >= 20) throw new BoardError('too_many_redirects', `too many redirects from ${target}`, response.status)
+        if (next.origin !== new URL(target).origin) {
+          headers = new Headers(headers)
+          headers.delete('authorization')
+          headers.delete('x-vercel-protection-bypass')
+        }
+        target = next.href
+        continue
+      }
+    }
+    const { status } = response
+    const page = /^text\/html\b/i.test(response.headers.get('content-type') ?? '') && !response.headers.has('content-disposition')
+    if (page && ((status >= 200 && status < 300) || status === 401 || status === 403)) throw new Wall(status)
+    return response
+  }
+}
+
+const bypassFile = (host: string) =>
+  join(configDir(), 'bypass', `${createHash('sha256').update(host).digest('hex').slice(0, 32)}.json`)
+
+async function readBypass(host: string): Promise<string | null> {
+  try {
+    return (JSON.parse(await readFile(bypassFile(host), 'utf8')) as { secret?: string }).secret || null
+  } catch {
+    return null
+  }
+}
+
+async function writeBypass(host: string, secret: string) {
+  await mkdir(join(configDir(), 'bypass'), { recursive: true, mode: 0o700 })
+  await writeFile(bypassFile(host), JSON.stringify({ host, secret }), { mode: 0o600 })
+}
+
+type Bypasses = Record<string, { scope?: string }> | undefined
+const automationBypass = (bypasses: Bypasses) =>
+  Object.entries(bypasses ?? {}).find(([, value]) => value.scope === 'automation-bypass')?.[0] ?? null
+
+type VercelApi = (method: 'GET' | 'PATCH', path: string) => Promise<unknown>
+
+/**
+ * The board's project's automation bypass secret, as `vercel curl` finds it:
+ * the deployment (or alias) behind the host gives the project, whose
+ * `protectionBypass` has it. When there's none, it's created.
+ */
+async function projectBypass(url: string, host: string, doFetch: typeof fetch): Promise<{ secret: string; created: boolean }> {
+  const blocked = (why: string) =>
+    new BoardError('protected', `${url} is behind Vercel Deployment Protection, and your Vercel login ${why}, or set VERCEL_AUTOMATION_BYPASS_SECRET (${WHERE})`, 0)
+  let api: VercelApi
+  try {
+    const token = await getVercelToken()
+    api = async (method, path) => {
+      const response = await doFetch(`https://api.vercel.com${path}`, {
+        method,
+        headers: { authorization: `Bearer ${token}`, ...(method === 'PATCH' ? { 'content-type': 'application/json' } : {}) },
+        ...(method === 'PATCH' ? { body: '{}' } : {}),
+      })
+      return response.ok ? await response.json() : null
+    }
+  } catch {
+    api = vercelCliApi
+  }
+
+  const project = await findProject(api, host)
+  if (!project) throw blocked("can't see its project: run `vercel login` or ask for access")
+  const scope = project.ownerId.startsWith('team_') ? `?teamId=${project.ownerId}` : ''
+  const details = (await api('GET', `/v9/projects/${project.projectId}${scope}`)) as {
+    name?: string
+    protectionBypass?: Bypasses
+    ssoProtection?: unknown
+    passwordProtection?: unknown
+  } | null
+  // Without the project's settings, creating could add a second bypass.
+  if (!details) throw blocked("can't read its project's settings: ask for access")
+  const existing = automationBypass(details.protectionBypass)
+  if (existing) return { secret: existing, created: false }
+  // An HTML page from an unprotected project isn't a wall: it isn't a board, so nothing gets created.
+  if (!details.ssoProtection && !details.passwordProtection)
+    throw new BoardError('no_board', `no board at ${url}: it answered with a web page, and its Vercel project isn't protected`, 0)
+  const created = (await api('PATCH', `/v1/projects/${project.projectId}/protection-bypass${scope}`)) as { protectionBypass?: Bypasses } | null
+  const secret = automationBypass(created?.protectionBypass)
+  if (!secret) throw blocked("can't read or create its project's automation bypass: ask a project admin")
+  process.stderr.write(`created a Protection Bypass for Automation on the Vercel project ${details?.name ?? project.projectId}\n`)
+  return { secret, created: true }
+}
+
+/** The project behind a host, as `vercel curl` finds it: the deployment, then the alias, in your own scope and then each of your teams. */
+async function findProject(api: VercelApi, host: string): Promise<{ projectId: string; ownerId: string } | null> {
+  type Found = { projectId?: string; ownerId?: string; team?: { id?: string } } | null
+  const lookup = async (kind: 'deployment' | 'alias', team: string | null) => {
+    const path = kind === 'deployment' ? `/v13/deployments/${encodeURIComponent(host)}` : `/now/aliases/${encodeURIComponent(host)}`
+    const found = (await api('GET', `${path}${team ? `?teamId=${team}` : ''}`).catch(() => null)) as Found
+    const owner = found?.ownerId ?? found?.team?.id ?? team
+    return found?.projectId && owner ? { projectId: found.projectId, ownerId: owner } : null
+  }
+  const own = (await lookup('deployment', null)) ?? (await lookup('alias', null))
+  if (own) return own
+  const { teams } = ((await api('GET', '/v2/teams?limit=100').catch(() => null)) ?? {}) as { teams?: { id: string; limited?: boolean }[] }
+  const ids = (teams ?? []).filter((team) => !team.limited).map((team) => team.id)
+  for (const kind of ['deployment', 'alias'] as const) {
+    // A few at a time: with keychain credentials each lookup is a `vercel` process.
+    for (let i = 0; i < ids.length; i += 8) {
+      const found = (await Promise.all(ids.slice(i, i + 8).map((id) => lookup(kind, id)))).find(Boolean)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+/** When credentials live in the keychain, the Vercel CLI makes the API call itself. */
+let vercelCli: Promise<boolean> | undefined
+const vercelCliApi: VercelApi = async (method, path) => {
+  // Signed out, `vercel` starts a login flow and waits: check once, quickly, before any call.
+  vercelCli ??= promisify(execFile)('vercel', ['whoami', '--non-interactive'], { timeout: 10_000 }).then(
+    () => true,
+    () => false,
+  )
+  if (!(await vercelCli)) throw new BoardError('not_logged_in', 'not signed in to Vercel: run `vercel login`', 0)
+  const args = ['api', path, '-X', method, '--raw', '--non-interactive']
+  if (method === 'PATCH') args.push('--input', '-')
+  try {
+    const run = promisify(execFile)('vercel', args, { timeout: 30_000 })
+    run.child.stdin?.end(method === 'PATCH' ? '{}' : '')
+    return JSON.parse((await run).stdout)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+      throw new BoardError('not_logged_in', 'not signed in to Vercel: run `vercel login`', 0)
+    return null
+  }
 }
