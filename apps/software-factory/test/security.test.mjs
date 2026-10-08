@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { fromSecurity, security } from "../app/api/board/[[...path]]/security.ts";
+import { security } from "../app/api/board/[[...path]]/security.ts";
 import { extension } from "../app/api/board/[[...path]]/agent.ts";
 
 function event() {
@@ -111,12 +111,6 @@ test("a retried callback sends Pi the same deduplication key", async () => {
   await h.run();
   await h.run();
   assert.deepEqual(h.notifications.map(n => n.key), ["security-88", "security-88"]);
-});
-
-test("its own reply is recognizable, so the pi watcher doesn't wake Pi for it", () => {
-  assert.equal(fromSecurity({ actor: "vboard:watch:security" }), true);
-  assert.equal(fromSecurity({ actor: "slack:user:U123" }), false);
-  assert.equal(fromSecurity({ actor: "vboard:watch:triage-gpt" }), false);
 });
 
 test("a message late in a sandbox session extends it to a full turn, and an early one doesn't", () => {

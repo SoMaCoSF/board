@@ -1,4 +1,5 @@
 import type { NetworkPolicy, Sandbox } from "@vercel/sandbox";
+import type { WatcherContext } from "vboard";
 
 // Pi, the coding agent, working on a board thread from its own Vercel Sandbox: the
 // `pi` CLI with `vb`, `gh`, and git, like a developer at a terminal. Each thread gets
@@ -13,6 +14,12 @@ const MODEL = "anthropic/claude-opus-5.5";
 const PI = "@earendil-works/pi-coding-agent@1.0.0";
 /** The `vb` Pi runs. A thread's sandbox outlives releases, so setup upgrades it in place. */
 const VBOARD = "0.4.0";
+/**
+ * The `gh` a new sandbox gets, pinned too: asking GitHub's API for the latest release goes out without
+ * credentials (setup runs before the network policy), and sandboxes share that rate limit, so new
+ * threads' setup failed on a 403.
+ */
+const GH = "2.102.0";
 /**
  * A sandbox session ends at a fixed deadline, not after idling; its files come back with the next one.
  * Each message gets at least this long before it, so a turn that starts late in a session isn't cut off.
@@ -66,6 +73,12 @@ export const piAvatar = (thread: number) =>
 /** Whether a message was written by the Pi working on `thread` (named `pi` before it had a name of its own). */
 export const byPi = (thread: number, by: { profile: string | null; session: string | null }) =>
   (by.profile === piName(thread) || by.profile === "pi") && by.session === piSession(thread);
+
+/**
+ * Whether a message is one of the board's watchers' own notes (a crosspost, `:security:`'s answer, or saying Pi
+ * couldn't start), not a person's: it doesn't wake Pi or triage.
+ */
+export const byWatcher = (by: { actor: string }) => by.actor.startsWith("vboard:watch:");
 
 /** The Slack workspace the factory syncs with. */
 const SLACK = "https://vercel.slack.com";
@@ -142,14 +155,13 @@ export const INSTRUCTIONS: Record<Task, string> = {
   review: `${REVIEW}\n${PRESENCE}\n${DIRECTION}`,
 };
 
-const SETUP = `set -e
+export const SETUP = `set -e
 command -v pi >/dev/null || npm install -g ${PI} pnpm >/dev/null 2>&1
 # Pinned like pi. If that release isn't on npm yet, a vb already here stays, and a new sandbox gets the latest.
 [ "$(vb --version 2>/dev/null)" = "${VBOARD}" ] || npm install -g vboard@${VBOARD} >/dev/null 2>&1 || command -v vb >/dev/null || npm install -g vboard >/dev/null 2>&1
 command -v gh >/dev/null || {
-  v=$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest | sed -n 's/.*"tag_name": *"v\\([^"]*\\)".*/\\1/p')
-  curl -fsSL "https://github.com/cli/cli/releases/download/v$v/gh_\${v}_linux_amd64.tar.gz" | tar xz -C /tmp
-  install "/tmp/gh_\${v}_linux_amd64/bin/gh" /usr/local/bin/gh
+  curl -fsSL "https://github.com/cli/cli/releases/download/v${GH}/gh_${GH}_linux_amd64.tar.gz" | tar xz -C /tmp
+  install "/tmp/gh_${GH}_linux_amd64/bin/gh" /usr/local/bin/gh
 }`;
 
 /**
@@ -216,22 +228,51 @@ async function sh(sandbox: Sandbox, script: string) {
   if (done.exitCode !== 0) throw new Error(`sandbox setup failed: ${(await done.stderr()).slice(-500)}`);
 }
 
+/** How many times a message to Pi is tried before the thread hears Pi couldn't start, and the wait after a first failure. */
+const TRIES = 3;
+const RETRY_MS = 5_000;
+
+/**
+ * Runs `start` until it works, up to TRIES times, and if it never does, says so in the thread instead of throwing.
+ * A watcher that throws is retried 10 times in about half a minute and then dead-lettered, which stops it on that
+ * thread for good: one bad start (setup hitting GitHub's rate limit) left a thread's Pi deaf to every reply after it.
+ * Saying so leaves the watcher listening, so the next reply tries again.
+ */
+export async function startOrSay(
+  board: Pick<WatcherContext["board"], "reply">,
+  thread: number,
+  start: () => Promise<void>,
+  retryMs = RETRY_MS,
+) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await start();
+    } catch (error) {
+      if (attempt < TRIES) {
+        await new Promise((resolve) => setTimeout(resolve, retryMs * attempt));
+        continue;
+      }
+      console.error(`[factory] Pi couldn't start on board thread #${thread}:`, error);
+      const reason = (error instanceof Error ? error.message : String(error)).split("\n")[0]!.slice(0, 200);
+      await board.reply(thread, `Pi couldn't start: \`${reason}\`. Reply here to try again.`);
+      return;
+    }
+  }
+}
+
 /**
  * Sends Pi a message about a thread: the first one is its task (a thread to work or a PR to review), later ones say
- * there's news. Pi's sandbox and session for the thread are created on first use.
+ * there's news. Pi's sandbox and session for the thread are created on first use. If Pi can't be reached, `board`
+ * (the calling watcher's) says so in the thread; see `startOrSay`.
  * `key` names the message, so telling Pi the same thing twice is a no-op.
  */
-export async function tellPi({
-  task,
-  thread,
-  key,
-  message,
-}: {
-  task: Task;
-  thread: number;
-  key: string;
-  message: string;
-}) {
+export async function tellPi({ board, ...input }: PiMessage & { board: Pick<WatcherContext["board"], "reply"> }) {
+  await startOrSay(board, input.thread, () => deliver(input));
+}
+
+type PiMessage = { task: Task; thread: number; key: string; message: string };
+
+async function deliver({ task, thread, key, message }: PiMessage) {
   const [{ Sandbox }, { getToken }, { getVercelOidcToken }] = await Promise.all([
     import("@vercel/sandbox"),
     import("@vercel/connect"),

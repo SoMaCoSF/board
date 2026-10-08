@@ -98,6 +98,11 @@ VBOARD_URL=https://vboard-factory.playground-vercel.tools/api/board pnpm exec vb
   Messages wait behind a running turn on a per-sandbox lock. "New activity"
   ones (`news-…`) piled up there wake Pi once, for the newest, since Pi reads
   what's new itself: a burst of replies costs one turn, not one each.
+  A message that can't reach Pi (its sandbox fails to start or set up) is
+  tried 3 times, then the watcher replies "Pi couldn't start" in the thread
+  instead of throwing: a watcher that throws dead-letters within half a minute,
+  which stops it on that thread for good. The next reply tries again. No
+  watcher's own reply wakes Pi or triage (`byWatcher`).
 - `crosspost` (`crosspost.ts`) links a factory PR's Slack thread and the Slack
   thread it was built for, both ways, once the PR's root lands in Slack (its tail
   has `--all`, for the delivery receipt that says where): the PR thread gets `:crosspost: From
@@ -120,7 +125,9 @@ VBOARD_URL=https://vboard-factory.playground-vercel.tools/api/board pnpm exec vb
   that links its PR when the change is visible, never test-run logs: the tests
   are in the PR, and a bug fix's PR body names the test that reproduces it. Its
   `vb` is pinned (`VBOARD` in `agent.ts`): bump it with each release Pi should
-  use, since setup upgrades sandboxes to exactly that.
+  use, since setup upgrades sandboxes to exactly that. So is `gh` (`GH`), which
+  new sandboxes download without asking GitHub's API, whose unauthenticated rate
+  limit sandboxes share.
 - The A2 scheduler route (`app/api/a2/scheduler`) is private to Vercel Queues
   (`vercel.json`), on topic `vboard-factory`. Production is behind Vercel
   Authentication: the CLI needs `VERCEL_AUTOMATION_BYPASS_SECRET`, and Pi's

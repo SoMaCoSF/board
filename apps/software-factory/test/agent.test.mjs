@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { GITHUB_TOKEN, byPi, piAvatar, piName, sourceLink, taskMessage } from "../app/api/board/[[...path]]/agent.ts";
+import { GITHUB_TOKEN, byPi, byWatcher, piAvatar, piName, sourceLink, startOrSay, taskMessage } from "../app/api/board/[[...path]]/agent.ts";
 
 test("sourceLink: a Slack thread's permalink, a GitHub issue or PR, or nothing", () => {
   assert.deepEqual(sourceLink({ thread: "slack:C0C6MNT9LLC:1791394851.272189" }), {
@@ -79,4 +79,48 @@ test("GITHUB_TOKEN: Pi never gets a cached GitHub token that dies before its ses
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+test("byWatcher: the board's watchers' own notes, which wake neither Pi nor triage", () => {
+  assert.ok(byWatcher({ actor: "vboard:watch:crosspost" }));
+  assert.ok(byWatcher({ actor: "vboard:watch:security" }));
+  assert.ok(byWatcher({ actor: "vboard:watch:pi" }));
+  assert.ok(!byWatcher({ actor: "slack:user:U123" }));
+  assert.ok(!byWatcher({ actor: "vboard:schedule" }));
+});
+
+function thread() {
+  const replies = [];
+  return { replies, board: { reply: async (id, text) => { replies.push({ id, text }); } } };
+}
+
+test("startOrSay: a start that fails is tried again, and once Pi starts the thread hears nothing", async () => {
+  const { replies, board } = thread();
+  let tries = 0;
+  await startOrSay(board, 7, async () => {
+    if (++tries < 3) throw new Error("sandbox setup failed: ");
+  }, 0);
+  assert.equal(tries, 3);
+  assert.deepEqual(replies, []);
+});
+
+test("startOrSay: a Pi that never starts says why in its thread instead of throwing, so its watcher keeps listening", async () => {
+  const { replies, board } = thread();
+  let tries = 0;
+  const error = console.error;
+  console.error = () => {};
+  try {
+    await startOrSay(board, 2903, async () => {
+      tries++;
+      throw new Error("sandbox setup failed: curl: (22) The requested URL returned error: 403\ncurl: (22) The requested URL returned error: 404");
+    }, 0);
+  } finally {
+    console.error = error;
+  }
+  assert.ok(tries > 1, "it was retried first");
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].id, 2903);
+  assert.match(replies[0].text, /couldn't start/);
+  assert.match(replies[0].text, /returned error: 403/);
+  assert.match(replies[0].text, /try again/);
 });

@@ -4,12 +4,6 @@ import type { tellPi } from "./agent";
 /** Long enough for deepsec at its maximum thinking on a PR's diff, inside the 45m each Pi turn gets (`SANDBOX_MS` in agent.ts). */
 const DEEPSEC_TIMEOUT = "30m";
 
-/** Who the watcher's own replies are by on the board. */
-const ACTOR = "vboard:watch:security";
-
-/** Whether a message is this watcher's reply, which no one needs Pi to answer. */
-export const fromSecurity = (by: { actor: string }) => by.actor === ACTOR;
-
 /**
  * A person's :security: reaction on a PR thread's root (from Slack) has Pi run deepsec on the
  * PR's diff and report back, reacting :secure: when it comes out clean. Anyone in the channel
@@ -38,6 +32,7 @@ export function security(options: { tellPi: typeof tellPi }): Watcher {
       // Named, not $(mktemp -d): each of Pi's commands runs in a new shell, so a variable wouldn't last.
       const dir = `/tmp/deepsec-${event.index}`;
       await options.tellPi({
+        board,
         task: "review",
         thread: root.id,
         key: `security-${event.index}`,

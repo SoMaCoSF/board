@@ -1,8 +1,6 @@
 import type { Watcher } from "vboard";
-import { taskMessage, type byPi, type tellPi } from "./agent.ts";
+import { byWatcher, taskMessage, type byPi, type tellPi } from "./agent.ts";
 import { isPiKind, PI_KINDS, piTask, scheduled, scheduledThread } from "./kinds.ts";
-import { fromSecurity } from "./security.ts";
-import { CROSSPOST_ACTOR } from "./crosspost.ts";
 import { parked } from "./todo.ts";
 
 /**
@@ -26,6 +24,7 @@ export function pi(options: { tellPi: typeof tellPi; byPi: typeof byPi }): Watch
       if (kind && isPiKind(kind) && message.re === null) {
         if (parked(message)) return;
         await options.tellPi({
+          board,
           task: "thread",
           thread: message.id,
           key: `kind-${kind}`,
@@ -35,11 +34,11 @@ export function pi(options: { tellPi: typeof tellPi; byPi: typeof byPi }): Watch
         event.type === "message.posted" &&
         message.re !== null &&
         (scheduled(message) || !options.byPi(message.re, message.by)) &&
-        !fromSecurity(message.by) &&
-        message.by.actor !== CROSSPOST_ACTOR
+        !byWatcher(message.by)
       ) {
         if (parked((await board.thread(message.re)).message)) return;
         await options.tellPi({
+          board,
           task: "thread",
           thread: message.re,
           key: `news-${message.id}`,

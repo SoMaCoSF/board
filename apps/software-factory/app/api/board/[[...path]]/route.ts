@@ -10,7 +10,7 @@ import {
 } from "@vercel/connect/chat";
 import { redisHttp } from "experimental-a2/store-redis-http";
 import { vercelQueues } from "experimental-a2/scheduler-vercel";
-import { byPi, tellPi } from "./agent";
+import { byPi, byWatcher, tellPi } from "./agent";
 import { classifyThread } from "./classify";
 import { scheduled, scheduledThread } from "./kinds";
 import { security } from "./security";
@@ -19,7 +19,7 @@ import { todo } from "./todo";
 import { pi } from "./pi";
 import { autoland } from "./autoland";
 import { owner } from "./owner";
-import { crosspost, CROSSPOST_ACTOR } from "./crosspost";
+import { crosspost } from "./crosspost";
 import { renderForSlack } from "./render";
 
 // The software factory: vboard running on its own repo and Vercel's Slack. Locally
@@ -92,7 +92,7 @@ export const { GET, POST, scheduler } = board({
           event.type !== "message.posted" ||
           !message ||
           byPi(message.re ?? message.id, message.by) ||
-          message.by.actor === CROSSPOST_ACTOR ||
+          byWatcher(message.by) ||
           scheduledThread(message)
         ) {
           return;
@@ -123,13 +123,14 @@ export const { GET, POST, scheduler } = board({
     // threads: `--label pr` matches a reply by its root's labels too.
     "review-pi": {
       tail: "dev --label pr",
-      run: async ({ event }) => {
+      run: async ({ event, board }) => {
         const message = event.message;
         if (event.type !== "message.posted" || !message) {
           return;
         }
         if (message.re === null) {
           await tellPi({
+            board,
             task: "review",
             thread: message.id,
             key: "pr",
@@ -138,9 +139,10 @@ export const { GET, POST, scheduler } = board({
         } else if (
           (scheduled(message) || !byPi(message.re, message.by)) &&
           !message.author?.handle.endsWith("[bot]") &&
-          message.by.actor !== CROSSPOST_ACTOR
+          !byWatcher(message.by)
         ) {
           await tellPi({
+            board,
             task: "review",
             thread: message.re,
             key: `news-${message.id}`,

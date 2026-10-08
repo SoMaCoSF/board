@@ -50,6 +50,7 @@ export function todo(options: { tellPi: typeof tellPi }): Watcher {
       const kind = root.labels.kind;
       if (kind && isPiKind(kind)) {
         await options.tellPi({
+          board,
           task: "thread",
           thread: root.id,
           key: `todo-removed-${event.index}`,
