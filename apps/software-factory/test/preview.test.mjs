@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ownThreads, previewBot, previewLog, slackConnector } from "../app/api/board/[[...path]]/preview.ts";
+import { invitePreviewBot, ownThreads, previewBot, previewLog, slackConnector } from "../app/api/board/[[...path]]/preview.ts";
 
 test("a branch's bot is named for it, short enough for Slack", () => {
   assert.deepEqual(previewBot("martin/preview-bots"), {
@@ -91,4 +91,27 @@ test("a failed lookup is asked again", async () => {
   fail = false;
   await run({ event: message("5.1", "5.2"), board });
   assert.deepEqual(synced, ["5.2"]);
+});
+
+test("the inviter adds the preview's bot to the preview channel, once or again", async () => {
+  const calls = [];
+  const slack = (answers) => async (token, method, body) => {
+    calls.push([token, method, body]);
+    return answers[method];
+  };
+  await invitePreviewBot("xoxb-preview", "xoxb-inviter", slack({
+    "auth.test": { ok: true, user_id: BOT },
+    "conversations.invite": { ok: false, error: "already_in_channel" },
+  }));
+  assert.deepEqual(calls, [
+    ["xoxb-preview", "auth.test", {}],
+    ["xoxb-inviter", "conversations.invite", { channel: "C0C7P6NN8FM", users: BOT }],
+  ]);
+  await assert.rejects(
+    invitePreviewBot("xoxb-preview", "xoxb-inviter", slack({
+      "auth.test": { ok: true, user_id: BOT },
+      "conversations.invite": { ok: false, error: "not_in_channel" },
+    })),
+    /conversations.invite: not_in_channel/,
+  );
 });

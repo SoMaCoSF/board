@@ -60,6 +60,35 @@ export const manifest = {
   events: ["app_mention", "message.channels", "message.groups", "reaction_added", "reaction_removed"],
 };
 
+/**
+ * A bot can't join a private channel itself, and only a member with `groups:write` can invite
+ * one. This bot is that member: invited to #project-vboard-previews once, by a person, it adds
+ * each preview's bot. Connect gives a bot's token only to a deployment, so the preview asks.
+ */
+export const INVITER = {
+  connector: "slack/vboard-previews",
+  appName: "vboard previews",
+  description: "Adds each vboard-factory preview's bot to #project-vboard-previews.",
+  botScopes: ["groups:read", "groups:write"],
+};
+
+type SlackCall = (token: string, method: string, body: Record<string, string>) => Promise<{ ok: boolean; error?: string; user_id?: string }>;
+
+const slackApi: SlackCall = async (token, method, body) =>
+  (await fetch(`https://slack.com/api/${method}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json; charset=utf-8" },
+    body: JSON.stringify(body),
+  })).json();
+
+/** Adds the preview's bot (`token`) to the preview channel, as the inviter (`inviter`). */
+export async function invitePreviewBot(token: string, inviter: string, call: SlackCall = slackApi) {
+  const me = await call(token, "auth.test", {});
+  if (!me.ok || !me.user_id) throw new Error(`auth.test: ${me.error}`);
+  const invited = await call(inviter, "conversations.invite", { channel: PREVIEW_CHANNEL, users: me.user_id });
+  if (!invited.ok && invited.error !== "already_in_channel") throw new Error(`conversations.invite: ${invited.error}`);
+}
+
 type SlackRoot = { user?: string; text?: string };
 
 export type PreviewWeb = {

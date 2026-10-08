@@ -19,7 +19,8 @@ import { autoland } from "./autoland";
 import { owner } from "./owner";
 import { crosspost } from "./crosspost";
 import { renderForSlack } from "./render";
-import { ownThreads, PREVIEW_CHANNEL, previewLog, slackConnector } from "./preview";
+import { getToken } from "@vercel/connect";
+import { INVITER, invitePreviewBot, ownThreads, PREVIEW_CHANNEL, previewLog, slackConnector } from "./preview";
 
 // The software factory: vboard running on its own repo and Vercel's Slack. Locally
 // there's no VERCEL_ENV, so the log is SQLite at .a2/dev.db and attachments are
@@ -33,11 +34,21 @@ export const maxDuration = 300;
 const slackCredentials = connectSlackAdapter(slackConnector());
 const slackAdapter = createSlackAdapter(slackCredentials);
 const slackToken = slackCredentials.botToken;
-const slackClient = async () =>
-  slackAdapter.withBotToken(
-    typeof slackToken === "function" ? await slackToken() : slackToken,
-    () => slackAdapter.webClient,
-  );
+// A preview's bot is added to the private preview channel once, by the inviter bot.
+let invited: Promise<void> | undefined;
+const slackClient = async () => {
+  const token = typeof slackToken === "function" ? await slackToken() : slackToken;
+  if (env === "preview") {
+    invited ??= getToken(INVITER.connector, { subject: { type: "app" } })
+      .then((inviter) => invitePreviewBot(token, inviter))
+      .catch((error: unknown) => {
+        invited = undefined;
+        console.warn(`[factory] couldn't add the preview bot to ${PREVIEW_CHANNEL}: ${error}`);
+      });
+    await invited;
+  }
+  return slackAdapter.withBotToken(token, () => slackAdapter.webClient);
+};
 
 export const { GET, POST, scheduler } = board({
   store: env

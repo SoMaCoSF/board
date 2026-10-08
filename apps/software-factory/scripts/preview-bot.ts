@@ -2,6 +2,7 @@
 //
 //   node scripts/preview-bot.ts ensure <branch>   make it, or repair its name; safe to rerun
 //   node scripts/preview-bot.ts remove <branch>   turn it off and delete its connector
+//   node scripts/preview-bot.ts inviter           make the bot that adds them to the channel, once
 //
 // Only a Vercel user may create, rename or delete a connector, so this runs with VERCEL_TOKEN or
 // your `vc login`, never from a deployment. Connect's Slack manager (Vercel's Slack app, already
@@ -9,7 +10,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { manifest, PREVIEW_CHANNEL, previewBot, SLACK_TEAM } from "../app/api/board/[[...path]]/preview.ts";
+import { INVITER, manifest, PREVIEW_CHANNEL, previewBot, SLACK_TEAM } from "../app/api/board/[[...path]]/preview.ts";
 
 const TEAM = "team_TtmJZYmD3tcLBLqWOhoVawd1";
 const PROJECT = "prj_Cu5qMQq8MGIQUIyWGOqgZgJPBG4z";
@@ -67,7 +68,7 @@ async function ensure(branch: string) {
     // Connect sends the bot's events to the branch's newest preview, through deployment protection.
     triggerDestination: { projectId: PROJECT, branch, path: "/api/board/webhooks/slack" },
   });
-  console.log(`✓ made ${connector}, @${appName}: invite it to <#${PREVIEW_CHANNEL}> (private, so it can't join itself)`);
+  console.log(`✓ made ${connector}, @${appName}; the preview adds it to <#${PREVIEW_CHANNEL}> as @${INVITER.appName}`);
 }
 
 // Nothing Connect gives out can take an app out of Slack, so the bot is renamed to say why it
@@ -87,9 +88,35 @@ async function remove(branch: string) {
   console.log(`✓ ${connector} is off; remove "${appName} (closed)" under Apps in Slack`);
 }
 
+// The one bot that adds preview bots to the private preview channel: no events, only invites.
+async function inviter() {
+  const { connector, appName, description, botScopes } = INVITER;
+  if (await vercel("GET", connectorPath(connector))) {
+    console.log(`✓ ${connector} exists`);
+    return;
+  }
+  await vercel("POST", "/v1/connect/connectors/managed/slack", {
+    managerClientId: MANAGER,
+    installationId: SLACK_TEAM,
+    uid: connector,
+    name: connector.slice("slack/".length),
+    projectId: PROJECT,
+    environments: ["preview"],
+    input: { appName, description, botScopes },
+  });
+  console.log(`✓ made ${connector}, @${appName}: invite it to <#${PREVIEW_CHANNEL}> once`);
+}
+
 const [command, branch] = process.argv.slice(2);
+if (command === "inviter") {
+  await inviter().catch((error: unknown) => {
+    console.error(`error: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  });
+  process.exit(0);
+}
 if (!branch || (command !== "ensure" && command !== "remove")) {
-  console.error("usage: node scripts/preview-bot.ts ensure|remove <branch>");
+  console.error("usage: node scripts/preview-bot.ts ensure|remove <branch> | inviter");
   process.exit(2);
 }
 try {
