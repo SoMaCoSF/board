@@ -143,6 +143,9 @@ test("only the PR thread's own Pi can set the verdict", async () => {
     assert.deepEqual(h.labels, []);
     assert.deepEqual(h.requests, []);
   }
+  const own = harness(routes());
+  await own.run();
+  assert.equal(own.labels[0].set.autoland, "would", "thread-59's own Pi sets it");
 });
 
 test("the watcher ignores other labels, replies, and other repos", async () => {
@@ -153,6 +156,8 @@ test("the watcher ignores other labels, replies, and other repos", async () => {
   await h.run(event({ message: { ...event().message, labels: { ...event().message.labels, pr: "vercel/v0#1" } } }));
   assert.deepEqual(h.labels, []);
   assert.deepEqual(h.requests, []);
+  await h.run();
+  assert.equal(h.labels[0].set.autoland, "would", "the same harness labels a land verdict on a vboard PR root");
 });
 
 test("when GitHub fails, it says no and why", async () => {
@@ -183,5 +188,6 @@ test("the stamp is left alone when the verdict doesn't change", async () => {
   const never = harness({ "/pulls/53": { status: 404, json: { message: "Not Found" } } });
   await never.run();
   await never.run(withVerdict("no"));
+  assert.equal(never.labels[1].set.autoland, "no");
   assert.deepEqual([...stays.reactions, ...never.reactions], []);
 });

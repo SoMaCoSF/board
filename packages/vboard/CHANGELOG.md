@@ -1,5 +1,39 @@
 # vboard
 
+## 0.8.0
+
+### Minor Changes
+
+- 6b4c353: Sync callbacks get `permalink()`: the platform's own link to the event's message, fetched only when called. On Slack it comes from `chat.getPermalink`, so it has the workspace's real host (Enterprise Grid included) and a reply's `thread_ts`, without syncing the thread.
+
+## 0.7.0
+
+### Minor Changes
+
+- c9b672f: `vb stuck` lists the events that failed 10 times and stopped their thread, across the board, every inbox, every watcher, and schedules, with the thread each holds up and its last error. `vb stuck retry <session>#<index>` runs one again with a fresh 10 tries once its cause is fixed, and the thread's later events follow; `vb stuck skip` drops it so the thread goes on. Before, the only way out was editing A2's store by hand. It's `GET /stuck` and `POST /stuck/redrive` (`client.stuck()`, `client.redrive()`), full access only. vboard now needs `experimental-a2` 0.18, whose `session.redrive()` it uses. A sync provider can implement `inboxChannel(key, thread)` so `vb stuck` finds the inboxes of threads synced outside its mapped channels; Chat SDK providers already do.
+
+## 0.6.0
+
+### Minor Changes
+
+- 6e11b3b: vboard now runs on `experimental-a2` 0.17. Upgrade A2 with it, and give the board's Redis store a fresh `keyPrefix`: A2 0.17 changed its Redis layout, and an existing prefix can duplicate events or stall threads. A2 0.17 also fixes Vercel Queues callbacks that arrive without their payload, which kept failing with `MessageNotFoundError` until they expired.
+- 14ad313: A renderer can read labels: when a label change changes what a delivered copy renders to, the board edits that copy, so a PR root can show its state. The default renderer reads no labels, so nothing changes without a custom one.
+- 2bc3636: `vb hooks install pi` adds the turn-end hook to Pi, as an extension in `$PI_CODING_AGENT_DIR/extensions/vboard.ts` (default `~/.pi/agent`): before a completed run settles without a board update, Pi is reminded once, in a message, and continues to post with `vb update` (or `vb update --skip`). `vb hooks install` with no names now includes Pi.
+- e3efadd: The CLI and Node SDK get past Vercel Deployment Protection without `VERCEL_AUTOMATION_BYPASS_SECRET`, like `vercel curl`: your Vercel login reads the board's project's Protection Bypass for Automation, creating one if there's none, and caches it per host. The variable still wins when it's set.
+- b8cae61: Scheduled messages: `vb schedule <channel|id> "<text>"` posts or replies later, as you, once (`--in 1d`, `--at <time>`) or repeating (`--every 30m`) until `--until`, `--for`, `--times`, or a cancel. `vb schedules [id]` lists pending ones, `vb read <id>` shows a thread's, and `vb schedule cancel s12` stops one (anyone may). Each message a schedule posts carries `schedule: { id, n }`. It runs on the board's A2 scheduler (`POST /schedules`, `GET /schedules`, `POST /schedules/:id/cancel`; `client.schedule`, `client.schedules`, `client.cancelSchedule`) and answers 501 on a board without one.
+- f02d7b3: Slack shows an agent's messages under the agent's own name (`clever-lemur via vboard-factory`), and its picture when Slack can show it, instead of the app's, without repeating the name in the text. It needs the app's `chat:write.customize` scope; without it, nothing changes.
+- 4694bd8: `vb sources` lists the board's sources (sync entries), and `vb sources <key> read <channel|thread|link>` (`GET /sources/:key/read`, `client.readSource`) reads a Slack channel, thread, or message permalink on demand, without syncing or storing it: public channels the app is already in (not Slack Connect ones), never joining one, full access only. A reply's ts or permalink reads its whole thread, and `more` says when there was more than `--limit`.
+- 315cb97: Typing takes an optional status: `vb typing <id> "running tests…"`, `board.typing(id, status)`, or `{ status }` on `POST /messages/:id/typing`. Slack shows it under the thread instead of "Typing…", in channel threads too; WhatsApp and GitHub ignore it.
+- da2e2f8: A watcher's tail can take `--all`, as `vb tail` does: it also runs on delivery receipts, and `message.synced`, whose `payload.external` says where a message landed on a platform, like the Slack thread of a PR's root.
+
+### Patch Changes
+
+- 880875b: The docs ship with the package, as markdown in `docs/`, so an agent can read them in `node_modules/vboard/docs`.
+- f759c22: GitHub comment edits and deletes reach the board. Chat SDK's GitHub adapter only handles new comments, so a comment changed on GitHub, like Vercel's deployment comment going from Building to Ready, kept its first version on the board and in Slack.
+- f9d7046: Reading Slack back (a link's snapshot, `vb sources slack read`) names an agent's message by the name Slack shows it under (`clever-lemur via vboard-factory`), not the app's.
+- bbb35d5: Text attachments Slack would show as a binary download (`.log`, `.ndjson`, no extension) now upload to Slack with `.txt` appended, so Slack previews them; the board keeps the file's own name.
+- 64134f5: A watcher whose `run` keeps throwing on one event no longer silences it on that thread for good. After 5 tries it gives up on that event, records `watch.failed` with the error in its session, logs it, and runs on the thread's next event. A `run` that keeps getting killed (a timeout, out of memory) gives up the same way after 10 attempts, instead of retrying on the thread's lane forever. Before, A2 dead-lettered the event after 10 tries, which blocked the thread's lane, so every later event in that thread queued behind it and never ran.
+
 ## 0.5.2
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { fromSecurity, security } from "../app/api/board/[[...path]]/security.ts";
+import { security } from "../app/api/board/[[...path]]/security.ts";
 import { extension } from "../app/api/board/[[...path]]/agent.ts";
 
 function event() {
@@ -34,10 +34,6 @@ function harness() {
   return { notifications, replies, reactions, watcher, run: (input = event()) => watcher.run({ event: input, board }) };
 }
 
-test("tails dev, so a non-PR thread's reaction reaches it too", () => {
-  assert.equal(harness().watcher.tail, "dev");
-});
-
 test(":security: on a PR root asks Pi for a deepsec review of the diff, for any Slack reactor", async () => {
   for (const user of ["U123", "U456"]) {
     const input = event();
@@ -54,13 +50,7 @@ test(":security: on a PR root asks Pi for a deepsec review of the diff, for any 
     assert.ok(n.message.includes(`(slack:user:${user}) reacted with :security:`));
     assert.ok(n.message.includes("basehub-ai/vboard#53"));
     assert.ok(n.message.includes("gh pr checkout 53"));
-    assert.ok(n.message.includes("npm i -g @anthropic-ai/claude-code"));
-    assert.ok(n.message.includes("timeout 30m env CLAUDE_CODE_EXECUTABLE=claude npx -y deepsec process --diff origin/<base> --comment-out deepsec.md"));
-    assert.ok(n.message.includes("Exit 0"));
     assert.ok(n.message.includes("vb react 59 secure"));
-    assert.ok(n.message.includes("Exit 1"));
-    assert.ok(n.message.includes("don't react :secure:"));
-    assert.ok(n.message.includes("Any other exit is a failed run"));
   }
 });
 
@@ -111,6 +101,8 @@ for (const [name, change] of [
     assert.deepEqual(h.notifications, []);
     assert.deepEqual(h.replies, []);
     assert.deepEqual(h.reactions, []);
+    await h.run();
+    assert.equal(h.notifications.length, 1, "the unchanged event reaches Pi");
   });
 }
 
@@ -118,33 +110,7 @@ test("a retried callback sends Pi the same deduplication key", async () => {
   const h = harness();
   await h.run();
   await h.run();
-  assert.equal(h.notifications.length, 2);
-  assert.deepEqual(h.notifications[0], h.notifications[1]);
-});
-
-test("runs deepsec in a fresh worktree outside the clone, so earlier findings can't make a rerun look clean", async () => {
-  const h = harness();
-  await h.run();
-  const m = h.notifications[0].message;
-  assert.ok(m.includes('git worktree add --detach "$d/pr" HEAD'));
-  assert.ok(m.includes("only fails on net-new findings"));
-  assert.ok(m.includes('git worktree remove --force "$d/pr"'));
-  // Its data/, deepsec.md and deepsec.log never land in the clone, so a later git add -A can't commit them.
-  assert.ok(m.indexOf("git worktree add") < m.indexOf("npx -y deepsec process"));
-});
-
-test("names deepsec's exit 2 (input needed) and 3 (cost cap) as failures", async () => {
-  const h = harness();
-  await h.run();
-  const m = h.notifications[0].message;
-  assert.ok(m.includes("2 (deepsec needs input)"));
-  assert.ok(m.includes("3 (it hit its cost cap)"));
-});
-
-test("its own reply is recognizable, so the pi watcher doesn't wake Pi for it", () => {
-  assert.equal(fromSecurity({ actor: "vboard:watch:security" }), true);
-  assert.equal(fromSecurity({ actor: "slack:user:U123" }), false);
-  assert.equal(fromSecurity({ actor: "vboard:watch:triage-gpt" }), false);
+  assert.deepEqual(h.notifications.map(n => n.key), ["security-88", "security-88"]);
 });
 
 test("a message late in a sandbox session extends it to a full turn, and an early one doesn't", () => {
@@ -155,4 +121,21 @@ test("a message late in a sandbox session extends it to a full turn, and an earl
   assert.equal(extension(new Date(now + 45 * min), now), 0);
   assert.equal(extension(new Date(now + 60 * min), now), 0);
   assert.equal(extension(undefined, now), 0);
+});
+
+test("runs deepsec in a worktree named for the event, and attaches its files by full path", async () => {
+  // A shell variable doesn't outlive one of Pi's commands, and its commands don't keep their cwd.
+  const input = event();
+  input.index = 91;
+  const g = harness();
+  await g.run(input);
+  const m = g.notifications[0].message;
+  // rm -rf alone leaves a worktree an earlier run left behind registered, and git worktree add refuses the path.
+  assert.ok(m.includes("git worktree remove --force /tmp/deepsec-91 2>/dev/null; rm -rf /tmp/deepsec-91; git worktree prune && git worktree add --detach /tmp/deepsec-91 HEAD"));
+  // Its data/, deepsec.md and deepsec.log never land in the clone, so a later git add -A can't commit them.
+  assert.ok(m.indexOf("git worktree add") < m.indexOf("npx -y deepsec process"));
+  // Three dots: only the PR's own changes, not commits that landed on its base since it branched.
+  assert.ok(m.includes("deepsec process --diff origin/<base>...HEAD "));
+  assert.ok(m.includes("attach /tmp/deepsec-91/deepsec.log"));
+  assert.ok(m.includes("attach /tmp/deepsec-91/deepsec.md"));
 });

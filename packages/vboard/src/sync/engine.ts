@@ -790,9 +790,10 @@ export function createSyncEngine(options: {
   /**
    * Shows typing in every platform thread a board thread is synced to. It's
    * ephemeral and best-effort: nothing goes in the log, and a platform that
-   * fails is skipped. Answers the external threads that took it.
+   * fails is skipped. Answers the external threads that took it. `status`
+   * replaces "Typing…" where the platform shows text (Slack).
    */
-  async function typing(thread: string): Promise<string[]> {
+  async function typing(thread: string, status?: string): Promise<string[]> {
     const { session } = bound()
     const [{ state: sync }, { state: messages }] = await Promise.all([session.state(syncReducer), session.state(messagesReducer)])
     const synced = sync.threads[thread]
@@ -809,7 +810,7 @@ export function createSyncEngine(options: {
             const origin = messages.byId[ids[i]!]
             if (origin && !origin.deleted && origin.origin?.thread === external) latest = origin.origin.message
           }
-          await platform.startTyping(native(external), latest)
+          await platform.startTyping(native(external), latest, status)
           return external
         } catch (error) {
           console.warn(`[vboard] skipped typing on ${external}:`, describe(error))
@@ -855,6 +856,19 @@ export function createSyncEngine(options: {
       }))
   }
 
+  /** Every inbox that can hold events: the mapped channels', and those of threads synced anywhere else. */
+  async function inboxChannels(): Promise<string[]> {
+    const channels = new Set<string>()
+    for (const key of Object.keys(entries)) for (const channel of (await mappings(key)).keys()) channels.add(channel)
+    const { state: sync } = await bound().session.state(syncReducer)
+    for (const thread of Object.keys(sync.byExternalThread)) {
+      const key = thread.slice(0, thread.indexOf(':'))
+      const channel = entries[key]?.inboxChannel(key, thread)
+      if (channel) channels.add(channel)
+    }
+    return [...channels]
+  }
+
   /** The status for what a platform wouldn't read: the caller's mistake, missing, refused, or the platform failing. */
   const unreadableStatus = (code: string) => {
     if (code === 'unsupported' || code === 'invalid_target') return 400
@@ -887,6 +901,7 @@ export function createSyncEngine(options: {
     findByEmail,
     handleWebhook,
     readInbox,
+    inboxChannels,
     typing,
   }
 }

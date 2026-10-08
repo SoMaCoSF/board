@@ -46,7 +46,7 @@ export type ChatTransport = Omit<ProviderOptions, 'uploadsFiles'> & {
   deleteFiles?(ids: string[]): Promise<void>
   /** What the adapter needs to fetch a file again, if not everything the event carried. */
   fileToFetch?(file: ExternalFile): ExternalFile
-  startTyping?(thread: string, latest: string | null): Promise<void>
+  startTyping?(thread: string, latest: string | null, status?: string): Promise<void>
 }
 
 const externalFile = (file: NonNullable<ChatMessage['attachments']>[number]): ExternalFile => ({
@@ -91,6 +91,11 @@ export abstract class ChatSyncProvider<E extends ProviderEvent = ProviderEvent> 
     const thread = `${key}:${this.transport.groupThread?.(native) ?? native}`
     const channel = this.transport.channelOf?.(native) ?? this.toNative(this.transport.adapter.channelIdFromThreadId(chatThread))
     return { channel: `${key}:${channel}`, thread, subthread: precise === thread ? null : precise }
+  }
+
+  override inboxChannel(key: string, thread: string): string {
+    const native = thread.slice(key.length + 1)
+    return `${key}:${this.transport.channelOf?.(native) ?? this.toNative(this.transport.adapter.channelIdFromThreadId(this.toChat(native)))}`
   }
 
   eventId(key: string, input: ChatInput): string {
@@ -211,10 +216,10 @@ export abstract class ChatSyncProvider<E extends ProviderEvent = ProviderEvent> 
     if (added) await adapter.addReaction(this.toChat(thread), message, emoji)
     else await adapter.removeReaction(this.toChat(thread), message, emoji)
   }
-  override async startTyping(thread: string, latest: string | null) {
+  override async startTyping(thread: string, latest: string | null, status?: string) {
     const adapter = await this.ready()
-    if (this.transport.startTyping) await this.transport.startTyping(this.toChat(thread), latest)
-    else await adapter.startTyping(this.toChat(thread))
+    if (this.transport.startTyping) await this.transport.startTyping(this.toChat(thread), latest, status)
+    else await adapter.startTyping(this.toChat(thread), status)
   }
   override async uploadFiles(thread: string, files: ProviderFile[]) {
     await this.ready()

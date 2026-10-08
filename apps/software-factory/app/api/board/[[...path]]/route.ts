@@ -10,14 +10,14 @@ import {
 } from "@vercel/connect/chat";
 import { redisHttp } from "experimental-a2/store-redis-http";
 import { vercelQueues } from "experimental-a2/scheduler-vercel";
-import { byPi, newsMessage, quote, sincePi, taskMessage, tellPi } from "./agent";
+import { byPi, byWatcher, newsMessage, sincePi, taskMessage, tellPi, threadQuote } from "./agent";
 import { classifyThread } from "./classify";
 import { isPiKind, PI_KINDS, piTask, scheduled, scheduledThread } from "./kinds";
-import { fromSecurity, security } from "./security";
+import { security } from "./security";
 import { shipit } from "./shipit";
 import { autoland } from "./autoland";
 import { owner } from "./owner";
-import { crosspost, CROSSPOST_ACTOR } from "./crosspost";
+import { crosspost } from "./crosspost";
 import { renderForSlack } from "./render";
 
 // The software factory: vboard running on its own repo and Vercel's Slack. Locally
@@ -32,13 +32,24 @@ const slackCredentials = connectSlackAdapter("slack/vboard-factory");
 const slackAdapter = createSlackAdapter(slackCredentials);
 const slackToken = slackCredentials.botToken;
 
+/** What Pi's told about news in a thread: what's new since its last reply, quoted; or just that there's news, if the read fails. */
+async function news(board: { thread: (id: number) => Promise<{ message: Parameters<typeof sincePi>[1][number]; replies: Parameters<typeof sincePi>[1] }> }, thread: number) {
+  try {
+    const { message, replies } = await board.thread(thread);
+    return newsMessage(thread, sincePi(thread, [message, ...replies]));
+  } catch {
+    return newsMessage(thread, []);
+  }
+}
+
 export const { GET, POST, scheduler } = board({
   store: env
     ? redisHttp({
         url: process.env.KV_REST_API_URL!,
         token: process.env.KV_REST_API_TOKEN!,
         // One Redis serves every environment: a preview never touches production's log.
-        keyPrefix: env === "production" ? "vboard-factory" : `vboard-factory:${env}`,
+        // `-2` since A2 0.17 changed its Redis layout; the log under `vboard-factory` was copied over.
+        keyPrefix: env === "production" ? "vboard-factory-2" : `vboard-factory-2:${env}`,
       })
     : undefined,
   // Attachments (Pi's proof of work) in the project's private Blob store, `vboard-factory-attachments`.
@@ -88,7 +99,7 @@ export const { GET, POST, scheduler } = board({
           event.type !== "message.posted" ||
           !message ||
           byPi(message.re ?? message.id, message.by) ||
-          message.by.actor === CROSSPOST_ACTOR ||
+          byWatcher(message.by) ||
           scheduledThread(message)
         ) {
           return;
@@ -132,29 +143,30 @@ export const { GET, POST, scheduler } = board({
           // 👀 from the board right away: Pi's own would come after a sandbox boot and a model turn (~25s).
           const ack = event.type === "labels.changed";
           const [thread] = await Promise.all([
-            board.thread(message.id),
-            ack ? board.react(message.id, "eyes") : null,
+            board.thread(message.id).catch(() => null),
+            ack ? board.react(message.id, "eyes").catch(() => null) : null,
           ]);
           await tellPi({
+            board,
             task: "thread",
             thread: message.id,
             key: `kind-${kind}`,
-            message: `${taskMessage(piTask(kind), message)}${ack ? " It already has your 👀." : ""}\n\n${quote([thread.message, ...thread.replies])}`,
+            message: `${taskMessage(piTask(kind), message)}${ack ? " It already has your 👀." : ""}${thread ? `\n\n${threadQuote(message.id, [thread.message, ...thread.replies])}` : ""}`,
             since: event.createdAt,
           });
         } else if (
           event.type === "message.posted" &&
           message.re !== null &&
           (scheduled(message) || !byPi(message.re, message.by)) &&
-          !fromSecurity(message.by) &&
-          message.by.actor !== CROSSPOST_ACTOR
+          !byWatcher(message.by)
         ) {
-          const thread = await board.thread(message.re);
           await tellPi({
+            board,
             task: "thread",
             thread: message.re,
             key: `news-${message.id}`,
-            message: newsMessage(message.re, sincePi(message.re, [thread.message, ...thread.replies])),
+            about: message.id,
+            message: await news(board, message.re),
             since: event.createdAt,
           });
         }
@@ -172,6 +184,7 @@ export const { GET, POST, scheduler } = board({
         }
         if (message.re === null) {
           await tellPi({
+            board,
             task: "review",
             thread: message.id,
             key: "pr",
@@ -181,14 +194,15 @@ export const { GET, POST, scheduler } = board({
         } else if (
           (scheduled(message) || !byPi(message.re, message.by)) &&
           !message.author?.handle.endsWith("[bot]") &&
-          message.by.actor !== CROSSPOST_ACTOR
+          !byWatcher(message.by)
         ) {
-          const thread = await board.thread(message.re);
           await tellPi({
+            board,
             task: "review",
             thread: message.re,
             key: `news-${message.id}`,
-            message: newsMessage(message.re, sincePi(message.re, [thread.message, ...thread.replies])),
+            about: message.id,
+            message: await news(board, message.re),
             since: event.createdAt,
           });
         }

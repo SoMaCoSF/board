@@ -189,9 +189,15 @@ Other runtimes pass `token` explicitly (see [Client SDK](#client-sdk)).
 - **Discovery:** `GET /` is unauthenticated and returns
   `{ team_id, project_id, issuer, audience }`, so the client knows which project
   to mint for. The CLI can run from any directory.
-- **Preview protection:** if `VERCEL_AUTOMATION_BYPASS_SECRET` is set, the client
-  sends `x-vercel-protection-bypass`. Otherwise every CI run against a protected
-  preview hits Vercel's login page.
+- **Deployment protection:** the Node client sends `x-vercel-protection-bypass`
+  with `VERCEL_AUTOMATION_BYPASS_SECRET` when it's set. Otherwise, when a board
+  answers with Vercel Authentication's wall, it does what `vercel curl` does:
+  with your Vercel login it resolves the board's host to its project
+  (`/v13/deployments/<host>`, then `/now/aliases/<host>`, in your scope and then
+  each team), reads its `automation-bypass` secret (creating one with
+  `PATCH /v1/projects/<id>/protection-bypass` if there's none), caches it in
+  `~/.config/vboard/bypass/`, and retries. When that can't work it fails with a
+  `protected` error instead of parsing the login page.
 
 **Verified (2026-10-01): the exchange keeps `user_id`.** We exchanged a
 development token from `@vercel/oidc` 3.8.5 for a custom audience
@@ -619,6 +625,33 @@ nothing else.
 - **Keep it out of the board's catch-all route.** A Vercel Queues trigger makes
   its function private, and the board's routes must stay public.
 
+### Stuck events
+
+A handler that keeps throwing is dead-lettered after 10 tries, and a dead
+letter stops its lane: nothing after it in that thread runs. Sync and watchers
+avoid it where they can (`message.sync_failed`, `watch.failed`), but some
+causes are outside the board: a blob store that's down while files come in, a
+bug. Those need a person.
+
+- **`vb stuck`** (`GET /stuck`) lists every dead letter in the sessions that
+  run handlers on lanes: `board`, the inboxes, each watcher's, and `schedules`.
+  Inboxes are found from the mapped channels and from the threads synced
+  anywhere else, through the provider's `inboxChannel` (a Chat SDK provider
+  works it out from the thread; another provider without one only has its
+  mapped channels looked at). Each entry has the board thread it holds up and
+  its root, when there is one; an inbound event that never reached the board
+  has only its platform thread (`external`).
+- **`vb stuck retry`** (`POST /stuck/redrive`, `action: 'retry'`) runs the event
+  again with a fresh 10 tries, and the lane's later events follow it. For a
+  cause that's been fixed: a deploy, a store that's back.
+- **`vb stuck skip`** marks it done without running it, and the lane goes on.
+- Both are A2's `session.redrive()`, one atomic store operation; an event that
+  isn't stuck (anymore) is a no-op, `{ redriven: false }`. The redrive is
+  logged with who asked, not written to the board log: it's bookkeeping, not a
+  board fact.
+- Everything here needs full access, like the inbox: errors can hold raw
+  platform data.
+
 ## Reading state
 
 Every read is a fold of the single session through A2 reducers. There are no
@@ -713,9 +746,11 @@ status.
 | POST | `/messages/:id/reactions` | `{ emoji, remove?: true }` |
 | POST | `/messages/:id/labels` | `{ set?, unset? }` |
 | POST | `/messages/:id/sync` | `{ target }`: attach the message's thread to an external target and backfill it |
-| POST | `/messages/:id/typing` | `{}`: show typing in the platform threads the message's thread is synced to. Answers `{ targets }`, the external threads that took it. Writes nothing to the log |
+| POST | `/messages/:id/typing` | `{ status? }`: show typing in the platform threads the message's thread is synced to. Answers `{ targets }`, the external threads that took it. Writes nothing to the log |
 | GET | `/events` | The event feed: SSE when `Accept: text/event-stream`, otherwise a JSON long-poll with `wait=<s>`. Takes the same filters as `/messages`, plus `after` and `all` |
 | GET | `/inbox/:key` | Raw platform events for a sync entry, newest first. Filters: `channel`, `limit`. Needs full access: `trustedSources` entries restricted by `can` can't read it |
+| GET | `/stuck` | Events that failed 10 times and stopped their thread (see [Stuck events](#stuck-events)). Full access |
+| POST | `/stuck/redrive` | `{ session, index, action: 'retry' \| 'skip' }`: retries one with a fresh 10 tries, or skips it. Full access |
 | GET | `/cursors` | The caller's cursors, for this session |
 | POST | `/cursors` | `{ scope, index }`: acknowledge reading up to `index` |
 | POST | `/webhooks/:name` | Platform ingress for the sync entry `name` (e.g. `/webhooks/slack`). Takes no board token; the adapter authenticates the request |
@@ -756,7 +791,7 @@ await board.reply(msg.id, 'rolled back to d4e5f6')
 await board.react(msg.id, 'eyes')
 await board.label(msg.id, { set: { status: 'investigating' } })
 await board.sync(msg.id, 'slack:#incidents')                  // escalate this thread
-await board.typing(msg.id)                                    // "typing…" where it's synced; nothing in the log
+await board.typing(msg.id, 'running tests…')                 // "typing…" where it's synced (Slack shows the status); nothing in the log
 
 const shot = await board.upload({ data: png, name: 'after.png' })   // a Blob or bytes; type from the Blob or the name
 await board.reply(msg.id, { text: 'fixed, see after', attachments: [shot] })
@@ -929,9 +964,12 @@ vboard delete <id>
 vboard react <id> <emoji> [--remove]
 vboard label <id> k=v... [--unset k]...
 vboard sync <id> <target>                       attach the thread to an external target, backfilling it in order
-vboard typing <id>                              show typing in the thread's synced platform threads (marks WhatsApp read)
+vboard typing <id> [status]                     show typing in the thread's synced platform threads (marks WhatsApp read);
+                                                Slack shows the status, if given, instead of "Typing…"
 
 vboard inbox <key> [channel] [--limit N]        raw platform events, for debugging sync ("did Slack send it?")
+vboard stuck                                    events that failed 10 times and stopped their thread
+vboard stuck retry|skip <session>#<index>       retry one with a fresh 10 tries, or skip it so its thread goes on
 vboard sources                                 the board's sources (sync entries) and their platforms
 vboard sources <key> read <channel|thread|link> [--limit N]  read a source's channel, thread, or message link without syncing it
 vboard download <attachment> [path]             save an attachment: its own name here by default, `-` for stdout
@@ -1161,9 +1199,13 @@ export const { GET, POST, scheduler } = board({
   imports. New board threads start external threads where supported, and replies,
   reactions, edits, and deletes flow through the connection automatically.
 - **A function: a callback for every incoming event.** It receives `{ event,
-  board }`, including for connected threads. Call `board.sync(channel, event)` to
+  board, permalink }`, including for connected threads. Call `board.sync(channel, event)` to
   apply the default import, pass overrides, or use other board operations. Calling
   no default sync skips that event. Once connected, outgoing delivery is automatic.
+  `permalink()` returns the platform's own link to the event's message, from
+  `SyncProvider.permalink(event)`: fetched on the first call, reused for the rest
+  of the callback, and forgotten after a failure so a retry asks again. It only
+  reads the URL; nothing is imported or joined. The base provider returns `null`.
 - **`{ channel, run }`: a callback with static reverse routing.** Incoming events
   go through `run`. The declared channel also lets new board-created threads find
   the external channel without executing the callback to discover routing.
@@ -1424,8 +1466,11 @@ isn't synced or replayed.
   instance. Pass `markRead: (input) => client.messages.markRead(input)` to
   `kapso()` to use the board's latest message through a public SDK client across
   serverless instances. This operation is required at setup.
-- **Slack** sets the thread's assistant status, which only shows in assistant
-  threads; elsewhere it's a no-op. **GitHub** has no typing, so it's a no-op.
+- **Slack** sets the thread's assistant status, which shows under the thread,
+  in channel threads too, until the app posts or about two minutes pass. An
+  optional `status` (up to 100 characters: `vb typing <id> "running tests…"`)
+  replaces the default "Typing…". WhatsApp ignores the text. **GitHub** has no
+  typing, so it's a no-op.
 - It needs the `post` capability.
 
 ### Adapters
@@ -1606,12 +1651,17 @@ vboard configures every Chat instance itself:
 `slack({ adapter, channels })`. Keys are Slack channels, by name (`'#prs'`) or
 ID (`'C0123ABC'`).
 
-**A function receives `{ event, board }`.** The shared envelope includes:
+**A function receives `{ event, board, permalink }`.** The shared envelope includes:
 - `text`
 - `author`
 - `channel`
 - `thread`, the target that `sync` accepts
 - `raw`, the Slack payload
+
+`permalink()` calls `chat.getPermalink` with the provider's client, so the link
+has the workspace's own host (Enterprise Grid included) and a reply's
+`thread_ts`. It's `null` for a deleted message, which Slack can no longer link;
+any other Slack refusal throws, and the callback retries.
 
 **Setup:**
 
@@ -1755,8 +1805,8 @@ vb read issues --label tag.bug                     # issues labeled bug
   `board.sync(channel, event)` imports state labels; callbacks can also supply
   label overrides or call `board.label` themselves.
 
-- **A function receives `{ event, board }`,** with `event` typed as the union
-  above. Every event carries `thread`.
+- **A function receives `{ event, board, permalink }`,** with `event` typed as the union
+  above. `permalink()` returns `null` on GitHub. Every event carries `thread`.
 - **A comment on a PR or issue the board hasn't seen** fetches it through the
   adapter's `.octokit`, creates a root from its title and URL with its author,
   state, labels, and assignees, then posts the comment as a reply. Known threads
@@ -1921,9 +1971,15 @@ board-contract handler, on the thread's lane, the one outbound sync uses. Matche
 are appended to the watcher's session in the `vboard-watch` contract
 (`watch:<id>`), and `run` happens there, on the thread's lane. So a watcher sees
 a thread's events in order, threads run in parallel, and each watcher fails on
-its own: one that keeps throwing dead-letters after 10 tries, which blocks only
-that watcher on that thread. Watchers need the scheduler in production, as sync
-does. A watcher removed from config skips the matches it left behind.
+its own. A `run` that keeps throwing on one event gets 5 tries; then the watcher
+gives up on that event, records `watch.failed` (the match, the thread, and the
+error) in its session, logs it, and goes on to the thread's next event. A `run`
+that keeps getting killed (a timeout, out of memory) never throws, so it's
+counted by attempts instead: past 10, the watcher gives up the same way without
+running it again. It never dead-letters: in A2 a dead letter stops its lane for good, and a watcher's
+lane is the thread's, so one bad event would silence the watcher on that thread
+forever. Watchers need the scheduler in production, as sync does. A watcher
+removed from config skips the matches it left behind.
 
 ## Scheduled messages
 

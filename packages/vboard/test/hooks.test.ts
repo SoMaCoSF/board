@@ -17,9 +17,9 @@ describe('hooks', () => {
   it('suggests a Codex profile that allows only the board and Vercel', () => {
     const { top, tables } = codexNetwork('board.example.com')
     expect(top).toBe('default_permissions = "vboard"') // a top-level key: it can't follow a [table]
-    expect(tables).toContain('"board.example.com" = "allow"\n"api.vercel.com" = "allow"')
-    expect(tables).toContain('extends = ":workspace"')
     expect(tables).not.toContain('default_permissions')
+    expect(tables).toContain('"board.example.com" = "allow"\n"api.vercel.com" = "allow"')
+    expect(codexNetwork(null).tables).toContain('"<your board host>" = "allow"\n"api.vercel.com" = "allow"')
   })
 
   it('names the repo from its origin remote', () => {

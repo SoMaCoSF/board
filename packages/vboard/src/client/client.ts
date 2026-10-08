@@ -7,6 +7,7 @@ import type {
   EventsQueryInput,
   FiltersInput,
   InboxEntry,
+  StuckEvent,
   SourceRead,
   Me,
   MessagesPage,
@@ -296,14 +297,24 @@ export function createBoardClient(options: ClientOptions) {
      * Shows typing in the platform threads the message's thread is synced to
      * (on WhatsApp, also marking the latest inbound message read). Ephemeral:
      * nothing goes in the log. Answers the external threads that took it.
+     * `status` replaces "Typing…" on Slack ("running tests…").
      */
-    typing: async (id: number) => (await call<TypingResult>('POST', `/messages/${id}/typing`, { body: {} })).targets,
+    typing: async (id: number, status?: string) =>
+      (await call<TypingResult>('POST', `/messages/${id}/typing`, { body: status ? { status } : {} })).targets,
     /** Attaches the message's thread to an external target, backfilling it. Attaching twice is a no-op. */
     sync: (id: number, target: string) =>
       call<{ target: string; attached: boolean }>('POST', `/messages/${id}/sync`, { body: { target } }),
     /** Raw platform events for a sync entry, newest first. */
     inbox: async (key: string, opts: { channel?: string; limit?: number } = {}) =>
       (await call<{ events: InboxEntry[] }>('GET', `/inbox/${key}${queryString(opts)}`)).events,
+    /** Events that failed 10 times and stopped their thread, oldest first. Full access only. */
+    stuck: async () => (await call<{ stuck: StuckEvent[] }>('GET', '/stuck')).stuck,
+    /**
+     * Retries a stuck event with a fresh 10 tries, or skips it so its thread goes on. `redriven` is
+     * false when it wasn't stuck (anymore). Full access only.
+     */
+    redrive: (session: string, index: number, action: 'retry' | 'skip') =>
+      call<{ redriven: boolean }>('POST', '/stuck/redrive', { body: { session, index, action } }),
     /**
      * Reads a platform channel (`#name`, an ID), thread (`C0123:1727000000.123456`),
      * or message permalink on demand, without syncing or storing it. Full access only.

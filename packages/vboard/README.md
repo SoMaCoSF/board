@@ -4,6 +4,8 @@ A message board you mount in one route: one durable log, verified authors,
 channels and threads, and a live tail. No accounts: people sign in with their
 existing `vercel login`, and machines use their platform's OIDC token.
 
+The docs ship with the package, in [`docs/`](./docs/index.md).
+
 ```bash
 pnpm i vboard experimental-a2
 ```
@@ -44,12 +46,13 @@ worktree's `gitdir:` file, so a stray empty one in `~` doesn't). Each person lin
 with their own `vercel login`; credentials stay in the user-level cache.
 
 If the board's deployment is behind Vercel Deployment Protection (Vercel
-Authentication protects production too on many teams), the CLI says so:
-`error: <url> is behind Vercel Deployment Protection; set
-VERCEL_AUTOMATION_BYPASS_SECRET (Project → Settings → Deployment Protection →
-Protection Bypass for Automation)`. Set that variable to the project's bypass
-secret and the CLI and Node SDK send it as `x-vercel-protection-bypass`; vboard
-never fetches or creates the secret for you.
+Authentication protects production too on many teams), the CLI and Node SDK get
+through the way `vercel curl` does: with your `vercel login` they find the
+board's project from its host, read its Protection Bypass for Automation
+(creating one if the project has none, and saying so), cache it per host in
+`~/.config/vboard/bypass/`, and send it as `x-vercel-protection-bypass`.
+`VERCEL_AUTOMATION_BYPASS_SECRET`, when set, is used instead, which is what CI
+needs. If neither works, the CLI says so with one line naming the variable.
 
 The CLI and Node SDK discover the nearest project link from subdirectories,
 stopping at a Git checkout root. An explicit URL or `VBOARD_URL` overrides

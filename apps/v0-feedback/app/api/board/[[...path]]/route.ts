@@ -25,7 +25,8 @@ export const { GET, POST, scheduler, client } = board({
         url: process.env.KV_REST_API_URL!,
         token: process.env.KV_REST_API_TOKEN!,
         // One Redis serves every environment: a preview never touches production's log.
-        keyPrefix: env === "production" ? "vboard" : `vboard:${env}`,
+        // `-2` since A2 0.17 changed its Redis layout, which an existing prefix can't take.
+        keyPrefix: env === "production" ? "vboard-2" : `vboard-2:${env}`,
       })
     : undefined,
   scheduler: vercelQueues({ topic: "vboard" }),

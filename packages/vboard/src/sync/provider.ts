@@ -13,7 +13,16 @@ export type SyncClient<E extends ProviderEvent = ProviderEvent> = Omit<BoardClie
   sync(channel: string, event: E, overrides?: SyncOverrides): Promise<SyncResult>
 }
 
-export type SyncHandler<E extends ProviderEvent> = (args: { event: E; board: SyncClient<E> }) => unknown
+export type SyncHandler<E extends ProviderEvent> = (args: {
+  event: E
+  board: SyncClient<E>
+  /**
+   * The platform's own link to the event's message (Slack's `chat.getPermalink`), fetched on
+   * the first call and kept for the rest of the callback. Null when the event has no single
+   * message or the platform has no links. It only reads the URL: nothing is synced or joined.
+   */
+  permalink(): Promise<string | null>
+}) => unknown
 export type SyncContext = {
   id: string
   key: string
@@ -91,6 +100,8 @@ export abstract class SyncProvider<E extends ProviderEvent = ProviderEvent> {
   mention(_actor: Actor): string | null { return null }
   async fetchRoot(_thread: string): Promise<SyncRoot | null> { return null }
   async fetchFile(_file: ExternalFile): Promise<Uint8Array | null> { return null }
+  /** The platform's own link to an event's message, or null when it has none. */
+  async permalink(_event: E): Promise<string | null> { return null }
   /** A linked message the platform didn't describe, read from the platform. */
   async fetchLink(_link: ExternalLink): Promise<FetchedLink> { return { snapshot: null, unavailable: `${this.platform} can't read it` } }
   /**
@@ -103,7 +114,13 @@ export abstract class SyncProvider<E extends ProviderEvent = ProviderEvent> {
   async edit(_thread: string, _message: string, _body: ProviderPost): Promise<void> {}
   async delete(_thread: string, _message: string): Promise<void> {}
   async react(_thread: string, _message: string, _emoji: string, _added: boolean): Promise<void> {}
-  async startTyping(_thread: string, _latest: string | null): Promise<void> {}
+  async startTyping(_thread: string, _latest: string | null, _status?: string): Promise<void> {}
+  /**
+   * The channel whose inbox a thread's events land in (`slack:C0123ABC` for `slack:C0123ABC:1727.1234`),
+   * worked out without calling the platform. Null when the provider can't tell: `vb stuck` then only
+   * sees the mapped channels' inboxes.
+   */
+  inboxChannel(_key: string, _thread: string): string | null { return null }
   async deleteFiles(_ids: string[]): Promise<void> {}
   refusesFiles(_error: unknown): boolean { return false }
   async uploadFiles(_thread: string, _files: ProviderFile[]): Promise<FileDelivery> {
@@ -130,7 +147,14 @@ export abstract class SyncProvider<E extends ProviderEvent = ProviderEvent> {
       ...(typeof value === 'object' ? { channel: value.channel } : {}),
       run: (context) => {
         const event = immutable(this.event(context))
-        return handler({ event, board: context.client(event) })
+        let link: Promise<string | null> | undefined
+        const permalink = () => {
+          const promise = link ?? this.permalink(event)
+          link = promise
+          promise.catch(() => { if (link === promise) link = undefined })
+          return promise
+        }
+        return handler({ event, board: context.client(event), permalink })
       },
     }
   }
