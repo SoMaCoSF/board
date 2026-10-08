@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { BoardEventView } from '../src/api/routes.ts'
-import { parseTail, words } from '../src/api/tail.ts'
+import { parseTail, parseWatchTail, words } from '../src/api/tail.ts'
 import type { Watcher } from '../src/server/index.ts'
 import { caller, personToken, testBoard } from './harness.ts'
 
@@ -29,6 +29,8 @@ describe('tail expressions', () => {
     })
     expect(parseTail('--mentions')).toEqual({ mentions: 'me' })
     expect(parseTail('')).toEqual({})
+    expect(parseWatchTail('prs --label pr --all')).toEqual({ filters: { channel: 'prs', label: [['pr', null]] }, all: true })
+    expect(parseWatchTail('prs').all).toBe(false)
   })
 
   it('reject what a filter is not', () => {

@@ -28,7 +28,7 @@ import { ATTACHMENT_BYTES_MAX, ATTACHMENTS_PER_MESSAGE_MAX, MESSAGE_TEXT_MAX, ty
 import { readAttachmentData, writeUpload, type BlobStore } from '../server/blob.ts'
 import type { Principal } from '../server/auth.ts'
 import type { BoardSession } from '../server/board.ts'
-import { badRequest, notFound } from '../server/errors.ts'
+import { badRequest, HttpError, notFound } from '../server/errors.ts'
 import {
   writeDelete,
   writeEdit,
@@ -42,7 +42,7 @@ import {
 import type { SyncProvider } from './provider.ts'
 import { replaceMentions } from '../contract/mentions.ts'
 import { SyncOverrides, immutable, type SyncRoot, type ProviderEvent, type SyncResult } from './events.ts'
-import { ReceivedEvent, ResolvedTarget, type ProviderMapping, type SyncClient, type SyncContext } from './provider.ts'
+import { ReceivedEvent, ResolvedTarget, UnreadableError, type ProviderMapping, type ProviderSender, type SyncClient, type SyncContext } from './provider.ts'
 import { ChannelPath } from '../contract/schemas.ts'
 import { displayText } from '../contract/bots.ts'
 
@@ -501,7 +501,7 @@ export function createSyncEngine(options: {
   }
 
   /** A board message as markdown for a platform, which converts it to its own format. */
-  function render(key: string, target: string, message: Message, actors: ActorsState, quote?: Message): { markdown: string } {
+  function render(key: string, target: string, message: Message, actors: ActorsState, quote?: Message): { markdown: string; as?: ProviderSender } {
     const actor = actors.byId[message.by.actor]
     let name = actor?.name ?? message.by.actor
     if (message.by.profile && actor?.handle.includes('/')) name = `${actor.name} via ${actor.handle.split('/')[0]}`
@@ -511,7 +511,9 @@ export function createSyncEngine(options: {
       : ''
     const body = platformOf(key).render(immutable({ message: { ...structuredClone(message), text: displayText(message.text, message.by.actor) }, author: actor ? { ...actor } : null, label: name, target }))
     if (typeof body !== 'string') throw badRequest('a provider renderer must return markdown')
-    return { markdown: `${quoted}${textFor(platformOf(key), message, actors, body)}` }
+    const markdown = `${quoted}${textFor(platformOf(key), message, actors, body)}`
+    // An agent's message can carry its own name and picture where the platform shows a sender per message.
+    return message.by.profile && !message.from ? { markdown, as: { name, avatar: actor?.avatar ?? null } } : { markdown }
   }
 
   /** What a platform shows for files it didn't get: one line each, so a reader knows they're on the board. */
@@ -524,9 +526,9 @@ export function createSyncEngine(options: {
    */
   const renderFor = (target: string, message: Message, actors: ActorsState, quote?: Message, noted = false) => {
     const key = keyOf(target)
-    const { markdown } = render(key, target, message, actors, quote)
+    const { markdown, as } = render(key, target, message, actors, quote)
     const lines = message.attachments.length > 0 && (noted || !platformOf(key).uploadsFiles || !options.blob)
-    return { markdown: lines ? `${markdown}\n${attachmentNotes(message)}` : markdown }
+    return { markdown: lines ? `${markdown}\n${attachmentNotes(message)}` : markdown, ...(as ? { as } : {}) }
   }
 
   type Ctx<K extends keyof BoardEvents> = HandlerContext<BoardEvents, K>
@@ -788,9 +790,10 @@ export function createSyncEngine(options: {
   /**
    * Shows typing in every platform thread a board thread is synced to. It's
    * ephemeral and best-effort: nothing goes in the log, and a platform that
-   * fails is skipped. Answers the external threads that took it.
+   * fails is skipped. Answers the external threads that took it. `status`
+   * replaces "Typing…" where the platform shows text (Slack).
    */
-  async function typing(thread: string): Promise<string[]> {
+  async function typing(thread: string, status?: string): Promise<string[]> {
     const { session } = bound()
     const [{ state: sync }, { state: messages }] = await Promise.all([session.state(syncReducer), session.state(messagesReducer)])
     const synced = sync.threads[thread]
@@ -807,7 +810,7 @@ export function createSyncEngine(options: {
             const origin = messages.byId[ids[i]!]
             if (origin && !origin.deleted && origin.origin?.thread === external) latest = origin.origin.message
           }
-          await platform.startTyping(native(external), latest)
+          await platform.startTyping(native(external), latest, status)
           return external
         } catch (error) {
           console.warn(`[vboard] skipped typing on ${external}:`, describe(error))
@@ -853,8 +856,29 @@ export function createSyncEngine(options: {
       }))
   }
 
+  /** The status for what a platform wouldn't read: the caller's mistake, missing, refused, or the platform failing. */
+  const unreadableStatus = (code: string) => {
+    if (code === 'unsupported' || code === 'invalid_target') return 400
+    if (code === 'channel_not_found') return 404
+    if (code === 'ratelimited') return 429
+    if (['no_client', 'list_failed', 'internal_error', 'fatal_error', 'service_unavailable', 'request_timeout'].includes(code)) return 502
+    return 403
+  }
+
+  /** A platform channel or thread, read for the caller: nothing is synced, stored, or joined. */
+  async function readSource(key: string, target: string, limit: number) {
+    const platform = platformOf(key)
+    try {
+      return await platform.read(target, { limit })
+    } catch (error) {
+      if (error instanceof UnreadableError) throw new HttpError(unreadableStatus(error.code), error.code, error.message)
+      throw badRequest(`can't read ${target} from ${key}: ${describe(error)}`, 'platform_error')
+    }
+  }
+
   return {
     inboxServer,
+    readSource,
     outboundHandlers,
     bind: (b: BoardBinding) => {
       binding = b

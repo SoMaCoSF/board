@@ -6,6 +6,7 @@ import { basename, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { serve } from './http.ts'
 import { personToken, testBoard } from './harness.ts'
+import { fakeQueue } from './queue.ts'
 
 const CLI = join(import.meta.dirname, '../src/cli/main.ts')
 // Every directory a test makes lives under one root, which holds an empty `.git`
@@ -256,6 +257,7 @@ describe('cli', () => {
     expect((await vb(['react', id, '👀'])).code).toBe(0)
     // This board syncs nowhere, so typing shows nowhere, and that's fine.
     expect(await vb(['typing', id])).toMatchObject({ code: 0, stdout: '', stderr: '' })
+    expect(await vb(['typing', id, 'running', 'tests…'])).toMatchObject({ code: 0, stdout: '', stderr: '' })
     expect((await vb(['label', id, 'status=investigating'])).code).toBe(0)
 
     const read = await vb(['read', 'errors-www'])
@@ -378,7 +380,7 @@ describe('cli', () => {
 
     expect((await vb(['hooks', 'uninstall', 'claude'], at)).stdout).toContain('removed')
     expect(JSON.parse(await readFile(settings, 'utf8'))).toEqual(theirs)
-    expect((await vb(['hooks', 'install', 'gemini'], at))).toMatchObject({ code: 2, stderr: 'error: unknown agent: gemini (known: claude, codex, cursor)\n' })
+    expect((await vb(['hooks', 'install', 'gemini'], at))).toMatchObject({ code: 2, stderr: 'error: unknown agent: gemini (known: claude, codex, cursor, pi)\n' })
   })
 
   it('installs the Claude Code hook in CLAUDE_CONFIG_DIR when it is set', async () => {
@@ -501,6 +503,54 @@ describe('cli', () => {
     await expect(readFile(join(home, '.cursor', 'hooks.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
+  it("reminds Pi through an extension before its run settles, once, and not after it updates with vb", async () => {
+    const home = await tmp('vboard-home-')
+    const agentDir = join(home, 'pi-agent')
+    const at = { HOME: home, PI_CODING_AGENT_DIR: agentDir }
+    const file = join(agentDir, 'extensions', 'vboard.ts')
+    expect((await vb(['hooks', 'install', 'pi'], at)).stdout).toContain(`Pi: added the turn-end hook to ${file}`)
+    expect((await vb(['hooks', 'install', 'pi'], at)).stdout).toContain('Pi: already installed')
+    expect((await vb(['hooks', 'status', 'pi'], at)).stdout).toMatch(/^Pi: .* hook stop --agent pi 2>\/dev\/null \|\| true\n$/)
+
+    // Load it as Pi does, with a stand-in for Pi's API, and run its handler as Pi would before settling.
+    const handlers: Record<string, (event: unknown, ctx: unknown) => Promise<unknown>> = {}
+    const { default: extension } = await import(file)
+    extension({ on: (name: string, handler: (event: unknown, ctx: unknown) => Promise<unknown>) => (handlers[name] = handler) })
+    expect(Object.keys(handlers)).toEqual(['agent_before_settle'])
+    const repo = await tmp('vboard-repo-')
+    execFileSync('git', ['init', '-q', '-b', 'feat/pi'], { cwd: repo })
+    const session = `pi-${Date.now()}`
+    const ctx = { cwd: repo, sessionManager: { getSessionId: () => session } }
+    const settle = (outcome = 'completed') => handlers.agent_before_settle!({ type: 'agent_before_settle', outcome, entries: [], continue: false }, ctx)
+    for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value)
+    try {
+      // A run that didn't touch the board continues once, with the reminder as a message; the follow-up settles.
+      expect(await settle()).toEqual({
+        entries: [{ type: 'custom_message', customType: 'vboard', content: expect.stringContaining(' update "<summary>"'), display: true }],
+        continue: true,
+      })
+      expect(await settle()).toBeUndefined()
+      // Pi's bash tool exports the session as PI_SESSION_ID: its update counts, so the next run settles freely.
+      expect(await vb_in(repo, ['update', 'Taught Pi the hook.'], { PI_CODING_AGENT: 'true', PI_SESSION_ID: session })).toMatchObject({ code: 0, stderr: '' })
+      expect(await settle()).toBeUndefined()
+      // An aborted run isn't reminded.
+      expect(await settle('aborted')).toBeUndefined()
+      expect(await settle()).toMatchObject({ continue: true })
+    } finally {
+      vi.unstubAllEnvs()
+    }
+    const { stdout } = await vb(['read', 'work', '--label', `work=${basename(repo)}@feat/pi`, '--json'])
+    expect(stdout.trim().split('\n').map((line) => JSON.parse(line)).filter((m) => m.re !== null).map((m) => [m.by.profile, m.by.session, m.text])).toEqual([['pi', session, 'Taught Pi the hook.']])
+
+    // It won't overwrite an extension that isn't its own; uninstalling removes only its file.
+    expect((await vb(['hooks', 'uninstall', 'pi'], at)).stdout).toContain(`Pi: removed the turn-end hook from ${file}`)
+    await expect(readFile(file, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    await writeFile(file, 'export default () => {}\n')
+    expect(await vb(['hooks', 'install', 'pi'], at)).toMatchObject({ code: 1, stderr: `error: ${file} isn't vboard's: move it, then install again\n` })
+    expect((await vb(['hooks', 'status', 'pi'], at)).stdout).toBe('Pi: not installed\n')
+    expect(await readFile(file, 'utf8')).toBe('export default () => {}\n')
+  }, 30_000)
+
   it('delivers all of a long read to a reader that falls behind', async () => {
     const post = async (body: unknown) =>
       ((await (await fetch(`${url}/messages`, {
@@ -523,6 +573,28 @@ describe('cli', () => {
     expect(code).toBe(0)
     expect(stdout.trim().split('\n')).toHaveLength(1501)
   }, 60_000)
+
+  it('lists sources, and reads one only as `sources <key> read <target>`', async () => {
+    expect((await vb(['sources'])).stdout.trim()).toBe('no sources: this board has no sync configured')
+    const misuse = await vb(['sources', 'slack', '#general'])
+    expect(misuse.code).toBe(2)
+    expect(misuse.stderr).toContain('usage: vboard sources <key> read')
+    const unsynced = await vb(['sources', 'slack', 'read', '#general'])
+    expect(unsynced.code).toBe(1)
+    expect(unsynced.stderr).toContain('no sync configured')
+  })
+
+  it("says so when the board is older than `sources read`, instead of crashing on its discovery document", async () => {
+    // An old board answers any unknown GET with its discovery document, 200.
+    const old = await serve(async () => Response.json({ version: '0.4.0', sync: [] }))
+    try {
+      const read = await vb(['sources', 'slack', 'read', '#general'], { VBOARD_URL: `${old.origin}/api/board` })
+      expect(read.code).toBe(1)
+      expect(read.stderr).toContain("this board can't read sources yet")
+    } finally {
+      await old.close()
+    }
+  })
 
   it('prints one error line and exits 1 on failure, 2 on misuse', async () => {
     expect(await vb(['read', '99999'])).toMatchObject({ code: 1, stderr: 'error: message not found: #99999\n' })
@@ -548,5 +620,49 @@ describe('cli', () => {
     expect(await (await fetch(address)).text()).toContain('<div id="root"></div>')
     child.kill('SIGINT')
     expect(await exited).toBe(0)
+  })
+})
+
+describe('cli schedules', () => {
+  it('schedules a reply, shows it in the thread, sends it, and cancels a repeat', async () => {
+    const queue = fakeQueue()
+    const scheduled = await serve(testBoard({ url: undefined, scheduler: queue.scheduler }).fetch)
+    const board = `${scheduled.origin}/api/board`
+    const as = { VBOARD_URL: board, VBOARD_TOKEN: await personToken('u_julian', board) }
+    try {
+      const root = (await vb(['post', 'dev', 'PR #12 is open'], as)).stdout.trim()
+      const once = await vb(['schedule', root, 'friendly ping: review?', '--in', '1s'], as)
+      expect(once).toMatchObject({ code: 0, stderr: '' })
+      expect(once.stdout).toMatch(new RegExp(`^⏰ s\\d+  #${root} · once · next in 1s \\(.+\\) · by julian\\n    friendly ping: review\\?\\n$`))
+      const repeat = await vb(['schedule', root, 'check prod', '--every', '30m', '--for', '1d', '--json'], as)
+      const { id } = JSON.parse(repeat.stdout)
+
+      const before = (await vb(['read', root], as)).stdout
+      expect(before).toContain('  ⏰ s1  #')
+      expect(before).toContain(`  ⏰ s${id}  #${root} · every 30m · until `)
+      expect((await vb(['schedules', root], as)).stdout.match(/^⏰/gm)).toHaveLength(2)
+
+      await new Promise((resolve) => setTimeout(resolve, 1100))
+      await queue.fire()
+      await vi.waitFor(async () => expect((await vb(['read', root], as)).stdout).toMatch(/↳ #\d+  julian · \d+s ⏰ s1\n {4}friendly ping: review\?/))
+
+      expect((await vb(['schedule', 'cancel', `s${id}`], as)).stdout).toBe(`canceled s${id}\n`)
+      expect((await vb(['schedule', 'cancel', `s${id}`], as)).stdout).toBe(`s${id} is already canceled\n`)
+      expect((await vb(['schedules', root], as)).stdout).toBe('no pending schedules\n')
+      expect((await vb(['schedules', '--all'], as)).stdout).toMatch(/· done · 1 sent · by julian[\s\S]*· canceled · by julian/)
+
+      expect(await vb(['schedule', root, 'when?'], as)).toMatchObject({ code: 2, stderr: 'error: say when: --in 1d, --at <time>, or --every 30m\n' })
+      expect((await vb(['schedule', root, 'x', '--at', 'soonish'], as)).code).toBe(2)
+    } finally {
+      await scheduled.close()
+    }
+  }, 30_000)
+
+  it('says so when the board has no scheduler', async () => {
+    const root = (await vb(['post', 'dev', 'no queue here'])).stdout.trim()
+    expect(await vb(['schedule', root, 'later', '--in', '1h'])).toMatchObject({
+      code: 1,
+      stderr: "error: this board has no scheduler, so it can't schedule messages\n",
+    })
   })
 })

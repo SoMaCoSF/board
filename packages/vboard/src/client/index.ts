@@ -20,6 +20,8 @@ export {
   type PostOptions,
   type ProfileOption,
   type ReplyOptions,
+  type ScheduleOptions,
+  type ScheduleTiming,
   type UploadInput,
   type WaitOptions,
 } from './client.ts'

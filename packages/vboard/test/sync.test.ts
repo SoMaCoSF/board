@@ -105,6 +105,26 @@ describe('sync', () => {
     await vi.waitFor(() => expect(seen).toEqual(['message.posted', 'message.posted']))
   })
 
+  it('runs `--all` watchers on receipts too, like `vb tail --all`: where a message landed', async () => {
+    const landed: unknown[] = []
+    const { board, s } = setup({
+      watch: {
+        landed: {
+          tail: 'prs --label pr --all',
+          run: ({ event }) => {
+            if (event.type === 'message.synced') landed.push({ id: event.payload.id, external: event.payload.external, pr: event.message?.labels.pr })
+          },
+        },
+      },
+    })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    await julian('POST', '/messages', { channel: 'prs', text: 'no PR here' })
+    const pr = (await julian('POST', '/messages', { channel: 'prs', text: 'PR #12', labels: { pr: 'acme/www#12' } })).body.message
+    await vi.waitFor(() => expect(s.channelPosts).toHaveLength(2))
+    await vi.waitFor(() => expect(landed).toHaveLength(1))
+    expect(landed[0]).toEqual({ id: pr.id, external: { thread: `slack:C2:${s.channelPosts[1]!.id}`, message: s.channelPosts[1]!.id }, pr: 'acme/www#12' })
+  })
+
   it('mirrors a Slack thread into the board, and board replies back into Slack', async () => {
     const { board, s, webhook } = setup()
     const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
@@ -304,6 +324,30 @@ describe('sync', () => {
     error.mockRestore()
   })
 
+  it('uploads a text file Slack would call binary under a name it previews, and keeps its own name on the board', async () => {
+    const { board, s, webhook } = setup()
+    const token = await personToken()
+    const julian = caller(board.fetch, token)
+    const upload = async (name: string, type: string) => {
+      const response = await board.fetch(
+        new Request(`${BOARD_URL}/attachments`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}`, 'content-type': type, 'x-board-filename': name },
+          body: 'exit 0',
+        }),
+      )
+      return ((await response.json()) as { attachment: { id: string } }).attachment.id
+    }
+    await webhook('slack', { type: 'message', threadId: 'slack:C1:1727.3', id: '1727.3', text: 'run deepsec', user: 'U1' })
+    await vi.waitFor(async () => expect(await read(julian, 'firehose')).toHaveLength(1))
+    const [root] = await read(julian, 'firehose')
+    const files = [await upload('deepsec.log', 'text/plain'), await upload('notes.md', 'text/markdown'), await upload('proof.png', 'image/png')]
+    const { body } = await julian('POST', '/messages', { re: root!.id, text: 'nothing found', attachments: files })
+    await vi.waitFor(() => expect(s.posts).toHaveLength(2))
+    expect(JSON.parse(s.posts[1]!.text).files.map((f: { filename: string }) => f.filename)).toEqual(['deepsec.log.txt', 'notes.md', 'proof.png'])
+    expect(body.message.attachments.map((a: { name: string }) => a.name)).toEqual(['deepsec.log', 'notes.md', 'proof.png'])
+  })
+
   it('starts a Slack thread for a board root in a mirrored channel, then follows it', async () => {
     const { board, s, webhook } = setup()
     const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
@@ -333,8 +377,10 @@ describe('sync', () => {
     const { board, s } = setup()
     const julian = caller(board.fetch, await personToken())
     await julian('POST', '/messages', { channel: 'firehose', text: 'scratch', noSync: true })
-    await new Promise((r) => setTimeout(r, 50))
-    expect(s.channelPosts).toHaveLength(0)
+    await julian('POST', '/messages', { channel: 'firehose', text: 'shared' })
+    await vi.waitFor(() => expect(s.channelPosts).toHaveLength(1))
+    expect(s.channelPosts[0]!.text).toContain('shared') // only the synced root reaches Slack
+    expect((await read(julian, 'firehose')).map((m) => m.text)).toEqual(['scratch', 'shared'])
   })
 
   it('syncs reactions both ways', async () => {
@@ -373,6 +419,21 @@ describe('sync', () => {
     }
     const partial = await julian('POST', `/messages/${root!.id}/typing`, {})
     expect(partial).toMatchObject({ status: 200, body: { targets: ['github:basehub-ai/vboard:12'] } })
+  })
+
+  it('passes a typing status through to Slack, which shows it instead of "Typing…"', async () => {
+    const { board, s, webhook } = setup()
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    await webhook('slack', { type: 'message', threadId: 'slack:C1:200', id: '200', text: 'bug', user: 'U_ADA' })
+    await vi.waitFor(async () => expect(await read(julian, 'firehose')).toHaveLength(1))
+    const [root] = await read(julian, 'firehose')
+
+    await julian('POST', `/messages/${root!.id}/typing`, { status: '  running tests…  ' })
+    await julian('POST', `/messages/${root!.id}/typing`, {})
+    expect(s.typing).toEqual(['slack:C1:200', 'slack:C1:200'])
+    expect(s.statuses).toEqual(['running tests…', undefined])
+
+    expect((await julian('POST', `/messages/${root!.id}/typing`, { status: 'x'.repeat(101) })).status).toBe(400)
   })
 
   it('runs function mappings for connected conversations and delegates normal imports', async () => {
@@ -598,6 +659,7 @@ describe('sync', () => {
     const julian = caller(board.fetch, await personToken())
     await webhook('github', { type: 'message', threadId: 'github:basehub-ai/vboard:52', id: 'c1', text: 'Building', user: '35613825' })
     await vi.waitFor(() => expect(seen).toHaveBeenCalledTimes(1))
+    expect(seen.mock.calls[0]![0].event).toMatchObject({ type: 'comment', text: 'Building' })
     expect(await read(julian, 'prs')).toHaveLength(0)
     expect(get).not.toHaveBeenCalled()
   })
@@ -749,11 +811,10 @@ describe('sync', () => {
       avatar: 'https://avatars.githubusercontent.com/in/8329?v=4',
     })
 
-    const { body: posted } = await julian('POST', '/messages', { channel: 'firehose', text: '**ship it**' })
+    await julian('POST', '/messages', { channel: 'firehose', text: '**ship it**' })
     // The GitHub thread mirrored to Slack too: each starts a thread in its channel.
     await vi.waitFor(() => expect(s.channelPosts.map((p) => p.channelId).sort()).toEqual(['slack:C1', 'slack:C2']))
     expect(s.channelPosts.find((p) => p.channelId === 'slack:C1')!.text).toBe(JSON.stringify({ markdown: '**julian**: **ship it**' }))
-    expect(posted.message.id).toBeGreaterThan(0)
   })
 
   it('re-renders a copy when a label change changes its rendering, and only then', async () => {
@@ -1242,6 +1303,7 @@ describe('provider callbacks', () => {
     const board = testBoard({ sync: { github: github({ adapter: g.adapter, repos: { 'basehub-ai/vboard': seen } }) } })
     await board.fetch(new Request(`${BOARD_URL}/webhooks/github`, { method: 'POST', body: JSON.stringify({ type: 'message', threadId: 'github:basehub-ai/vboard:99', id: 'c1', text: 'skip', user: '1' }) }))
     await vi.waitFor(() => expect(seen).toHaveBeenCalledOnce())
+    expect(seen.mock.calls[0]![0].event).toMatchObject({ type: 'comment', text: 'skip' })
     expect(get).not.toHaveBeenCalled()
   })
 

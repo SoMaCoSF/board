@@ -49,10 +49,13 @@ export function words(expression: string): string[] {
   return out
 }
 
+/** A watcher's tail takes the filters and `--all`, which shows receipts as it does in `vb tail`. */
+const TAIL_FLAGS = { ...FILTER_FLAGS, all: { type: 'boolean' } } as const
+
 /** Parses filter flags, with errors that read like the CLI's. */
 function parseFilterFlags(args: string[]) {
   try {
-    return parseArgs({ args, options: FILTER_FLAGS, allowPositionals: true, strict: true })
+    return parseArgs({ args, options: TAIL_FLAGS, allowPositionals: true, strict: true })
   } catch (error) {
     const { code, message } = error as { code?: string; message: string }
     const flag = /'(-[^' ]+)/.exec(message)?.[1]
@@ -63,6 +66,11 @@ function parseFilterFlags(args: string[]) {
 
 /** A `vb tail` expression, `firehose --label status=needs-agent`, as filters. */
 export function parseTail(expression: string): z.output<typeof Filters> {
+  return parseWatchTail(expression).filters
+}
+
+/** A watcher's `tail`: its filters, and whether `--all` shows it receipts too. */
+export function parseWatchTail(expression: string): { filters: z.output<typeof Filters>; all: boolean } {
   const { values, positionals } = parseFilterFlags(withMentions(words(expression)))
   if (positionals.length > 1) throw new Error(`expected one channel, got: ${positionals.join(' ')}`)
   const channel = positionals[0]
@@ -79,5 +87,5 @@ export function parseTail(expression: string): z.output<typeof Filters> {
     const issue = parsed.error.issues[0]
     throw new Error(`${issue?.path.length ? `--${String(issue.path[0])}: ` : ''}${issue?.message ?? 'invalid filters'}`)
   }
-  return parsed.data
+  return { filters: parsed.data, all: values.all === true }
 }

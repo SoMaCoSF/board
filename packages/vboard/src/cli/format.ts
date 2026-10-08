@@ -1,4 +1,4 @@
-import type { BoardEventView, MessageView } from '../api/routes.ts'
+import type { BoardEventView, MessageView, ScheduleView, SourceRead } from '../api/routes.ts'
 import { displayEmoji } from '../contract/emoji.ts'
 import { fileSize } from '../contract/files.ts'
 import { displayText } from '../contract/bots.ts'
@@ -65,7 +65,7 @@ export function formatMessage(message: MessageView, options: { reply?: boolean; 
   const pad = options.reply ? '    ' : '      '
   const head = `${options.reply ? '  ↳ ' : ''}#${message.id}  ${authorName(message)} · ${ago(message.createdAt)}${
     message.editedAt ? ' (edited)' : ''
-  }${labels(message)}`
+  }${message.schedule ? ` ⏰ s${message.schedule.id}` : ''}${labels(message)}`
   const body = message.deleted ? `${pad}(message removed)` : indent(displayText(message.text, message.by.actor), pad)
   const files = (message.attachments ?? []).map((a) => `${pad}📎 ${a.name} · ${a.type} · ${fileSize(a.size)} · ${a.id}`)
   const links = message.deleted ? [] : (message.links ?? []).flatMap((link) => embed(link, pad))
@@ -92,6 +92,55 @@ export function formatThreads(messages: MessageView[]): string {
   for (const reply of orphans)
     blocks.push(`(in thread #${reply.re})\n${formatMessage(reply, { reply: true, names })}`)
   return blocks.join('\n\n')
+}
+
+/** `90m` → `1h30m`, `1d`: milliseconds as a duration flag would say them. */
+export function span(ms: number): string {
+  const parts: string[] = []
+  let rest = Math.round(ms / 1000)
+  for (const [unit, size] of [['d', 86_400], ['h', 3600], ['m', 60], ['s', 1]] as const) {
+    if (rest >= size) parts.push(`${Math.floor(rest / size)}${unit}`)
+    rest %= size
+  }
+  return parts.join('') || '0s'
+}
+
+/** `in 25m`, or `due` once it's past. */
+const until = (iso: string, now: number) => {
+  const ms = Date.parse(iso) - now
+  if (ms <= 0) return 'due'
+  return `in ${span(ms < 60_000 ? Math.ceil(ms / 1000) * 1000 : Math.ceil(ms / 60_000) * 60_000)}`
+}
+
+/** One schedule: what it sends, when, where, and how it stops. */
+export function formatSchedule(schedule: ScheduleView, options: { pad?: string; now?: number } = {}): string {
+  const now = options.now ?? Date.now()
+  const pad = options.pad ?? ''
+  const where = schedule.re === null ? `new thread in ${schedule.channel}` : `#${schedule.re}`
+  const repeat = schedule.every === null ? 'once' : `every ${span(schedule.every)}`
+  const stop =
+    schedule.every === null
+      ? ''
+      : schedule.times !== null
+        ? ` · ${schedule.times} times`
+        : schedule.until !== null
+          ? ` · until ${schedule.until}`
+          : ' · until canceled'
+  const when =
+    schedule.state === 'pending'
+      ? `next ${until(schedule.next!, now)} (${schedule.next})`
+      : schedule.state === 'canceled'
+        ? schedule.canceled?.reason === 'thread_deleted'
+          ? 'ended: the thread was deleted'
+          : 'canceled'
+        : 'done'
+  const sent = schedule.sent > 0 ? ` · ${schedule.sent} sent` : ''
+  const files = schedule.attachments.length ? ` · 📎 ${schedule.attachments.length}` : ''
+  const text = displayText(schedule.text, schedule.by.actor)
+  return [
+    `${pad}⏰ s${schedule.id}  ${where} · ${repeat}${stop} · ${when}${sent}${files} · by ${authorName(schedule)}`,
+    indent(text || '(no text)', `${pad}    `),
+  ].join('\n')
 }
 
 /** One line per live event, for `tail` and `wait`. */
@@ -126,4 +175,26 @@ export function formatEvent(event: BoardEventView): string {
     default:
       return `#${event.index}  ${event.type}`
   }
+}
+
+/**
+ * A channel or thread read with `vb sources <key> read`: a header, then each message under its ID,
+ * with the target that reads its thread when it has replies.
+ */
+export function formatSourceRead(key: string, read: SourceRead, now = Date.now()): string {
+  const where = `${key}:${read.channel}${read.name ? ` (#${read.name})` : ''}${read.thread ? `, thread ${read.thread}` : ''}`
+  if (read.messages.length === 0) return `${where}\nno messages`
+  const blocks = read.messages.map((message) => {
+    const reply = read.thread !== null && message.id !== read.thread
+    const pad = reply ? '    ' : '      '
+    const when = message.createdAt ? ` · ${ago(message.createdAt, now)}` : ''
+    const replies = message.replies > 0 && read.thread === null ? `  (${message.replies} ${message.replies === 1 ? 'reply' : 'replies'}: vb sources ${key} read ${message.thread})` : ''
+    return [
+      `${reply ? '  ↳ ' : ''}${message.id}  ${message.author}${when}${replies}`,
+      indent(message.text || '(no text)', pad),
+      ...message.files.map((file) => `${pad}📎 ${file.name}${file.url ? ` ${file.url}` : ''}`),
+    ].join('\n')
+  })
+  const more = read.more ? [`(${read.thread ? 'later replies' : 'older messages'} not shown: raise --limit, up to 200)`] : []
+  return [where, ...blocks, ...more].join('\n')
 }

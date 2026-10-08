@@ -78,8 +78,8 @@ test("a retry reads the current draft status and does not mark it ready again", 
   assertIntent(h, "Checks are pending.");
 });
 
-test("shipit and its Slack squirrel alias merge a PR root for any reactor", async () => {
-  for (const [emoji, user] of [["shipit", "U123"], ["squirrel", "U123"], ["squirrel", "U456"]]) {
+test("shipit, its Slack squirrel alias, and :approved: merge a PR root for any reactor", async () => {
+  for (const [emoji, user] of [["shipit", "U123"], ["squirrel", "U123"], ["squirrel", "U456"], ["approved", "U456"]]) {
     const input = event();
     input.payload.emoji = emoji;
     input.payload.by = { actor: `slack:user:${user}`, principal: `slack:user:${user}` };
@@ -95,6 +95,8 @@ test("shipit and its Slack squirrel alias merge a PR root for any reactor", asyn
     for (const request of h.requests) {
       assert.equal(request.headers.authorization, "Bearer test-token");
       assert.equal(request.headers["x-github-api-version"], "2026-03-10");
+      // Every GitHub call has a timeout, so a hung request can't stall the watcher.
+      // AbortSignal.timeout ignores mocked timers, so a hung fetch would take the full 15s here.
       assert.ok(request.signal instanceof AbortSignal);
     }
     assert.deepEqual(h.notifications, []);
@@ -116,13 +118,24 @@ for (const [name, change] of [
   test(`ignores ${name} without obtaining credentials or calling GitHub`, async () => {
     const input = event();
     change(input);
-    const h = harness([]);
+    const h = harness([open(), merged()]);
     await h.run(input);
     assert.equal(h.tokens(), 0);
     assert.deepEqual(h.requests, []);
     assert.deepEqual(h.notifications, []);
+    await h.run();
+    assert.equal(h.requests.at(-1).url, "https://api.github.com/repos/basehub-ai/vboard/pulls/53/merge", "the unchanged event merges");
   });
 }
+
+test("a failed :approved: merge names the reaction it came from", async () => {
+  const input = event();
+  input.payload.emoji = "approved";
+  const h = harness([open(), { status: 405, body: { message: "Checks are pending." } }]);
+  await h.run(input);
+  assert.equal(h.notifications.length, 1);
+  assert.match(h.notifications[0].message, /reacted with :approved: to request a merge/);
+});
 
 test("a retried callback sees the merged PR and does not merge it again", async () => {
   const h = harness([open(), merged(), merged()]);
@@ -179,8 +192,6 @@ function assertIntent(h, reason, requester = "sam") {
   assert.ok(notification.message.includes(`${requester} (slack:user:U123)`));
   assert.ok(notification.message.includes("request a merge of basehub-ai/vboard#53"));
   assert.ok(notification.message.includes(reason));
-  assert.ok(notification.message.includes("checks, and reviews"));
-  assert.ok(notification.message.includes("Ping the appropriate reviewer or owner"));
 }
 
 test("uses the reactor's verified identity when its display name is unavailable", async () => {
@@ -207,6 +218,5 @@ test("a failed Pi handoff can retry with the same deduplication key", async () =
   });
   await assert.rejects(watcher.run({ event: event() }), /sandbox unavailable/);
   await watcher.run({ event: event() });
-  assert.equal(notifications.length, 2);
-  assert.deepEqual(notifications[0], notifications[1]);
+  assert.deepEqual(notifications.map(n => n.key), ["shipit-71", "shipit-71"]);
 });

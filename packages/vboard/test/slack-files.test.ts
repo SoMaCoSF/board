@@ -1,7 +1,7 @@
 import { Readable } from 'node:stream'
 import { describe, expect, it } from 'vitest'
 import { createSlackAdapter } from '@chat-adapter/slack'
-import { slack } from '../src/sync/slack.ts'
+import { slack, slackFileName } from '../src/sync/slack.ts'
 
 /**
  * The real Slack adapter, single-workspace like the software factory (an async
@@ -41,5 +41,19 @@ describe('files from Slack', () => {
     const url = 'https://files.slack.com/files-pri/T2-F2/other.png'
     await expect(provider.fetchFile({ type: 'image', name: 'other.png', url, fetchMetadata: { url, teamId: 'T2' } })).rejects.toThrow(/Installation not found for team T2/)
     expect(requests).toEqual([]) // never sent with the default bot token
+  })
+})
+
+describe('files to Slack', () => {
+  it('names a text file so Slack previews it instead of offering a binary download', () => {
+    expect(slackFileName('deepsec.log', 'text/plain')).toBe('deepsec.log.txt')
+    expect(slackFileName('events.ndjson', 'application/x-ndjson')).toBe('events.ndjson.txt')
+    expect(slackFileName('Makefile', 'text/plain')).toBe('Makefile.txt')
+    expect(slackFileName('test-run.txt', 'text/plain')).toBe('test-run.txt')
+    expect(slackFileName('README.MD', 'text/markdown')).toBe('README.MD')
+    expect(slackFileName('data.json', 'application/json')).toBe('data.json')
+    expect(slackFileName('shot.png', 'image/png')).toBe('shot.png')
+    expect(slackFileName('blob.bin', 'application/octet-stream')).toBe('blob.bin')
+    expect(slackFileName('unknown.log')).toBe('unknown.log')
   })
 })

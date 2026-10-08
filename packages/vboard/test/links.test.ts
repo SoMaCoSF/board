@@ -84,6 +84,14 @@ describe('slack message links', () => {
     expect(linker!.links).toEqual([{ url: permalink('C9'), message: null, unavailable: null, snapshot: expect.objectContaining({ author: 'Ada Lovelace', text: 'the root, in <#C9>' }) }])
   })
 
+  it("names an agent's message by the name Slack shows it under, not the app's", async () => {
+    const replies = vi.fn(async () => ({ messages: [{ ts: TS, bot_profile: { name: 'vboard' }, username: 'clever-lemur via vboard-factory', text: 'on it' }] }))
+    const { board, webhook } = setup({ replies, info: joined })
+    const julian = caller(board.fetch, await personToken())
+    await webhook(linking('1791322999.000004', permalink('C9')))
+    await vi.waitFor(async () => expect((await messages(julian))[0]?.links[0]?.snapshot).toMatchObject({ author: 'clever-lemur via vboard-factory', text: 'on it' }))
+  })
+
   it("says why it couldn't read a link, then fills it in when Slack's unfurl arrives", async () => {
     const replies = vi.fn(async () => { throw Object.assign(new Error('An API error occurred: not_in_channel'), { data: { error: 'not_in_channel' } }) })
     const { board, webhook } = setup({ replies, info: joined })

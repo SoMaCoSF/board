@@ -3,24 +3,26 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, w
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 
-// Coding agents end each turn with a hook. `vb hooks install` adds one that
+// Coding agents end each turn with a hook (Pi, with an extension). `vb hooks install` adds one that
 // reminds the agent, once, to update the board when its turn didn't: it runs
 // `vb update` (or `vb reply` in a thread it's in), or `vb update --skip` to stay
 // quiet. The hook only reminds; the agent uses the CLI for everything, reading
 // included. Deciding reads only a local marker, so a turn never waits on it.
 
-type Shape = 'nested' | 'flat'
+type Shape = 'nested' | 'flat' | 'extension'
 
 /**
  * Where each agent keeps hooks, and which of its events run ours. Claude Code
  * and Codex read `{ hooks: { Stop: [{ hooks: [entry] }] } }`; Cursor reads
  * `{ version: 1, hooks: { stop: [entry] } }`, and its stop can't block, so it's
- * reminded with a follow-up message instead.
+ * reminded with a follow-up message instead. Pi has no hook files: its hook is
+ * an extension we write whole (`piExtension`), in `$PI_CODING_AGENT_DIR/extensions`.
  */
 export const AGENTS = {
   claude: { name: 'Claude Code', shape: 'nested', event: 'Stop', file: () => join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'settings.json') },
   codex: { name: 'Codex', shape: 'nested', event: 'Stop', file: () => join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'hooks.json') },
   cursor: { name: 'Cursor', shape: 'flat', event: 'stop', file: () => join(homedir(), '.cursor', 'hooks.json') },
+  pi: { name: 'Pi', shape: 'extension', event: 'agent_before_settle', file: () => join(process.env.PI_CODING_AGENT_DIR || join(homedir(), '.pi', 'agent'), 'extensions', 'vboard.ts') },
 } as const satisfies Record<string, { name: string; shape: Shape; event: string; file: () => string }>
 
 export type HookAgent = keyof typeof AGENTS
@@ -59,13 +61,75 @@ function without(entries: Entries, shape: Shape): Entries {
     .filter((group) => group.hooks.length > 0)
 }
 
+/** The line of our Pi extension that holds the command it runs: how status finds it. */
+const PI_COMMAND = /^const COMMAND = (".*")$/m
+
+/**
+ * Pi's turn-end hook, as an extension. Before Pi settles a completed run, it
+ * runs our command with what Claude Code's hook gets (the session, the
+ * directory, and whether this hook made it continue); a reminder comes back
+ * as a message, and Pi continues once to act on it. Pi's bash tool exports the
+ * same session as `PI_SESSION_ID`, so the agent's `vb update` counts for it.
+ */
+export function piExtension(command: string): string {
+  return `// Added by \`vb hooks install pi\`: reminds Pi, once per turn, to update the team's board (vboard).
+// \`vb hooks uninstall pi\` removes it; reinstalling replaces this file.
+import { spawn } from 'node:child_process'
+
+const COMMAND = ${JSON.stringify(command)}
+
+function run(cwd: string, input: string): Promise<string> {
+  return new Promise((resolve) => {
+    let out = ''
+    const child = spawn('/bin/sh', ['-c', COMMAND], { cwd, stdio: ['pipe', 'pipe', 'ignore'] })
+    const timer = setTimeout(() => child.kill(), 10_000)
+    child.stdout.on('data', (chunk) => (out += chunk))
+    child.on('error', () => resolve(''))
+    child.on('close', () => (clearTimeout(timer), resolve(out)))
+    child.stdin.on('error', () => {})
+    child.stdin.end(input)
+  })
+}
+
+export default function vboard(pi: any) {
+  let reminded = false
+  pi.on('agent_before_settle', async (event: any, ctx: any) => {
+    const continuing = reminded
+    reminded = false
+    if (event.outcome !== 'completed') return
+    try {
+      const input = JSON.stringify({ session_id: ctx.sessionManager.getSessionId(), cwd: ctx.cwd, stop_hook_active: continuing })
+      const reason = JSON.parse((await run(ctx.cwd, input)) || '{}').reason
+      if (typeof reason !== 'string' || !reason) return
+      reminded = true
+      return { entries: [...event.entries, { type: 'custom_message', customType: 'vboard', content: reason, display: true }], continue: true }
+    } catch {}
+  })
+}
+`
+}
+
 /** Adds our hook, replacing an earlier one of ours; everything else in the file stays. Answers whether it changed. */
 export function installHook(agent: HookAgent, cli: string, flags = ''): boolean {
   const spec = AGENTS[agent]
-  const config = readConfig(spec.file())
   // `|| true`: whatever `cli` turns out to be (an older vboard without `hook` exits 2, which Claude Code
   // and Codex read as "keep going"), the hook can't fail a turn.
   const command = `${cli} hook stop --agent ${agent}${flags} 2>/dev/null || true`
+  if (spec.shape === 'extension') {
+    const source = piExtension(command)
+    let current: string | null = null
+    try {
+      current = readFileSync(spec.file(), 'utf8')
+    } catch {}
+    if (current === source) return false
+    if (current !== null && !current.startsWith('// Added by `vb hooks install pi`'))
+      throw new Error(`${spec.file()} isn't vboard's: move it, then install again`)
+    mkdirSync(dirname(spec.file()), { recursive: true })
+    writeFileSync(`${spec.file()}.vboard-tmp`, source)
+    renameSync(`${spec.file()}.vboard-tmp`, spec.file())
+    return true
+  }
+  const config = readConfig(spec.file())
   const entry = spec.shape === 'flat' ? { command, timeout: 10 } : { hooks: [{ type: 'command', command, timeout: 10 }] }
   const hooks = { ...config.hooks, [spec.event]: [...without(config.hooks?.[spec.event] ?? [], spec.shape), entry] }
   const next = { ...(spec.shape === 'flat' ? { version: 1 } : {}), ...config, hooks }
@@ -78,6 +142,7 @@ export function installHook(agent: HookAgent, cli: string, flags = ''): boolean 
 export function uninstallHook(agent: HookAgent): boolean {
   const spec = AGENTS[agent]
   if (installedHook(agent) === null) return false
+  if (spec.shape === 'extension') return unlinkSync(spec.file()), true
   const config = readConfig(spec.file())
   const hooks = { ...config.hooks }
   const kept = without(hooks[spec.event] ?? [], spec.shape)
@@ -92,6 +157,14 @@ export function uninstallHook(agent: HookAgent): boolean {
 /** The command our hook runs for `agent`, if it's installed. */
 export function installedHook(agent: HookAgent): string | null {
   const spec = AGENTS[agent]
+  if (spec.shape === 'extension') {
+    try {
+      const line = PI_COMMAND.exec(readFileSync(spec.file(), 'utf8'))
+      return line ? (JSON.parse(line[1]!) as string) : null
+    } catch {
+      return null
+    }
+  }
   const entries = readConfig(spec.file()).hooks?.[spec.event] ?? []
   const commands = spec.shape === 'flat' ? (entries as HookEntry[]) : entries.flatMap((group) => (group as Group).hooks ?? [])
   return commands.find(ours)?.command ?? null

@@ -30,6 +30,7 @@ export function fakePlatform(name: string, extend: (adapter: Adapter) => void = 
   const edits: { threadId: string; messageId: string; text: string }[] = []
   const deletes: { threadId: string; messageId: string }[] = []
   const typing: string[] = []
+  const statuses: (string | undefined)[] = []
   /** What the platform hands over for a file URL: the bytes, or an error to throw. */
   const served = new Map<string, Uint8Array | Error>()
   const fetches: string[] = []
@@ -128,8 +129,9 @@ export function fakePlatform(name: string, extend: (adapter: Adapter) => void = 
         return Buffer.from(found)
       },
     }),
-    startTyping: async (threadId: string) => {
+    startTyping: async (threadId: string, status?: string) => {
       typing.push(threadId)
+      statuses.push(status)
     },
     addReaction: async (threadId: string, messageId: string, emoji: unknown) => {
       reactions.push({ threadId, messageId, emoji: String(emoji), added: true })
@@ -139,7 +141,7 @@ export function fakePlatform(name: string, extend: (adapter: Adapter) => void = 
     },
   } as Partial<Adapter>)
   extend(adapter)
-  return { adapter, posts, channelPosts, reactions, edits, deletes, typing, served, fetches }
+  return { adapter, posts, channelPosts, reactions, edits, deletes, typing, statuses, served, fetches }
 }
 
 

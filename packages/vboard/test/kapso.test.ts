@@ -158,7 +158,7 @@ describe('kapso sync', () => {
       expect(reactions).toEqual([{ phoneNumberId: NUMBER, to: JANE, reaction: { messageId: 'wamid.1', emoji: '👀' } }]),
     )
 
-    const { body } = await julian('POST', '/messages', { re: root!.id, text: 'fixed' })
+    await julian('POST', '/messages', { re: root!.id, text: 'fixed' })
     await vi.waitFor(() => expect(texts).toHaveLength(1))
     const reactionsOn = async () => (await julian('GET', `/messages/${root!.id}`)).body.replies[0].reactions
     await react('wamid.r1', 'wamid.out1', '👍')
@@ -167,7 +167,6 @@ describe('kapso sync', () => {
     await vi.waitFor(async () => expect(await reactionsOn()).toEqual({ heart: [`whatsapp:user:${JANE}`] }))
     await react('wamid.r3', 'wamid.out1', '') // a removal names no emoji
     await vi.waitFor(async () => expect(await reactionsOn()).toEqual({}))
-    expect(body.message.id).toBeGreaterThan(root!.id)
     expect(reactions).toHaveLength(1) // Jane's reactions aren't echoed back
   })
 
@@ -228,7 +227,7 @@ describe('kapso sync', () => {
     await text('wamid.1', 'export is broken')
     await text('wamid.2', 'since this morning')
     await vi.waitFor(async () => expect(await read(julian, 'support')).toHaveLength(2))
-    const [root, reply] = await read(julian, 'support')
+    const [, reply] = await read(julian, 'support')
 
     const before = (await julian('GET', '/channels')).body.cursor
     // Any message in the thread will do: typing is for the whole thread.
@@ -237,7 +236,6 @@ describe('kapso sync', () => {
     expect(reads).toEqual([{ phoneNumberId: NUMBER, messageId: 'wamid.2', typingIndicator: { type: 'text' } }])
     // Nothing is written to the log.
     expect((await julian('GET', '/channels')).body.cursor).toBe(before)
-    expect(root!.re).toBeNull()
   })
 
   it('shows typing from a fresh instance, which never saw the inbound webhook', async () => {

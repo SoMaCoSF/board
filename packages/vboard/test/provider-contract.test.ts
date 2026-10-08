@@ -131,6 +131,8 @@ function providerContract(name: string, fixture: typeof nativeFixture | typeof c
       expect((await test.send({ id: 'root', kind: 'message', text: 'forged' }, false)).status).toBe(401)
       expect(test.events).toEqual([])
       expect(await test.read()).toEqual([])
+      expect((await test.send({ id: 'root', kind: 'message', text: 'signed' })).status).toBe(200)
+      await vi.waitFor(async () => expect((await test.read()).map((message) => message.text)).toEqual(['signed']))
     })
 
     it('deduplicates native deliveries and exposes durable callback IDs', async () => {
@@ -248,3 +250,21 @@ function providerContract(name: string, fixture: typeof nativeFixture | typeof c
 
 providerContract('native', nativeFixture)
 providerContract('Chat SDK bridge', chatFixture)
+
+describe('who a post is from', () => {
+  it("gives a platform an agent's name and avatar to post under, and nothing for a person", async () => {
+    const provider = new NativeProvider(async ({ event, board }) => { await board.sync('tickets', event) }, {})
+    const board = testBoard({ sync: { tickets: provider } })
+    const token = await personToken()
+    const person = caller(board.fetch, token)
+    const agent = caller(board.fetch, token, { 'x-board-profile': 'clever-lemur', 'x-board-avatar': 'https://example.com/lemur.png' })
+    await person('POST', '/messages', { channel: 'tickets', text: 'from a person' })
+    await vi.waitFor(() => expect(provider.posts).toHaveLength(1))
+    await agent('POST', '/messages', { channel: 'tickets', text: 'from an agent' })
+    await vi.waitFor(() => expect(provider.posts).toHaveLength(2))
+    expect(provider.posts[0]!.body.as).toBeUndefined()
+    const as = provider.posts[1]!.body.as
+    expect(as).toEqual({ name: expect.stringMatching(/^clever-lemur via /), avatar: 'https://example.com/lemur.png' })
+    expect(provider.posts[1]!.body.markdown).toBe(`**${as!.name}**: from an agent`)
+  })
+})

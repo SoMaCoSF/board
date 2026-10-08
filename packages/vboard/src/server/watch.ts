@@ -1,7 +1,7 @@
 import { idempotentId } from 'experimental-a2'
 import { createServer, type A2Scheduler, type A2Store, type HandlerContext } from 'experimental-a2/server'
 import type { BoardEventView } from '../api/routes.ts'
-import { parseTail } from '../api/tail.ts'
+import { parseWatchTail } from '../api/tail.ts'
 import type { BoardClient } from '../client/client.ts'
 import { watchContract, watchSession, type BoardEvent, type BoardEvents } from '../contract/contract.ts'
 import { actorsReducer, messagesReducer, type Message, type MessagesState } from '../contract/reducers.ts'
@@ -18,7 +18,10 @@ export type WatcherContext = {
 
 /** A `vb tail` the board runs for you: every event the tail would print, handed to `run`. */
 export type Watcher = {
-  /** A `vb tail` expression without `vb tail`: `firehose --label status=needs-agent`. */
+  /**
+   * A `vb tail` expression without `vb tail`: `firehose --label status=needs-agent`. `--all` adds
+   * delivery receipts, as in `vb tail`: `message.synced` says where a message landed on a platform.
+   */
   tail: string
   /**
    * `matches` (the default) runs on every event the tail prints. `enters` runs only when a
@@ -30,7 +33,7 @@ export type Watcher = {
 
 export const ID = /^[a-z0-9][a-z0-9_-]{0,63}$/
 
-/** The events a tail shows: each concerns a message, and carries its thread for the lane. Receipts are hidden. */
+/** The events a tail shows, receipts included for `--all`: each concerns a message, and carries its thread for the lane. */
 const WATCHED = [
   'message.posted',
   'message.edited',
@@ -39,7 +42,12 @@ const WATCHED = [
   'reaction.removed',
   'labels.changed',
   'message.sync_failed',
+  'message.synced',
+  'message.files_synced',
 ] as const
+
+/** Receipts: only a `--all` tail shows them. */
+const RECEIPTS = new Set(['message.synced', 'message.files_synced'])
 
 /** A watcher writes as itself, and its own writes never wake it. */
 const identityOf = (id: string): Identity => deploymentIdentity(`vboard:watch:${id}`, id)
@@ -57,15 +65,16 @@ export function createWatchers(options: {
   const watchers = Object.entries(options.watch).map(([id, watcher]) => {
     if (!ID.test(id)) throw new Error(`watch: ids use lowercase letters, numbers, - and _, got: ${id}`)
     let filters: ParsedFilters
+    let all: boolean
     try {
-      filters = parseTail(watcher.tail)
+      ;({ filters, all } = parseWatchTail(watcher.tail))
     } catch (error) {
       throw new Error(`watch ${id}: ${(error as Error).message}`)
     }
     if (filters.mentions === 'me') throw new Error(`watch ${id}: a watcher has no "me": use --mentions @handle`)
     const criteria = hasCriteria(filters)
     if (watcher.when === 'enters' && !criteria) throw new Error(`watch ${id}: \`when: enters\` needs a filter to enter`)
-    return { id, filters, criteria, enters: watcher.when === 'enters', identity: identityOf(id), run: watcher.run }
+    return { id, filters, criteria, enters: watcher.when === 'enters', all, identity: identityOf(id), run: watcher.run }
   })
   const byId = new Map(watchers.map((watcher) => [watcher.id, watcher]))
 
@@ -103,6 +112,7 @@ export function createWatchers(options: {
     let view: BoardEventView | undefined
     for (const watcher of watchers) {
       if (by === watcher.identity.actor.id) continue
+      if (RECEIPTS.has(event.type) && !watcher.all) continue
       const match = compileFilter(watcher.filters, { me: null, actors, messages })
       if (watcher.enters ? !entered(match, before, after, messages) : !(watcher.criteria ? match(before) || match(after) : id !== null))
         continue

@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { Message, Actor } from '../contract/reducers.ts'
 import type { BoardClient } from '../client/client.ts'
+import type { SourceRead } from '../api/routes.ts'
 import { ExternalEvent, type ExternalAuthor, type ExternalFile, type ExternalLink, type Link } from '../contract/contract.ts'
 import { immutable, type ProviderEvent, type SyncOverrides, type SyncResult, type SyncRoot } from './events.ts'
 
@@ -36,8 +37,22 @@ export type FileDelivery = { message: string; files: string[] }
 /** What a linked message said, or why the platform wouldn't say. */
 export type FetchedLink = Pick<Link, 'snapshot' | 'unavailable'>
 
+/** Why a platform wouldn't read a channel or thread on demand. Its message is shown as is. */
+export class UnreadableError extends Error {
+  readonly code: string
+  constructor(code: string, message: string) {
+    super(message)
+    this.code = code
+  }
+}
+
 export type ProviderFile = { data: Buffer; filename: string; mimeType?: string }
-export type ProviderPost = { markdown: string; files?: ProviderFile[] }
+/**
+ * Who a post is from, for a platform that can show it as the sender (Slack's per-message
+ * username and icon): `name` is the label the text opens with (`**name**: …`).
+ */
+export type ProviderSender = { name: string; avatar: string | null }
+export type ProviderPost = { markdown: string; files?: ProviderFile[]; as?: ProviderSender }
 export type ProviderDelivery = { thread: string; message: string; files?: string[] }
 export type ProviderOptions = {
   platform: string
@@ -78,10 +93,17 @@ export abstract class SyncProvider<E extends ProviderEvent = ProviderEvent> {
   async fetchFile(_file: ExternalFile): Promise<Uint8Array | null> { return null }
   /** A linked message the platform didn't describe, read from the platform. */
   async fetchLink(_link: ExternalLink): Promise<FetchedLink> { return { snapshot: null, unavailable: `${this.platform} can't read it` } }
+  /**
+   * A channel or thread, read on demand for whoever asked: nothing is synced,
+   * stored, or joined. Throws `UnreadableError` for what it won't read.
+   */
+  async read(_target: string, _options: { limit: number }): Promise<SourceRead> {
+    throw new UnreadableError('unsupported', `${this.platform} can't be read on demand`)
+  }
   async edit(_thread: string, _message: string, _body: ProviderPost): Promise<void> {}
   async delete(_thread: string, _message: string): Promise<void> {}
   async react(_thread: string, _message: string, _emoji: string, _added: boolean): Promise<void> {}
-  async startTyping(_thread: string, _latest: string | null): Promise<void> {}
+  async startTyping(_thread: string, _latest: string | null, _status?: string): Promise<void> {}
   async deleteFiles(_ids: string[]): Promise<void> {}
   refusesFiles(_error: unknown): boolean { return false }
   async uploadFiles(_thread: string, _files: ProviderFile[]): Promise<FileDelivery> {

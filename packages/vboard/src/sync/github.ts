@@ -22,6 +22,22 @@ const author = (user: User | undefined): ExternalAuthor => ({
   isBot: user?.type === 'Bot',
 })
 
+type Comment = { id: number; in_reply_to_id?: number; user?: User; body?: string }
+type Repository = { name: string; owner: { login: string } }
+type CommentPayload = {
+  action?: string
+  comment?: Comment
+  issue?: { number?: number; pull_request?: unknown }
+  pull_request?: { number?: number }
+  repository?: Repository
+}
+/** The adapter's own parsing, so an edit lands on the same thread and message IDs as the comment it changes. */
+type CommentParser = {
+  encodeThreadId(id: { owner: string; repo: string; prNumber: number; type?: 'pr' | 'issue'; reviewCommentId?: number }): string
+  parseIssueComment(comment: Comment, repository: Repository, number: number, threadId: string, type?: 'pr' | 'issue'): ChatMessage
+  parseReviewComment(comment: Comment, repository: Repository, number: number, threadId: string): ChatMessage
+}
+
 type Label = { name?: string }
 type Item = { labels?: Label[]; assignees?: User[] }
 type GitHubItem = Item & {
@@ -252,6 +268,36 @@ export class GitHubProvider extends ChatSyncProvider<GitHubEvent> {
         const path = raw?.path ?? raw?.comment?.path
         const line = raw?.line ?? raw?.comment?.line
         return path ? (line ? `${path}:${line}` : path) : null
+      },
+      // Chat SDK's GitHub adapter only handles new comments; edits (Vercel updating its deployment comment) and deletes come through here.
+      missed(headers, body) {
+        const name = headers.get('x-github-event') ?? ''
+        if (name !== 'issue_comment' && name !== 'pull_request_review_comment') return []
+        let payload: CommentPayload
+        try {
+          payload = JSON.parse(body) as CommentPayload
+        } catch {
+          return []
+        }
+        if ((payload.action !== 'edited' && payload.action !== 'deleted') || !payload.comment?.id || !payload.repository) return []
+        const { comment, repository } = payload
+        const adapter = options.adapter as Adapter & CommentParser
+        const review = name === 'pull_request_review_comment'
+        const number = review ? payload.pull_request?.number : payload.issue?.number
+        if (!number) return []
+        const type = review ? undefined : payload.issue?.pull_request ? 'pr' : 'issue'
+        const threadId = adapter.encodeThreadId({
+          owner: repository.owner.login, repo: repository.name, prNumber: number,
+          ...(review ? { reviewCommentId: comment.in_reply_to_id ?? comment.id } : { type }),
+        })
+        const message = review
+          ? adapter.parseReviewComment(comment, repository, number, threadId)
+          : adapter.parseIssueComment(comment, repository, number, threadId, type)
+        // The board's own comments: it made the change, so it already has it.
+        if (message.author.isMe) return []
+        return payload.action === 'edited'
+          ? [{ kind: 'edited', message }]
+          : [{ kind: 'deleted', thread: threadId, message: message.id, raw: payload }]
       },
       intercept(key, headers, body): ReceivedEvent[] {
         const name = headers.get('x-github-event') ?? ''

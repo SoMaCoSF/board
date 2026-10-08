@@ -46,10 +46,17 @@ describe('known bot messages', () => {
   it('only reads Vercel comments that Vercel wrote', () => {
     expect(display(VERCEL_BUILDING, 'github:user:42')).toBe(VERCEL_BUILDING)
     expect(display(VERCEL_BUILDING, 'slack:user:U1')).toBe(VERCEL_BUILDING)
+    expect(display(VERCEL_BUILDING, VERCEL_BOT)).toContain('- ⏳ **[vboard-factory]')
   })
 
   it('reads a comment with CRLF line endings', () => {
-    expect(displayText(VERCEL_WITH_SKIPPED.replace(/\n/g, '\r\n'))).toBe(displayText(VERCEL_WITH_SKIPPED))
+    expect(displayText(VERCEL_WITH_SKIPPED.replace(/\n/g, '\r\n'))).toBe(
+      [
+        '**▲ Vercel**',
+        '- ⏳ **[vboard-factory](https://vercel.com/vercel-internal-playground/vboard-factory)** · [Building](https://vercel.com/vercel-internal-playground/vboard-factory/AKYQCQiM4Vf5Zp1AAcH6nQDYUC4n) · [Preview](https://vboard-factory-git-changeset-release-main.playground-vercel.tools) · Oct 6, 2026 5:25pm UTC',
+        '- ⚪ **[vboard](https://vercel.com/basehub/vboard)** · [Ignored](https://vercel.com/basehub/vboard/Go3sKM9tee9TraPTMa71Haa1uZzj) (skipped) · Oct 6, 2026 5:25pm UTC',
+      ].join('\n'),
+    )
   })
 
   it('shows the readable form in vb read, and the original in --json', () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BoardError, createClient } from '../src/client/index.ts'
+import { createClient } from '../src/client/index.ts'
 import { BOARD_URL, personToken, testBoard } from './harness.ts'
 import { detectAgent } from '../src/client/node.ts'
 
@@ -30,7 +30,7 @@ describe('client', () => {
       code: 'message_not_found',
       status: 404,
     })
-    await expect(client.post('Bad Channel', 'x')).rejects.toBeInstanceOf(BoardError)
+    await expect(client.post('Bad Channel', 'x')).rejects.toMatchObject({ name: 'BoardError', code: 'invalid_request', status: 400 })
   })
 
   it('waits for the next matching event, or times out with null', async () => {

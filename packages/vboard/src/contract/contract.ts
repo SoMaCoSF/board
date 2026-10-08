@@ -86,6 +86,8 @@ export const boardContract = contract({
       attachments: z.array(Attachment).max(ATTACHMENTS_PER_MESSAGE_MAX).optional(),
       /** Platform messages it links to. Events written before links have none. */
       links: z.array(Link).max(LINKS_PER_MESSAGE_MAX).optional(),
+      /** (server) Posted by a schedule: its ID and which send this is, from 0. Other messages have none. */
+      schedule: z.object({ id: z.number().int().positive(), n: z.number().int().nonnegative() }).optional(),
     }),
     /** A message's links changed: an edit linked something new, or the platform sent what a link says. */
     'message.linked': z.object({ id: MessageId, thread: ThreadKey, links: z.array(Link).max(LINKS_PER_MESSAGE_MAX), by: Author, from: From }),
@@ -288,3 +290,60 @@ export type WatchEvents = typeof watchContract.events
 
 /** `watch:triage`: the session for one watcher. */
 export const watchSession = (id: string) => `watch:${id}`
+
+/** Epoch milliseconds. */
+const Millis = z.number().int().nonnegative()
+
+/** Who a schedule posts as: the identity that created it, as the board resolved it then. */
+export const ScheduleIdentity = z.object({
+  author: Author,
+  principal: z.object({ id: z.string().min(1), kind: z.enum(['person', 'deployment', 'workflow', 'external']), handle: Handle }),
+  actor: z.object({ id: ActorId, kind: SeenActorKind, handle: Handle, name: z.string().min(1).max(128), avatar: z.string().nullable() }),
+})
+
+/**
+ * Scheduled messages, outside the board log: one session, `schedules`. A schedule's ID is
+ * its `schedule.created` index. Each send is an A2 timer carrying `schedule.due`; timers
+ * can't be revoked, so a canceled or superseded one fires into a no-op.
+ */
+export const schedulesContract = contract({
+  name: 'vboard-schedules',
+  events: {
+    'schedule.created': z.object({
+      /** A new root in `channel`, or a reply in the thread rooted at `re`. */
+      channel: ChannelPath,
+      re: MessageId.nullable(),
+      text: z.union([MessageText, z.literal('')]),
+      labels: Labels,
+      noSync: z.boolean(),
+      attachments: z.array(Attachment).max(ATTACHMENTS_PER_MESSAGE_MAX).optional(),
+      /** The first send. */
+      first: Millis,
+      /** Repeats this often after the first send, or null for once. */
+      every: Millis.nullable(),
+      /** Stops repeating after this time, or after this many sends. Null: never. */
+      until: Millis.nullable(),
+      times: z.number().int().positive().nullable(),
+      as: ScheduleIdentity,
+    }),
+    'schedule.canceled': z.object({
+      id: z.number().int().positive(),
+      by: Author,
+      /** `canceled`: someone canceled it; `thread_deleted`: the thread it replies in is gone. */
+      reason: z.enum(['canceled', 'thread_deleted']),
+    }),
+    /** (server) A timer: send `n` is due at `at`. */
+    'schedule.due': z.object({ id: z.number().int().positive(), n: z.number().int().nonnegative(), at: Millis }),
+    /** (server) Send `n` was posted as `message`; the next is due at `next`, or never. */
+    'schedule.fired': z.object({
+      id: z.number().int().positive(),
+      n: z.number().int().nonnegative(),
+      message: MessageId,
+      next: Millis.nullable(),
+    }),
+  },
+})
+
+export type ScheduleEvents = typeof schedulesContract.events
+export type ScheduleEvent = ContractEvent<ScheduleEvents>
+export const SCHEDULES_SESSION = 'schedules'

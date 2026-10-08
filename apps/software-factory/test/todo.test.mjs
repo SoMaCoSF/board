@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { todo } from "../app/api/board/[[...path]]/todo.ts";
-import { pi, parked } from "../app/api/board/[[...path]]/pi.ts";
+import { pi } from "../app/api/board/[[...path]]/pi.ts";
+import { parked } from "../app/api/board/[[...path]]/todo.ts";
 import { byPi } from "../app/api/board/[[...path]]/agent.ts";
 
-const KINDS = { bug: "a bug report", feature: "a feature request", question: "a question" };
 const person = { actor: "slack:user:U123", principal: "slack:user:U123", profile: null, session: null };
+const cliPerson = { actor: "vercel:user:u_abc", principal: "vercel:user:u_abc", profile: null, session: null };
 
 const root = (over = {}) => ({ id: 854, re: null, labels: { kind: "feature" }, reactions: {}, by: person, ...over });
 
@@ -20,8 +21,8 @@ function harness(threadRoot = root()) {
   return {
     told,
     labels,
-    todo: event => todo({ tellPi, kinds: KINDS }).run({ event, board }),
-    pi: event => pi({ tellPi, byPi, kinds: KINDS }).run({ event, board }),
+    todo: event => todo({ tellPi }).run({ event, board }),
+    pi: event => pi({ tellPi, byPi }).run({ event, board }),
   };
 }
 
@@ -85,5 +86,26 @@ test("Pi isn't told about a parked thread's kind or its replies", async () => {
 test("parked reads the label or the reaction", () => {
   assert.equal(parked(root()), false);
   assert.equal(parked(root({ labels: { todo: "yes" } })), true);
-  assert.equal(parked(root({ reactions: { todo: ["x"] } })), true);
+  assert.equal(parked(root({ reactions: { todo: ["slack:user:U9"] } })), true);
+});
+
+// Review of #80: a :todo: from someone the todo watcher ignores (a person on `vb react`,
+// Pi, a bot) parked the thread with no label, and nothing ever unparked it, so replies
+// sent meanwhile never reached Pi.
+test("a :todo: the todo watcher ignores doesn't park the thread either", async () => {
+  const reactions = { todo: [cliPerson.actor, "vercel:project:pi:production"] };
+  assert.equal(parked(root({ reactions })), false);
+
+  const h = harness(root({ reactions }));
+  await h.todo(reaction("reaction.added", root({ reactions }), cliPerson));
+  assert.deepEqual(h.labels, []);
+  await h.pi({ index: 2, type: "message.posted", payload: {}, message: { id: 1114, re: 854, labels: {}, reactions: {}, by: person } });
+  assert.deepEqual(h.told.map(t => t.key), ["news-1114"]);
+});
+
+test("removing a person's :todo: unparks even when an ignored :todo: remains", async () => {
+  const h = harness();
+  await h.todo(reaction("reaction.removed", root({ labels: { kind: "feature", todo: "yes" }, reactions: { todo: [cliPerson.actor] } })));
+  assert.deepEqual(h.labels, [{ id: 854, unset: ["todo"] }]);
+  assert.equal(h.told.length, 1);
 });

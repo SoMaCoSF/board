@@ -3,12 +3,13 @@ import type { Adapter, Message as ChatMessage } from 'chat'
 import { markdownOf } from './chat.ts'
 import { z } from 'zod'
 import { envelope, eventSchema } from './events.ts'
-import type { ResolvedTarget, SyncContext, SyncHandler, EventMapping, RenderInput, ReceivedEvent, FetchedLink } from './provider.ts'
+import { UnreadableError, type ResolvedTarget, type ProviderPost, type ProviderDelivery, type ProviderSender, type SyncContext, type SyncHandler, type EventMapping, type RenderInput, type ReceivedEvent, type FetchedLink } from './provider.ts'
+import type { SourceMessage, SourceRead } from '../api/routes.ts'
 import { stringifyMarkdown } from 'chat'
 import { LINKS_PER_MESSAGE_MAX, type ExternalLink } from '../contract/contract.ts'
 import { MESSAGE_TEXT_MAX } from '../contract/schemas.ts'
 
-type SlackChannel = { id?: string; name?: string; is_member?: boolean; is_private?: boolean; is_im?: boolean; is_mpim?: boolean }
+type SlackChannel = { id?: string; name?: string; is_member?: boolean; is_private?: boolean; is_im?: boolean; is_mpim?: boolean; is_ext_shared?: boolean }
 export type SlackClient = {
   conversations: {
     list(args: Record<string, unknown>): Promise<{
@@ -17,14 +18,58 @@ export type SlackClient = {
     }>
     info(args: { channel: string }): Promise<{ channel?: SlackChannel }>
     join(args: { channel: string }): Promise<unknown>
-    /** Reads a linked message; needs `channels:history` (`groups:history` for private channels). */
-    replies?(args: { channel: string; ts: string; oldest: string; latest: string; inclusive: boolean; limit: number }): Promise<{ messages?: SlackMessage[] }>
+    /** Reads a linked message or a thread; needs `channels:history` (`groups:history` for private channels). */
+    replies?(args: { channel: string; ts: string; oldest?: string; latest?: string; inclusive?: boolean; limit: number }): Promise<{ messages?: SlackMessage[]; has_more?: boolean }>
+    /** Reads a channel, newest first, for `vb sources <key> read`; needs `channels:history`. */
+    history?(args: { channel: string; limit: number }): Promise<{ messages?: SlackMessage[]; has_more?: boolean }>
   }
   users?: {
     info(args: { user: string }): Promise<{ user?: SlackUser }>
     lookupByEmail?(args: { email: string }): Promise<{ user?: SlackUser }>
   }
   files?: { delete(args: { file: string }): Promise<unknown> }
+  /** Posts an agent's message under its own name; needs `chat:write.customize` for `username` and `icon_url`. */
+  chat?: { postMessage(args: SlackPost): Promise<{ ts?: string }> }
+  /** Says which scopes the app has (`response_metadata.scopes`, from Slack's `x-oauth-scopes`). */
+  auth?: { test(): Promise<{ response_metadata?: { scopes?: string[] } }> }
+}
+
+type SlackPost = {
+  channel: string
+  thread_ts?: string
+  text?: string
+  markdown_text?: string
+  username?: string
+  icon_url?: string
+  unfurl_links?: boolean
+  unfurl_media?: boolean
+}
+
+/** What the Slack adapter does to a message before posting it, used when vboard posts one itself. */
+type SlackInternals = Omit<Adapter, 'decodeThreadId'> & {
+  decodeThreadId(threadId: string): { channel: string; threadTs: string }
+  formatConverter?: { toSlackPayload?(message: { markdown: string }): { text: string } | { markdown_text: string } }
+  resolveMessageMentions?(message: { markdown: string }, threadId: string): Promise<{ markdown: string }>
+}
+
+/** The `**name**: ` a message's text opens with, taken out when Slack shows the name as the sender. */
+export function withoutLabel(markdown: string, name: string): string {
+  const label = new RegExp(`(^|\\n)\\*\\*${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\*\\*: `)
+  return markdown.replace(label, '$1')
+}
+
+/**
+ * A sender's picture as Slack's `icon_url`: an https image. The board's built-in agent
+ * avatars are SVGs, which Slack won't show, so those keep the app's icon.
+ */
+export function slackIcon(avatar: string | null): string | null {
+  if (!avatar) return null
+  try {
+    const url = new URL(avatar)
+    return url.protocol === 'https:' && !/\/avatars\/[a-z0-9-]+$/.test(url.pathname) && !url.pathname.endsWith('.svg') ? avatar : null
+  } catch {
+    return null
+  }
 }
 
 type SlackUser = {
@@ -43,6 +88,8 @@ type SlackMessage = {
   username?: string
   bot_profile?: { name?: string }
   files?: SlackFile[]
+  thread_ts?: string
+  reply_count?: number
 }
 /** What Slack attaches to a message that links another: `is_msg_unfurl` marks a message link's. */
 type SlackAttachment = {
@@ -115,6 +162,21 @@ function slackError(error: unknown): string {
   return data.needed ? `${data.error}, needs ${data.needed}` : data.error
 }
 
+/** Extensions Slack shows as text (a preview, not a download): it calls any other extension binary. */
+const SLACK_TEXT_EXTENSIONS = new Set(['txt', 'md', 'markdown', 'csv', 'json', 'yaml', 'yml', 'xml', 'html', 'css', 'js', 'ts', 'py', 'rb', 'go', 'rs', 'java', 'c', 'h', 'cpp', 'sh', 'bash', 'sql', 'diff', 'patch'])
+const TEXT_TYPES = /^(text\/|application\/(json|x-ndjson|xml|yaml|x-yaml|javascript|x-sh)\b)/
+
+/**
+ * The name a file goes to Slack under. Slack picks a file's type from its
+ * extension, so a text file named `run.log` arrives as a binary download;
+ * `run.log.txt` arrives as text it previews. The board keeps the file's own name.
+ */
+export function slackFileName(filename: string, mimeType?: string): string {
+  if (!mimeType || !TEXT_TYPES.test(mimeType)) return filename
+  const extension = /\.([^./]+)$/.exec(filename)?.[1]?.toLowerCase()
+  return extension && SLACK_TEXT_EXTENSIONS.has(extension) ? filename : `${filename}.txt`
+}
+
 export const SlackEvent = eventSchema('slack', 'message')
 export type SlackEvent = z.infer<typeof SlackEvent>
 
@@ -137,6 +199,9 @@ export function slack(options: SlackOptions): SlackProvider {
 }
 
 export class SlackProvider extends ChatSyncProvider<SlackEvent> {
+  private readonly web: () => Promise<SlackClient | undefined>
+  private customize: Promise<boolean> | undefined
+
   constructor(options: SlackOptions) {
     let directClient: SlackClient | undefined
     if (!options.client) {
@@ -198,10 +263,11 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
       try {
         found = match(await channels(client, false)) ?? match(await channels(client, true))
       } catch (error) {
-        throw new Error(`can't list Slack channels to find #${name} (${slackError(error)}); use its ID instead`)
+        throw new UnreadableError('list_failed', `can't list Slack channels to find #${name} (${slackError(error)}); use its ID instead`)
       }
       if (!found)
-        throw new Error(
+        throw new UnreadableError(
+          'channel_not_found',
           publicOnly
             ? `no public Slack channel named #${name} (the app lacks groups:read, so a private channel needs its ID)`
             : `no Slack channel named #${name} (a private channel shows up once the app is invited)`,
@@ -298,6 +364,7 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
         const sent = await options.adapter.postMessage(thread, { markdown: '', files })
         return { message: sent.id, files: fileIds(sent.raw) }
       },
+      uploadName: (file) => slackFileName(file.filename, file.mimeType),
       refusesFiles: (error) => REFUSED.has((error as { data?: { error?: string } } | null)?.data?.error ?? ''),
       async deleteFiles(ids) {
         const web = await client()
@@ -356,11 +423,81 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
           return { snapshot: null, unavailable: slackError(error) }
         }
         if (!found) return { snapshot: null, unavailable: 'message_not_found' }
-        const author = found.user ? await nameOf(found.user) : found.bot_profile?.name || found.username || 'someone'
+        const author = found.user ? await nameOf(found.user) : found.username || found.bot_profile?.name || 'someone'
         return { unavailable: null, snapshot: {
           author: author.slice(0, 256), text: mrkdwn(found.text ?? '').slice(0, MESSAGE_TEXT_MAX),
           createdAt: tsTime(found.ts), files: filesOf(found.files),
         } }
+      },
+      // A channel or thread read on demand (`vb sources <key> read`), with the same limits as a link:
+      // public channels the app is already in. It never joins (that would announce the
+      // app, and Slack would start sending the channel's events), and nothing it reads
+      // is stored; the board still only listens to the channels it's configured with.
+      async read(target, { limit }): Promise<SourceRead> {
+        const web = await client()
+        if (!web) throw new UnreadableError('no_client', 'no Slack client to read it with')
+        let channel: string
+        let thread: string | null = null
+        const link = new RegExp(PERMALINK.source).exec(target)
+        if (link) {
+          const [, id, seconds, micros, query] = link
+          channel = id!
+          thread = /[?&]thread_ts=(\d+\.\d+)/.exec(query?.replaceAll('&amp;', '&') ?? '')?.[1] ?? `${seconds}.${micros}`
+        } else if (target.startsWith('#')) {
+          channel = (await find(web, target.slice(1))).id
+        } else {
+          const parsed = /^([A-Z0-9]+)(?::(\d+\.\d+))?$/.exec(target)
+          if (!parsed) throw new UnreadableError('invalid_target', `not a Slack channel, thread, or message link: ${target} (try #name, C0123, C0123:1727000000.123456, or a permalink)`)
+          channel = parsed[1]!
+          thread = parsed[2] ?? null
+        }
+        let found: SlackMessage[]
+        let more = false
+        let name: string | null = null
+        try {
+          const info = (await web.conversations.info({ channel })).channel
+          if (!info) throw new UnreadableError('channel_not_found', `no Slack channel ${channel}`)
+          name = info.name ?? null
+          const label = name ? `#${name}` : channel
+          if (info.is_private || info.is_im || info.is_mpim)
+            throw new UnreadableError('private_channel', `${label} is private: the board only reads public channels on demand`)
+          // Slack Connect: another organization's people write here, so it isn't ours to read on demand.
+          if (info.is_ext_shared)
+            throw new UnreadableError('shared_channel', `${label} is shared with another organization: the board doesn't read those on demand`)
+          if (!info.is_member)
+            throw new UnreadableError('not_in_channel', `the app isn't in ${label}: someone needs to add it (it won't join on its own)`)
+          if (thread) {
+            const replies = web.conversations.replies
+            if (!replies) throw new UnreadableError('no_client', "this Slack client can't read threads")
+            let page = await replies({ channel, ts: thread, limit })
+            // A reply's ts reads only that reply: read the thread it's in instead.
+            const root = page.messages?.[0]?.thread_ts
+            if (root && root !== thread) {
+              thread = root
+              page = await replies({ channel, ts: root, limit })
+            }
+            found = page.messages ?? []
+            more = page.has_more ?? false
+          } else {
+            if (!web.conversations.history) throw new UnreadableError('no_client', "this Slack client can't read channels")
+            const page = await web.conversations.history({ channel, limit })
+            found = (page.messages ?? []).reverse()
+            more = page.has_more ?? false
+          }
+        } catch (error) {
+          if (error instanceof UnreadableError) throw error
+          throw new UnreadableError(slackError(error).split(',')[0]!, `Slack refused to read ${target}: ${slackError(error)}`)
+        }
+        const messages = await Promise.all(found.slice(0, limit).filter((m) => m.ts).map(async (m): Promise<SourceMessage> => ({
+          id: m.ts!,
+          thread: `${channel}:${m.thread_ts ?? m.ts}`,
+          author: (m.user ? await nameOf(m.user) : m.username || m.bot_profile?.name || 'someone').slice(0, 256),
+          text: mrkdwn(m.text ?? '').slice(0, MESSAGE_TEXT_MAX),
+          createdAt: tsTime(m.ts),
+          replies: m.reply_count ?? 0,
+          files: filesOf(m.files),
+        })))
+        return { channel, name, thread, messages, more: more || found.length > limit }
       },
       // Slack unfurls a message link a moment later, as a `message_changed` that keeps the text.
       // Chat SDK drops those (nothing it shows changed), so they come here.
@@ -402,6 +539,69 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
       },
     })
     for (const [key, value] of Object.entries(options.channels)) this.map(key, value)
+    this.web = client
+  }
+
+  /**
+   * An agent's message goes out under its own name (`clever-lemur via vboard-factory`), and its
+   * picture when it has one Slack can show, instead of the app's, with the text's
+   * `**name**: ` label dropped. Without `chat:write.customize` it posts as the app, label and all.
+   */
+  override async post(target: string, kind: ResolvedTarget['kind'], body: ProviderPost): Promise<ProviderDelivery> {
+    const { as, ...post } = body
+    return (as && !post.files?.length ? await this.postAs(target, as, post.markdown) : null) ?? super.post(target, kind, post)
+  }
+
+  /** An edit keeps the label out only where the message went out under the agent's name. */
+  override async edit(thread: string, message: string, body: ProviderPost) {
+    const { as, ...post } = body
+    const named = as ? await this.sentAs(thread, message, as.name) : false
+    await super.edit(thread, message, named && as ? { ...post, markdown: withoutLabel(post.markdown, as.name) } : post)
+  }
+
+  private async postAs(target: string, as: ProviderSender, markdown: string): Promise<ProviderDelivery | null> {
+    const adapter = (await this.ready()) as SlackInternals
+    const web = await this.web()
+    if (!web?.chat || !adapter.formatConverter?.toSlackPayload || !(await this.canCustomize(web))) return null
+    const threadId = this.toChat(target)
+    const { channel, threadTs } = adapter.decodeThreadId(threadId)
+    const message = { markdown: withoutLabel(markdown, as.name) }
+    const resolved = (await adapter.resolveMessageMentions?.(message, threadId)) ?? message
+    const icon = slackIcon(as.avatar)
+    const sent = await web.chat.postMessage({
+      channel,
+      ...(threadTs ? { thread_ts: threadTs } : {}),
+      ...adapter.formatConverter.toSlackPayload(resolved),
+      unfurl_links: false,
+      unfurl_media: false,
+      username: as.name.slice(0, 80),
+      ...(icon ? { icon_url: icon } : {}),
+    })
+    if (!sent.ts) throw new Error('slack: chat.postMessage returned no ts')
+    return { thread: this.toNative(`${adapter.name}:${channel}:${threadTs || sent.ts}`), message: sent.ts }
+  }
+
+  /** Whether the app may set a message's username and icon (`chat:write.customize`), asked once. */
+  private canCustomize(web: SlackClient): Promise<boolean> {
+    this.customize ??= (async () => (await web.auth?.test())?.response_metadata?.scopes?.includes('chat:write.customize') ?? false)().catch(
+      (error: unknown) => {
+        this.customize = undefined
+        console.warn(`[vboard] slack: couldn't check the app's scopes (${slackError(error)}); posting as the app`)
+        return false
+      },
+    )
+    return this.customize
+  }
+
+  /** Whether a message Slack has went out under `name`. */
+  private async sentAs(thread: string, message: string, name: string): Promise<boolean> {
+    const web = await this.web().catch(() => undefined)
+    const channel = thread.slice(0, thread.indexOf(':'))
+    if (!web?.conversations.replies || !channel) return false
+    const found = await web.conversations
+      .replies({ channel, ts: message, oldest: message, latest: message, inclusive: true, limit: 1 })
+      .then((page) => page.messages?.find((m) => m.ts === message), () => undefined)
+    return found?.username === name.slice(0, 80)
   }
 
   override eventId(key: string, input: ChatInput): string {

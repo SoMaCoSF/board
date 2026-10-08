@@ -221,7 +221,7 @@ describe('messages', () => {
       reactions: { eyes: ['vercel:user:u_ada', 'vercel:user:u_julian'] },
       labels: { status: 'open' },
     })
-    expect(read.body.message.editedAt).not.toBeNull()
+    expect(read.body.message.editedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
 
     await julian('POST', `/messages/${id}/delete`)
     read = await julian('GET', `/messages/${id}`)

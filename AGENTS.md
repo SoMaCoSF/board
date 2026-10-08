@@ -12,6 +12,9 @@ pnpm check          # build + typecheck + test
 pnpm test           # vitest: unit, in-process server, and CLI end to end
 ```
 
+CI runs `pnpm check` on every PR and on `main` (`.github/workflows/check.yml`);
+its `check` job is the status a PR needs before it can land.
+
 Tests use A2's memory store and a local test issuer (`test/harness.ts`). Auth
 runs real `jose` verification against an injected JWKS; there is no bypass.
 
@@ -48,40 +51,76 @@ VBOARD_URL=https://vboard-factory.playground-vercel.tools/api/board pnpm exec vb
   `/api/board/webhooks/slack` and `/api/board/webhooks/github`.
 - Watchers do the work. `triage-gpt` labels each non-PR dev thread's `kind` with
   GPT-6 Luna's decision model (`openai/gpt-6-luna-decisions`),
-  judging the whole thread whenever a person posts. `pi` hands `kind=bug`,
-  `kind=feature`, and `kind=question` threads (not `noise`) to Pi (`agent.ts`)
-  and tells it when someone replies; Pi reads what's new itself. For a bug, Pi
-  reproduces it, then opens a PR from a `pi/<thread>` branch, or labels the
+  judging the whole thread whenever a person posts. Its scope (`classify.ts`) is the
+  library and the factory, Pi included, so "Pi should…" is a feature, not noise. `pi` hands `kind=bug`,
+  `kind=feature`, `kind=question`, and `kind=task` threads (not `noise`) to Pi (`agent.ts`);
+  `task` is someone asking Pi itself to do something (a recap, an investigation), and the
+  kinds live in `kinds.ts`
+  and tells it when someone replies; Pi reads what's new itself. Before it plans
+  or builds, Pi searches earlier threads and PRs and builds on related work. For a bug, Pi
+  reproduces it, then opens a PR from a `pi/<thread>` branch (its body opens
+  with a line linking what triggered it: the Slack thread or GitHub issue, which
+  `taskMessage` puts in Pi's first message), or labels the
   thread `reproduced=no` and says why. It builds clear features the same way
   (asking first when they're not), and answers questions in the thread.
-  `review-pi` hands each new `dev --label pr` thread to Pi to review the PR, and tells it when
+  `review-pi` hands each new `dev --label pr` thread to Pi to review the PR (Pi wears `:looking-bunny:` on the PR root while it reviews), and tells it when
   someone other than a bot replies. Pi hears every reply in its threads but stays quiet when one is
   addressed to someone else, and keeps board replies to a few lines; a review's detail
   goes in a GitHub review on the code. Review is its initial task; people can redirect
   Pi in the thread to fix, push, approve, mark ready, merge, or close the PR.
   `shipit` lets anyone add `:shipit:` to a PR's Slack root
   to request a merge as the factory GitHub App. Slack delivers that alias as
-  `squirrel`, which the watcher also accepts. It reads the current PR, marks it
+  `squirrel`, which the watcher also accepts, and `:approved:` works the same way. It reads the current PR, marks it
   ready if it's a draft, and merges with that head SHA and a merge commit,
   honoring GitHub's merge rules;
   a rejected merge tells Pi who requested it and why it failed. Pi resolves
   blockers, marks drafts ready when needed, and completes the requested merge
   when GitHub's requirements allow, without asking for another reaction. It
   mentions reviewers or owners when their action is needed.
+  `autoland` (`autoland.ts`) is auto-landing in shadow mode: it labels PRs and
+  merges nothing. After each review, the PR thread's Pi labels the root
+  `land=yes|no` with `land.why` and the head it reviewed (`land.sha`); yes
+  means it fixes a bug or does what a person clearly asked, with nothing to
+  fix and no caveats or tradeoffs. Only that Pi's label counts. The watcher
+  then checks the rest on GitHub (a factory PR, still open, no commits since
+  the review, CI `check` green on the head, and not a user-facing change to
+  vboard core, meaning `packages/vboard/src`, its `package.json`, or
+  `tsdown.config.ts` together with a changeset) and labels the root
+  `autoland=would|no` with `autoland.why`. A `would` root also wears
+  `:stamp-hammer:`, added and removed as the verdict flips, so Slack shows it.
+  `security` (`security.ts`) lets anyone add `:security:` to a PR's Slack root
+  to have Pi run a deepsec review of its diff, in a fresh `git worktree` outside
+  its clone (deepsec only fails on net-new findings, so reused state could look
+  clean). Pi reacts `:secure:` only when deepsec exits 0. On a thread that isn't
+  a PR, the watcher replies itself, and `pi` doesn't wake Pi for that reply.
+  Each message to Pi extends its sandbox session to at least 45m, so a long run
+  late in a session isn't cut off.
+  Messages wait behind a running turn on a per-sandbox lock. "New activity"
+  ones (`news-…`) piled up there wake Pi once, for the newest, since Pi reads
+  what's new itself: a burst of replies costs one turn, not one each.
+- `crosspost` (`crosspost.ts`) links a factory PR's Slack thread and the Slack
+  thread it was built for, both ways, once the PR's root lands in Slack (its tail
+  has `--all`, for the delivery receipt that says where): the PR thread gets `:crosspost: From
+  <who>'s Slack thread`, the source thread gets `:crosspost: #N <title>`. Slack
+  shows them without a label, and they don't wake Pi or triage. The PR-thread
+  one reaches GitHub too, as a comment.
 - In Slack a PR root is one line (`render.ts`): its state's emoji (`:pr:`,
   `:pr-draft:`, `:pr-merged:`, `:pr-closed:`) and a link titled with the PR.
   The board edits it when its `state` label changes.
 - Pi runs the `pi` CLI (Opus 5.5 on AI Gateway) in one persistent Vercel Sandbox
   per thread, with `vb`, `gh`, and git. Its credentials are placeholders that
   the sandbox's network policy swaps for real ones on the way out, refreshed with
-  every message. The policy also pins who Pi is on the board (profile `pi`,
-  session `thread-<id>`), so watchers can tell a thread's Pi from everyone else. Its `vb` talks to the production board, the only one a sandbox
+  every message. The GitHub token is asked for with at least 45m left (`GITHUB_TOKEN`), as long
+  as a session can run after a message, since Connect otherwise reuses a cached token about to expire. The policy also pins who Pi is on the board (a profile named for the
+  thread, like `clever-lemur-1956`, and session `thread-<id>`), so watchers can tell a thread's Pi from everyone else. Its `vb` talks to the production board, the only one a sandbox
   can reach.
 - Attachments live in the project's private Blob store, `vboard-factory-attachments`
   (`BLOB_STORE_ID`, authenticated with OIDC), shared by every deployment; locally
-  they're files in `.a2/attachments`. Pi attaches proof (test runs, screenshots) to the reply
-  that links its PR. Its `vb` is pinned (`VBOARD` in `agent.ts`): bump it with
-  each release Pi should use, since setup upgrades sandboxes to exactly that.
+  they're files in `.a2/attachments`. Pi attaches a screenshot to the reply
+  that links its PR when the change is visible, never test-run logs: the tests
+  are in the PR, and a bug fix's PR body names the test that reproduces it. Its
+  `vb` is pinned (`VBOARD` in `agent.ts`): bump it with each release Pi should
+  use, since setup upgrades sandboxes to exactly that.
 - The A2 scheduler route (`app/api/a2/scheduler`) is private to Vercel Queues
   (`vercel.json`), on topic `vboard-factory`. Production is behind Vercel
   Authentication: the CLI needs `VERCEL_AUTOMATION_BYPASS_SECRET`, and Pi's

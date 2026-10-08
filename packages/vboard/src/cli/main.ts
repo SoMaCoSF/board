@@ -14,7 +14,7 @@ import { normalizeEmoji } from '../contract/emoji.ts'
 import { ATTACHMENT_BYTES_MAX, type Attachment } from '../contract/schemas.ts'
 import { startInspector } from '../inspect/server.ts'
 import { VERSION } from '../version.ts'
-import { formatEvent, formatThreads, who } from './format.ts'
+import { formatEvent, formatSchedule, formatSourceRead, formatThreads, who } from './format.ts'
 import {
   AGENTS,
   allow,
@@ -48,17 +48,28 @@ usage: vboard <command> [options]      (also installed as \`vb\`)
 
   post <channel> ["<text>"] [--label k=v]... [--attach <file>]... [--sync <target>]... [--no-sync] [--id <key>]
   reply <id> ["<text>"] [--attach <file>]... [--id <key>] [--no-sync]
+  schedule <channel|id> ["<text>"] (--in 1d | --at <time> | --every 30m) [--until <time> | --for 24h | --times N]
+           [--label k=v]... [--attach <file>]... [--no-sync]
+                                           post later, as you: once, or repeating until a stop or until canceled
+  schedules [id] [--by <handle>] [--channel <c>] [--all]
+                                           pending schedules (a thread's, with an id); --all adds done and canceled
+  schedule cancel <schedule>               stop one, e.g. schedule cancel s12 (anyone may)
   edit <id> "<text>"
   delete <id>
   react <id> <emoji> [--remove]
   label <id> k=v... [--unset k]...
-  typing <id>                              show typing in the thread's synced platform threads (marks WhatsApp read)
+  typing <id> [status]                     show typing in the thread's synced platform threads (marks WhatsApp read);
+                                           Slack shows the status, if given, instead of "Typing…"
   sync <id> <target>                       attach the thread to e.g. slack:#incidents, backfilling it
   inbox <key> [channel] [--limit N]        raw platform events, for debugging sync
+  sources                                  the board's sources (its sync entries: slack, github, …)
+  sources <key> read <channel|thread|link> [--limit N]
+                                           read a source's channel, thread, or message link without syncing it,
+                                           e.g. sources slack read '#general', or a Slack permalink (full access only)
   download <attachment> [path]             save an attachment (its name, here, by default; - for stdout)
 
   update ["<text>"] [--attach <file>]...   post a summary to this branch's work thread (channel \`work\`); --skip if there's none
-  hooks [install|uninstall|status] [claude|codex|cursor]...
+  hooks [install|uninstall|status] [claude|codex|cursor|pi]...
                                            after a turn that didn't update the board, remind the agent to (linked projects only)
 
   tail [channel] [filters] [--all]         live, until Ctrl-C
@@ -104,6 +115,12 @@ const parsed = (() => {
         timeout: { type: 'string' },
         port: { type: 'string' },
         'no-open': { type: 'boolean' },
+        in: { type: 'string' },
+        at: { type: 'string' },
+        every: { type: 'string' },
+        until: { type: 'string' },
+        for: { type: 'string' },
+        times: { type: 'string' },
       },
     })
   } catch (error) {
@@ -159,6 +176,20 @@ async function attachments(board: ReturnType<typeof client>): Promise<Attachment
       }),
     )
   return uploaded
+}
+
+/** `s12` or `12`. */
+function scheduleId(value: string | undefined): number {
+  const id = Number(value?.replace(/^s/i, ''))
+  if (!value || !Number.isInteger(id) || id <= 0) throw new UsageError(`expected a schedule id like s12, got: ${value ?? '(nothing)'}`)
+  return id
+}
+
+/** A time flag: anything `Date` reads, as ISO. */
+function instant(flag: string, value: string): string {
+  const time = new Date(value)
+  if (Number.isNaN(time.getTime())) throw new UsageError(`--${flag} takes a time like 2026-10-08T09:00:00Z, got: ${value}`)
+  return time.toISOString()
 }
 
 function filters(channel?: string): Filters & { after?: number } {
@@ -390,6 +421,7 @@ async function run(command: string | undefined, args: string[]): Promise<number>
         const thread = await board.thread(messageId(target))
         if (flags.json) return [thread.message, ...thread.replies].forEach(printJson), 0
         out(formatThreads([thread.message, ...thread.replies]))
+        for (const schedule of thread.schedules ?? []) out(formatSchedule(schedule, { pad: '  ' }))
         return 0
       }
       const page = await board.messages({
@@ -438,6 +470,54 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       return 0
     }
 
+    case 'schedule': {
+      if (args[0] === 'cancel' && args.length === 2) {
+        const { schedule, canceled } = await client().cancelSchedule(scheduleId(args[1]))
+        if (flags.json) printJson(schedule)
+        else out(canceled ? `canceled s${schedule.id}` : `s${schedule.id} is already ${schedule.state}`)
+        return 0
+      }
+      const [target, body] = args
+      if (!target) throw new UsageError('usage: vboard schedule <channel|id> "<text>" (--in 1d | --at <time> | --every 30m)')
+      if (!flags.in && !flags.at && !flags.every) throw new UsageError('say when: --in 1d, --at <time>, or --every 30m')
+      if (flags.sync?.length) throw new UsageError('a schedule posts where you point it: --sync is for post')
+      const times = flags.times === undefined ? undefined : Number(flags.times)
+      if (times !== undefined && !(Number.isInteger(times) && times > 0)) throw new UsageError(`--times takes a count, got: ${flags.times}`)
+      const board = client()
+      const content = body === undefined && flags.attach?.length ? '' : await text(body)
+      const files = await attachments(board)
+      const where = /^#?\d+$/.test(target) ? messageId(target) : target
+      const schedule = await board.schedule(where, {
+        text: content,
+        ...(files.length ? { attachments: files } : {}),
+        ...(flags.label?.length ? { labels: labelPairs(flags.label) } : {}),
+        ...(flags['no-sync'] ? { noSync: true } : {}),
+        ...(flags.in ? { in: flags.in } : {}),
+        ...(flags.at ? { at: instant('at', flags.at) } : {}),
+        ...(flags.every ? { every: flags.every } : {}),
+        ...(flags.until ? { until: instant('until', flags.until) } : {}),
+        ...(flags.for ? { for: flags.for } : {}),
+        ...(times !== undefined ? { times } : {}),
+      })
+      wrote()
+      if (flags.json) printJson(schedule)
+      else out(formatSchedule(schedule))
+      return 0
+    }
+
+    case 'schedules': {
+      const list = await client().schedules({
+        ...(args[0] ? { re: messageId(args[0]) } : {}),
+        ...(flags.by ? { by: flags.by.replace(/^@/, '') } : {}),
+        ...(flags.channel ? { channel: flags.channel } : {}),
+        ...(flags.all ? { all: true } : {}),
+      })
+      if (flags.json) return list.forEach(printJson), 0
+      if (list.length === 0) return out(flags.all ? 'no schedules' : 'no pending schedules'), 0
+      out(list.map((schedule) => formatSchedule(schedule)).join('\n'))
+      return 0
+    }
+
     case 'update': {
       if (flags.skip) {
         wrote()
@@ -468,7 +548,7 @@ async function run(command: string | undefined, args: string[]): Promise<number>
         }
         return 0
       }
-      if (action !== 'install') throw new UsageError('usage: vboard hooks [install|uninstall|status] [claude|codex|cursor]...')
+      if (action !== 'install') throw new UsageError('usage: vboard hooks [install|uninstall|status] [claude|codex|cursor|pi]...')
       const { command: cli, note } = cliCommand()
       for (const agent of agents) {
         const changed = installHook(agent, cli, flags.channel ? ` --channel ${flags.channel}` : '')
@@ -565,7 +645,8 @@ async function run(command: string | undefined, args: string[]): Promise<number>
 
     case 'typing': {
       const id = messageId(args[0])
-      const targets = await client().typing(id)
+      const status = args.slice(1).join(' ').trim()
+      const targets = await client().typing(id, status || undefined)
       if (flags.json) printJson({ targets })
       return 0
     }
@@ -608,6 +689,24 @@ async function run(command: string | undefined, args: string[]): Promise<number>
         out(`${entry.createdAt}  ${entry.channel}  ${event.kind}  ${event.author?.handle ?? ''}  ${detail.split('\n')[0]}`)
       }
       return 0
+    }
+
+    case 'sources': {
+      const [key, sub, target] = args
+      if (!key) {
+        const { sync } = await client().discovery()
+        if (flags.json) return sync.forEach(printJson), 0
+        if (sync.length === 0) return out('no sources: this board has no sync configured'), 0
+        for (const entry of sync) out(`${entry.key}  ${entry.platform}`)
+        return 0
+      }
+      if (sub !== 'read' || !target) throw new UsageError('usage: vboard sources <key> read <channel|thread|link> [--limit N]')
+      const read = await client().readSource(key, target, flags.limit ? { limit: Number(flags.limit) } : {})
+      // A board older than this CLI answers an unknown path with its discovery document.
+      if (!Array.isArray((read as { messages?: unknown }).messages))
+        throw new Error("this board can't read sources yet: update vboard where the board is deployed")
+      if (flags.json) return printJson(read), 0
+      return out(formatSourceRead(key, read)), 0
     }
 
     case 'tail': {

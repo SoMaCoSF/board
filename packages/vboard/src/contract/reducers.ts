@@ -30,6 +30,8 @@ export type Message = {
   attachments: Attachment[]
   /** Platform messages it links to (Slack permalinks), each with what it said. */
   links: Link[]
+  /** Set when a schedule posted it: the schedule's ID and which send this was, from 0. */
+  schedule?: { id: number; n: number }
 }
 
 export type MessagesState = {
@@ -68,6 +70,7 @@ export function foldMessages(
         undelivered: {},
         attachments: payload.attachments ?? [],
         links: payload.links ?? [],
+        ...(payload.schedule ? { schedule: { ...payload.schedule } } : {}),
       }
       if (payload.re !== null) (state.replies[payload.re] ??= []).push(event.index)
       return state

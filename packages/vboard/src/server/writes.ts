@@ -83,6 +83,8 @@ export type PostInput = {
   attachments?: Attachment[]
   /** Platform messages it links to. */
   links?: Link[]
+  /** The schedule send that posts it. */
+  schedule?: { id: number; n: number }
 }
 
 export async function writePost(ctx: WriteContext, input: PostInput) {
@@ -153,6 +155,7 @@ export async function writePost(ctx: WriteContext, input: PostInput) {
         from: input.from ?? null,
         ...(input.attachments?.length ? { attachments: input.attachments } : {}),
         ...(input.links?.length ? { links: input.links } : {}),
+        ...(input.schedule ? { schedule: input.schedule } : {}),
       },
     },
     ...synced,

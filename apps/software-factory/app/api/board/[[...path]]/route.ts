@@ -12,17 +12,15 @@ import { redisHttp } from "experimental-a2/store-redis-http";
 import { vercelQueues } from "experimental-a2/scheduler-vercel";
 import { byPi, tellPi } from "./agent";
 import { classifyThread } from "./classify";
+import { scheduled, scheduledThread } from "./kinds";
+import { security } from "./security";
 import { shipit } from "./shipit";
 import { todo } from "./todo";
 import { pi } from "./pi";
+import { autoland } from "./autoland";
+import { owner } from "./owner";
+import { crosspost, CROSSPOST_ACTOR } from "./crosspost";
 import { renderForSlack } from "./render";
-
-/** The kinds of thread Pi acts on, and how it's told about one. Noise it ignores. */
-const PI_TASKS = {
-  bug: "a bug report",
-  feature: "a feature request",
-  question: "a question",
-} as const;
 
 // The software factory: vboard running on its own repo and Vercel's Slack. Locally
 // there's no VERCEL_ENV, so the log is SQLite at .a2/dev.db and attachments are
@@ -75,8 +73,15 @@ export const { GET, POST, scheduler } = board({
   },
   watch: {
     shipit: shipit({ tellPi }),
+    // Shadow mode: labels each reviewed factory PR autoland=would|no, and merges nothing.
+    autoland: autoland(),
+    // A factory PR's root names whose it is: the person who opened its source thread.
+    owner: owner(),
+    // A factory PR's Slack thread and the Slack thread it was built for link to each other.
+    crosspost: crosspost(),
+    security: security({ tellPi }),
     // :todo: parks a thread for later: labeled todo=yes, and Pi leaves it alone until the reaction goes.
-    todo: todo({ tellPi, kinds: PI_TASKS }),
+    todo: todo({ tellPi }),
     // Every non-PR dev thread gets a kind, judged from all of it,
     // so a chat that turns into a bug report becomes kind=bug. Bugs get 🐛 in Slack too.
     "triage-gpt": {
@@ -86,7 +91,9 @@ export const { GET, POST, scheduler } = board({
         if (
           event.type !== "message.posted" ||
           !message ||
-          byPi(message.re ?? message.id, message.by)
+          byPi(message.re ?? message.id, message.by) ||
+          message.by.actor === CROSSPOST_ACTOR ||
+          scheduledThread(message)
         ) {
           return;
         }
@@ -109,8 +116,8 @@ export const { GET, POST, scheduler } = board({
         }
       },
     },
-    // Pi works bugs, features and questions (not noise), unless they're parked as todos.
-    pi: pi({ tellPi, byPi, kinds: PI_TASKS }),
+    // Pi works bugs, features, questions and tasks (not noise), unless they're parked as todos.
+    pi: pi({ tellPi, byPi }),
     // Pi reviews PRs: a PR's thread opens in `dev` when it's opened or marked ready, and
     // Pi hears when anyone but a bot (Vercel's deploy comments, CI) replies there. Only PR
     // threads: `--label pr` matches a reply by its root's labels too.
@@ -129,8 +136,9 @@ export const { GET, POST, scheduler } = board({
             message: `There's a pull request to review in board thread #${message.id}.`,
           });
         } else if (
-          !byPi(message.re, message.by) &&
-          !message.author?.handle.endsWith("[bot]")
+          (scheduled(message) || !byPi(message.re, message.by)) &&
+          !message.author?.handle.endsWith("[bot]") &&
+          message.by.actor !== CROSSPOST_ACTOR
         ) {
           await tellPi({
             task: "review",

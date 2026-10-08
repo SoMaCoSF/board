@@ -8,12 +8,16 @@ import {
   EditBody,
   EventsQuery,
   InboxQuery,
+  SourceReadQuery,
   LabelBody,
   MessagesQuery,
   PostBody,
   ReactBody,
   routes,
+  ScheduleBody,
+  SchedulesQuery,
   SyncBody,
+  TypingBody,
   type Discovery,
   type TypingResult,
   type Me,
@@ -37,6 +41,7 @@ import { attachmentResponse, defaultBlob, readAttachment, writeUpload, type Blob
 import { badRequest, forbidden, HttpError, json, notFound, toErrorResponse, unauthorized } from './errors.ts'
 import { compileFilter, liveFeed, pollFeed, view } from './feed.ts'
 import { discoveryIdentity, ownProjectId } from './identity.ts'
+import { createSchedules } from './schedules.ts'
 import { createWatchers, ID, type Watcher } from './watch.ts'
 import {
   writeAttach,
@@ -53,7 +58,7 @@ import {
 export type BoardOptions = {
   /** Any A2 store. Omitted: SQLite in development, memory in tests, an error in production. */
   store?: A2Store
-  /** Required for sync in production. Mount the board's `scheduler` as `POST` in its own route. */
+  /** Required for sync in production, and for scheduled messages. Mount the board's `scheduler` as `POST` in its own route. */
   scheduler?: A2Scheduler
   /** Machines outside this project that may call the board. */
   trustedSources?: readonly TrustedSource[]
@@ -100,11 +105,15 @@ const PATTERNS: { method: string; name: RouteName; pattern: RegExp }[] = [
   { method: 'GET', name: 'message', pattern: /\/messages\/(\d+)$/ },
   { method: 'GET', name: 'messages', pattern: /\/messages$/ },
   { method: 'POST', name: 'post', pattern: /\/messages$/ },
+  { method: 'POST', name: 'cancelSchedule', pattern: /\/schedules\/s?(\d+)\/cancel$/ },
+  { method: 'GET', name: 'schedules', pattern: /\/schedules$/ },
+  { method: 'POST', name: 'schedule', pattern: /\/schedules$/ },
   { method: 'GET', name: 'channels', pattern: /\/channels$/ },
   { method: 'GET', name: 'actors', pattern: /\/actors$/ },
   { method: 'GET', name: 'events', pattern: /\/events$/ },
   { method: 'GET', name: 'me', pattern: /\/me$/ },
   { method: 'GET', name: 'inbox', pattern: /\/inbox\/([A-Za-z0-9_-]+)$/ },
+  { method: 'GET', name: 'sourceRead', pattern: /\/sources\/([A-Za-z0-9_-]+)\/read$/ },
   { method: 'POST', name: 'webhook', pattern: /\/webhooks\/([A-Za-z0-9_-]+)$/ },
   { method: 'GET', name: 'avatar', pattern: /\/avatars\/([a-z0-9-]+)$/ },
   { method: 'GET', name: 'openapi', pattern: /\/openapi\.json$/ },
@@ -134,7 +143,7 @@ function combineHandlers(...sets: BoardHandlers[]): BoardHandlers {
   return combined as BoardHandlers
 }
 
-const NUMERIC = new Set<RouteName>(['edit', 'delete', 'react', 'label', 'sync', 'typing', 'message'])
+const NUMERIC = new Set<RouteName>(['edit', 'delete', 'react', 'label', 'sync', 'typing', 'message', 'cancelSchedule'])
 
 function route(method: string, pathname: string, basePath?: string): Match | null {
   const path = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname
@@ -211,6 +220,7 @@ export function board(options: BoardOptions = {}) {
     options.watch && Object.keys(options.watch).length > 0
       ? createWatchers({ watch: options.watch, store: options.store, scheduler: options.scheduler })
       : null
+  const schedules = createSchedules({ store: options.store, scheduler: options.scheduler })
   const handlers = [watchers?.boardHandlers, engine?.outboundHandlers].filter((set) => set !== undefined)
   const server = createServer({
     contract: boardContract,
@@ -267,6 +277,7 @@ export function board(options: BoardOptions = {}) {
   }
 
   engine?.bind({ session, writes, clientAs })
+  schedules.bind({ writes })
   watchers?.bind({ clientAs })
 
   async function dispatch(request: Request, injected: Identity | null): Promise<Response> {
@@ -360,7 +371,7 @@ export function board(options: BoardOptions = {}) {
           if (!message) throw notFound(`message not found: #${match.id}`, 'message_not_found')
           const root = message.re === null ? message : state.byId[message.re]!
           const replies = (state.replies[root.id] ?? []).map((id) => view(state.byId[id]!, actors))
-          return json({ message: view(root, actors), replies, cursor: index })
+          return json({ message: view(root, actors), replies, cursor: index, schedules: await schedules.forThread(root.id) })
         }
         case 'post': {
           require(principal, 'post')
@@ -379,6 +390,27 @@ export function board(options: BoardOptions = {}) {
             sync: body.sync,
           })
           return json({ message }, 201)
+        }
+        case 'schedule': {
+          require(principal, 'post')
+          const body = ScheduleBody.parse(await readJson(request))
+          const attachments = await Promise.all([...new Set(body.attachments ?? [])].map((id) => readAttachment(blob, id)))
+          return json({ schedule: await schedules.create(identity, body, attachments) }, 201)
+        }
+        case 'schedules': {
+          const query = SchedulesQuery.parse(queryObject(url))
+          let root: number | undefined
+          if (query.re !== undefined) {
+            const { state } = await session.state(messagesReducer)
+            const message = state.byId[query.re]
+            if (!message) throw notFound(`message not found: #${query.re}`, 'message_not_found')
+            root = message.re ?? message.id
+          }
+          return json({ schedules: await schedules.list({ ...query, ...(root !== undefined ? { root } : {}) }) })
+        }
+        case 'cancelSchedule': {
+          require(principal, 'post')
+          return json(await schedules.cancel(identity, match.id!))
         }
         case 'edit': {
           require(principal, 'post')
@@ -431,7 +463,8 @@ export function board(options: BoardOptions = {}) {
           const { state } = await session.state(messagesReducer)
           const message = state.byId[match.id!]
           if (!message || message.deleted) throw notFound(`message not found: #${match.id}`, 'message_not_found')
-          const body: TypingResult = { targets: engine ? await engine.typing(message.thread) : [] }
+          const { status } = TypingBody.parse(await readJson(request)) ?? {}
+          const body: TypingResult = { targets: engine ? await engine.typing(message.thread, status) : [] }
           return json(body)
         }
         case 'inbox': {
@@ -440,6 +473,13 @@ export function board(options: BoardOptions = {}) {
           if (!engine) throw notFound('this board has no sync configured')
           const query = InboxQuery.parse(queryObject(url))
           return json({ events: await engine.readInbox(match.param!, query.channel, query.limit ?? 50) })
+        }
+        case 'sourceRead': {
+          // The app's token reads what the app can, not what the caller can: full access only.
+          if (principal.can !== 'all') throw forbidden('reading a source needs full access')
+          if (!engine) throw notFound('this board has no sync configured')
+          const query = SourceReadQuery.parse(queryObject(url))
+          return json(await engine.readSource(match.param!, query.target, query.limit ?? 50))
         }
         case 'events': {
           const query = EventsQuery.parse(queryObject(url))
@@ -460,7 +500,12 @@ export function board(options: BoardOptions = {}) {
   }
 
   const handle = (request: Request) => dispatch(request, null)
-  const servers = [server, ...(engine ? [engine.inboxServer] : []), ...(watchers ? [watchers.server] : [])]
+  const servers = [
+    server,
+    ...(engine ? [engine.inboxServer] : []),
+    schedules.server,
+    ...(watchers ? [watchers.server] : []),
+  ]
   return {
     GET: handle,
     POST: handle,

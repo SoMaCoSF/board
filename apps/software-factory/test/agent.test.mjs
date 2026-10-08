@@ -1,27 +1,82 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { INSTRUCTIONS } from "../app/api/board/[[...path]]/agent.ts";
+import { GITHUB_TOKEN, byPi, piAvatar, piName, sourceLink, taskMessage } from "../app/api/board/[[...path]]/agent.ts";
 
-for (const task of ["thread", "review"]) {
-  test(`${task}: Pi stays out of messages meant for someone else`, () => {
-    assert.match(INSTRUCTIONS[task], /addressed to someone else/);
-    assert.match(INSTRUCTIONS[task], /don't reply/i);
+test("sourceLink: a Slack thread's permalink, a GitHub issue or PR, or nothing", () => {
+  assert.deepEqual(sourceLink({ thread: "slack:C0C6MNT9LLC:1791394851.272189" }), {
+    platform: "Slack",
+    url: "https://vercel.slack.com/archives/C0C6MNT9LLC/p1791394851272189",
   });
-
-  test(`${task}: board replies are tight, with no "what I ran" list`, () => {
-    assert.doesNotMatch(INSTRUCTIONS[task], /list of what you ran/);
-    assert.match(INSTRUCTIONS[task], /no "What I ran"/i);
-    assert.match(INSTRUCTIONS[task], /a few lines/);
+  assert.deepEqual(sourceLink({ thread: "github:basehub-ai/vboard:issue:42" }), {
+    platform: "GitHub",
+    url: "https://github.com/basehub-ai/vboard/issues/42",
   });
-}
-
-test("review: detail goes in GitHub review comments, not the board", () => {
-  assert.match(INSTRUCTIONS.review, /gh api .*pulls\/<N>\/reviews/);
-  assert.match(INSTRUCTIONS.review, /file:line/);
+  assert.deepEqual(sourceLink({ thread: "github:basehub-ai/vboard:78" }), {
+    platform: "GitHub",
+    url: "https://github.com/basehub-ai/vboard/pull/78",
+  });
+  assert.equal(sourceLink(null), null);
+  assert.equal(sourceLink({ thread: "whatsapp:123" }), null);
 });
 
-test("review: COMMENT on the factory's own PRs, which GitHub won't let it approve or block", () => {
-  assert.match(INSTRUCTIONS.review, /--input/);
-  assert.match(INSTRUCTIONS.review, /own PRs, so on a PR it opened use COMMENT/);
-  assert.match(INSTRUCTIONS.review, /lines the diff touches/);
+test("taskMessage: Pi's task names where the thread came from and who posted it", () => {
+  assert.equal(
+    taskMessage("a feature request", {
+      id: 1010,
+      origin: { thread: "slack:C0C6MNT9LLC:1791394851.272189" },
+      author: { name: "Martin Sione" },
+    }),
+    "There's a feature request in board thread #1010, posted by Martin Sione on Slack: https://vercel.slack.com/archives/C0C6MNT9LLC/p1791394851272189.",
+  );
+  assert.equal(
+    taskMessage("a bug report", { id: 7, origin: null, author: null }),
+    "There's a bug report in board thread #7.",
+  );
+});
+
+test("piName: each thread's Pi has a name of its own", () => {
+  assert.equal(piName(1956), "clever-lemur-1956");
+  const names = new Set();
+  for (let t = 1; t <= 100_000; t++) {
+    const name = piName(t);
+    // A valid board profile: starts with a letter, up to 32 letters, numbers, and hyphens.
+    if (t % 997 === 0) assert.match(name, /^[A-Za-z][A-Za-z0-9-]{0,31}$/);
+    names.add(name);
+  }
+  assert.equal(names.size, 100_000);
+  assert.ok(piName(99_999_999).length <= 32);
+});
+
+test("byPi: the thread's own Pi, by its name or the old `pi`, and no other thread's", () => {
+  const session = "thread-1956";
+  assert.ok(byPi(1956, { profile: piName(1956), session }));
+  assert.ok(byPi(1956, { profile: "pi", session }));
+  assert.ok(!byPi(1956, { profile: piName(1957), session }));
+  assert.ok(!byPi(1956, { profile: piName(1956), session: "thread-1957" }));
+  assert.ok(!byPi(1956, { profile: null, session: null }));
+});
+
+test("piAvatar: a PNG generated from each Pi's name", () => {
+  assert.equal(piAvatar(1956), "https://vercel.com/api/www/avatar?s=64&format=png&u=clever-lemur-1956");
+});
+
+test("GITHUB_TOKEN: Pi never gets a cached GitHub token that dies before its session ends", async () => {
+  const { getToken } = await import("@vercel/connect");
+  const realFetch = globalThis.fetch;
+  let minted = 0;
+  globalThis.fetch = async () => {
+    minted++;
+    // Each token Connect mints here has 44 minutes left, a minute short of a sandbox session.
+    return Response.json({ token: `t${minted}`, expiresAt: Date.now() + 44 * 60_000, connector: { id: "c", uid: "u", type: "github" } });
+  };
+  try {
+    const options = { vercelToken: "oidc" };
+    // The default 30s buffer hands the token out again: the bug.
+    const app = { subject: { type: "app" } };
+    assert.equal(await getToken("github/test", app, options), await getToken("github/test", app, options));
+    // Pi's asks for one that lasts the whole session, so it isn't reused.
+    assert.notEqual(await getToken("github/test", GITHUB_TOKEN, options), await getToken("github/test", GITHUB_TOKEN, options));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
