@@ -5,11 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { piFiles, piPreview, policy } from "../app/api/board/[[...path]]/agent.ts";
+import { boardOf, piFiles, piPreview, policy, sandboxName } from "../app/api/board/[[...path]]/agent.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const script = join(root, "skills/ui-video/scripts/ui-video");
-const tokens = { gateway: "g", board: "b", github: "h" };
+const tokens = { gateway: "g", board: "b", preview: "p", github: "h" };
 
 test("piFiles: the ui-video skill and the computer tool go in Pi's home, scripts executable", async () => {
   const files = await piFiles(root);
@@ -19,22 +19,41 @@ test("piFiles: the ui-video skill and the computer tool go in Pi's home, scripts
     [
       [`${home}/skills/ui-video/SKILL.md`, 0o644],
       [`${home}/skills/ui-video/scripts/ui-video`, 0o755],
+      [`${home}/skills/slack-preview/SKILL.md`, 0o644],
       [`${home}/extensions/computer/index.ts`, 0o644],
       [`${home}/extensions/computer/xinput.py`, 0o755],
     ],
   );
   assert.match(String(files[0].content), /^---\nname: ui-video\ndescription: .+\n---\n/);
-  assert.match(String(files[2].content), /registerTool\(computer\)/);
+  assert.match(String(files[2].content), /^---\nname: slack-preview\ndescription: .+\n---\n/);
+  assert.match(String(files[3].content), /registerTool\(computer\)/);
 });
 
 test("policy: Pi's own branch preview gets past Vercel Authentication, and no other deployment sees the secret", () => {
   const allow = policy(3100, tokens, "s3cret").allow;
   assert.equal(piPreview(3100), "vboard-factory-git-pi-3100.playground-vercel.tools");
-  assert.deepEqual(allow[piPreview(3100)], [{ transform: [{ headers: { "x-vercel-protection-bypass": "s3cret" } }] }]);
   const withSecret = Object.entries(allow).filter(([, rules]) => JSON.stringify(rules).includes("s3cret"));
   assert.deepEqual(withSecret.map(([host]) => host).sort(), ["vboard-factory.playground-vercel.tools", piPreview(3100)].sort());
   assert.deepEqual(allow["*"], []);
   assert.equal(policy(3100, tokens, undefined).allow[piPreview(3100)], undefined);
+});
+
+test("policy: Pi signs in to its preview's board as itself, and talks to Slack as the tester only when there is one", () => {
+  const allow = policy(3100, { ...tokens, slack: "xoxb-tester" }, "s3cret").allow;
+  const headers = (host) => allow[host][0].transform[0].headers;
+  assert.equal(headers(piPreview(3100)).authorization, "Bearer p");
+  assert.equal(headers("vboard-factory.playground-vercel.tools").authorization, "Bearer b");
+  assert.equal(headers(piPreview(3100))["x-board-profile"], headers("vboard-factory.playground-vercel.tools")["x-board-profile"]);
+  assert.equal(headers("slack.com").authorization, "Bearer xoxb-tester");
+  assert.equal(policy(3100, tokens, "s3cret").allow["slack.com"], undefined);
+});
+
+test("a preview's Pis have its board and sandboxes of their own", () => {
+  const preview = { VERCEL_ENV: "preview", VERCEL_BRANCH_URL: "vboard-factory-git-pi-12.playground-vercel.tools", VERCEL_GIT_COMMIT_REF: "pi/12" };
+  assert.equal(boardOf(preview), "https://vboard-factory-git-pi-12.playground-vercel.tools/api/board");
+  assert.equal(sandboxName(7, preview), "pi-pi-12-7");
+  assert.equal(boardOf({ VERCEL_ENV: "production" }), "https://vboard-factory.playground-vercel.tools/api/board");
+  assert.equal(sandboxName(7, { VERCEL_ENV: "production" }), "pi-7");
 });
 
 // ui-video with fake Xvfb, ffmpeg and AI Gateway: what it records, which captions it burns in, and when.

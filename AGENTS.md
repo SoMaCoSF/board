@@ -56,6 +56,12 @@ VBOARD_URL=https://vboard-factory.playground-vercel.tools/api/board pnpm exec vb
   ensure|remove <branch>` makes or retires one with your `vc login`; a PR labeled
   `preview-bot` does it in CI (`VERCEL_TOKEN`). Slack keeps a retired app, renamed
   `(closed)`, until someone removes it under Apps.
+  Pi tries its own factory changes there (the `slack-preview` skill): it labels its
+  PR `preview-bot`, signs in to its preview's board (`$VBOARD_PREVIEW_URL`, through
+  its network policy), and acts in Slack as `slack/vboard-tester` (`preview-bot.ts
+  tester`), whose token the policy puts on `slack.com`; each preview invites the
+  tester with its own bot. A preview's Pis use the preview's board and sandboxes of
+  their own (`pi-<branch>-<thread>`), so they never touch production's threads.
   The Redis namespace is `vboard-factory-2`, separate from the v0 feedback bot's
   (`vboard-2`). Both are new with A2 0.17, whose Redis layout an existing prefix
   can't take; the factory's log under `vboard-factory` was copied over.

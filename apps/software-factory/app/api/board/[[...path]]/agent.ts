@@ -2,6 +2,7 @@ import type { NetworkPolicy, Sandbox } from "@vercel/sandbox";
 import type { WatcherContext } from "vboard";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { slug, TESTER } from "./preview.ts";
 
 // Pi, the coding agent, working on a board thread from its own Vercel Sandbox: the
 // `pi` CLI with `vb`, `gh`, and git, like a developer at a terminal. Each thread gets
@@ -9,8 +10,19 @@ import { join } from "node:path";
 // Credentials are placeholders inside the sandbox; its network policy puts the real
 // ones on the wire, so nothing in the sandbox can read them.
 
-/** The production board the agent's `vb` talks to. */
-const BOARD = "https://vboard-factory.playground-vercel.tools/api/board";
+/**
+ * The board this deployment's Pis talk to: production's, or on a preview its own (its branch URL),
+ * so a preview's Pis work on the preview's threads and a change to Pi can be tried there.
+ */
+export const boardOf = (env: NodeJS.ProcessEnv) =>
+  env.VERCEL_ENV === "preview" && env.VERCEL_BRANCH_URL
+    ? `https://${env.VERCEL_BRANCH_URL}/api/board`
+    : "https://vboard-factory.playground-vercel.tools/api/board";
+const BOARD = boardOf(process.env);
+
+/** A thread's sandbox. A preview's threads are numbered from 1 too, so their sandboxes carry the branch. */
+export const sandboxName = (thread: number, env: NodeJS.ProcessEnv) =>
+  env.VERCEL_ENV === "preview" && env.VERCEL_GIT_COMMIT_REF ? `pi-${slug(env.VERCEL_GIT_COMMIT_REF)}-${thread}` : `pi-${thread}`;
 const MODEL = "anthropic/claude-opus-5.5";
 /** The first Pi release that knows MODEL on AI Gateway. */
 const PI = "@earendil-works/pi-coding-agent@1.0.0";
@@ -30,11 +42,12 @@ const FFMPEG_STATIC = "5.2.0";
 const PI_USER = "vercel-sandbox";
 /**
  * What Pi gets on top of its own, written into `~/.pi/agent` every turn from this app's folders of the same names:
- * the ui-video skill, and the computer tool (an extension) it records.
+ * the ui-video skill, the slack-preview skill, and the computer tool (an extension) ui-video records.
  */
 const PI_FILES = [
   "skills/ui-video/SKILL.md",
   "skills/ui-video/scripts/ui-video",
+  "skills/slack-preview/SKILL.md",
   "extensions/computer/index.ts",
   "extensions/computer/xinput.py",
 ];
@@ -143,7 +156,7 @@ A person's :security: reaction on a PR is a request for a deepsec review of its 
 
 const THREAD = `You own bug reports, feature requests, and questions for vboard (github.com/basehub-ai/vboard, private), a message board library and CLI.
 The board is how you talk to people. vb read <id> shows a thread, vb reply <id> "<text>" answers in it (and reaches Slack or GitHub when the thread is synced), vb label <id> k=v labels it. Run vb help for the rest.
-A thread's kind label (bug, feature, question, task) says what it is; judge it yourself from the whole thread too. Clone with gh repo clone basehub-ai/vboard; the repo uses pnpm (pnpm install, pnpm test). Any change you make goes on a branch named pi/<thread id> (never main), in a pull request opened with gh pr create, and you reply with the PR link.
+A thread's kind label (bug, feature, question, task) says what it is; judge it yourself from the whole thread too. Clone with gh repo clone basehub-ai/vboard; the repo uses pnpm (pnpm install, pnpm test). Any change you make goes on a branch named pi/<thread id> (never main), in a pull request opened with gh pr create, and you reply with the PR link. When the change is to what the factory does in Slack, try it there on your PR's preview first (the slack-preview skill).
 Open the PR body with one line saying what triggered it, before anything else: "> 💬 From [<who>'s Slack thread](<link>) · board #<id>" for Slack, "> 🐙 From #<issue> on GitHub · board #<id>" for a GitHub issue (with "Closes #<issue>" below when the PR fixes it), or "> From board #<id>" when the thread has no source. Your task message gives the source link and who posted it.
 Before you plan or build for a bug or feature, look for related work: search earlier threads with vb read dev --text <keywords> and pull requests with gh pr list --state all --search <keywords>. If a thread or PR already covers it, link it in your reply and build on it (comment there, push to its branch, or ask to merge it) instead of starting over with a duplicate.
 For a bug report:
@@ -212,41 +225,50 @@ cd ~ && exec flock ~/.pi/lock bash -c '
  */
 export const piPreview = (thread: number) => `vboard-factory-git-pi-${thread}.playground-vercel.tools`;
 
+/** Its own preview's board, where Pi tries a change to the factory (the slack-preview skill). */
+export const piPreviewBoard = (thread: number) => `https://${piPreview(thread)}/api/board`;
+
 /**
- * Real credentials on the way out: the deployment's OIDC token, and the factory GitHub App's.
- * On the board, the policy also sets who Pi is, so nothing in the sandbox can post as anyone else.
+ * Real credentials on the way out: the deployment's OIDC tokens (one per board), the factory GitHub App's,
+ * and the Slack tester's, when there is one. On each board the policy also sets who Pi is, so nothing in
+ * the sandbox can post as anyone else.
  */
 export function policy(
   thread: number,
-  tokens: { gateway: string; board: string; github: string },
-  bypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET,
+  tokens: { gateway: string; board: string; preview: string; github: string; slack?: string },
+  bypass: string | undefined,
 ): NetworkPolicy {
   const basic = Buffer.from(`x-access-token:${tokens.github}`).toString("base64");
   const protection = bypass ? { "x-vercel-protection-bypass": bypass } : {};
+  const as = (token: string) => [
+    {
+      transform: [
+        {
+          headers: {
+            authorization: `Bearer ${token}`,
+            "x-board-profile": piName(thread),
+            "x-board-avatar": piAvatar(thread),
+            "x-board-session": piSession(thread),
+            ...protection,
+          },
+        },
+      ],
+    },
+  ];
   return {
     allow: {
       // Pi speaks the Anthropic messages API to AI Gateway, which reads x-api-key.
       "ai-gateway.vercel.sh": [
         { transform: [{ headers: { "x-api-key": tokens.gateway, authorization: `Bearer ${tokens.gateway}` } }] },
       ],
-      [new URL(BOARD).host]: [
-        {
-          transform: [
-            {
-              headers: {
-                authorization: `Bearer ${tokens.board}`,
-                "x-board-profile": piName(thread),
-                "x-board-avatar": piAvatar(thread),
-                "x-board-session": piSession(thread),
-                ...protection,
-              },
-            },
-          ],
-        },
-      ],
-      ...(bypass ? { [piPreview(thread)]: [{ transform: [{ headers: protection }] }] } : {}),
+      // Behind Vercel Authentication like production, so only with the bypass; before the board, so a
+      // preview's own Pi for the same thread number still signs in to its board.
+      ...(bypass ? { [piPreview(thread)]: as(tokens.preview) } : {}),
+      [new URL(BOARD).host]: as(tokens.board),
       "github.com": [{ transform: [{ headers: { authorization: `Basic ${basic}` } }] }],
       "api.github.com": [{ transform: [{ headers: { authorization: `Bearer ${tokens.github}` } }] }],
+      // The tester bot, in the preview channel only.
+      ...(tokens.slack ? { "slack.com": [{ transform: [{ headers: { authorization: `Bearer ${tokens.slack}` } }] }] } : {}),
       "*": [],
     },
   };
@@ -348,7 +370,7 @@ async function deliver({ task, thread, key, message, about }: PiMessage, watcher
     import("@vercel/oidc"),
   ]);
   const settings = {
-    name: `pi-${thread}`,
+    name: sandboxName(thread, process.env),
     runtime: "node24",
     timeout: SANDBOX_MS,
     persistent: true,
@@ -357,7 +379,9 @@ async function deliver({ task, thread, key, message, about }: PiMessage, watcher
       AI_GATEWAY_API_KEY: "from-the-network-policy",
       VBOARD_URL: BOARD,
       VBOARD_TOKEN: "from-the-network-policy",
+      VBOARD_PREVIEW_URL: piPreviewBoard(thread),
       GH_TOKEN: "from-the-network-policy",
+      SLACK_TOKEN: "from-the-network-policy",
     },
   } as const;
   let sandbox = await Sandbox.getOrCreate(settings);
@@ -372,12 +396,17 @@ async function deliver({ task, thread, key, message, about }: PiMessage, watcher
   await sh(sandbox, SETUP);
   await sandbox.writeFiles(await piFiles());
   // Fresh tokens with every message, so a thread can pick up again days later.
-  const [gateway, board, github] = await Promise.all([
+  const [gateway, board, preview, github, slack] = await Promise.all([
     getVercelOidcToken(),
     getVercelOidcToken({ audience: BOARD }),
+    getVercelOidcToken({ audience: piPreviewBoard(thread) }),
     getToken("github/vboard-factory", GITHUB_TOKEN),
+    // Without the tester, Pi works as before, only unable to test in Slack.
+    getToken(TESTER.connector, { subject: { type: "app" } }).catch(() => undefined),
   ]);
-  await sandbox.update({ networkPolicy: policy(thread, { gateway, board, github }) });
+  await sandbox.update({
+    networkPolicy: policy(thread, { gateway, board, preview, github, slack }, process.env.VERCEL_AUTOMATION_BYPASS_SECRET),
+  });
   // A message landing late in a session (say, one started by an earlier turn) still gets a full SANDBOX_MS.
   const extend = extension(sandbox.expiresAt, Date.now());
   if (extend > 0) await sandbox.extendTimeout(extend);

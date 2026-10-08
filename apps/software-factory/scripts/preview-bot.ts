@@ -3,6 +3,7 @@
 //   node scripts/preview-bot.ts ensure <branch>   make it, or repair its name; safe to rerun
 //   node scripts/preview-bot.ts remove <branch>   turn it off and delete its connector
 //   node scripts/preview-bot.ts inviter           make the bot that adds them to the channel, once
+//   node scripts/preview-bot.ts tester            make the bot Pi tests a preview as in Slack, once
 //
 // Only a Vercel user may create, rename or delete a connector, so this runs with VERCEL_TOKEN or
 // your `vc login`, never from a deployment. Connect's Slack manager (Vercel's Slack app, already
@@ -10,7 +11,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { INVITER, manifest, PREVIEW_CHANNEL, previewBot, SLACK_TEAM } from "../app/api/board/[[...path]]/preview.ts";
+import { INVITER, TESTER, manifest, PREVIEW_CHANNEL, previewBot, SLACK_TEAM } from "../app/api/board/[[...path]]/preview.ts";
 
 const TEAM = "team_TtmJZYmD3tcLBLqWOhoVawd1";
 const PROJECT = "prj_Cu5qMQq8MGIQUIyWGOqgZgJPBG4z";
@@ -88,9 +89,16 @@ async function remove(branch: string) {
   console.log(`✓ ${connector} is off; remove "${appName} (closed)" under Apps in Slack`);
 }
 
-// The one bot that adds preview bots to the private preview channel: no events, only invites.
-async function inviter() {
-  const { connector, appName, description, botScopes } = INVITER;
+// The bots every preview shares, with no events: the inviter, which adds preview bots to the private
+// channel (a person invites it once), and the tester Pi speaks as there. Production's Pi hands out the
+// tester's token, so it's attached to production too.
+const helpers = {
+  inviter: { ...INVITER, environments: ["preview"], next: `invite it to <#${PREVIEW_CHANNEL}> once` },
+  tester: { ...TESTER, environments: ["production", "preview"], next: "each preview adds it to the channel" },
+};
+
+async function helper(name: keyof typeof helpers) {
+  const { connector, appName, description, botScopes, environments, next } = helpers[name];
   if (await vercel("GET", connectorPath(connector))) {
     console.log(`✓ ${connector} exists`);
     return;
@@ -101,22 +109,22 @@ async function inviter() {
     uid: connector,
     name: connector.slice("slack/".length),
     projectId: PROJECT,
-    environments: ["preview"],
+    environments,
     input: { appName, description, botScopes },
   });
-  console.log(`✓ made ${connector}, @${appName}: invite it to <#${PREVIEW_CHANNEL}> once`);
+  console.log(`✓ made ${connector}, @${appName}: ${next}`);
 }
 
 const [command, branch] = process.argv.slice(2);
-if (command === "inviter") {
-  await inviter().catch((error: unknown) => {
+if (command === "inviter" || command === "tester") {
+  await helper(command).catch((error: unknown) => {
     console.error(`error: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
   });
   process.exit(0);
 }
 if (!branch || (command !== "ensure" && command !== "remove")) {
-  console.error("usage: node scripts/preview-bot.ts ensure|remove <branch> | inviter");
+  console.error("usage: node scripts/preview-bot.ts ensure|remove <branch> | inviter | tester");
   process.exit(2);
 }
 try {

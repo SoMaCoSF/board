@@ -13,7 +13,7 @@ export const PREVIEW_CHANNEL = "C0C7P6NN8FM";
 export const SLACK_TEAM = "T0CAQ00TU";
 
 // A connector's name and a Slack app's (35 at most) both come from the branch, kept short.
-const slug = (branch: string) => {
+export const slug = (branch: string) => {
   const plain = branch.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "branch";
   if (plain.length <= 24) return plain;
   const hash = createHash("sha256").update(branch).digest("hex").slice(0, 5);
@@ -72,6 +72,18 @@ export const INVITER = {
   botScopes: ["groups:read", "groups:write"],
 };
 
+/**
+ * Who Pi is in Slack when it tests a preview: a bot that posts, reacts and reads in the preview
+ * channel, the only one it's in, so a preview hears someone other than itself. Pi gets its token
+ * through its network policy; each preview invites it with its own bot.
+ */
+export const TESTER = {
+  connector: "slack/vboard-tester",
+  appName: "vboard tester",
+  description: "Pi, testing a vboard-factory preview in #project-vboard-previews.",
+  botScopes: ["chat:write", "groups:history", "groups:read", "reactions:read", "reactions:write"],
+};
+
 type SlackCall = (token: string, method: string, body: Record<string, string>) => Promise<{ ok: boolean; error?: string; user_id?: string }>;
 
 const slackApi: SlackCall = async (token, method, body) =>
@@ -81,12 +93,14 @@ const slackApi: SlackCall = async (token, method, body) =>
     body: JSON.stringify(body),
   })).json();
 
-/** Adds the preview's bot (`token`) to the preview channel, as the inviter (`inviter`). */
-export async function invitePreviewBot(token: string, inviter: string, call: SlackCall = slackApi) {
-  const me = await call(token, "auth.test", {});
-  if (!me.ok || !me.user_id) throw new Error(`auth.test: ${me.error}`);
-  const invited = await call(inviter, "conversations.invite", { channel: PREVIEW_CHANNEL, users: me.user_id });
-  if (!invited.ok && invited.error !== "already_in_channel") throw new Error(`conversations.invite: ${invited.error}`);
+/** Adds each bot (by its token: the preview's, the tester's) to the preview channel, as the inviter. */
+export async function inviteToPreviewChannel(tokens: string[], inviter: string, call: SlackCall = slackApi) {
+  for (const token of tokens) {
+    const me = await call(token, "auth.test", {});
+    if (!me.ok || !me.user_id) throw new Error(`auth.test: ${me.error}`);
+    const invited = await call(inviter, "conversations.invite", { channel: PREVIEW_CHANNEL, users: me.user_id });
+    if (!invited.ok && invited.error !== "already_in_channel") throw new Error(`conversations.invite: ${invited.error}`);
+  }
 }
 
 type SlackRoot = { user?: string; bot_id?: string; text?: string };
