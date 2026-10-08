@@ -28,7 +28,7 @@ function harness(roots) {
   const asked = [];
   const synced = [];
   const web = async () => ({
-    auth: { test: async () => ({ user_id: BOT }) },
+    auth: { test: async () => ({ user_id: BOT, bot_id: "B0PREVIEW" }) },
     conversations: {
       replies: async ({ ts }) => {
         asked.push(ts);
@@ -63,6 +63,12 @@ test("a preview takes replies in a thread its bot started", async () => {
   await deliver(message("2.1", "2.5"));
   await deliver({ kind: "reaction", thread: "slack:C0C7P6NN8FM:2.1", message: "2.1", emoji: "eyes" });
   assert.deepEqual(synced, [["dev", "2.5"], ["dev", "2.1"]]);
+});
+
+test("a root the board posted under an author's name, with only the bot's ID, is the preview's", async () => {
+  const { synced, deliver } = harness({ "6.1": { bot_id: "B0PREVIEW", text: "e2e: a board post" } });
+  await deliver(message("6.1", "6.2"));
+  assert.deepEqual(synced, [["dev", "6.2"]]);
 });
 
 test("another preview's thread, or nobody's, is left alone", async () => {

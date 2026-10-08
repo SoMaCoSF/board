@@ -89,10 +89,10 @@ export async function invitePreviewBot(token: string, inviter: string, call: Sla
   if (!invited.ok && invited.error !== "already_in_channel") throw new Error(`conversations.invite: ${invited.error}`);
 }
 
-type SlackRoot = { user?: string; text?: string };
+type SlackRoot = { user?: string; bot_id?: string; text?: string };
 
 export type PreviewWeb = {
-  auth: { test(): Promise<{ user_id?: string }> };
+  auth: { test(): Promise<{ user_id?: string; bot_id?: string }> };
   conversations: {
     replies(args: { channel: string; ts: string; limit: number; inclusive: boolean }): Promise<{ messages?: SlackRoot[] }>;
   };
@@ -104,11 +104,13 @@ export type PreviewWeb = {
  * previews, or to nobody. A thread's verdict is asked of Slack once and kept.
  */
 export function ownThreads(web: () => Promise<PreviewWeb>) {
-  let me: Promise<string> | undefined;
+  let me: Promise<{ user: string; bot: string | undefined }> | undefined;
   const verdicts = new Map<string, Promise<boolean>>();
 
-  const mine = (root: SlackRoot | undefined, bot: string) =>
-    !!root && (root.user === bot || (root.text ?? "").includes(`<@${bot}>`));
+  // The board posts under each author's name (`chat:write.customize`), and Slack then gives the
+  // message only the bot's ID, no user.
+  const mine = (root: SlackRoot | undefined, { user, bot }: { user: string; bot: string | undefined }) =>
+    !!root && (root.user === user || (!!bot && root.bot_id === bot) || (root.text ?? "").includes(`<@${user}>`));
 
   const owned = (event: SlackEvent) => {
     // `slack:<channel>:<root ts>`
@@ -117,9 +119,9 @@ export function ownThreads(web: () => Promise<PreviewWeb>) {
     if (!verdict) {
       verdict = (async () => {
         const client = await web();
-        me ??= client.auth.test().then(({ user_id }) => {
+        me ??= client.auth.test().then(({ user_id, bot_id }) => {
           if (!user_id) throw new Error("auth.test named no bot user");
-          return user_id;
+          return { user: user_id, bot: bot_id };
         });
         const bot = await me;
         if (event.kind === "message" && event.isRoot) return mine(event.raw as SlackRoot, bot);
