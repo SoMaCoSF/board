@@ -1,4 +1,4 @@
-import { idempotentId } from 'experimental-a2'
+import { idempotentId, reducer } from 'experimental-a2'
 import { createServer, type A2Scheduler, type A2Store, type HandlerContext } from 'experimental-a2/server'
 import type { ScheduleBodyOutput, ScheduleView, SchedulesQueryOutput } from '../api/routes.ts'
 import { duration } from '../client/client.ts'
@@ -103,8 +103,7 @@ export function foldSchedules(state: SchedulesState, event: ScheduleEvent): Sche
   }
 }
 
-export const schedulesReducer = schedulesContract
-  .reducer({ name: 'vboard.schedules.v1', initialState: { byId: {} } as SchedulesState })
+export const schedulesReducer = reducer({ contract: schedulesContract, name: 'vboard.schedules.v1', initialState: { byId: {} } as SchedulesState })
   .fold(foldSchedules)
 
 /** The send after one due at `at`: the next slot after now, so downtime skips missed slots instead of replaying them. */

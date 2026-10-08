@@ -29,7 +29,8 @@ while the repo is private). The CLI and the API read their version from
 ## the software factory (`apps/software-factory`)
 
 vboard running on itself: the board for `basehub-ai/vboard` PRs and Vercel's
-Slack, on `vercel-internal-playground/vboard-factory`. The app is only wiring:
+Slack, on `vercel-internal-playground/vboard-factory`. The app is only wiring,
+plus the [docs site](#the-docs-packagesvboarddocs) everywhere outside `/api`:
 the board route holds the whole config, and the A2 scheduler route re-exports
 the board's `scheduler`. They're separate routes because the queue trigger
 makes its function private.
@@ -44,7 +45,9 @@ VBOARD_URL=https://vboard-factory.playground-vercel.tools/api/board pnpm exec vb
 - Every environment syncs with the real Slack and GitHub, so a local or preview
   board posts there too. `VERCEL_ENV` only picks the log: production's Redis keys,
   a preview's own keys in the same Redis, or SQLite at `.a2/dev.db` locally.
-  The Redis namespace is `vboard-factory`, separate from the v0 feedback bot.
+  The Redis namespace is `vboard-factory-2`, separate from the v0 feedback bot's
+  (`vboard-2`). Both are new with A2 0.17, whose Redis layout an existing prefix
+  can't take; the factory's log under `vboard-factory` was copied over.
   Slack channel `C0C6MNT9LLC`, GitHub PRs, and GitHub issues all mirror `dev`.
   Connect uses `slack/vboard-factory` and
   `github/vboard-factory`, with production triggers at
@@ -122,16 +125,35 @@ VBOARD_URL=https://vboard-factory.playground-vercel.tools/api/board pnpm exec vb
 - Attachments live in the project's private Blob store, `vboard-factory-attachments`
   (`BLOB_STORE_ID`, authenticated with OIDC), shared by every deployment; locally
   they're files in `.a2/attachments`. Pi attaches a screenshot to the reply
-  that links its PR when the change is visible, never test-run logs: the tests
+  that links its PR when the change is visible (a captioned video, for a flow),
+  never test-run logs: the tests
   are in the PR, and a bug fix's PR body names the test that reproduces it. Its
   `vb` is pinned (`VBOARD` in `agent.ts`): bump it with each release Pi should
   use, since setup upgrades sandboxes to exactly that. So is `gh` (`GH`), which
   new sandboxes download without asking GitHub's API, whose unauthenticated rate
   limit sandboxes share.
+- Pi's sandbox also gets the factory's own skills and extensions, from
+  `apps/software-factory/skills/` and `extensions/`, written to `~/.pi/agent`
+  every turn (add a new file to `PI_FILES` in `agent.ts`). The `computer`
+  extension is computer use, done the way Codex does it: one tool, sequential,
+  that does one action on a virtual desktop (Xvfb) per call, with the mouse and
+  keyboard through XTEST (`xinput.py`, using ctypes because the sandbox has no
+  pip or xdotool), and returns a screenshot. Each call carries a title.
+  `ui-video` records that desktop with ffmpeg and burns each call's title in
+  as a caption, read aloud by a speech model on AI Gateway (`openai/tts-1`; the
+  network policy's gateway key covers it). It keeps each line and a few seconds
+  after its action and cuts the time Pi spends thinking, as an mp4 under 4 MB. Setup installs Xvfb and libXtst
+  (dnf), Chrome (through `agent-browser`, pinned as `AGENT_BROWSER`), and a
+  static ffmpeg (`FFMPEG_STATIC`), and a failed install doesn't stop Pi. Pi
+  tests against a local dev server or the preview of its own branch
+  (`piPreview`). The network policy adds the Vercel Authentication bypass to
+  that host only, so the secret never reaches other deployments, or the
+  sandbox.
 - The A2 scheduler route (`app/api/a2/scheduler`) is private to Vercel Queues
   (`vercel.json`), on topic `vboard-factory`. Production is behind Vercel
-  Authentication: the CLI needs `VERCEL_AUTOMATION_BYPASS_SECRET`, and Pi's
-  network policy injects it when calling the board. Connect forwards webhooks
+  Authentication: the CLI gets through with your `vercel login` (or
+  `VERCEL_AUTOMATION_BYPASS_SECRET`), and Pi's network policy injects the
+  bypass when calling the board. Connect forwards webhooks
   through deployment protection.
 
 ## the v0 feedback bot (`apps/v0-feedback`)
@@ -172,6 +194,33 @@ VBOARD_URL=https://vboard.playground-vercel.tools/api/board pnpm exec vb inspect
   through with the automation bypass (`VERCEL_AUTOMATION_BYPASS_SECRET`), and
   `/api/v0-hook` also checks `V0_HOOK_KEY`. Tagging the owner in Slack needs the
   Connect Slack app's `users:read.email` scope; without it the email shows as text.
+
+## the docs (`packages/vboard/docs`)
+
+Markdown in the package, so it ships on npm (`files` has `docs`) and agents can
+read it in `node_modules/vboard/docs`. The software factory serves it at
+https://vboard-factory.playground-vercel.tools: `docs/index.md` is the landing
+page's body, and every page also answers as markdown at its URL plus `.md`. The
+site (`app/` outside `api/`, `components/`, `lib/`) is A2's docs site ported,
+grayscale and Geist Mono; it reads the docs from its installed `vboard`.
+
+- **Plain GFM, no HTML.** Frontmatter is `title` and `description` (YAML: quote
+  a value with `: ` in it). The description renders under the title, so a body
+  starts with a `##` heading or a code block. Fences take a filename after the
+  language (```` ```ts app/api/board/[[...path]]/route.ts ````) and only
+  `lib/markdown.tsx`'s languages; ```` ```package-install ```` takes one
+  `npm i …` line. Callouts are GitHub's `> [!NOTE]`, `> [!TIP]`, `> [!WARNING]`,
+  and under a `## FAQ`, each `###` question folds into a `<details>`.
+- **Pages link by relative file path** (`../02-sync/03-slack.md#files`), so they
+  read the same on GitHub and in `node_modules`. The site turns them into URLs,
+  and a link to no page fails the build; `test/docs.test.mjs` checks anchors too.
+- **Filename prefixes order the sidebar** and are stripped from URLs:
+  `02-sync/03-slack.md` is `/sync/slack`, in the group "Sync".
+- **A2's voice:** present tense, as if it ships today; short sentences; no
+  em-dashes, hype, or filler; "vboard" lowercase. Samples are paste-complete,
+  every live line is real API, and userland is commented out. The docs describe
+  the code: where SPEC.md and the code disagree (cursors aren't built), the code
+  wins. A change people will notice updates its page.
 
 ## the inspector (`vb inspect`, `src/inspect/`)
 

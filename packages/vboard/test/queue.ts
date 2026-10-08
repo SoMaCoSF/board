@@ -14,7 +14,8 @@ export function fakeQueue() {
   const scheduler: A2Scheduler = {
     schedule: async (task) => {
       if (task.kind === 'drain') drain(task.contract, task.sessionId)
-      else if (!timers.some((t) => t.id === task.id)) timers.push(task)
+      // vboard never clears a session, so the only other task is a timer.
+      else if (task.kind === 'append' && !timers.some((t) => t.id === task.id)) timers.push(task)
     },
     handler: (...mounted) => {
       servers = mounted

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { GITHUB_TOKEN, byPi, byWatcher, piAvatar, piName, sourceLink, startOrSay, taskMessage } from "../app/api/board/[[...path]]/agent.ts";
+import { createRequire } from "node:module";
+const require_ = createRequire(import.meta.url);
+import { BUSY, GITHUB_TOKEN, QUEUED, byPi, byWatcher, markQueued, piAvatar, piName, sourceLink, startOrSay, taskMessage } from "../app/api/board/[[...path]]/agent.ts";
 
 test("sourceLink: a Slack thread's permalink, a GitHub issue or PR, or nothing", () => {
   assert.deepEqual(sourceLink({ thread: "slack:C0C6MNT9LLC:1791394851.272189" }), {
@@ -124,3 +126,47 @@ test("startOrSay: a Pi that never starts says why in its thread instead of throw
   assert.match(replies[0].text, /returned error: 403/);
   assert.match(replies[0].text, /try again/);
 });
+
+test("markQueued: a message that waits behind Pi's turn gets a ⏳ at once, and one that doesn't wait gets nothing", async () => {
+  const reactions = [];
+  const board = { react: async (id, emoji) => void reactions.push([id, emoji]) };
+  await markQueued(board, 3383, async () => true);
+  await markQueued(board, 3384, async () => false);
+  await markQueued(board, undefined, async () => true); // a task, not a person's message
+  assert.deepEqual(reactions, [[3383, QUEUED]]);
+});
+
+test("markQueued: a check or reaction that fails never holds up the message", async () => {
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    await markQueued({ react: async () => { throw new Error("slack down"); } }, 1, async () => true);
+    await markQueued({ react: async () => {} }, 1, async () => { throw new Error("sandbox gone"); });
+  } finally {
+    console.warn = warn;
+  }
+});
+
+test("BUSY: exits 0 only while a turn holds the lock", { skip: !hasFlock() && "no flock here" }, async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { spawn, spawnSync } = await import("node:child_process");
+  const home = mkdtempSync(join(tmpdir(), "pi-home-"));
+  const env = { ...process.env, HOME: home };
+  const busy = () => spawnSync("bash", ["-c", BUSY], { env }).status === 0;
+  assert.equal(busy(), false); // no turn has ever run
+  spawnSync("bash", ["-c", "mkdir -p ~/.pi && touch ~/.pi/lock"], { env });
+  assert.equal(busy(), false); // the last turn is over
+  const turn = spawn("bash", ["-c", "flock ~/.pi/lock sleep 5"], { env });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  try {
+    assert.equal(busy(), true);
+  } finally {
+    turn.kill();
+  }
+});
+
+function hasFlock() {
+  return require_("node:child_process").spawnSync("bash", ["-c", "command -v flock"]).status === 0;
+}

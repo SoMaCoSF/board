@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { BoardEventView } from '../src/api/routes.ts'
 import { parseTail, parseWatchTail, words } from '../src/api/tail.ts'
 import type { Watcher } from '../src/server/index.ts'
+import { runMatch } from '../src/server/watch.ts'
 import { caller, personToken, testBoard } from './harness.ts'
 
 /** A watcher that records every event it runs on. */
@@ -184,6 +185,54 @@ describe('watchers', () => {
     expect(root.status).toBe(201)
     expect((await julian('POST', '/messages', { re: root.body.message.id, text: 'still broken' })).status).toBe(201)
     await vi.waitFor(() => expect(ok.types()).toEqual(['message.posted', 'message.posted']))
+  })
+
+  it("give up on an event that keeps failing, and keep running on the thread's later events", async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const seen: string[] = []
+    const board = testBoard({
+      watch: {
+        flaky: {
+          tail: 'firehose',
+          run: ({ event }) => {
+            if (event.message?.text === 'boom') throw new Error('sandbox setup failed')
+            seen.push(event.message!.text)
+          },
+        },
+      },
+    })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    const root = await julian('POST', '/messages', { channel: 'firehose', text: 'boom' })
+    await julian('POST', '/messages', { re: root.body.message.id, text: 'are you alive?' })
+
+    // Without a scheduler nothing retries on its own; each drain is the next try.
+    const watches = board.servers.at(-1)!
+    await vi.waitFor(async () => {
+      await watches.drain('watch:flaky')
+      expect(seen).toEqual(['are you alive?'])
+    })
+    const failed = (await watches.session('watch:flaky').history()).filter((event) => event.type === 'watch.failed')
+    expect(failed).toEqual([expect.objectContaining({ payload: expect.objectContaining({ thread: root.body.message.thread, error: 'sandbox setup failed' }) })])
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('watcher flaky gave up on event'), 'sandbox setup failed')
+    error.mockRestore()
+  })
+
+  it('give up without running once runs keep getting killed, which never throw', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const run = vi.fn()
+    const recorded: unknown[] = []
+    const match = { id: 'm1', payload: { thread: 't1', event: { index: 7, type: 'message.posted' } } }
+    const input = { watcher: { id: 'pi', run }, match, board: () => ({}) as never, record: async (failure: unknown) => void recorded.push(failure) }
+
+    // Up to twice the tries, a run gets another go: earlier attempts may have been kills.
+    await runMatch({ ...input, attempt: 10 })
+    expect(run).toHaveBeenCalledTimes(1)
+    // Past that, the runs keep dying (A2 counts kills as attempts, not failures): give up, don't run again.
+    await runMatch({ ...input, attempt: 11 })
+    expect(run).toHaveBeenCalledTimes(1)
+    expect(recorded).toEqual([{ matched: 'm1', thread: 't1', error: 'its run was cut short 10 times (a timeout, or out of memory)' }])
+    expect(error).toHaveBeenCalledWith('[vboard] watcher pi gave up on event #7 after 11 tries:', 'its run was cut short 10 times (a timeout, or out of memory)')
+    error.mockRestore()
   })
 
   it('fail the boot when one is misconfigured', () => {

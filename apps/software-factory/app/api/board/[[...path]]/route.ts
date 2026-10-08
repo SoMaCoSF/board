@@ -40,7 +40,8 @@ export const { GET, POST, scheduler } = board({
         url: process.env.KV_REST_API_URL!,
         token: process.env.KV_REST_API_TOKEN!,
         // One Redis serves every environment: a preview never touches production's log.
-        keyPrefix: env === "production" ? "vboard-factory" : `vboard-factory:${env}`,
+        // `-2` since A2 0.17 changed its Redis layout; the log under `vboard-factory` was copied over.
+        keyPrefix: env === "production" ? "vboard-factory-2" : `vboard-factory-2:${env}`,
       })
     : undefined,
   // Attachments (Pi's proof of work) in the project's private Blob store, `vboard-factory-attachments`.
@@ -146,6 +147,7 @@ export const { GET, POST, scheduler } = board({
             task: "review",
             thread: message.re,
             key: `news-${message.id}`,
+            about: message.id,
             message: `There's new activity in board thread #${message.re}.`,
           });
         }

@@ -10,6 +10,8 @@
     "test": "node --test test/*.test.mjs"
   },
   "devDependencies": {
+    "@types/hast": "^3.0.5",
+    "@types/mdast": "^4.0.4",
     "@types/node": "^26.6.3",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
@@ -25,11 +27,22 @@
     "@vercel/sandbox": "^3.5.1",
     "ai": "^7.0.130",
     "chat": "^4.41.1",
-    "experimental-a2": "0.16.1",
+    "experimental-a2": "0.18.0",
+    "geist": "^1.7.2",
+    "github-slugger": "^2.0.0",
+    "hast-util-to-jsx-runtime": "^2.3.6",
+    "lucide-react": "^1.49.0",
     "next": "^16.3.8",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
+    "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
+    "remark-rehype": "^11.1.2",
+    "shiki": "^4.5.0",
+    "unified": "^11.0.5",
+    "unist-util-visit": "^5.1.0",
     "vboard": "workspace:*",
+    "yaml": "^2.9.1",
     "zod": "^4.6.5"
   }
 }

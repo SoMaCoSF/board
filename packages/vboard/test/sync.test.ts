@@ -1216,6 +1216,37 @@ describe('provider callbacks', () => {
     await vi.waitFor(async () => expect((await call('GET', `/messages/${reply.id}`)).body.replies.find((message: { id: number }) => message.id === reply.id).deleted).toBe(true))
   })
 
+  it('gives a Slack callback the message permalink lazily, without importing the thread', async () => {
+    const getPermalink = vi.fn(async ({ channel, message_ts }: { channel: string; message_ts: string }) =>
+      ({ permalink: `https://acme.enterprise.slack.com/archives/${channel}/p${message_ts.replace('.', '')}?thread_ts=100.000000` }))
+    const client = { conversations: { list: async () => ({}), info: async () => ({}), join: async () => ({}) }, chat: { postMessage: async () => ({}), getPermalink } }
+    const s = fakePlatform('slack', withSlackClient(client, false))
+    const links: (string | null)[] = []
+    let skipped = 0
+    const board = testBoard({ sync: { slack: slack({
+      adapter: s.adapter,
+      channels: { C1: async ({ event, permalink }) => {
+        if (event.kind === 'deleted') return void links.push(await permalink())
+        if (event.kind !== 'message') return
+        if (event.text === 'skip') return void skipped++
+        links.push(await permalink(), await permalink())
+      } },
+    }) } })
+    const call = caller(board.fetch, await personToken())
+    const send = (id: string, text: string) => board.fetch(new Request(`${BOARD_URL}/webhooks/slack`, { method: 'POST', body: JSON.stringify({ type: 'message', threadId: 'slack:C1:100.000000', id, text, user: 'U1' }) }))
+    await send('100.000200', 'skip')
+    await send('100.000300', 'copy me')
+    await vi.waitFor(() => expect(links).toHaveLength(2))
+    expect(skipped).toBe(1)
+    expect(links).toEqual(Array(2).fill('https://acme.enterprise.slack.com/archives/C1/p100000300?thread_ts=100.000000'))
+    expect(getPermalink).toHaveBeenCalledExactlyOnceWith({ channel: 'C1', message_ts: '100.000300' })
+    expect(await read(call, 'firehose')).toEqual([])
+    await board.fetch(new Request(`${BOARD_URL}/webhooks/slack`, { method: 'POST', body: JSON.stringify({ type: 'delete', threadId: 'slack:C1:100.000000', id: '100.000300' }) }))
+    await vi.waitFor(() => expect(links).toHaveLength(3))
+    expect(links[2]).toBeNull()
+    expect(getPermalink).toHaveBeenCalledOnce()
+  })
+
   it('rejects forged envelopes and calls after the callback, and skips an event without disconnecting', async () => {
     const s = fakePlatform('slack')
     let saved!: () => Promise<unknown>

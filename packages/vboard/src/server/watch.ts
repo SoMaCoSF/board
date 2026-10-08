@@ -49,6 +49,51 @@ const WATCHED = [
 /** Receipts: only a `--all` tail shows them. */
 const RECEIPTS = new Set(['message.synced', 'message.files_synced'])
 
+/**
+ * A2 dead-letters a handler after 10 failures, and a dead letter stops its
+ * lane, which is the thread's: the watcher would never run on that thread
+ * again. So `run` gets a few tries, then the failure is recorded and the
+ * thread moves on.
+ */
+const RUN_ATTEMPTS = 5
+
+/**
+ * A run that's killed (a timeout, out of memory) never throws, and A2 doesn't
+ * count kills toward a dead letter, so it would retry on the thread's lane
+ * forever. Attempts count kills too: this many means runs keep dying.
+ */
+const KILLED_ATTEMPTS = RUN_ATTEMPTS * 2
+
+const describe = (error: unknown) => ((error instanceof Error ? error.message : String(error)) || 'unknown error').slice(0, 500)
+
+type Match = { id: string; payload: { thread: string; event: unknown } }
+
+/**
+ * One match, on its thread's lane: `run`, retried by A2 while it fails, then
+ * given up on (recorded as `watch.failed`) so the thread's next event runs.
+ */
+export async function runMatch(input: {
+  watcher: { id: string; run: Watcher['run'] }
+  match: Match
+  attempt: number
+  board: () => BoardClient
+  record: (failure: { matched: string; thread: string; error: string }) => Promise<unknown>
+}) {
+  const { watcher, match, attempt } = input
+  const event = match.payload.event as BoardEventView
+  const giveUp = async (error: string) => {
+    console.error(`[vboard] watcher ${watcher.id} gave up on event #${event.index} after ${attempt} tries:`, error)
+    await input.record({ matched: match.id, thread: match.payload.thread, error })
+  }
+  if (attempt > KILLED_ATTEMPTS) return giveUp(`its run was cut short ${attempt - 1} times (a timeout, or out of memory)`)
+  try {
+    await watcher.run({ event, board: input.board() })
+  } catch (error) {
+    if (attempt < RUN_ATTEMPTS) throw error
+    await giveUp(describe(error))
+  }
+}
+
 /** A watcher writes as itself, and its own writes never wake it. */
 const identityOf = (id: string): Identity => deploymentIdentity(`vboard:watch:${id}`, id)
 
@@ -91,9 +136,15 @@ export function createWatchers(options: {
           // A watcher removed from config since it matched has nothing left to run.
           const watcher = byId.get(ctx.session.id.slice('watch:'.length))
           if (!watcher) return
-          if (!clientAs) throw new Error('watchers used before the board bound them')
-          const event = ctx.event.payload.event as BoardEventView
-          await watcher.run({ event, board: clientAs(watcher.identity, ctx.event.id) })
+          const bound = clientAs
+          if (!bound) throw new Error('watchers used before the board bound them')
+          await runMatch({
+            watcher,
+            match: ctx.event,
+            attempt: ctx.attempt,
+            board: () => bound(watcher.identity, ctx.event.id),
+            record: (payload) => ctx.session.append(`failed:${ctx.event.id}`, { type: 'watch.failed', payload }),
+          })
         },
       },
     },
@@ -144,6 +195,7 @@ export function createWatchers(options: {
   return {
     server,
     boardHandlers,
+    ids: watchers.map((watcher) => watcher.id),
     bind: (binding: { clientAs: (identity: Identity, trigger: string) => BoardClient }) => {
       clientAs = binding.clientAs
     },
