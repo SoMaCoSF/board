@@ -48,8 +48,10 @@ VBOARD_URL=https://vboard-factory.playground-vercel.tools/api/board pnpm exec vb
   A preview speaks as its branch's own bot (`preview.ts`), not `slack/vboard-factory`:
   `slack/vboard-preview-<branch>`, a Slack app Connect's Slack manager makes and
   installs with no browser, whose events Connect sends to the branch's newest
-  preview. Every preview bot lives in #project-vboard-previews (`C0C7P6NN8FM`,
-  private, so invite each one), and a preview takes only its own threads there: ones
+  preview. Every preview bot lives in #project-vboard-previews (`C0C7P6NN8FM`).
+  It's private, and a bot can't join a private channel, so `slack/vboard-previews`
+  (made once with `preview-bot.ts inviter`, invited once by a person, `groups:write`)
+  adds each preview's bot on its first Slack call. A preview takes only its own threads there: ones
   its bot started or whose root mentions it. `node scripts/preview-bot.ts
   ensure|remove <branch>` makes or retires one with your `vc login`; a PR labeled
   `preview-bot` does it in CI (`VERCEL_TOKEN`). Slack keeps a retired app, renamed
