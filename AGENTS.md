@@ -143,15 +143,23 @@ VBOARD_URL=https://vboard-factory.playground-vercel.tools/api/board pnpm exec vb
   use, since setup upgrades sandboxes to exactly that. So is `gh` (`GH`), which
   new sandboxes download without asking GitHub's API, whose unauthenticated rate
   limit sandboxes share.
-- Pi's sandbox also has skills of the factory's own, in
-  `apps/software-factory/skills/` and written to `~/.pi/agent/skills` every turn
-  (add a new file to `SKILLS` in `agent.ts`). `ui-video` records a flow in
-  `agent-browser` and burns a caption for each step in with ffmpeg, as an mp4
-  under 4 MB. Setup installs both, pinned (`AGENT_BROWSER`, `FFMPEG_STATIC`),
-  and a failed install doesn't stop Pi. Pi tests against a local dev server or
-  the preview of its own branch (`piPreview`). The network policy adds the
-  Vercel Authentication bypass to that host only, so the secret never reaches
-  other deployments, or the sandbox.
+- Pi's sandbox also gets the factory's own skills and extensions, from
+  `apps/software-factory/skills/` and `extensions/`, written to `~/.pi/agent`
+  every turn (add a new file to `PI_FILES` in `agent.ts`). The `computer`
+  extension is computer use, done the way Codex does it: one tool, sequential,
+  that does one action on a virtual desktop (Xvfb) per call, with the mouse and
+  keyboard through XTEST (`xinput.py`, using ctypes because the sandbox has no
+  pip or xdotool), and returns a screenshot. Each call carries a title.
+  `ui-video` records that desktop with ffmpeg and burns each call's title in
+  as a caption, read aloud by a speech model on AI Gateway (`openai/tts-1`; the
+  network policy's gateway key covers it). It keeps each line and a few seconds
+  after its action and cuts the time Pi spends thinking, as an mp4 under 4 MB. Setup installs Xvfb and libXtst
+  (dnf), Chrome (through `agent-browser`, pinned as `AGENT_BROWSER`), and a
+  static ffmpeg (`FFMPEG_STATIC`), and a failed install doesn't stop Pi. Pi
+  tests against a local dev server or the preview of its own branch
+  (`piPreview`). The network policy adds the Vercel Authentication bypass to
+  that host only, so the secret never reaches other deployments, or the
+  sandbox.
 - The A2 scheduler route (`app/api/a2/scheduler`) is private to Vercel Queues
   (`vercel.json`), on topic `vboard-factory`. Production is behind Vercel
   Authentication: the CLI gets through with your `vercel login` (or

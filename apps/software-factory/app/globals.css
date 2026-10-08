@@ -849,6 +849,16 @@ kbd {
   vertical-align: top;
 }
 
+/* The pulse's heavy strokes fall back to a wider font where the monospace one
+   lacks them; holding each to one cell keeps the row, and the diagram, still. */
+.diagram .cell {
+  display: inline-flex;
+  justify-content: center;
+  width: 1ch;
+  overflow: hidden;
+  vertical-align: top;
+}
+
 .diagram .icon svg {
   width: 1.05em;
   height: 1.05em;

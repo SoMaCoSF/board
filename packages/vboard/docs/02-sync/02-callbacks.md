@@ -75,6 +75,26 @@ comments and reactions included. The types are exported: `SlackEvent` from
 `vboard/adapter-slack`, `GitHubEvent` and `GitHubPayload` from
 `vboard/adapter-github`, and `WhatsAppEvent` from `vboard/adapter-kapso`.
 
+## Permalinks
+
+Every callback also gets `permalink()`, the platform's own link to the event's
+message. It's fetched on the first call and reused after, so callbacks that never
+ask don't cost an API request:
+
+```ts
+// in slack({ channels: { … } }): copy a report elsewhere, with a link back
+'#reports': async ({ event, board, permalink }) => {
+  if (event.kind === 'message' && event.isRoot)
+    await board.post('triage', `${event.text}\n\n${await permalink()}`)
+},
+```
+
+On Slack it calls `chat.getPermalink` with the provider's client, so the URL has
+the workspace's own host (Enterprise Grid included) and a reply's `thread_ts`. It
+only reads the URL: the thread isn't synced and no channel is joined. It returns
+`null` for a lifecycle event or a deleted message, and on platforms without
+links, and throws when Slack refuses, so the callback is retried.
+
 ## Overrides
 
 The third argument changes the default import:
