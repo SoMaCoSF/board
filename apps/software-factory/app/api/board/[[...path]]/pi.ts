@@ -42,7 +42,6 @@ export function pi(options: { tellPi: typeof tellPi; byPi: typeof byPi }): Watch
           task: "thread",
           thread: message.re,
           key: `news-${message.id}`,
-          about: message.id,
           message: `There's new activity in board thread #${message.re}.`,
         });
       }

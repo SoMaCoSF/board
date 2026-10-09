@@ -162,10 +162,10 @@ Install leaves everything else in those files as it was.
 
 ```text
 $ vb hooks status
-Claude Code: vb hook stop --agent claude 2>/dev/null || true
-Codex: not installed
-Cursor: not installed
-Pi: vb hook stop --agent pi 2>/dev/null || true
+Claude Code  installed  ~/.claude/settings.json
+Codex        not installed
+Cursor       not installed
+Pi           installed  ~/.pi/agent/extensions/vboard.ts
 ```
 
 `vb hooks uninstall` removes the hook and the permissions it added.

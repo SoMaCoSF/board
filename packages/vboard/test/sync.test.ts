@@ -565,6 +565,40 @@ describe('sync', () => {
     expect(g.posts).toHaveLength(0)
   })
 
+  it.each([
+    { name: 'PR', key: 'pull_request', event: 'pull_request' },
+    { name: 'issue', key: 'issue', event: 'issues' },
+  ])('puts a reaction on a $name root on the $name itself, not on a comment', async ({ key, event }) => {
+    const reactions = {
+      createForIssue: vi.fn(async () => ({})),
+      listForIssue: vi.fn(async () => ({ data: [{ id: 9, content: 'rocket', user: { id: 42 } }, { id: 10, content: 'rocket', user: { id: 1 } }] })),
+      deleteForIssue: vi.fn(async () => ({})),
+    }
+    const { board, g, webhook } = setup({ githubClient: { rest: { pulls: { get: vi.fn() }, issues: { get: vi.fn() }, reactions } } })
+    Object.assign(g.adapter, { botUserId: '1', emojiToGitHubReaction: (emoji: string) => ({ rocket: 'rocket', eyes: 'eyes' })[emoji] ?? '+1' })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    const item = { number: 41, title: 'Ship it', html_url: 'https://github.com/basehub-ai/vboard/pull/41' }
+    await webhook('github', { action: 'opened', repository: { full_name: 'basehub-ai/vboard' }, sender: { id: 42, login: 'julianbenegas' }, [key]: item },
+      { 'x-github-event': event, 'x-github-delivery': `react-${key}` })
+    await vi.waitFor(async () => expect(await read(julian, 'prs')).toHaveLength(1))
+    const [root] = await read(julian, 'prs')
+
+    await julian('POST', `/messages/${root!.id}/reactions`, { emoji: 'rocket' })
+    const where = { owner: 'basehub-ai', repo: 'vboard', issue_number: 41 }
+    await vi.waitFor(() => expect(reactions.createForIssue).toHaveBeenCalledExactlyOnceWith({ ...where, content: 'rocket' }))
+    expect(g.reactions).toEqual([]) // no comment reaction on comment NaN
+
+    // Emoji GitHub doesn't have stay off the PR, rather than turning into the bot's 👍.
+    await julian('POST', `/messages/${root!.id}/reactions`, { emoji: 'looking-bunny' })
+    await julian('POST', `/messages/${root!.id}/reactions`, { emoji: 'thumbs_up' })
+    await vi.waitFor(() => expect(reactions.createForIssue).toHaveBeenLastCalledWith({ ...where, content: '+1' }))
+    expect(reactions.createForIssue).toHaveBeenCalledTimes(2)
+    expect((await read(julian, 'prs'))[0]!.reactions).toHaveProperty('looking-bunny')
+
+    await julian('POST', `/messages/${root!.id}/reactions`, { emoji: 'rocket', remove: true })
+    await vi.waitFor(() => expect(reactions.deleteForIssue).toHaveBeenCalledExactlyOnceWith({ ...where, reaction_id: 10 }))
+  })
+
   it("mirrors Vercel's deployment comment to Slack as a line per deployment, keeping the original on the board", async () => {
     const { board, s, webhook } = setup({ githubClient: { rest: { pulls: { get: vi.fn() } } } })
     const julian = caller(board.fetch, await personToken())

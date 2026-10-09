@@ -4,7 +4,6 @@ import { fileSize } from '../contract/files.ts'
 import { displayText } from '../contract/bots.ts'
 
 /** "claude via julian" for a profile, the name otherwise. */
-/** "claude via julian" for a profile, the name otherwise. */
 export const who = (me: { name: string; handle: string; profile: string | null }): string =>
   me.profile !== null && me.handle.includes('/') ? `${me.name} via ${me.handle.slice(0, me.handle.indexOf('/'))}` : me.name
 
@@ -56,7 +55,7 @@ function embed(link: NonNullable<MessageView['links']>[number], pad: string): st
   return [
     `${pad}↪ ${author}${link.message !== null ? ` · #${link.message}` : ''} · ${link.url}`,
     ...shown.map((line) => `${pad}> ${line}`),
-    ...files.map((file) => `${pad}> 📎 ${file.name}${file.url ? ` ${file.url}` : ''}`),
+    ...files.map((file) => `${pad}> file ${file.name}${file.url ? ` ${file.url}` : ''}`),
   ]
 }
 
@@ -65,9 +64,9 @@ export function formatMessage(message: MessageView, options: { reply?: boolean; 
   const pad = options.reply ? '    ' : '      '
   const head = `${options.reply ? '  ↳ ' : ''}#${message.id}  ${authorName(message)} · ${ago(message.createdAt)}${
     message.editedAt ? ' (edited)' : ''
-  }${message.schedule ? ` ⏰ s${message.schedule.id}` : ''}${labels(message)}`
+  }${message.schedule ? ` · scheduled s${message.schedule.id}` : ''}${labels(message)}`
   const body = message.deleted ? `${pad}(message removed)` : indent(displayText(message.text, message.by.actor), pad)
-  const files = (message.attachments ?? []).map((a) => `${pad}📎 ${a.name} · ${a.type} · ${fileSize(a.size)} · ${a.id}`)
+  const files = (message.attachments ?? []).map((a) => `${pad}file ${a.name} · ${a.type} · ${fileSize(a.size)} · ${a.id}`)
   const links = message.deleted ? [] : (message.links ?? []).flatMap((link) => embed(link, pad))
   const reacted = reactions(message, options.names ?? new Map())
   const undelivered = Object.entries(message.undelivered ?? {}).map(([target, error]) => `${pad}✗ didn't reach ${target}: ${error}`)
@@ -142,10 +141,10 @@ export function formatSchedule(schedule: ScheduleView, options: { pad?: string; 
           : 'canceled'
         : 'done'
   const sent = schedule.sent > 0 ? ` · ${schedule.sent} sent` : ''
-  const files = schedule.attachments.length ? ` · 📎 ${schedule.attachments.length}` : ''
+  const files = schedule.attachments.length ? ` · ${schedule.attachments.length} ${schedule.attachments.length === 1 ? 'file' : 'files'}` : ''
   const text = displayText(schedule.text, schedule.by.actor)
   return [
-    `${pad}⏰ s${schedule.id}  ${where} · ${repeat}${stop} · ${when}${sent}${files} · by ${authorName(schedule)}`,
+    `${pad}s${schedule.id}  ${where} · ${repeat}${stop} · ${when}${sent}${files} · by ${authorName(schedule)}`,
     indent(text || '(no text)', `${pad}    `),
   ].join('\n')
 }
@@ -158,7 +157,7 @@ export function formatEvent(event: BoardEventView): string {
   const who = authorName(message)
   switch (event.type) {
     case 'message.posted': {
-      const files = (message.attachments ?? []).map((a) => `  📎 ${a.name}`).join('')
+      const files = (message.attachments ?? []).map((a) => ` · file ${a.name}`).join('')
       return `#${message.id}  ${where}  ${who}: ${displayText(message.text, message.by.actor)}${files}`
     }
     case 'message.edited':
@@ -199,7 +198,7 @@ export function formatSourceRead(key: string, read: SourceRead, now = Date.now()
     return [
       `${reply ? '  ↳ ' : ''}${message.id}  ${message.author}${when}${replies}`,
       indent(message.text || '(no text)', pad),
-      ...message.files.map((file) => `${pad}📎 ${file.name}${file.url ? ` ${file.url}` : ''}`),
+      ...message.files.map((file) => `${pad}file ${file.name}${file.url ? ` ${file.url}` : ''}`),
     ].join('\n')
   })
   const more = read.more ? [`(${read.thread ? 'later replies' : 'older messages'} not shown: raise --limit, up to 200)`] : []

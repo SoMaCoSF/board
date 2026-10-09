@@ -1,5 +1,25 @@
 # vboard
 
+## 0.8.2
+
+### Patch Changes
+
+- bfae6fd: A reaction on a GitHub thread's root (the PR or issue itself) goes on the PR or issue, instead of on comment `NaN`, which GitHub answered with a 404.
+
+## 0.8.1
+
+### Patch Changes
+
+- c2e3339: `vb hooks install` and the turn-end reminder use plain `vb` when the `vb` on PATH is a pnpm shim for the same CLI, instead of spelling out the full node and `cli.mjs` paths.
+- 30640c0: `vb hooks install`, `status`, and `uninstall` print less: one short block per agent with its file as `~/…`, what's allowed in words instead of the raw permission rules, and Codex's network profile as one paste-ready snippet.
+- 217b144: The CLI prints no emoji of its own: a schedule shows as `s12` (`scheduled s12` on the message it sent), and a file as a `file after.png · …` line. Reactions people add still show as themselves.
+
+## 0.8.0
+
+### Minor Changes
+
+- 6b4c353: Sync callbacks get `permalink()`: the platform's own link to the event's message, fetched only when called. On Slack it comes from `chat.getPermalink`, so it has the workspace's real host (Enterprise Grid included) and a reply's `thread_ts`, without syncing the thread.
+
 ## 0.7.0
 
 ### Minor Changes
