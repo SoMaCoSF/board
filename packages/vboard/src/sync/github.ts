@@ -53,6 +53,11 @@ type GitHubClient = {
   rest: {
     pulls: { get(args: { owner: string; repo: string; pull_number: number }): Promise<{ data: GitHubItem }> }
     issues: { get(args: { owner: string; repo: string; issue_number: number }): Promise<{ data: GitHubItem }> }
+    reactions?: {
+      createForIssue(args: { owner: string; repo: string; issue_number: number; content: string }): Promise<unknown>
+      listForIssue(args: { owner: string; repo: string; issue_number: number; content?: string; per_page?: number }): Promise<{ data: { id: number; content: string; user: { id: number } | null }[] }>
+      deleteForIssue(args: { owner: string; repo: string; issue_number: number; reaction_id: number }): Promise<unknown>
+    }
   }
 }
 
@@ -335,6 +340,37 @@ export class GitHubProvider extends ChatSyncProvider<GitHubEvent> {
       if (pulls) this.map(`${repo}:pulls`, pulls)
       if (issues) this.map(`${repo}:issues`, issues)
     }
+  }
+
+  /**
+   * A thread's root is the PR or issue itself, not a comment: its copy has no comment ID
+   * (`root:<event>` or `lifecycle:<event>`), so its reactions go on the PR or issue.
+   */
+  override async react(thread: string, message: string, emoji: string, added: boolean) {
+    if (/^\d+$/.test(message)) return super.react(thread, message, emoji, added)
+    const match = /^([^/]+)\/([^:]+):(?:issue:)?(\d+)$/.exec(thread)
+    if (!match) throw new Error(`invalid GitHub thread: ${thread}`)
+    const adapter = (await this.ready()) as Adapter & {
+      octokit: GitHubClient
+      getOctokitForThread?(owner: string, repo: string): Promise<GitHubClient>
+      botUserId?: string
+      emojiToGitHubReaction?(emoji: string): string
+    }
+    // GitHub has eight reactions, and the adapter turns any other emoji into +1. On the PR itself
+    // that reads as the bot approving (a review's looking-bunny, a person's shipit), so skip those.
+    const content = adapter.emojiToGitHubReaction?.(emoji)
+    if (!content || (content === '+1' && emoji !== 'thumbs_up' && emoji !== '+1')) return
+    const [, owner, repo, number] = match as unknown as [string, string, string, string]
+    // The adapter's own reactions use the thread's installation, which holds outside a webhook request too.
+    const client = (await adapter.getOctokitForThread?.(owner, repo)) ?? adapter.octokit
+    const reactions = client.rest.reactions
+    if (!reactions) throw new Error('GitHub client has no reactions API')
+    const where = { owner, repo, issue_number: Number(number) }
+    if (added) return void (await reactions.createForIssue({ ...where, content }))
+    if (adapter.botUserId === undefined) return
+    const { data } = await reactions.listForIssue({ ...where, content, per_page: 100 })
+    const own = data.find((reaction) => reaction.content === content && String(reaction.user?.id) === adapter.botUserId)
+    if (own) await reactions.deleteForIssue({ ...where, reaction_id: own.id })
   }
 
   override event(context: Pick<SyncContext, 'id' | 'key' | 'event' | 'raw'>): GitHubEvent {

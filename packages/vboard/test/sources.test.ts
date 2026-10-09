@@ -168,7 +168,7 @@ describe('reading a platform on demand (vb sources <key> read)', () => {
       `${ROOT}  Ada · 1h  (2 replies: vb sources slack read CKIT:${ROOT})`,
       '      kit maps users',
       '      to vercel ids',
-      '      📎 map.png',
+      '      file map.png',
       '(older messages not shown: raise --limit, up to 200)',
     ])
     const thread = formatSourceRead('slack', {

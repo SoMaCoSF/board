@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { appendFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, delimiter, join } from 'node:path'
+import { basename, delimiter, dirname, isAbsolute, join } from 'node:path'
 import { parseArgs } from 'node:util'
 import type { BoardEventView, MessageView } from '../api/routes.ts'
 import { FILTER_FLAGS, withMentions } from '../api/tail.ts'
@@ -27,6 +27,7 @@ import {
   installHook,
   markPosted,
   reminder,
+  tilde,
   uninstallHook,
   workOf,
   type HookAgent,
@@ -243,9 +244,31 @@ const fromNpx = (path: string) => /[\\/]_npx[\\/]/.test(path)
 function globalVb(): string | null {
   for (const dir of (process.env.PATH ?? '').split(delimiter)) {
     const candidate = join(dir, 'vb')
-    if (existsSync(candidate) && !fromNpx(realpathSync(candidate))) return realpathSync(candidate)
+    if (existsSync(candidate) && !fromNpx(realpathSync(candidate))) return candidate
   }
   return null
+}
+
+/**
+ * Whether `bin` runs the CLI at `self`: a symlink to it (npm), or a shell
+ * shim that execs node on it (pnpm, through `$basedir`- or `$basedir_abs`-relative paths).
+ */
+function runsCli(bin: string, self: string): boolean {
+  try {
+    const real = realpathSync(bin)
+    if (real === self) return true
+    if (statSync(real).size > 64 * 1024) return false
+    const script = readFileSync(real, 'utf8')
+    if (!script.startsWith('#!')) return false
+    const basedir = dirname(bin)
+    // pnpm 10 quotes "$basedir/…"; pnpm 11 quotes "$basedir_abs/…" and notes `# cmd-shim-target=<path>`.
+    const paths = [
+      ...[...script.matchAll(/"([^"\n]+)"/g)].map(([, quoted]) => quoted!.replace(/^\$(?:\{basedir(?:_abs)?\}|basedir(?:_abs)?)(?=\/)/, basedir)),
+      ...[...script.matchAll(/^# cmd-shim-target=(.+)$/gm)].map(([, target]) => target!.trim()),
+    ]
+    for (const path of paths) if (isAbsolute(path) && existsSync(path) && realpathSync(path) === self) return true
+  } catch {}
+  return false
 }
 
 /**
@@ -257,7 +280,7 @@ function cliCommand(): { command: string; note?: string } {
   const self = realpathSync(process.argv[1]!)
   const installed = globalVb()
   if (!fromNpx(self)) {
-    if (installed === self) return { command: 'vb' }
+    if (installed && runsCli(installed, self)) return { command: 'vb' }
     const quote = (part: string) => (/^[\w./-]+$/.test(part) ? part : `'${part.replace(/'/g, `'\\''`)}'`)
     return { command: [process.execPath, self].map(quote).join(' ') }
   }
@@ -538,8 +561,13 @@ async function run(command: string | undefined, args: string[]): Promise<number>
     case 'hooks': {
       const [action = 'status', ...names] = args
       const agents = hookAgents(names)
+      const width = Math.max(...agents.map((agent) => AGENTS[agent].name.length))
+      const row = (agent: HookAgent, ...cells: string[]) => out([AGENTS[agent].name.padEnd(width), ...cells].join('  ').trimEnd())
       if (action === 'status') {
-        for (const agent of agents) out(`${AGENTS[agent].name}: ${installedHook(agent) ?? 'not installed'}`)
+        for (const agent of agents) {
+          const installed = installedHook(agent) !== null
+          row(agent, installed ? 'installed' : 'not installed', installed ? tilde(AGENTS[agent].file()) : '')
+        }
         return 0
       }
       if (action === 'uninstall') {
@@ -547,20 +575,22 @@ async function run(command: string | undefined, args: string[]): Promise<number>
           const installed = installedHook(agent)
           const rules = installed ? allowRules(agent, cliOf(installed)) : null
           if (rules) disallow(rules.file, rules.rules)
-          out(`${AGENTS[agent].name}: ${uninstallHook(agent) ? `removed the turn-end hook from ${AGENTS[agent].file()}` : 'not installed'}`)
+          row(agent, uninstallHook(agent) ? 'removed' : 'not installed', installed ? tilde(AGENTS[agent].file()) : '')
         }
         return 0
       }
       if (action !== 'install') throw new UsageError('usage: vboard hooks [install|uninstall|status] [claude|codex|cursor|pi]...')
       const { command: cli, note } = cliCommand()
+      // One block per agent: its name and file, then what happened and what's left to do, indented.
       for (const agent of agents) {
         const changed = installHook(agent, cli, flags.channel ? ` --channel ${flags.channel}` : '')
-        out(`${AGENTS[agent].name}: ${changed ? `added the turn-end hook to ${AGENTS[agent].file()}` : 'already installed'}`)
+        out(`${AGENTS[agent].name}  ${tilde(AGENTS[agent].file())}`)
+        out(`  ${changed ? 'added the turn-end hook' : 'already installed'}`)
         // The reminder asks for `vb update`, `vb reply`, and `vb read`: no permission prompt for each.
         const rules = allowRules(agent, cli)
         const added = rules ? allow(rules.file, rules.rules) : []
-        if (added.length > 0) out(`  allowed ${added.join(', ')} in ${rules!.file}`)
-        if (agent === 'cursor' && !rules) out('  install vb globally (npm i -g vboard) to let Cursor run it without asking')
+        if (added.length > 0) out(`  ${agent === 'claude' ? 'update, reply, and read run without asking' : 'vb runs without asking'}`)
+        if (agent === 'cursor' && !rules) out('  npm i -g vboard lets Cursor run vb without asking')
         if (agent === 'codex') {
           if (changed) out('  approve it once in Codex with /hooks')
           let host: string | null = null
@@ -570,16 +600,15 @@ async function run(command: string | undefined, args: string[]): Promise<number>
           } catch {}
           const config = join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'config.toml')
           const profile = codexNetwork(host)
-          out("  Codex's sandbox has no network by default, so vb can't reach the board from it. To allow just the board")
-          out(`  (permission profiles are beta), put this at the top of ${config}, before any [table]:\n`)
-          out(`    ${profile.top}\n`)
-          out('  and these tables anywhere in it (merge [features] into yours if you have one):\n')
-          out(profile.tables.replace(/^/gm, '    '))
+          out(`  to let vb reach the board from Codex's sandbox, add to ${tilde(config)}:`)
           out('')
+          out(['# a permission profile (beta) that opens the network to just the board', '', '# at the top, before any [table]', profile.top, '', '# anywhere (merge [features] into yours)', profile.tables].join('\n').replace(/^(?=.)/gm, '    '))
         }
+        out('')
       }
-      if (note) out(`Note: ${note}.`)
-      out('It reminds only in projects linked with `vb link <url>` (or with VBOARD_URL set), once per turn that didn\'t update the board.')
+      if (note) out(`${note[0]!.toUpperCase()}${note.slice(1)}.`)
+      out('The hooks remind once per turn without a board update.')
+      out('They stay quiet outside projects linked with `vb link <url>`.')
       return 0
     }
 
@@ -665,7 +694,7 @@ async function run(command: string | undefined, args: string[]): Promise<number>
 
     case 'download': {
       const id = args[0]
-      if (!id) throw new UsageError('usage: vboard download <attachment> [path]   (the id `vb read` shows after 📎)')
+      if (!id) throw new UsageError('usage: vboard download <attachment> [path]   (the id `vb read` shows on a file line)')
       const response = await client().download(id)
       const data = new Uint8Array(await response.arrayBuffer())
       if (args[1] === '-') return process.stdout.write(data), 0

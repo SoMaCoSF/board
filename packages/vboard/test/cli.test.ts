@@ -1,69 +1,12 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readdirSync, realpathSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { describe, expect, it } from 'vitest'
 import { serve } from './http.ts'
 import { personToken, testBoard } from './harness.ts'
-import { fakeQueue } from './queue.ts'
+import { CLI, env, server, tmp, url, useBoard, vb } from './cli-harness.ts'
 
-const CLI = join(import.meta.dirname, '../src/cli/main.ts')
-// Every directory a test makes lives under one root, which holds an empty `.git`
-// (as stray ones in `~` or `/tmp` do): it isn't a checkout, so nothing links there.
-const TEMP = realpathSync(mkdtempSync(join(tmpdir(), 'vboard-cli-')))
-mkdirSync(join(TEMP, '.git'))
-const tmp = (prefix: string) => mkdtemp(join(TEMP, prefix))
-
-let server: Awaited<ReturnType<typeof serve>>
-let url: string
-let env: NodeJS.ProcessEnv
-
-beforeAll(async () => {
-  // No fixed URL: the board infers its own from requests, as when mounted.
-  server = await serve(testBoard({ url: undefined }).fetch)
-  url = `${server.origin}/api/board`
-  // Every variable `detectAgent` reads, so the suite passes inside an agent's session too (Pi's included).
-  const clean = Object.fromEntries(
-    Object.entries(process.env).filter(
-      ([key]) => !/^(CLAUDE|CODEX|GROK|PI_|AI_AGENT|VBOARD|VERCEL|ACTIONS_ID_TOKEN)/.test(key),
-    ),
-  )
-  env = {
-    ...clean,
-    VBOARD_URL: url,
-    VBOARD_TOKEN: await personToken('u_julian', url),
-    VBOARD_HANDLE: 'julian',
-    HOME: await tmp('vboard-home-'),
-    XDG_CONFIG_HOME: await tmp('vboard-'),
-  }
-})
-afterAll(() => server.close())
-
-function vb(args: string[], extra: NodeJS.ProcessEnv = {}, stdin?: string, cwd?: string) {
-  return new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
-    const child = spawn(process.execPath, [CLI, ...args], { env: { ...env, ...extra }, cwd })
-    let stdout = ''
-    let stderr = ''
-    child.stdout.on('data', (d) => (stdout += d))
-    child.stderr.on('data', (d) => (stderr += d))
-    child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }))
-    if (stdin !== undefined) child.stdin.end(stdin)
-    else child.stdin.end()
-  })
-}
-
-function vb_in(cwd: string, args: string[], extra: NodeJS.ProcessEnv = {}) {
-  return new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
-    const child = spawn(process.execPath, [CLI, ...args], { cwd, env: { ...env, ...extra } })
-    let stdout = ''
-    let stderr = ''
-    child.stdout.on('data', (d) => (stdout += d))
-    child.stderr.on('data', (d) => (stderr += d))
-    child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }))
-    child.stdin.end()
-  })
-}
+useBoard()
 
 describe('cli', () => {
   it('links a checkout from a subdirectory, ignores the link, and reads it from other subdirectories', async () => {
@@ -345,7 +288,7 @@ describe('cli', () => {
     expect(attachment).toMatchObject({ name: 'after.png', type: 'image/png', size: 4 })
 
     const read = await vb(['read', id])
-    expect(read.stdout).toContain(`📎 after.png · image/png · 4 B · ${attachment.id}`)
+    expect(read.stdout).toContain(`file after.png · image/png · 4 B · ${attachment.id}`)
 
     const saved = join(dir, 'copy.png')
     expect(await vb(['download', attachment.id, saved])).toMatchObject({ code: 0, stdout: `${saved}\n` })
@@ -353,246 +296,39 @@ describe('cli', () => {
     expect(await vb(['post', 'proofs', 'x', '--attach', join(dir, 'missing.png')])).toMatchObject({ code: 2, stderr: `error: no such file: ${join(dir, 'missing.png')}\n` })
   }, 20_000) // five CLI runs: a cold start right after install can pass the default 5s
 
-  it('installs turn-end hooks, and the permissions their reminder needs, keeping what else is there', async () => {
-    const home = await tmp('vboard-home-')
-    const at = { HOME: home, CODEX_HOME: join(home, '.codex') }
-    await mkdir(join(home, '.claude'), { recursive: true })
-    const settings = join(home, '.claude', 'settings.json')
-    const theirs = {
-      model: 'opus',
-      permissions: { allow: ['Bash(ls:*)'], deny: ['Bash(rm:*)'] },
-      hooks: { Stop: [{ hooks: [{ type: 'command', command: 'say done' }] }], PreToolUse: [] },
-    }
-    await writeFile(settings, JSON.stringify(theirs))
-
-    const installed = await vb(['hooks', 'install', 'claude', 'codex'], at)
-    expect(installed).toMatchObject({ code: 0, stderr: '' })
-    expect(installed.stdout).toContain('Codex: added the turn-end hook')
-    // Codex has no command allowlist; its sandbox needs network, so it's told how to allow just the board.
-    expect(installed.stdout).toContain("Codex's sandbox has no network by default")
-    expect(installed.stdout).toContain(`"${new URL(url).hostname}" = "allow"`)
-    expect((await vb(['hooks', 'install', 'claude'], at)).stdout).toContain('Claude Code: already installed')
-    const claude = JSON.parse(await readFile(settings, 'utf8'))
-    expect(claude.model).toBe('opus')
-    expect(claude.hooks.PreToolUse).toEqual([])
-    expect(claude.hooks.Stop).toEqual([
-      { hooks: [{ type: 'command', command: 'say done' }] },
-      { hooks: [{ type: 'command', command: expect.stringMatching(/ hook stop --agent claude 2>\/dev\/null \|\| true$/), timeout: 10 }] },
-    ])
-    const cli = (claude.hooks.Stop[1].hooks[0].command as string).replace(/ hook stop .*$/, '')
-    expect(claude.permissions).toEqual({ allow: ['Bash(ls:*)', `Bash(${cli} update:*)`, `Bash(${cli} reply:*)`, `Bash(${cli} read:*)`], deny: ['Bash(rm:*)'] })
-    const codex = JSON.parse(await readFile(join(home, '.codex', 'hooks.json'), 'utf8'))
-    expect(codex.hooks.Stop[0].hooks[0].command).toMatch(/ hook stop --agent codex 2>\/dev\/null \|\| true$/)
-    expect((await vb(['hooks', 'status'], at)).stdout).toMatch(/Claude Code: .* hook stop --agent claude .*\|\| true\nCodex: .* hook stop --agent codex .*\|\| true\nCursor: not installed/)
-
-    // Whatever the saved command runs into (say, an older vb without `hook`, which exits 2), it can't fail a turn.
-    const stale = join(home, 'bin')
-    await mkdir(stale)
-    await writeFile(join(stale, 'vb'), '#!/bin/sh\necho "error: unknown command: hook" >&2\nexit 2\n', { mode: 0o755 })
-    const ran = await new Promise<{ code: number | null; stderr: string }>((resolve) => {
-      const child = spawn('/bin/sh', ['-c', 'vb hook stop --agent claude 2>/dev/null || true'], { env: { ...env, PATH: `${stale}:${process.env.PATH}` } })
-      let stderr = ''
-      child.stderr.on('data', (d) => (stderr += d))
-      child.on('close', (code) => resolve({ code, stderr }))
-      child.stdin.end('{}')
-    })
-    expect(ran).toEqual({ code: 0, stderr: '' })
-
-    expect((await vb(['hooks', 'uninstall', 'claude'], at)).stdout).toContain('removed')
-    expect(JSON.parse(await readFile(settings, 'utf8'))).toEqual(theirs)
-    expect((await vb(['hooks', 'install', 'gemini'], at))).toMatchObject({ code: 2, stderr: 'error: unknown agent: gemini (known: claude, codex, cursor, pi)\n' })
-  })
-
-  it('installs the Claude Code hook in CLAUDE_CONFIG_DIR when it is set', async () => {
-    const home = await tmp('vboard-home-')
-    const config = await tmp('vboard-claude-')
-    const at = { HOME: home, CLAUDE_CONFIG_DIR: config }
-    expect(await vb(['hooks', 'install', 'claude'], at)).toMatchObject({ code: 0, stderr: '' })
-    const settings = JSON.parse(await readFile(join(config, 'settings.json'), 'utf8'))
-    expect(settings.hooks.Stop[0].hooks[0].command).toMatch(/ hook stop --agent claude /)
-    expect(settings.permissions.allow).toHaveLength(3)
-    expect(readdirSync(home)).toEqual([])
-    expect((await vb(['hooks', 'status'], at)).stdout).toMatch(/Claude Code: .* hook stop --agent claude /)
-    expect((await vb(['hooks', 'status'], { HOME: home })).stdout).toMatch(/Claude Code: not installed/)
-    expect((await vb(['hooks', 'uninstall', 'claude'], at)).stdout).toContain('removed')
-    expect(JSON.parse(await readFile(join(config, 'settings.json'), 'utf8'))).toEqual({ hooks: {}, permissions: { allow: [] } })
-    expect(readdirSync(home)).toEqual([])
-  }, 20_000)
-
-  it("reminds an agent once when its turn didn't update the board, and the agent updates with vb", async () => {
-    const repo = await tmp('vboard-repo-')
-    execFileSync('git', ['init', '-q', '-b', 'feat/hooks'], { cwd: repo })
-    execFileSync('git', ['remote', 'add', 'origin', 'git@github.com:acme/app.git'], { cwd: repo })
-    // Markers live in the temp directory: fresh session IDs keep runs apart.
-    const s1 = `s1-${Date.now()}`
-    const claude = { CLAUDE_CODE_SESSION_ID: s1 }
-    const stop = (session: string, continuing = false, extra: NodeJS.ProcessEnv = {}) =>
-      vb(['hook', 'stop', '--agent', 'claude'], extra, JSON.stringify({ session_id: session, cwd: repo, hook_event_name: 'Stop', stop_hook_active: continuing }))
-    const reminds = async (result: Promise<{ stdout: string; code: number }>) => {
-      const { stdout, code } = await result
-      expect(code).toBe(0)
-      return stdout ? (JSON.parse(stdout) as { decision: string; reason: string }) : null
-    }
-    const work = async () => {
-      const { stdout } = await vb(['read', 'work', '--label', 'work=acme/app@feat/hooks', '--json'])
-      return stdout.trim() ? stdout.trim().split('\n').map((line) => JSON.parse(line) as { id: number; re: number | null; text: string; noSync: boolean; labels: Record<string, string>; by: { profile: string; session: string } }) : []
-    }
-
-    // A turn that didn't touch the board is reminded once, with the commands to run; the follow-up stops.
-    const reminded = await reminds(stop(s1))
-    expect(reminded).toMatchObject({ decision: 'block', reason: expect.stringContaining(' update "<summary>"') })
-    expect(reminded!.reason).toContain(' update --skip')
-    expect(await reminds(stop(s1, true))).toBeNull()
-
-    // The agent updates with vb: the turn's end isn't reminded. The next turn, with no update, is.
-    expect(await vb_in(repo, ['update', 'Added the turn-end hook; tests next.'], claude)).toMatchObject({ code: 0, stderr: '' })
-    expect(await reminds(stop(s1))).toBeNull()
-    expect(await reminds(stop(s1))).not.toBeNull()
-    expect(await reminds(stop(s1))).toBeNull() // reminded already this turn
-    await vb_in(repo, ['update', '--skip'], claude)
-    expect(await reminds(stop(s1))).toBeNull()
-
-    // Another agent's update on the same branch joins the same thread.
-    await vb_in(repo, ['update', 'Picked it up in Codex; tests pass.'], { CODEX_THREAD_ID: 't1' })
-    const [root, ...replies] = await work()
-    expect(root).toMatchObject({ re: null, noSync: true, labels: { work: 'acme/app@feat/hooks', repo: 'acme/app', branch: 'feat/hooks' } })
-    expect(replies.map((m) => [m.by.profile, m.by.session, m.text])).toEqual([
-      ['claude', s1, 'Added the turn-end hook; tests next.'],
-      ['codex', 't1', 'Picked it up in Codex; tests pass.'],
-    ])
-
-    // Past a page of messages on the branch, updates still find the thread instead of starting another.
-    const rootId = root!.id
-    for (let i = 0; i < 501; i++) {
-      const posted = await fetch(`${url}/messages`, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${env.VBOARD_TOKEN}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ re: rootId, text: `note ${i}`, noSync: true }),
-      })
-      expect(posted.status).toBe(201)
-    }
-    // From another session, so the root's stable id can't stand in for finding it.
-    expect(await vb_in(repo, ['update', 'Still the same thread.'], { CODEX_THREAD_ID: `t2-${Date.now()}` })).toMatchObject({ code: 0, stderr: '' })
-    const { stdout } = await vb(['read', String(rootId), '--json'])
-    const thread = stdout.trim().split('\n').map((line) => JSON.parse(line) as { re: number | null; text: string })
-    expect(thread).toHaveLength(1 + 2 + 501 + 1) // the root, two updates, the notes, and this one
-    expect(thread.at(-1)).toMatchObject({ re: rootId, text: 'Still the same thread.' })
-
-    // Outside a linked project, the hook stays out of the way.
-    expect(await reminds(stop(`s2-${Date.now()}`, false, { VBOARD_URL: '' }))).toBeNull()
-  }, 60_000)
-
-  it('starts the work thread for a branch whose name is longer than an id may be', async () => {
-    const repo = await tmp('vboard-repo-')
-    const branch = `feat/${'very-long-branch-name-'.repeat(10)}`
-    execFileSync('git', ['init', '-q', '-b', branch], { cwd: repo })
-    execFileSync('git', ['remote', 'add', 'origin', 'git@github.com:acme/app.git'], { cwd: repo })
-    expect(await vb_in(repo, ['update', 'First update on a long branch.'])).toMatchObject({ code: 0, stderr: '' })
-    expect(await vb_in(repo, ['update', 'Second one, same thread.'])).toMatchObject({ code: 0, stderr: '' })
-    const { stdout } = await vb(['read', 'work', '--label', `work=acme/app@${branch}`, '--json'])
-    const messages = stdout.trim().split('\n').map((line) => JSON.parse(line) as { re: number | null })
-    expect(messages.filter((m) => m.re === null)).toHaveLength(1)
-    expect(messages).toHaveLength(3)
-  })
-
-  it('reminds Cursor with a follow-up message, keyed by project since its shell has no session', async () => {
-    const home = await tmp('vboard-home-')
-    expect((await vb(['hooks', 'install', 'cursor'], { HOME: home })).stdout).toContain('Cursor: added the turn-end hook')
-    expect(JSON.parse(await readFile(join(home, '.cursor', 'hooks.json'), 'utf8'))).toEqual({
-      version: 1,
-      hooks: { stop: [{ command: expect.stringMatching(/ hook stop --agent cursor 2>\/dev\/null \|\| true$/), timeout: 10 }] },
-    })
-
-    const repo = await tmp('vboard-repo-')
-    execFileSync('git', ['init', '-q', '-b', 'feat/cursor'], { cwd: repo })
-    const stop = (payload: Record<string, unknown>) =>
-      vb(['hook', 'stop', '--agent', 'cursor'], {}, JSON.stringify({ conversation_id: `c-${Date.now()}`, workspace_roots: [repo], hook_event_name: 'stop', ...payload }))
-
-    expect(JSON.parse((await stop({ status: 'completed', loop_count: 0 })).stdout)).toEqual({ followup_message: expect.stringContaining(' update "<summary>"') })
-    expect((await stop({ status: 'completed', loop_count: 1 })).stdout).toBe('')
-    // The agent updates from Cursor's shell, which says only CURSOR_AGENT=1: the project's next turn end isn't reminded.
-    expect(await vb_in(repo, ['update', 'Renamed the helper.'], { CURSOR_AGENT: '1' })).toMatchObject({ code: 0, stderr: '' })
-    expect((await stop({ status: 'completed', loop_count: 0 })).stdout).toBe('')
-    const { stdout } = await vb(['read', 'work', '--label', `work=${basename(repo)}@feat/cursor`, '--json'])
-    expect(stdout.trim().split('\n').map((line) => JSON.parse(line)).filter((m) => m.re !== null).map((m) => [m.by.profile, m.text])).toEqual([['cursor', 'Renamed the helper.']])
-    // An aborted turn isn't reminded.
-    expect((await stop({ status: 'aborted', loop_count: 0 })).stdout).toBe('')
-
-    // Uninstalling removes the file it created.
-    expect((await vb(['hooks', 'uninstall', 'cursor'], { HOME: home })).stdout).toContain('removed')
-    await expect(readFile(join(home, '.cursor', 'hooks.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
-  })
-
-  it("reminds Pi through an extension before its run settles, once, and not after it updates with vb", async () => {
-    const home = await tmp('vboard-home-')
-    const agentDir = join(home, 'pi-agent')
-    const at = { HOME: home, PI_CODING_AGENT_DIR: agentDir }
-    const file = join(agentDir, 'extensions', 'vboard.ts')
-    expect((await vb(['hooks', 'install', 'pi'], at)).stdout).toContain(`Pi: added the turn-end hook to ${file}`)
-    expect((await vb(['hooks', 'install', 'pi'], at)).stdout).toContain('Pi: already installed')
-    expect((await vb(['hooks', 'status', 'pi'], at)).stdout).toMatch(/^Pi: .* hook stop --agent pi 2>\/dev\/null \|\| true\n$/)
-
-    // Load it as Pi does, with a stand-in for Pi's API, and run its handler as Pi would before settling.
-    const handlers: Record<string, (event: unknown, ctx: unknown) => Promise<unknown>> = {}
-    const { default: extension } = await import(file)
-    extension({ on: (name: string, handler: (event: unknown, ctx: unknown) => Promise<unknown>) => (handlers[name] = handler) })
-    expect(Object.keys(handlers)).toEqual(['agent_before_settle'])
-    const repo = await tmp('vboard-repo-')
-    execFileSync('git', ['init', '-q', '-b', 'feat/pi'], { cwd: repo })
-    const session = `pi-${Date.now()}`
-    const ctx = { cwd: repo, sessionManager: { getSessionId: () => session } }
-    const settle = (outcome = 'completed') => handlers.agent_before_settle!({ type: 'agent_before_settle', outcome, entries: [], continue: false }, ctx)
-    for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value)
-    try {
-      // A run that didn't touch the board continues once, with the reminder as a message; the follow-up settles.
-      expect(await settle()).toEqual({
-        entries: [{ type: 'custom_message', customType: 'vboard', content: expect.stringContaining(' update "<summary>"'), display: true }],
-        continue: true,
-      })
-      expect(await settle()).toBeUndefined()
-      // Pi's bash tool exports the session as PI_SESSION_ID: its update counts, so the next run settles freely.
-      expect(await vb_in(repo, ['update', 'Taught Pi the hook.'], { PI_CODING_AGENT: 'true', PI_SESSION_ID: session })).toMatchObject({ code: 0, stderr: '' })
-      expect(await settle()).toBeUndefined()
-      // An aborted run isn't reminded.
-      expect(await settle('aborted')).toBeUndefined()
-      expect(await settle()).toMatchObject({ continue: true })
-    } finally {
-      vi.unstubAllEnvs()
-    }
-    const { stdout } = await vb(['read', 'work', '--label', `work=${basename(repo)}@feat/pi`, '--json'])
-    expect(stdout.trim().split('\n').map((line) => JSON.parse(line)).filter((m) => m.re !== null).map((m) => [m.by.profile, m.by.session, m.text])).toEqual([['pi', session, 'Taught Pi the hook.']])
-
-    // It won't overwrite an extension that isn't its own; uninstalling removes only its file.
-    expect((await vb(['hooks', 'uninstall', 'pi'], at)).stdout).toContain(`Pi: removed the turn-end hook from ${file}`)
-    await expect(readFile(file, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
-    await writeFile(file, 'export default () => {}\n')
-    expect(await vb(['hooks', 'install', 'pi'], at)).toMatchObject({ code: 1, stderr: `error: ${file} isn't vboard's: move it, then install again\n` })
-    expect((await vb(['hooks', 'status', 'pi'], at)).stdout).toBe('Pi: not installed\n')
-    expect(await readFile(file, 'utf8')).toBe('export default () => {}\n')
-  }, 30_000)
 
   it('delivers all of a long read to a reader that falls behind', async () => {
-    const post = async (body: unknown) =>
-      ((await (await fetch(`${url}/messages`, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${env.VBOARD_TOKEN}`, 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-      })).json()) as { message: { id: number } }).message
-    const root = await post({ channel: 'long-reads', text: 'a long thread', noSync: true })
-    // Well past a pipe's buffer on any OS (Linux's is bigger than macOS's), so a dropped tail shows.
-    for (let batch = 0; batch < 15; batch++)
-      await Promise.all(Array.from({ length: 100 }, (_, i) => post({ re: root.id, text: `note ${batch * 100 + i} ${'x'.repeat(300)}`, noSync: true })))
-    // A reader that waits before reading: what's still queued on the pipe when the command returns must arrive.
-    const child = spawn(process.execPath, [CLI, 'read', String(root.id), '--json'], { env })
-    child.stdin.end()
-    child.stdout.pause()
-    setTimeout(() => child.stdout.resume(), 300)
-    let stdout = ''
-    child.stdout.on('data', (d) => (stdout += d))
-    const code = await new Promise((resolve) => child.on('close', resolve))
-    expect(code).toBe(0)
-    expect(stdout.trim().split('\n')).toHaveLength(1501)
-  }, 60_000)
+    const root = (await vb(['post', 'long-reads', 'a long thread', '--no-sync', '--json'])).stdout
+    const id = (JSON.parse(root) as { id: number }).id
+    expect((await vb(['reply', String(id), `note ${'x'.repeat(300)}`, '--no-sync'])).code).toBe(0)
+    // The thread, as the board would send it with 1,500 replies: well past a pipe's buffer on any OS
+    // (Linux's is bigger than macOS's), so a dropped tail shows. Posting that many takes the board half a minute.
+    const long = await serve(async (request) => {
+      const { pathname, search } = new URL(request.url)
+      const response = await fetch(`${server.origin}${pathname}${search}`, { headers: request.headers })
+      if (pathname !== `/api/board/messages/${id}`) return response
+      const thread = (await response.json()) as { replies: { id: number }[] }
+      const [reply] = thread.replies
+      thread.replies = Array.from({ length: 1500 }, (_, i) => ({ ...reply!, id: reply!.id + i }))
+      return Response.json(thread)
+    })
+    try {
+      // A reader that waits before reading: what's still queued on the pipe when the command returns must arrive.
+      const child = spawn(process.execPath, [CLI, 'read', String(id), '--json'], {
+        env: { ...env, VBOARD_URL: `${long.origin}/api/board` },
+      })
+      child.stdin.end()
+      child.stdout.pause()
+      setTimeout(() => child.stdout.resume(), 300)
+      let stdout = ''
+      child.stdout.on('data', (d) => (stdout += d))
+      const code = await new Promise((resolve) => child.on('close', resolve))
+      expect(code).toBe(0)
+      expect(stdout.trim().split('\n')).toHaveLength(1501)
+    } finally {
+      await long.close()
+    }
+  })
 
   it('lists sources, and reads one only as `sources <key> read <target>`', async () => {
     expect((await vb(['sources'])).stdout.trim()).toBe('no sources: this board has no sync configured')
@@ -649,49 +385,5 @@ describe('cli', () => {
     expect(await (await fetch(address)).text()).toContain('<div id="root"></div>')
     child.kill('SIGINT')
     expect(await exited).toBe(0)
-  })
-})
-
-describe('cli schedules', () => {
-  it('schedules a reply, shows it in the thread, sends it, and cancels a repeat', async () => {
-    const queue = fakeQueue()
-    const scheduled = await serve(testBoard({ url: undefined, scheduler: queue.scheduler }).fetch)
-    const board = `${scheduled.origin}/api/board`
-    const as = { VBOARD_URL: board, VBOARD_TOKEN: await personToken('u_julian', board) }
-    try {
-      const root = (await vb(['post', 'dev', 'PR #12 is open'], as)).stdout.trim()
-      const once = await vb(['schedule', root, 'friendly ping: review?', '--in', '1s'], as)
-      expect(once).toMatchObject({ code: 0, stderr: '' })
-      expect(once.stdout).toMatch(new RegExp(`^⏰ s\\d+  #${root} · once · next in 1s \\(.+\\) · by julian\\n    friendly ping: review\\?\\n$`))
-      const repeat = await vb(['schedule', root, 'check prod', '--every', '30m', '--for', '1d', '--json'], as)
-      const { id } = JSON.parse(repeat.stdout)
-
-      const before = (await vb(['read', root], as)).stdout
-      expect(before).toContain('  ⏰ s1  #')
-      expect(before).toContain(`  ⏰ s${id}  #${root} · every 30m · until `)
-      expect((await vb(['schedules', root], as)).stdout.match(/^⏰/gm)).toHaveLength(2)
-
-      await new Promise((resolve) => setTimeout(resolve, 1100))
-      await queue.fire()
-      await vi.waitFor(async () => expect((await vb(['read', root], as)).stdout).toMatch(/↳ #\d+  julian · \d+s ⏰ s1\n {4}friendly ping: review\?/))
-
-      expect((await vb(['schedule', 'cancel', `s${id}`], as)).stdout).toBe(`canceled s${id}\n`)
-      expect((await vb(['schedule', 'cancel', `s${id}`], as)).stdout).toBe(`s${id} is already canceled\n`)
-      expect((await vb(['schedules', root], as)).stdout).toBe('no pending schedules\n')
-      expect((await vb(['schedules', '--all'], as)).stdout).toMatch(/· done · 1 sent · by julian[\s\S]*· canceled · by julian/)
-
-      expect(await vb(['schedule', root, 'when?'], as)).toMatchObject({ code: 2, stderr: 'error: say when: --in 1d, --at <time>, or --every 30m\n' })
-      expect((await vb(['schedule', root, 'x', '--at', 'soonish'], as)).code).toBe(2)
-    } finally {
-      await scheduled.close()
-    }
-  }, 30_000)
-
-  it('says so when the board has no scheduler', async () => {
-    const root = (await vb(['post', 'dev', 'no queue here'])).stdout.trim()
-    expect(await vb(['schedule', root, 'later', '--in', '1h'])).toMatchObject({
-      code: 1,
-      stderr: "error: this board has no scheduler, so it can't schedule messages\n",
-    })
   })
 })

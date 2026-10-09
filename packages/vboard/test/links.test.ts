@@ -166,7 +166,7 @@ describe('slack message links', () => {
       `    ↪ Ada · #5 · ${permalink('C1')}`,
       '    > export is broken',
       '    > since monday',
-      '    > 📎 shot.png',
+      '    > file shot.png',
       `    ↪ ${permalink('C9')} (couldn't read it: not_in_channel)`,
     ])
   })
