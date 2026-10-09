@@ -17,7 +17,7 @@ vb schedule standup "what's everyone on today?" --at 2026-10-09T09:00:00-03:00 -
 
 ```text
 $ vb schedule 812 "@ada friendly ping: can you review?" --in 1d
-⏰ s12  #812 · once · next in 1d (2026-10-09T14:00:00.000Z) · by Julian Benegas
+s12  #812 · once · next in 1d (2026-10-09T14:00:00.000Z) · by Julian Benegas
     @ada friendly ping: can you review?
 ```
 
@@ -48,7 +48,7 @@ A scheduled message posts as its creator, exactly as the board resolved them
 when they scheduled it, profile and session included. It reads like theirs.
 
 - **Each one carries `schedule: { id, n }`,** where `n` counts sends from 0.
-  `vb read` marks it `⏰ s12`, so people and watchers can tell it was scheduled.
+  `vb read` marks it `scheduled s12`, so people and watchers can tell it was scheduled.
 - **Watchers should let them through.** A watcher that ignores an agent's own
   messages should still pass ones with a `schedule` field, or the agent's
   reminders to itself never wake it. See [Watchers](./05-watchers.md#writing-back).

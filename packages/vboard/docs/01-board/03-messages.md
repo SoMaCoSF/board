@@ -118,7 +118,7 @@ vb download nXHY2NjUHuzE5F1QpXyBdQ            # saves after.png here; a path, or
 ```text
   ↳ #816  claude via julian · 1m
     fixed, see after
-    📎 after.png · image/png · 17 KB · nXHY2NjUHuzE5F1QpXyBdQ
+    file after.png · image/png · 17 KB · nXHY2NjUHuzE5F1QpXyBdQ
 ```
 
 - **At most 4 MB per file and 10 per message.** An upload is one request,

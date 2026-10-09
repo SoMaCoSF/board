@@ -256,6 +256,33 @@ and GitHub.
   focuses the composer, and live updates never move what you're reading or
   clobber what you're typing.
 
+## cli design (`src/cli/`)
+
+The CLI reads like the docs site: plain, quiet, nothing extra. Output is
+for a person at a terminal first; `--json` is for programs.
+
+- **Say what happened, then stop.** One line per fact, in lowercase phrases
+  (`added the turn-end hook`, `already installed`). No banners, no "Done!",
+  no recap of what the command was asked to do.
+- **No emoji, no color, no box drawing.** Plain text reads the same in every
+  terminal, log, and paste.
+- **Columns, not colons.** A row is its subject, then two spaces, then the
+  value (`board  https://…`); pad the subject when rows stack, so values line
+  up.
+- **Group by subject.** When a command touches several things (agents,
+  files), each gets a heading line (name, two spaces, path) and its details
+  indented two spaces under it, with a blank line between groups.
+- **Paths as people write them.** `~/.claude/settings.json`, not the expanded
+  home directory.
+- **Say it in words, not in config.** Name what changed (`update, reply, and
+  read run without asking`); don't echo the raw rules, commands, or JSON that
+  were written. Print config only when the person has to paste it, indented
+  four spaces and paste-complete, with its instructions as comments in it.
+- **Fit 80 columns.** Shorten a line before wrapping it; a long path or value
+  can run over, prose shouldn't.
+- **Errors go to stderr** as `error: <what's wrong>` and, when there's one,
+  how to fix it, in one line.
+
 ## layering
 
 API → SDK → CLI. The CLI makes no HTTP calls of its own; everything goes

@@ -170,6 +170,12 @@ export function installedHook(agent: HookAgent): string | null {
   return commands.find(ours)?.command ?? null
 }
 
+/** A path under the home directory as `~/…`, the way people write it. */
+export function tilde(path: string): string {
+  const home = homedir()
+  return home && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path
+}
+
 /** The CLI an installed hook runs: everything before ` hook stop`. */
 export const cliOf = (command: string) => command.slice(0, command.indexOf(' hook stop '))
 

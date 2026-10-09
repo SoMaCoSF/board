@@ -165,7 +165,6 @@ export const { GET, POST, scheduler } = board({
             task: "thread",
             thread: message.re,
             key: `news-${message.id}`,
-            about: message.id,
             message: await news(board, message.re),
             since: event.createdAt,
           });
@@ -201,7 +200,6 @@ export const { GET, POST, scheduler } = board({
             task: "review",
             thread: message.re,
             key: `news-${message.id}`,
-            about: message.id,
             message: await news(board, message.re),
             since: event.createdAt,
           });

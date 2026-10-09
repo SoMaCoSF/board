@@ -199,7 +199,7 @@ See [Reading](../01-board/04-reading.md).
 vb download <attachment> [path]
 ```
 
-Saves an attachment, by the ID `vb read` shows after 📎. It's saved under its
+Saves an attachment, by the ID `vb read` shows on a file line. It's saved under its
 own name in the current directory unless you give a path; `-` writes it to
 stdout. Prints the path.
 

@@ -2,6 +2,7 @@ import type { NetworkPolicy, Sandbox } from "@vercel/sandbox";
 import type { WatcherContext } from "vboard";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import vboard from "vboard/package.json" with { type: "json" };
 
 // Pi, the coding agent, working on a board thread from its own Vercel Sandbox: the
 // `pi` CLI with `vb`, `gh`, and git, like a developer at a terminal. Each thread gets
@@ -14,8 +15,11 @@ const BOARD = "https://vboard-factory.playground-vercel.tools/api/board";
 const MODEL = "anthropic/claude-opus-5.5";
 /** The first Pi release that knows MODEL on AI Gateway. */
 const PI = "@earendil-works/pi-coding-agent@1.0.0";
-/** The `vb` Pi runs. A thread's sandbox outlives releases, so setup upgrades it in place. */
-const VBOARD = "0.6.0";
+/**
+ * The `vb` Pi runs: the vboard this deployment was built with, so each release reaches Pi
+ * with no hand-made bump. A thread's sandbox outlives releases, so setup upgrades it in place.
+ */
+const VBOARD: string = vboard.version;
 /**
  * The `gh` a new sandbox gets, pinned too: asking GitHub's API for the latest release goes out without
  * credentials (setup runs before the network policy), and sandboxes share that rate limit, so new
@@ -197,7 +201,7 @@ const REPO_DIR = "~/vboard";
 const REPO_READY = `A clone of basehub-ai/vboard with dependencies installed is being prepared at ${REPO_DIR} when your first turn starts. Before you use it, wait for the result with timeout 180 sh -c 'until [ -e ~/.pi/repo-done ]; do sleep 1; done'; cat ~/.pi/repo-done (the setup's exit code, 0 when it worked). Then git fetch and work from origin/main (or the branch you need). If the wait times out or the code isn't 0, use ${REPO_DIR} if it has a .git (run pnpm install there), and otherwise rm -rf ${REPO_DIR} and clone it again with gh repo clone basehub-ai/vboard ${REPO_DIR}.`;
 
 /** How Pi keeps people company in any thread: they see it's on it, and get pinged when it answers. */
-const PRESENCE = `As soon as you've read a message from a person that you're about to act on, react to it with vb react <id> eyes, so they know you saw it. When it asks for work that takes more than a quick look (a fix, a rebase, a new demo, a build), make your first reply, before you clone, read code, or run anything, one line saying what you're about to do, so nobody wonders whether you're stuck. A ⏳ on their message means it waited while you finished something else: say so in that line.
+const PRESENCE = `As soon as you've read a message from a person that you're about to act on, react to it with vb react <id> eyes, so they know you saw it. When it asks for work that takes more than a quick look (a fix, a rebase, a new demo, a build), make your first reply, before you clone, read code, or run anything, one line saying what you're about to do, so nobody wonders whether you're stuck.
 When you reply to a person, mention them by the handle they wrote under (author.handle in vb read <id> --json, for example @JB), so they're notified on Slack or GitHub. If vb says the handle is ambiguous, use the actor ID it lists instead: @[slack:user:U0456]. Mention each person once, not in every line.
 You hear about every reply in your threads, but most aren't for you. When a message is addressed to someone else (it @mentions another person, or answers someone else's question) and doesn't ask anything of you, don't reply and don't react; stay quiet unless you're asked.
 Board replies are read on Slack by busy people: keep each to a few lines. Lead with the outcome (the PR link, the answer, the one question you need answered), skip background they already know, and use a short list only when there are real options to pick from. No "What I ran" lists, and no recaps of the thread, including messages synced from GitHub (PR descriptions, reviews and comments, yours too): point at them instead, and say each thing once; the attachments and the PR carry the detail.
@@ -223,8 +227,9 @@ For a feature request: if it's clear what's wanted, build it with tests and open
 For a question: answer it from the code and docs, pointing at the files. Don't open a PR unless someone asks for one.
 For a task (someone asks you to do something, like a recap or an investigation): do it with what the board, the repo and GitHub show you, and reply with the result.
 Show your work only when it's worth looking at: when the change is something people can see and you can capture it, attach a screenshot to the reply that links the PR, with --attach <file> (up to 4 MB). When a change touches UI, prefer showing people it works over telling them: for a flow they click through, attach a captioned video of it working instead, using the ui-video skill and your computer tool. Don't attach test runs or logs of your own checks: the tests go in the PR, and for a bug, name the test that reproduces it in the PR body. People see attachments in Slack and vb inspect; GitHub gets a line pointing at the board.
-vb read lists a message's files as 📎 lines with an ID; vb download <id> saves one, so look at screenshots and logs people attach.
-When you're told there's new activity in a thread, the message quotes what's new since your last reply: act on it if it's for you, and run vb read only when you need more of the thread.`;
+vb read lists a message's files as file lines with an ID; vb download <id> saves one, so look at screenshots and logs people attach.
+When you're told there's new activity in a thread, the message quotes what's new since your last reply: act on it if it's for you, and run vb read only when you need more of the thread.
+Your PR's reviewer posts its verdict in your thread after each review; that's for you. If it found problems, read the review on GitHub (gh pr view <N> --comments), check for commits since it (someone in the PR thread may already be fixing them), fix what's left on the PR's branch, and push. Then reply in the PR's board thread (the root labeled pr=basehub-ai/vboard#<N>) in one line saying what you pushed: a push alone doesn't reach the board, and that reply is what gets the reviewer to look again. Unless a person said otherwise, don't reply to a review that found nothing to fix.`;
 
 const REVIEW = `Your initial task is to review a pull request for vboard (github.com/basehub-ai/vboard, private), a message board library and CLI.
 The board is how you talk to people. vb read <id> shows a thread, vb reply <id> "<text>" answers in it (and reaches Slack and the PR on GitHub), vb label <id> k=v labels it. Run vb help for the rest.
@@ -232,8 +237,9 @@ For a pull request (its board thread's root has a pr=owner/repo#N label):
 Before anything else, react to the PR thread's root with vb react <root id> looking-bunny, so people see a review is underway, also when you start reviewing again after new commits. Take it off with vb react <root id> looking-bunny --remove once you've labeled land in step 4.
 1. ${REPO_READY} Then gh pr checkout <N>. Read gh pr view <N> and gh pr diff <N>, and SPEC.md and AGENTS.md for the parts it touches.
 2. Run pnpm install and pnpm check. Try the change where you can: a test that should fail without it, or the CLI by hand.
-3. Put the detail on GitHub, attached to the code: submit one review with gh api repos/basehub-ai/vboard/pulls/<N>/reviews --input review.json (event COMMENT, REQUEST_CHANGES or APPROVE, with comments on file:line for each problem and suggestion). You review as vboard-factory[bot], and GitHub rejects APPROVE and REQUEST_CHANGES on that account's own PRs, so on a PR it opened use COMMENT and put the verdict in the body. Inline comments must be on lines the diff touches, or GitHub rejects the whole review; put anything else in the body. Always put the verdict in the body, even when the problems are all inline (a review with an empty body never reaches the board), and keep the body short: the verdict (good to merge, or the blocking problems in a line each), with the detail in the inline comments. The review shows up in the board thread and on Slack on its own, so don't restate it there: reply in the board thread only to add what it lacks, in a line (the mention of whoever asked, or what you tried by hand attached with --attach <file>, a log or a screenshot, up to 4 MB each), or not at all. vb read lists files people attached as 📎 lines; vb download <id> saves one.
+3. Put the detail on GitHub, attached to the code: submit one review with gh api repos/basehub-ai/vboard/pulls/<N>/reviews --input review.json (event COMMENT, REQUEST_CHANGES or APPROVE, with comments on file:line for each problem and suggestion). You review as vboard-factory[bot], and GitHub rejects APPROVE and REQUEST_CHANGES on that account's own PRs, so on a PR it opened use COMMENT and put the verdict in the body. Inline comments must be on lines the diff touches, or GitHub rejects the whole review; put anything else in the body. Always put the verdict in the body, even when the problems are all inline (a review with an empty body never reaches the board), and keep the body short: the verdict (good to merge, or the blocking problems in a line each), with the detail in the inline comments. The review shows up in the board thread and on Slack on its own, so don't restate it there: reply in the board thread only to add what it lacks, in a line (the mention of whoever asked, or what you tried by hand attached with --attach <file>, a log or a screenshot, up to 4 MB each), or not at all. vb read lists files people attached as file lines; vb download <id> saves one.
 4. After each review, say whether the PR could land without a person, in one command on the PR thread's root: vb label <root id> land=yes|no land.why="<one line>" land.sha=<the head SHA you reviewed>. Say yes only when all of these hold: it fixes a bug or does what a person clearly asked for (not something you or its author had to interpret); your review found nothing to fix; and it has no caveats, open questions, or negative tradeoffs (in its body, in the thread, or that you see). Otherwise say no, and land.why says which one failed. When unsure, say no. The board checks the rest itself: who opened it, CI, and whether it changes vboard core for users.
+5. Tell the thread the work started in. When the PR was built for another board thread (its branch is pi/<id>, and the PR thread has a ":crosspost: From … · board #<id>" reply), reply there after each review, in one line: the verdict (good to merge, or what blocks it, briefly) and that the detail is in the review on PR #<N>. That thread's Pi, the PR's author, hears it and can fix what you found, and the person who asked sees it where they asked. Don't mention anyone there, and don't restate the review.
 When you're told there's new activity in a thread, the message quotes what's new since your last reply: act on it if it's for you (run vb read only when you need more of the thread): answer questions, and review again if new commits landed (gh pr view <N> --json commits), labeling land again.`;
 
 export const INSTRUCTIONS: Record<Task, string> = {
@@ -389,8 +395,8 @@ export async function startOrSay(
  * (the calling watcher's) says so in the thread; see `startOrSay`.
  * `key` names the message, so telling Pi the same thing twice is a no-op.
  */
-export async function tellPi({ board, ...input }: PiMessage & { board: Pick<WatcherContext["board"], "reply" | "react"> }) {
-  await startOrSay(board, input.thread, () => deliver(input, board));
+export async function tellPi({ board, ...input }: PiMessage & { board: Pick<WatcherContext["board"], "reply"> }) {
+  await startOrSay(board, input.thread, () => deliver(input));
 }
 
 type PiMessage = {
@@ -398,29 +404,11 @@ type PiMessage = {
   thread: number;
   key: string;
   message: string;
-  /** The person's message this one is about, which gets a ⏳ when it has to wait for Pi's current turn. */
-  about?: number;
   /** When what Pi's told about happened (an event's `createdAt`), so the log shows the whole wait. */
   since?: string;
 };
 
-/** The reaction on a message that waits behind Pi's current turn: Pi can't see it, or say it has, until that turn ends. */
-export const QUEUED = "hourglass_flowing_sand";
-
-/** Whether a turn holds the lock TELL waits on; run in the sandbox, it exits 0 when one does. */
-export const BUSY = `[ -e ~/.pi/lock ] && ! flock -n ~/.pi/lock true`;
-
-/** Marks `about` queued when Pi is busy. Best-effort: a reaction that fails never holds up the message. */
-export async function markQueued(board: Pick<WatcherContext["board"], "react">, about: number | undefined, busy: () => Promise<boolean>) {
-  if (about === undefined) return;
-  try {
-    if (await busy()) await board.react(about, QUEUED);
-  } catch (error) {
-    console.warn(`[factory] couldn't mark #${about} queued:`, error);
-  }
-}
-
-async function deliver({ task, thread, key, message, about, since }: PiMessage, watcher: Pick<WatcherContext["board"], "react">) {
+async function deliver({ task, thread, key, message, since }: PiMessage) {
   const start = Date.now();
   const timings: Record<string, number> = {};
   const mark = (phase: string) => (timings[phase] = Date.now() - start);
@@ -457,8 +445,6 @@ async function deliver({ task, thread, key, message, about, since }: PiMessage, 
     sandbox = await Sandbox.create(settings);
   }
   mark("sandbox");
-  // Before setup, which takes a while: the person hears right away that Pi got it and is finishing something else.
-  await markQueued(watcher, about, async () => (await sandbox.runCommand({ cmd: "bash", args: ["-c", BUSY] })).exitCode === 0);
   // Every turn, so a sandbox picks up a new pinned vb; before the policy, so no credential is in place yet.
   await sh(sandbox, SETUP);
   await sandbox.writeFiles(await piFiles());

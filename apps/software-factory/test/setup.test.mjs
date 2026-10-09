@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -21,7 +21,7 @@ function sandbox() {
   };
   fake("pi", "exit 0");
   fake("vb", "exit 0");
-  fake("npm", "exit 0");
+  fake("npm", 'echo "$*" >> "$HOME/npm.log"');
   fake("install", 'cp "$1" "$HOME/gh"');
   fake(
     "curl",
@@ -36,7 +36,7 @@ esac`,
   );
   const bash = execFileSync("bash", ["-c", "command -v bash"], { encoding: "utf8" }).trim();
   const run = () => spawnSync(bash, ["-c", SETUP], { env: { HOME: home, PATH: bin }, encoding: "utf8" });
-  return { run, gh: join(home, "gh") };
+  return { run, gh: join(home, "gh"), npm: join(home, "npm.log") };
 }
 
 test("a new sandbox gets gh while GitHub's API refuses it", () => {
@@ -44,4 +44,12 @@ test("a new sandbox gets gh while GitHub's API refuses it", () => {
   const done = run();
   assert.equal(done.status, 0, done.stderr);
   assert.ok(existsSync(gh), "gh is installed");
+});
+
+test("an old sandbox upgrades vb to the vboard this deployment was built with", () => {
+  const { run, npm } = sandbox();
+  const done = run();
+  assert.equal(done.status, 0, done.stderr);
+  const { version } = JSON.parse(readFileSync(new URL("../../../packages/vboard/package.json", import.meta.url), "utf8"));
+  assert.match(readFileSync(npm, "utf8"), new RegExp(`install -g vboard@${version.replaceAll(".", "\\.")}\\b`));
 });
