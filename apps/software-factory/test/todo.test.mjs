@@ -109,3 +109,12 @@ test("removing a person's :todo: unparks even when an ignored :todo: remains", a
   assert.deepEqual(h.labels, [{ id: 854, unset: ["todo"] }]);
   assert.equal(h.told.length, 1);
 });
+
+test(":todo: on a PR thread's root doesn't park it: review-pi would never hear it's unparked", async () => {
+  const h = harness();
+  const pr = root({ labels: { pr: "basehub-ai/vboard#80", state: "open" }, reactions: { todo: [person.actor] } });
+  await h.todo(reaction("reaction.added", pr));
+  await h.todo(reaction("reaction.removed", { ...pr, labels: { ...pr.labels, todo: "yes" }, reactions: {} }));
+  assert.deepEqual(h.labels, []);
+  assert.deepEqual(h.told, []);
+});

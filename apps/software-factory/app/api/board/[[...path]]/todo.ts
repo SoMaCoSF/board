@@ -39,7 +39,9 @@ export function todo(options: { tellPi: typeof tellPi }): Watcher {
         event.payload.emoji !== TODO ||
         !human(event.payload.by.principal) ||
         !root ||
-        root.re !== null
+        root.re !== null ||
+        // PR threads are review-pi's, which never hears it's unparked: a :todo: there would silence it for good.
+        root.labels.pr !== undefined
       ) return;
       if (event.type === "reaction.added") {
         if (root.labels.todo !== "yes") await board.label(root.id, { set: { todo: "yes" } });
