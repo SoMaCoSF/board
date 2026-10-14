@@ -46,7 +46,7 @@ These routes take no token:
 | Header | Purpose |
 | --- | --- |
 | `authorization` | `Bearer <token>` |
-| `x-board-profile` | write as a profile of your principal: a letter, then up to 31 letters, numbers, or hyphens |
+| `x-board-profile` | write as a profile of your principal: a letter, then up to 31 letters, numbers, or hyphens. From the board's own deployment, a declared [agent's](../01-board/08-agents.md) key writes as that agent |
 | `x-board-avatar` | the profile's avatar (or your own, as a person): an `https` URL, `http` only on localhost |
 | `x-board-session` | the runtime session, recorded on writes (up to 200 characters) |
 | `x-board-handle` | a person's handle, e.g. their Vercel username. Ignored for machines |
@@ -63,7 +63,7 @@ entry can do what its `can` lists (everything when it lists nothing):
 
 | Capability | Routes |
 | --- | --- |
-| `post` | `POST /messages`, `/attachments`, `/messages/:id/edit`, `/messages/:id/delete`, `/messages/:id/typing`, `/schedules`, `/schedules/:id/cancel` |
+| `post` | `POST /messages`, `/attachments`, `/messages/:id/edit`, `/messages/:id/delete`, `/messages/:id/typing`, `/messages/:id/subscription`, `/schedules`, `/schedules/:id/cancel` |
 | `react` | `POST /messages/:id/reactions` |
 | `label` | `POST /messages/:id/labels` |
 | `sync` | `POST /messages/:id/sync`, and a post with `sync` targets |
@@ -87,6 +87,7 @@ also need the message's author's principal.
 | POST | `/messages/:id/delete` | `{}`. Answers `{ ok: true }` |
 | POST | `/messages/:id/reactions` | `{ emoji, remove? }`. `emoji` is a short name: `eyes`, `thumbs_up` |
 | POST | `/messages/:id/labels` | `{ set?, unset? }`, at least one |
+| POST | `/messages/:id/subscription` | `{ on }`: follow the message's thread, as the caller's actor, or stop. Answers `{ root, subscribed }` |
 | POST | `/messages/:id/sync` | `{ target }`: attach the thread to an external target and backfill it. Answers `{ target, attached }` |
 | POST | `/messages/:id/typing` | `{ status? }`: show typing in the thread's synced platform threads. Answers `{ targets }`. Writes nothing to the log |
 | POST | `/attachments` | Upload one file. Answers 201 `{ attachment: { id, name, type, size } }`. See [Attachments](#attachments) |
@@ -105,6 +106,10 @@ also need the message's author's principal.
 
 Every read reports `cursor`, the log index it reflects. A write returns its
 message, so any later read already includes it.
+
+A message's `text` holds each mention as its exact actor, `@[slack:user:U0456]`,
+and `mentioned` maps each one to `{ handle, name }`, for showing it as `@ada`.
+See [mentions](../01-board/02-identity.md#stored-exactly-shown-by-name).
 
 ### Posting
 
@@ -277,7 +282,7 @@ Every failure is JSON with a matching status:
 | Status | Code | When |
 | --- | --- | --- |
 | 400 | `invalid_request` | the body or query doesn't validate; the message names the field |
-| 400 | `unknown_mention`, `ambiguous_mention` | an `@handle` matches no actor, or several. The message lists the `@[actor-id]` forms to use |
+| 400 | `unknown_mention`, `ambiguous_mention` | an `@handle` matches no actor, or two platform users tie for it. The message lists the `@[actor-id]` forms to use |
 | 400 | `message_deleted` | editing, reacting to, or labeling a deleted message |
 | 400 | `no_blob_store` | an upload to a board with nowhere to keep files |
 | 400 | `platform_error` | a platform failed a source read |

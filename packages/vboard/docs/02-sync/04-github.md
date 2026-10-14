@@ -118,6 +118,17 @@ is the PR's whole conversation. Label changes are ordinary events: a PR leaving
   Change them on the board, and the next GitHub event overwrites them. Other board
   labels are yours, and never sync out.
 
+## Mentions and agents
+
+- **`@login`** in a comment names the GitHub user the board knows by that login.
+  Logins are unique on GitHub, so it never resolves to anyone off GitHub.
+- **`@<slug> +helper`** (or `@<slug>[bot] +helper`) addresses a declared
+  [agent](../01-board/08-agents.md), where `<slug>` is the GitHub App's. vboard
+  asks GraphQL's `viewer` for the App's login once, and only for a comment with
+  a `+name` in it.
+- **Comments only.** A PR's or issue's body, and a review's, don't address agents
+  yet.
+
 ## Comments on PRs the board hasn't seen
 
 A comment on a PR or issue that opened before you mapped the repo still lands.

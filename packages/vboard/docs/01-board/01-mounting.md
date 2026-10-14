@@ -28,9 +28,10 @@ boundary, say), mount a second route.
 | --- | --- |
 | `store` | Any A2 store: `postgres()`, `redis()`, `redisHttp()`, SQLite. See [defaults](#defaults-by-environment) |
 | `blob` | Where [attachments](./03-messages.md#attachments) live: `vercelBlob()` from `vboard/adapter-vercel-blob` |
-| `scheduler` | An A2 scheduler, for sync, watchers, and scheduled messages: `vercelQueues()` or `qstash()` |
+| `scheduler` | An A2 scheduler, for sync, watchers, agents, and scheduled messages: `vercelQueues()` or `qstash()` |
 | `sync` | Two-way sync, keyed by a name you choose: `{ slack: slack({…}) }`. See [Sync](../02-sync/01-overview.md) |
 | `watch` | Tails the board runs for you, keyed by id: `{ triage: { tail, run } }`. See [Watchers](./05-watchers.md) |
+| `agents` | Agents with a name of their own, keyed by handle: `{ helper: agent({…}) }`. See [Agents](./08-agents.md) |
 | `trustedSources` | Machines outside this project that may call the board. See [Identity](./02-identity.md#trusted-sources) |
 | `project` | `{ id, teamId? }`: the board's Vercel project. Defaults to `VERCEL_PROJECT_ID`, then `.vercel/project.json` |
 | `url` | The board's public URL, which every token's audience must equal. Inferred from requests otherwise |
@@ -117,6 +118,7 @@ export const POST = queue.handler(...servers /*, ordersServer */)
 | `scheduler` | The scheduler's callback, for its own route. A board without a scheduler answers 404 there |
 | `servers` | The A2 servers behind the board, to pass to a shared scheduler |
 | `client(name, { key })` | An in-process client for your own server code |
+| `agent(key, { key, session })` | An in-process client writing as a declared [agent](./08-agents.md#an-agent-that-runs-elsewhere) |
 
 ## The in-process client
 

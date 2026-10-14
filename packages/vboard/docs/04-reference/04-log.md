@@ -42,7 +42,7 @@ A new root or reply.
 | `thread` | `string` | (server) the thread key: the root's event ID |
 | `labels` | `Record<string, string>` | labels on the message |
 | `noSync` | `boolean` | kept on the board, not delivered to platforms |
-| `mentions` | `string[]` | (server) the actor IDs its mentions resolved to |
+| `mentions` | `string[]` | (server) the actor IDs its mentions resolved to. `text` holds each as `@[actor-id]` |
 | `by` | `{ actor, principal, profile, session }` | (server) who wrote it |
 | `origin` | `{ channel?, thread, subthread, message, context } \| null` | (server) where it came from on a platform |
 | `from` | `string \| null` | (server) the sync key it came from, or null when written on the board |
@@ -68,6 +68,8 @@ thread's events in order on its lane.
 | `message.files_synced` | `id`, `target`, `files` | (server) a message's files reached a platform after its text: the platform's IDs, or null when it refused files |
 | `message.sync_failed` | `id`, `target`, `error` | (server) a delivery gave up after its retries |
 | `actor.seen` | `actor`, `kind`, `handle`, `name`, `avatar` | an actor writes for the first time or changes its display details, in the same batch as its write |
+| `thread.subscribed` | `actor`, `cause` (`mention`, `reply`, or `request`), `by` | an actor follows a thread: a declared agent mentioned in it or posting in it, or anyone who asks |
+| `thread.unsubscribed` | `actor`, `by` | an actor stops following a thread, by choice: nothing subscribes it again but its own request |
 
 - **`by`** is `{ actor, principal, profile, session }`: the actor ID
   (`vercel:user:u_abc123+claude`), the verified principal, the profile, and
@@ -100,6 +102,7 @@ thread's events in order on its lane.
 | `vboard-inbox` | `inbox:<external channel>`, e.g. `inbox:slack:C0123ABC` | `external.received { sync, event, raw }` | every platform event, stored before the board answers the webhook; the inbound handler runs here |
 | `vboard-watch` | `watch:<id>`, e.g. `watch:triage` | `watch.matched { thread, event }` | each [watcher's](../01-board/05-watchers.md) matches; its `run` happens here |
 | `vboard-schedules` | `schedules` | `schedule.created`, `schedule.canceled`, `schedule.due`, `schedule.fired` | [scheduled messages](../01-board/06-schedules.md) |
+| `vboard-agents` | `agent:<key>`, e.g. `agent:helper` | `agent.notified { thread, reason, root, event, subscribed }`, `agent.failed { notified, thread, error }` | each [agent's](../01-board/08-agents.md) notifications; `notify` runs, and the agent wakes, here |
 
 - **`external.received`** holds the normalized platform event (a message, an
   edit, a delete, a reaction, or a lifecycle event like a PR opening) and the
@@ -108,6 +111,9 @@ thread's events in order on its lane.
   sessions be thrown away.
 - **`watch.matched`** holds the event exactly as `vb tail --json` prints it.
   One session per watcher means each watcher fails on its own.
+- **`agent.notified`** holds the same event, and why it reached the agent
+  (`mention` or `reply`). The agent's turns live in its own A2 agent,
+  `vboard-agent-<key>`, in one session per thread by default.
 
 ### Schedule events
 
@@ -130,8 +136,8 @@ event, so neither stops its thread. What's left is mostly the cause outside
 vboard's control: a blob store that's down while files come in, or a bug.
 
 `vb stuck` lists them across the `board` session, every inbox (the mapped
-channels', and those of threads synced anywhere else), every watcher, and
-`schedules`. `vb stuck retry` runs one again with a fresh 10 tries, and its
+channels', and those of threads synced anywhere else), every watcher, every
+agent, and `schedules`. `vb stuck retry` runs one again with a fresh 10 tries, and its
 thread's later events follow; `vb stuck skip` marks it done without running it.
 Both are one atomic A2 operation (`session.redrive()`), and the board logs who
 did which.
@@ -145,7 +151,8 @@ the first three.
 | --- | --- | --- | --- |
 | `messagesReducer` | `vboard.messages.v4` | `byId`: message ID → the message as it is now; `replies`: root → reply IDs, in log order | `read`, `/messages`, the event feed |
 | `channelsReducer` | `vboard.channels.v1` | path → `{ path, lastIndex, messages, threads }` | `channels` |
-| `actorsReducer` | `vboard.actors.v1` | `byId`: actor ID → `{ id, kind, handle, name, avatar }`; `byHandle`: lowercased handle → actor IDs | mention resolution, `actors`, rendering |
+| `actorsReducer` | `vboard.actors.v2` | `byId`: actor ID → `{ id, kind, handle, name, avatar }`; `byHandle`: lowercased handle → actor IDs | mention resolution, `actors`, rendering |
+| `subscriptionsReducer` | `vboard.subscriptions.v1` | thread key → actor → `{ subscribed, chosen }`, where `chosen` is an actor's own choice | waking agents |
 | sync (internal) | `vboard.sync.v1` | thread → its targets and external threads; external thread → thread; message → its copies on each platform | both sync handlers |
 
 A message, as `messagesReducer` folds it:

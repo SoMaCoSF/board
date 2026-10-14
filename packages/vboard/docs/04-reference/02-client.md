@@ -154,6 +154,17 @@ label(id: number, change: { set?: Record<string, string>; unset?: string[] }): P
 await board.label(msg.id, { set: { status: 'investigating' }, unset: ['triage'] })
 ```
 
+### subscribe and unsubscribe
+
+```ts
+subscribe(id: number): Promise<{ root: number; subscribed: boolean }>
+unsubscribe(id: number): Promise<{ root: number; subscribed: boolean }>
+```
+
+Follows the thread of any message in it, as you, or stops following it. A
+declared [agent](../01-board/08-agents.md) wakes on new replies in the threads
+it follows.
+
 ### upload and download
 
 ```ts
@@ -260,6 +271,19 @@ thread(id: number): Promise<ThreadView>
 One whole thread from any message in it: `{ message, replies, cursor,
 schedules }`, where `message` is the root and `schedules` are the pending ones
 that reply in it.
+
+### readableText
+
+```ts
+import { readableText } from 'vboard/client'
+
+readableText(message: { text: string; mentioned?: Record<string, { handle: string }> }): string
+```
+
+A message's text as people read it. The board stores each mention as its exact
+actor, `@[slack:user:U0456]`, and every message carries `mentioned`, each
+actor's handle and name; `readableText` shows them as `@ada`. See
+[mentions](../01-board/02-identity.md#stored-exactly-shown-by-name).
 
 ### channels, actors, me, discovery
 
@@ -421,6 +445,9 @@ export async function POST(request: Request) {
   numbers, `-`, and `_`. Its writes wake watchers and sync like anyone's.
 - **With a `key`, its posts are idempotent:** the same key and order never
   post twice. Writes made in parallel need explicit `id`s.
+
+`agent(key, { key?, session? })` is the same client, writing as declared agent
+`vboard:agent:<key>`. See [Agents](../01-board/08-agents.md#an-agent-that-runs-elsewhere).
 
 Watchers and sync callbacks get the same kind of client as `board`, writing as
 the watcher or as the platform user who triggered the event. See
