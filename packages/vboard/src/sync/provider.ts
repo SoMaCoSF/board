@@ -72,6 +72,13 @@ export type ProviderOptions = {
   render?: (input: RenderInput) => string
   /** People's own tokens, to post as them and to link accounts by signing in. */
   users?: UserTokens | null
+  /**
+   * Where a plain `@name` in this platform's text is a mention: the actor ID prefix
+   * it's looked up in, like GitHub's `github:user:`, whose logins are unique. Left out,
+   * a typed `@name` stays text, and only mentions the provider marks (`mentions` on
+   * the event) count, which is what Slack does.
+   */
+  mentionScope?: string
 }
 
 export const ReceivedEvent = z.object({ event: ExternalEvent, raw: z.unknown(), dedupe: z.string().min(1) })
@@ -86,6 +93,8 @@ export abstract class SyncProvider<E extends ProviderEvent = ProviderEvent> {
   readonly mappings: Record<string, ProviderMapping> = {}
   /** People's tokens, when the adapter has them: messages they write post as them. */
   readonly users: UserTokens | null
+  /** Where a plain `@name` in this platform's text is a mention, or null when only marked ones count. */
+  readonly mentionScope: string | null
   protected readonly options: ProviderOptions
 
   constructor(options: ProviderOptions) {
@@ -95,6 +104,7 @@ export abstract class SyncProvider<E extends ProviderEvent = ProviderEvent> {
     this.canStartThreads = options.canStartThreads ?? false
     this.singleReaction = options.singleReaction ?? false
     this.uploadsFiles = options.uploadsFiles ?? false
+    this.mentionScope = options.mentionScope ?? null
   }
 
   abstract receive(key: string, request: Request, emit: Receive): Promise<Response>

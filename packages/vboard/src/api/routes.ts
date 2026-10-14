@@ -219,7 +219,14 @@ export type PersonView = { id: string; handle: string; name: string; avatar: str
  * `person` is who a linked platform account belongs to.
  */
 export type ActorView = Pick<Actor, 'kind' | 'handle' | 'name' | 'avatar'> & { person?: PersonView }
-export type MessageView = Message & { author: ActorView | null }
+export type MessageView = Message & {
+  author: ActorView | null
+  /**
+   * Who `text` mentions, by actor ID. Stored text names each mention exactly,
+   * `@[slack:user:U0456]`; `displayText()` shows it as `@ada` with this.
+   */
+  mentioned?: Record<string, { handle: string; name: string }>
+}
 
 /** A board event as subscribers get it. Checking `type` narrows `payload` to that event's. */
 export type BoardEventView = BoardEvent extends infer E

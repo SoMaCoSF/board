@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { Adapter, Author as ChatAuthor, Chat, FileUpload, Message as ChatMessage, ReactionEvent } from 'chat'
 import type { Actor } from '../contract/reducers.ts'
-import { LINKS_PER_MESSAGE_MAX, type ExternalAuthor, type ExternalFile, type ExternalLink } from '../contract/contract.ts'
+import { LINKS_PER_MESSAGE_MAX, type ExternalAuthor, type ExternalFile, type ExternalLink, type MarkedMentions } from '../contract/contract.ts'
 import { SyncProvider, ResolvedTarget, type Receive, type ReceivedEvent, type ProviderOptions, type ProviderPost, type ProviderFile, type ProviderDelivery, type FileDelivery, type FetchedLink } from './provider.ts'
 import type { ProviderEvent, SyncRoot } from './events.ts'
 import type { SourceRead } from '../api/routes.ts'
@@ -29,6 +29,8 @@ export type ChatTransport = Omit<ProviderOptions, 'uploadsFiles'> & {
   toChatId?(id: string): string
   context?(message: ChatMessage): string | null
   markdown?(message: ChatMessage): string
+  /** Mentions in a message as the platform marked them, before Chat SDK flattened them into names. */
+  mentionsOf?(message: ChatMessage): Promise<MarkedMentions>
   /** Platform messages a message links to, located under sync key `key`. */
   links?(key: string, message: ChatMessage): ExternalLink[]
   fetchLink?(link: ExternalLink): Promise<FetchedLink>
@@ -137,10 +139,16 @@ export abstract class ChatSyncProvider<E extends ProviderEvent = ProviderEvent> 
     const message = input.message
     const found = this.transport.links?.(key, message) ?? []
     const links = found.length ? { links: found.slice(0, LINKS_PER_MESSAGE_MAX) } : {}
+    const marked = await this.transport.mentionsOf?.(message).catch((error: unknown) => {
+      console.warn(`[vboard] ${this.platform}: couldn't read a message's mentions`, error)
+      return null
+    })
     const common = {
       ...this.locate(key, message.threadId), message: message.id,
       text: this.transport.markdown?.(message) ?? markdownOf(message), author: await this.authorOf(message),
       ...links,
+      ...(marked?.mentions?.length ? { mentions: marked.mentions } : {}),
+      ...(marked?.appMentions?.length ? { appMentions: marked.appMentions } : {}),
     }
     return { dedupe, raw: message.raw, event: input.kind === 'edited' ? { kind: 'edited', ...common } : {
       kind: 'message', ...common,

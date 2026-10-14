@@ -6,7 +6,7 @@ import { envelope, eventSchema } from './events.ts'
 import { UnreadableError, type ResolvedTarget, type ProviderPost, type ProviderDelivery, type ProviderSender, type SyncContext, type SyncHandler, type EventMapping, type RenderInput, type ReceivedEvent, type FetchedLink } from './provider.ts'
 import type { SourceMessage, SourceRead } from '../api/routes.ts'
 import { stringifyMarkdown } from 'chat'
-import { LINKS_PER_MESSAGE_MAX, type ExternalLink } from '../contract/contract.ts'
+import { LINKS_PER_MESSAGE_MAX, type ExternalLink, type MarkedMentions } from '../contract/contract.ts'
 import { MESSAGE_TEXT_MAX } from '../contract/schemas.ts'
 import { createSlackAdapter } from '@chat-adapter/slack'
 import { connectSlackAdapter } from '@vercel/connect/chat'
@@ -367,6 +367,24 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
       return promise
     }
 
+    // The name Chat SDK writes a mention as (`<@U0456>` → `@Ada`): its own cached lookup,
+    // or the same fields in the same order when the adapter doesn't expose it.
+    const lookup = (options.adapter as { lookupUser?(user: string): Promise<{ displayName?: string } | null> }).lookupUser
+    const displays = new Map<string, Promise<string>>()
+    function displayOf(user: string): Promise<string> {
+      let promise = displays.get(user)
+      if (!promise) {
+        promise = (async () => {
+          const cached = lookup ? await lookup.call(options.adapter, user).catch(() => null) : null
+          if (cached?.displayName) return cached.displayName
+          const found = (await (await client())?.users?.info({ user }))?.user
+          return found?.profile?.display_name || found?.profile?.real_name || found?.real_name || found?.name || user
+        })().catch(() => user)
+        displays.set(user, promise)
+      }
+      return promise
+    }
+
     const fileIds = (raw: unknown) => ((raw as { uploadedFileIds?: string[] } | null)?.uploadedFileIds ?? []).filter(Boolean)
     // Slack tags each file with its event's team, and the adapter fetches a tagged
     // file with that team's installed token, which a single-workspace app (one bot
@@ -426,6 +444,22 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
         return channel.id
       },
       markdown: markdownOf,
+      // Slack marks each mention with an ID, `<@U0456>`; Chat SDK's text names it. Each is
+      // read back to the exact user it was, and a mention of the board's own bot to the app.
+      async mentionsOf(message) {
+        const raw = message.raw as { text?: unknown } | null
+        const text = typeof raw?.text === 'string' ? raw.text : ''
+        const users = [...new Set([...text.matchAll(/<@([UW][A-Z0-9_]+)(?:\|[^>]*)?>/g)].map((match) => match[1]!))]
+        const bot = (options.adapter as { botUserId?: string }).botUserId
+        const marked: MarkedMentions = { mentions: [], appMentions: [] }
+        for (const user of users) {
+          const display = await displayOf(user)
+          const forms = [...new Set([mrkdwn(`<@${user}|${display}>`), `@${display}`, `@${user}`])]
+          if (user === bot) marked.appMentions!.push(...forms)
+          else for (const form of forms) marked.mentions!.push({ form, actor: { id: `slack:user:${user}`, handle: display, name: display } })
+        }
+        return marked
+      },
       links(key, message) {
         const raw = message.raw as { text?: unknown; attachments?: SlackAttachment[] } | null
         return slackLinks(key, typeof raw?.text === 'string' ? raw.text : message.text, Array.isArray(raw?.attachments) ? raw.attachments : [], mrkdwn)

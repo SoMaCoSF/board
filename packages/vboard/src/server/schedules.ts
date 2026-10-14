@@ -11,7 +11,7 @@ import {
 import { actorKind, type Attachment, type Author, type Labels } from '../contract/schemas.ts'
 import { actorsReducer, messagesReducer, type ActorsState } from '../contract/reducers.ts'
 import { replaceMentions } from '../contract/mentions.ts'
-import { resolveMentions } from './actors.ts'
+import { resolveHandle, resolveMentions } from './actors.ts'
 import { badRequest, HttpError, notFound } from './errors.ts'
 import { deploymentIdentity, writePost, type Identity, type WriteContext } from './writes.ts'
 import { DroppedError } from './middleware.ts'
@@ -264,10 +264,13 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
       if (first > now + MAX_AHEAD_MS || (until !== null && until > now + MAX_AHEAD_MS))
         throw badRequest('a schedule reaches at most a year out: its first send and its stop')
 
-      // Mentions fail now, where the person scheduling sees it, not at send time.
-      const { state: known } = await writes.session.state(actorsReducer)
+      // Mentions fail now, where the person scheduling sees it, not at send time, and each
+      // `@handle` is pinned to the actor it names today. Emails resolve at each send.
+      const { state: seen } = await writes.session.state(actorsReducer)
+      const mentions = { known: writes.mentionable?.(seen) ?? seen, pending: identity.actor }
       const withoutEmails = replaceMentions(body.text, (t) => (t.kind === 'actor' && t.actor.includes('@') ? t.actor : null))
-      resolveMentions(withoutEmails, known, identity.actor)
+      resolveMentions(withoutEmails, mentions)
+      const text = replaceMentions(body.text, (t) => (t.kind === 'handle' ? `@[${resolveHandle(t.handle, mentions)}]` : null))
 
       let channel = body.channel
       let re: number | null = null
@@ -283,7 +286,7 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
         payload: {
           channel: channel!,
           re,
-          text: body.text,
+          text,
           labels: body.labels ?? {},
           noSync: body.noSync ?? false,
           ...(attachments.length ? { attachments } : {}),

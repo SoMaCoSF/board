@@ -241,8 +241,11 @@ describe('messages', () => {
       (await julian('GET', `/messages?${query}`)).body.messages.map((m: { text: string }) => m.text)
     expect(await texts('channel=www/')).toEqual(['one', 'two'])
     expect(await texts('label=status=open')).toEqual(['one'])
-    expect(await texts('by=ada')).toEqual(['hey @julian'])
-    expect(await texts('mentions=me')).toEqual(['hey @julian'])
+    // Stored text names the mention exactly; `mentioned` says who that is.
+    expect(await texts('by=ada')).toEqual(['hey @[vercel:user:u_julian]'])
+    expect(await texts('mentions=me')).toEqual(['hey @[vercel:user:u_julian]'])
+    const [mention] = (await julian('GET', '/messages?mentions=me')).body.messages
+    expect(mention.mentioned).toEqual({ 'vercel:user:u_julian': { handle: 'julian', name: 'julian' } })
   })
 
   it('filters by source, text, a label key or any of its values, and a thread root\'s labels', async () => {

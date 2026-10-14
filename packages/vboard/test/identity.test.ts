@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { serve } from './http.ts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Adapter } from 'chat'
-import { fakePlatform } from './sync-fixtures.ts'
+import { fakePlatform, slackNames } from './sync-fixtures.ts'
 import { slack } from '../src/sync/slack.ts'
 import { github } from '../src/sync/github.ts'
 import { withUserTokens, type UserTokens } from '../src/sync/users.ts'
@@ -74,7 +74,10 @@ function slackAs(owners: Record<string, string>, onPost?: (post: { threadId: str
 
 function setup(options: { users?: UserTokens; owners?: Record<string, string>; githubUsers?: UserTokens; onPost?: Parameters<typeof slackAs>[1]; url?: string | undefined } = {}) {
   const as = slackAs(options.owners ?? {}, options.onPost)
-  const s = fakePlatform('slack', as.extend)
+  const s = fakePlatform('slack', (adapter) => {
+    as.extend(adapter)
+    slackNames({ U_JULIAN: 'jb' })(adapter)
+  })
   const g = fakePlatform('github')
   const board = testBoard({
     sync: {
@@ -149,9 +152,11 @@ describe('linking accounts with a one-time code', () => {
     await ada('POST', '/messages', { re: root!.id, text: '@julian can you look?' })
     await vi.waitFor(() => expect(s.posts.map((p) => p.text)).toEqual([expect.stringContaining('<@U_JULIAN> can you look?')]))
 
-    await webhook('slack', { type: 'message', threadId: 'slack:C1:100', id: '102', text: '@jb ping', user: 'U_ADA' })
-    await vi.waitFor(async () => expect((await read(ada, 'mentions=julian')).map((m) => m.text)).toEqual(['@julian can you look?', '@jb ping']))
-    expect((await read(julian, 'mentions=me')).map((m) => m.text)).toEqual(['@julian can you look?', '@jb ping'])
+    // Slack marks the mention of julian's linked account: it's that account, and `--mentions` follows the link.
+    await webhook('slack', { type: 'message', threadId: 'slack:C1:100', id: '102', text: '@jb ping', raw: { text: '<@U_JULIAN> ping' }, user: 'U_ADA' })
+    const both = ['@[vercel:user:u_julian] can you look?', '@[slack:user:U_JULIAN] ping']
+    await vi.waitFor(async () => expect((await read(ada, 'mentions=julian')).map((m) => m.text)).toEqual(both))
+    expect((await read(julian, 'mentions=me')).map((m) => m.text)).toEqual(both)
   })
 
   it('imports an expired, foreign, or already used code as a message, and the first account keeps it', async () => {

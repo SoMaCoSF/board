@@ -245,8 +245,8 @@ describe('cli', () => {
       const { stdout } = await vb(['read', 'pings', ...args, '--json'])
       return stdout.trim().split('\n').map((line) => (JSON.parse(line) as { text: string }).text)
     }
-    expect(await texts(['--mentions'])).toEqual(['hey @julian, look'])
-    expect(await texts(['--mentions', '@julian'])).toEqual(['hey @julian, look'])
+    expect(await texts(['--mentions'])).toEqual(['hey @[vercel:user:u_julian], look'])
+    expect(await texts(['--mentions', '@julian'])).toEqual(['hey @[vercel:user:u_julian], look'])
   })
 
   it('filters by author, with or without the @', async () => {

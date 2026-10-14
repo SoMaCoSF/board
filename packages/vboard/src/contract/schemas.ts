@@ -54,6 +54,23 @@ export const actorKind = (kind: z.infer<typeof SeenActorKind>): ActorKind => (ki
 
 export const Handle = z.string().min(1).max(128)
 
+/** A declared agent's key, and so its handle: `helper`, `code-review`. It ends in a letter or a digit, so `@helper` parses. */
+export const AGENT_KEY = /^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$/
+
+const AGENT_PREFIX = 'vboard:agent:'
+
+/** `helper` → `vboard:agent:helper`, a declared agent's actor. */
+export const agentActorId = (key: string) => `${AGENT_PREFIX}${key}`
+
+/** The key of a declared agent's actor, or null for any other actor. */
+export const agentKeyOf = (actor: string): string | null => (actor.startsWith(AGENT_PREFIX) ? actor.slice(AGENT_PREFIX.length) : null)
+
+/**
+ * `vboard:` IDs are the board's own: its watchers, clients, middleware, schedules,
+ * and declared agents. Only the server mints them, and sync refuses them from a platform.
+ */
+export const isBoardActor = (actor: string) => actor.startsWith('vboard:')
+
 export const Author = z.object({
   actor: ActorId,
   principal: z.string().min(1),

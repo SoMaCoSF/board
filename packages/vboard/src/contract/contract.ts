@@ -214,6 +214,21 @@ export type ExternalLink = z.infer<typeof ExternalLink>
 
 export const ExternalLocation = z.object({ channel: ExternalTarget, thread: ExternalTarget, subthread: ExternalTarget.nullable() })
 
+/**
+ * Mentions as the platform marked them, before Chat SDK turned them into names. Each
+ * of `mentions` is a native mention (Slack's `<@U0456>`): `form` is how it reads in
+ * `text` (`@Ada Lovelace`), `actor` who it is. `appMentions` are the ways `text` names
+ * the board's own app, for `@app +helper`. Older events have neither.
+ */
+export const MarkedMentions = z.object({
+  mentions: z
+    .array(z.object({ form: z.string().min(1).max(200), actor: ExternalAuthor.pick({ id: true, handle: true, name: true }) }))
+    .max(50)
+    .optional(),
+  appMentions: z.array(z.string().min(1).max(200)).max(8).optional(),
+})
+export type MarkedMentions = z.infer<typeof MarkedMentions>
+
 /** A platform event, normalized at intake. Thread IDs are external IDs with the sync key prefix. */
 export const ExternalEvent = z.discriminatedUnion('kind', [
   z.object({
@@ -228,6 +243,7 @@ export const ExternalEvent = z.discriminatedUnion('kind', [
     files: z.array(ExternalFile).max(20).optional(),
     /** Platform messages it links to. Older events have none. */
     links: z.array(ExternalLink).max(LINKS_PER_MESSAGE_MAX).optional(),
+    ...MarkedMentions.shape,
   }),
   z.object({
     kind: z.literal('edited'),
@@ -236,6 +252,7 @@ export const ExternalEvent = z.discriminatedUnion('kind', [
     text: z.string(),
     author: ExternalAuthor,
     links: z.array(ExternalLink).max(LINKS_PER_MESSAGE_MAX).optional(),
+    ...MarkedMentions.shape,
     /** Only the links changed (the platform sent what they say), so `text` isn't news. */
     linksOnly: z.boolean().optional(),
   }),

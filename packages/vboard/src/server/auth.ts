@@ -20,6 +20,8 @@ export type Principal = {
   handle: string
   can: 'all' | ReadonlySet<Capability>
   expiresAt: Date | null
+  /** The board's own deployment, in the board's own environment: the one principal that may write as a declared agent. */
+  own?: true
 }
 
 type Claims = JWTPayload & Record<string, unknown>
@@ -117,6 +119,8 @@ async function keysFor(iss: string): Promise<JWTVerifyGetKey> {
 
 export function createVerifier(options: {
   projectId: () => Promise<string | null>
+  /** The board's own environment (`production`, `preview`), or null when it can't tell. */
+  environment?: () => string | null
   trustedSources: readonly TrustedSource[]
   auth?: AuthOptions
 }) {
@@ -190,7 +194,10 @@ export function createVerifier(options: {
           expiresAt,
         }
       }
-      return deployment(claims, project, environment, 'all', expiresAt)
+      // A preview deployment can't write as the production board's agents, and the other way around.
+      const boardEnvironment = options.environment?.() ?? null
+      const own = boardEnvironment === null || boardEnvironment === environment
+      return { ...deployment(claims, project, environment, 'all', expiresAt), ...(own ? { own: true as const } : {}) }
     }
     const can = fromSource('vercel', claims)
     if (!can) throw forbidden(`project is not a trusted source: ${project || String(claims.project_id)}`)

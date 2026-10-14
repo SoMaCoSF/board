@@ -498,8 +498,7 @@ async function run(command: string | undefined, args: string[]): Promise<number>
         printJson({ ...me, board: board.url })
         return 0
       }
-      const name = me.profile !== null ? `${me.name} via ${me.handle.split('/')[0]}` : me.name
-      out(`${name} (${me.actor})`)
+      out(`${who(me)} (${me.actor})`)
       out(`board  ${board.url}`)
       if (me.expiresAt) {
         const minutes = Math.max(0, Math.round((Date.parse(me.expiresAt) - Date.now()) / 60_000))

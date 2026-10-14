@@ -10,8 +10,9 @@ import {
   type Actor,
   type ActorsState,
   type Message,
+  type MessagesState,
 } from '../contract/reducers.ts'
-import type { Attachment, Author, Labels } from '../contract/schemas.ts'
+import { agentKeyOf, type Attachment, type Author, type Labels } from '../contract/schemas.ts'
 import type { Principal } from './auth.ts'
 import { actorSeen, resolveMentions } from './actors.ts'
 import { extractMentions, replaceMentions } from '../contract/mentions.ts'
@@ -46,7 +47,24 @@ export type WriteContext = {
   middleware?: readonly Middleware[]
   /** The in-process client middleware writes with. */
   middlewareClient?: () => BoardClient
+  /** The actors a write can mention: the board's, plus its declared agents. */
+  mentionable?: (actors: ActorsState) => ActorsState
 }
+
+/** Who wrote in a thread so far: they win a tie between same-named platform users. */
+const participantsOf = (messages: MessagesState, root: number | null): Set<string> => {
+  if (root === null || !messages.byId[root]) return new Set()
+  return new Set([root, ...(messages.replies[root] ?? [])].map((id) => messages.byId[id]!.by.actor))
+}
+
+/**
+ * Whether `identity` wrote `message`. A declared agent is one author however it
+ * writes, over HTTP or in-process, and nobody else is; everyone else is their principal.
+ */
+const isAuthor = (message: Message, identity: Identity) =>
+  agentKeyOf(message.by.actor) !== null || agentKeyOf(identity.author.actor) !== null
+    ? message.by.actor === identity.author.actor
+    : message.by.principal === identity.principal.id
 
 /** Where a write came from; `middleware` is the middleware's own client, which skips it. */
 export type Via = WriteSource | { kind: 'middleware' }
@@ -102,6 +120,10 @@ export type PostInput = WriteOrigin & {
   from?: string | null
   /** Platform text: mentions the board can't resolve are left as plain text. */
   lenientMentions?: boolean
+  /** Platform text: where a typed `@name` is a mention, or null when only marked ones count. */
+  mentionScope?: string | null
+  /** Platform text: the users it mentions, recorded so they have names. */
+  mentionActors?: Actor[]
   /** Files the board stored, as it recorded them. */
   attachments?: Attachment[]
   /** Platform messages it links to. */
@@ -132,6 +154,7 @@ export async function writePost(ctx: WriteContext, input: PostInput) {
     thread = id!
   }
 
+  const participants = participantsOf(messages, re)
   const chain = middlewareFor(ctx, input)
   if (chain && id !== undefined) {
     // A retry of a write that landed: what's on the board stands, whatever the middleware would say now.
@@ -149,18 +172,18 @@ export async function writePost(ctx: WriteContext, input: PostInput) {
         board: middlewareClient(ctx),
         ...(input.respond ? { respond: input.respond } : {}),
       },
-      (write) => commitPost(ctx, { ...input, text: write.text, labels: write.labels }, { channel: channel!, re, replyTo, thread, id }),
+      (write) => commitPost(ctx, { ...input, text: write.text, labels: write.labels }, { channel: channel!, re, replyTo, thread, id, participants }),
     )
-  return commitPost(ctx, input, { channel: channel!, re, replyTo, thread, id })
+  return commitPost(ctx, input, { channel: channel!, re, replyTo, thread, id, participants })
 }
 
 async function commitPost(
   ctx: WriteContext,
   input: PostInput,
-  placed: { channel: string; re: number | null; replyTo: number | null; thread: string; id: string | undefined },
+  placed: { channel: string; re: number | null; replyTo: number | null; thread: string; id: string | undefined; participants: Set<string> },
 ) {
   const { identity } = input
-  const { channel, re, replyTo, thread, id } = placed
+  const { channel, re, replyTo, thread, id, participants } = placed
   const { state: actors } = await ctx.session.state(actorsReducer)
   const targets: { target: string; kind: 'channel' | 'thread'; cause: 'config' | 'request' }[] = []
   if (re === null) {
@@ -175,9 +198,16 @@ async function commitPost(
   }
 
   const seen = actorSeen(identity.actor, actors)
-  const { text, found } = await withEmailMentions(ctx, input.text)
+  const emailed = await withEmailMentions(ctx, input.text)
+  const found = [...emailed.found, ...unseen(actors, input.mentionActors)]
   const named = found.map((actor) => actorSeen(actor, actors)).filter((event) => event !== null)
-  const mentions = resolveMentions(text, knownWith(actors, found), seen ? identity.actor : undefined, input.lenientMentions ?? false)
+  const { text, mentions } = resolveMentions(emailed.text, {
+    known: mentionable(ctx, knownWith(actors, found)),
+    pending: seen ? identity.actor : undefined,
+    lenient: input.lenientMentions ?? false,
+    participants,
+    ...(input.mentionScope !== undefined ? { scope: input.mentionScope } : {}),
+  })
   const synced = await Promise.all(
     targets.map(async ({ target, kind, cause }) => ({
       type: 'thread.synced' as const,
@@ -213,8 +243,13 @@ async function commitPost(
   const posted = rows.find((row) => row.type === 'message.posted') as BoardEvent
   const message = foldMessages({ byId: {}, replies: {} }, posted).byId[posted.index]!
   const known = seen ? { ...actors, byId: { ...actors.byId, [identity.actor.id]: identity.actor } } : actors
-  return view(message, known)
+  return view(message, mentionable(ctx, knownWith(known, found)))
 }
+
+/** The platform users a text mentions that the board hasn't seen: they're recorded with it. */
+const unseen = (actors: ActorsState, mentioned: Actor[] = []) => mentioned.filter((actor) => !actors.byId[actor.id])
+
+const mentionable = (ctx: WriteContext, actors: ActorsState) => ctx.mentionable?.(actors) ?? actors
 
 /** `slack:C0123ABC:1727.1` → `slack:C0123ABC`; `github:o/r:12` → `github:o/r`. */
 export const channelOf = (externalThread: string) => {
@@ -231,11 +266,19 @@ async function liveMessage(ctx: WriteContext, id: number): Promise<Message> {
   return message
 }
 
-export type EditInput = WriteOrigin & { identity: Identity; id: number; text: string; from?: string | null; asAuthor?: boolean }
+export type EditInput = WriteOrigin & {
+  identity: Identity
+  id: number
+  text: string
+  from?: string | null
+  asAuthor?: boolean
+  mentionScope?: string | null
+  mentionActors?: Actor[]
+}
 
 export async function writeEdit(ctx: WriteContext, input: EditInput) {
   const message = await liveMessage(ctx, input.id)
-  if (input.asAuthor !== false && message.by.principal !== input.identity.principal.id)
+  if (input.asAuthor !== false && !isAuthor(message, input.identity))
     throw forbidden('only the author can edit a message')
   if (message.deleted) throw badRequest('message was deleted', 'message_deleted')
   const chain = middlewareFor(ctx, input)
@@ -254,11 +297,21 @@ export async function writeEdit(ctx: WriteContext, input: EditInput) {
 }
 
 async function commitEdit(ctx: WriteContext, input: EditInput, message: Message) {
-  const { state: actors } = await ctx.session.state(actorsReducer)
+  const [{ state: actors }, { state: messages }] = await Promise.all([ctx.session.state(actorsReducer), ctx.session.state(messagesReducer)])
   const seen = actorSeen(input.identity.actor, actors)
-  const { text, found } = await withEmailMentions(ctx, input.text)
+  const emailed = await withEmailMentions(ctx, input.text)
+  const found = [...emailed.found, ...unseen(actors, input.mentionActors)]
   const named = found.map((actor) => actorSeen(actor, actors)).filter((event) => event !== null)
-  const mentions = resolveMentions(text, knownWith(actors, found), seen ? input.identity.actor : undefined, input.from != null)
+  const { text, mentions } = resolveMentions(emailed.text, {
+    known: mentionable(ctx, knownWith(actors, found)),
+    pending: seen ? input.identity.actor : undefined,
+    lenient: input.from != null,
+    participants: participantsOf(messages, message.re ?? message.id),
+    ...(input.mentionScope !== undefined ? { scope: input.mentionScope } : {}),
+  })
+  // A platform edit that only re-states what the board holds, say a mention typed back
+  // as `@login`, changes nothing.
+  if (text === message.text && mentions.join() === message.mentions.join()) return
   await ctx.session.append(...(seen ? [seen] : []), ...named, {
     type: 'message.edited',
     payload: {
@@ -287,7 +340,7 @@ export async function writeDelete(
   input: { identity: Identity; id: number; from?: string | null; asAuthor?: boolean },
 ) {
   const message = await liveMessage(ctx, input.id)
-  if (input.asAuthor !== false && message.by.principal !== input.identity.principal.id)
+  if (input.asAuthor !== false && !isAuthor(message, input.identity))
     throw forbidden('only the author can delete a message')
   if (message.deleted) return
   await ctx.session.append({

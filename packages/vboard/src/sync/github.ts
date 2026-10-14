@@ -276,13 +276,14 @@ type Detecting = {
  * the ID from the first comment it posts, per instance. GraphQL's `viewer` answers with
  * the app's bot user for the same token.
  */
-function fromConnector(connector: string, botUserId: number | undefined): Adapter {
+function fromConnector(connector: string, botUserId: number | undefined, learned: (login: string) => void): Adapter {
   const adapter = createGitHubAdapter({ ...connectGitHubAdapter(connector), ...(botUserId !== undefined ? { botUserId } : {}) })
   const detecting = adapter as unknown as Detecting
   detecting.detectBotUserId = async (octokit) => {
     if (detecting._botUserId !== null || !octokit.graphql) return
     try {
       const { viewer } = (await octokit.graphql('query { viewer { databaseId login } }')) as { viewer?: { databaseId?: number; login?: string } }
+      if (typeof viewer?.login === 'string') learned(viewer.login)
       if (typeof viewer?.databaseId !== 'number') return
       detecting._botUserId = viewer.databaseId
       detecting.logger?.info('GitHub bot user ID detected from the GraphQL viewer', { botUserId: viewer.databaseId, login: viewer.login })
@@ -298,17 +299,42 @@ export class GitHubProvider extends ChatSyncProvider<GitHubEvent> {
   private readonly body: (post: ProviderPost) => string
 
   constructor(given: GitHubOptions) {
+    // The app's own login (`vboard-factory[bot]`), for `@vboard-factory +helper`: learned once,
+    // from the connector's own lookup or GraphQL's `viewer`, and only for text that could use it.
+    let login: Promise<string | null> | null = null
     const options = {
       ...given,
       adapter: typeof given.adapter === 'string'
-        ? fromConnector(given.adapter, given.botUserId)
+        ? fromConnector(given.adapter, given.botUserId, (found) => {
+            login = Promise.resolve(found)
+          })
         : given.adapter,
     }
+    const appLogin = () =>
+      (login ??= (async () => {
+        const octokit = (options.adapter as Adapter & { octokit: { graphql(query: string): Promise<unknown> } }).octokit
+        const { viewer } = (await octokit.graphql('query { viewer { login } }')) as { viewer?: { login?: unknown } }
+        return typeof viewer?.login === 'string' ? viewer.login : null
+      })().catch(() => {
+        login = null
+        return null
+      }))
     super({
       render: options.render,
       platform: 'github',
       adapter: options.adapter,
       canStartThreads: false,
+      // A GitHub login is unique on GitHub, so `@login` in GitHub's text is that user.
+      mentionScope: 'github:user:',
+      async mentionsOf(message: ChatMessage) {
+        const raw = message.raw as { body?: unknown; comment?: { body?: unknown } } | null
+        const body = raw?.comment?.body ?? raw?.body ?? message.text
+        if (typeof body !== 'string' || !/@[\w.-]+(?:\[bot\])?[^\S\n]*\+[a-z]/i.test(body)) return {}
+        const found = await appLogin()
+        if (found === null) return {}
+        const slug = found.replace(/\[bot\]$/i, '')
+        return { appMentions: [`@${slug}[bot]`, `@${slug}`] }
+      },
       mention: (actor) => actor.id.startsWith('github:user:') ? `@${actor.handle}` : null,
       resolveChannel: (key) => Promise.resolve(key),
       // Inline review threads (`owner/repo:12:rc:345`) belong to their PR (`owner/repo:12`).
