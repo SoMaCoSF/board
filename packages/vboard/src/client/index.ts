@@ -14,6 +14,7 @@ export function createClient(options: Partial<ClientOptions> = {}): BoardClient 
 export {
   BoardError,
   duration,
+  readableText,
   type BoardClient,
   type ClientOptions,
   type Filters,

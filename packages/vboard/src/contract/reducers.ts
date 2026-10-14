@@ -249,6 +249,25 @@ export const actorsReducer = reducer({
   initialState: { byId: {}, byHandle: {}, links: {} } as ActorsState,
 }).fold(foldActors)
 
+/** Whether an actor follows a thread, and whether that was its own choice, which nothing undoes for it. */
+export type Subscription = { subscribed: boolean; chosen: boolean }
+/** Thread key → actor → its subscription. */
+export type SubscriptionsState = Record<string, Record<string, Subscription>>
+
+export function foldSubscriptions(state: SubscriptionsState, event: BoardEvent): SubscriptionsState {
+  if (event.type === 'thread.subscribed')
+    (state[event.payload.thread] ??= {})[event.payload.actor] = { subscribed: true, chosen: event.payload.cause === 'request' }
+  else if (event.type === 'thread.unsubscribed')
+    (state[event.payload.thread] ??= {})[event.payload.actor] = { subscribed: false, chosen: true }
+  return state
+}
+
+export const subscriptionsReducer = reducer({
+  contract: boardContract,
+  name: 'vboard.subscriptions.v1',
+  initialState: {} as SubscriptionsState,
+}).fold(foldSubscriptions)
+
 /** A copy of a board message on a platform. */
 /** `files`: the platform's IDs for the message's files, or null when it refused them; unset until they're sent. */
 /** `asUser`: posted with its author's own token, so editing or deleting it needs that token too. */

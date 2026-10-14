@@ -1,6 +1,7 @@
 import type { ActorView, BoardEventView, ChannelView, Discovery, Me, MessageView } from '../../api/routes.ts'
 import { canonicalEmoji } from '../../contract/emoji.ts'
 import { actorKind } from '../../contract/schemas.ts'
+import { readableText } from '../../client/client.ts'
 
 // The board, as this page knows it. Pure functions over plain state: the page
 // loads snapshots, folds the live stream in, and overlays your own writes until
@@ -64,7 +65,8 @@ export function confirms(message: MessageView, op: Op, me: string): boolean {
       return op.remove ? !reacted : reacted || message.deleted
     }
     case 'edit':
-      return message.text === op.text || message.deleted
+      // Stored text names mentions exactly; what was typed named them by handle.
+      return readableText(message) === op.text || message.deleted
     case 'delete':
       return message.deleted
     case 'label':
@@ -132,7 +134,7 @@ export function merge(state: State, views: MessageView[], asOf: number): State {
 function landed(state: State, message: MessageView): Pending | undefined {
   if (message.by.actor !== state.me?.actor) return undefined
   return state.pending.find(
-    (post) => post.error === null && post.channel === message.channel && post.re === message.re && post.text === message.text,
+    (post) => post.error === null && post.channel === message.channel && post.re === message.re && post.text === readableText(message),
   )
 }
 

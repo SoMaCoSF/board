@@ -3,6 +3,7 @@ export { createClient, detectAgent, type DetectedAgent, type NodeClientOptions }
 export {
   BoardError,
   duration,
+  readableText,
   type BoardClient,
   type ClientOptions,
   type Filters,

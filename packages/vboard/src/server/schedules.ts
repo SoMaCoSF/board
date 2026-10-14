@@ -10,7 +10,8 @@ import {
 } from '../contract/contract.ts'
 import { actorKind, type Attachment, type Author, type Labels } from '../contract/schemas.ts'
 import { actorsReducer, messagesReducer, type ActorsState } from '../contract/reducers.ts'
-import { replaceMentions } from '../contract/mentions.ts'
+import { extractMentions, replaceMentions } from '../contract/mentions.ts'
+import { mentionedIn } from './feed.ts'
 import { resolveHandle, resolveMentions } from './actors.ts'
 import { badRequest, HttpError, notFound } from './errors.ts'
 import { deploymentIdentity, writePost, type Identity, type WriteContext } from './writes.ts'
@@ -122,6 +123,7 @@ export const scheduleView = (schedule: Schedule, actors: ActorsState): ScheduleV
     channel: schedule.channel,
     re: schedule.re,
     text: schedule.text,
+    mentioned: mentionedIn({ mentions: extractMentions(schedule.text).flatMap((token) => (token.kind === 'actor' ? [token.actor] : [])) }, actors),
     labels: { ...schedule.labels },
     noSync: schedule.noSync,
     attachments: schedule.attachments,

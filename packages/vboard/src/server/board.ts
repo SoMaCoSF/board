@@ -13,6 +13,7 @@ import {
   InboxQuery,
   SourceReadQuery,
   LabelBody,
+  SubscriptionBody,
   MessagesQuery,
   PostBody,
   ReactBody,
@@ -56,6 +57,7 @@ import {
   writeLabels,
   writePost,
   writeReaction,
+  writeSubscription,
   deploymentIdentity,
   type Identity,
   type WriteContext,
@@ -123,6 +125,7 @@ const PATTERNS: { method: string; name: RouteName; pattern: RegExp }[] = [
   { method: 'POST', name: 'delete', pattern: /\/messages\/(\d+)\/delete$/ },
   { method: 'POST', name: 'react', pattern: /\/messages\/(\d+)\/reactions$/ },
   { method: 'POST', name: 'label', pattern: /\/messages\/(\d+)\/labels$/ },
+  { method: 'POST', name: 'subscription', pattern: /\/messages\/(\d+)\/subscription$/ },
   { method: 'POST', name: 'sync', pattern: /\/messages\/(\d+)\/sync$/ },
   { method: 'POST', name: 'typing', pattern: /\/messages\/(\d+)\/typing$/ },
   { method: 'GET', name: 'message', pattern: /\/messages\/(\d+)$/ },
@@ -175,7 +178,7 @@ function combineHandlers(...sets: BoardHandlers[]): BoardHandlers {
 
 const MIDDLEWARE_IDENTITY = deploymentIdentity(MIDDLEWARE_ACTOR, 'middleware')
 
-const NUMERIC = new Set<RouteName>(['edit', 'delete', 'react', 'label', 'sync', 'typing', 'message', 'cancelSchedule'])
+const NUMERIC = new Set<RouteName>(['edit', 'delete', 'react', 'label', 'subscription', 'sync', 'typing', 'message', 'cancelSchedule'])
 
 function route(method: string, pathname: string, basePath?: string): Match | null {
   const path = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname
@@ -567,6 +570,10 @@ export function board(options: BoardOptions = {}) {
           const body = LabelBody.parse(await readJson(request))
           await writeLabels(writes, { identity, id: match.id!, set: body.set, unset: body.unset })
           return json({ ok: true })
+        }
+        case 'subscription': {
+          const body = SubscriptionBody.parse(await readJson(request))
+          return json(await writeSubscription(writes, { identity, id: match.id!, on: body.on }))
         }
         case 'upload': {
           require(principal, 'post')

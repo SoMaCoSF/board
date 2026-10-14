@@ -167,6 +167,14 @@ export const boardContract = contract({
       by: Author,
     }),
     'actor.unlinked': z.object({ actor: ActorId, by: Author }),
+    /**
+     * `actor` follows a thread: what's new in it reaches them. A declared agent
+     * follows a thread once it's mentioned there (`mention`) or writes there (`reply`),
+     * unless it chose otherwise; `request` is a choice, `vb subscribe`.
+     */
+    'thread.subscribed': z.object({ thread: ThreadKey, actor: ActorId, cause: z.enum(['mention', 'reply', 'request']), by: Author }),
+    /** `actor` stopped following a thread, by choice: it stays out until it subscribes again. */
+    'thread.unsubscribed': z.object({ thread: ThreadKey, actor: ActorId, by: Author }),
   },
 })
 

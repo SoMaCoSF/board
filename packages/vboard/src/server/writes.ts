@@ -6,11 +6,13 @@ import {
   foldMessages,
   messagesReducer,
   postedReducer,
+  subscriptionsReducer,
   syncReducer,
   type Actor,
   type ActorsState,
   type Message,
   type MessagesState,
+  type Subscription,
 } from '../contract/reducers.ts'
 import { agentKeyOf, type Attachment, type Author, type Labels } from '../contract/schemas.ts'
 import type { Principal } from './auth.ts'
@@ -184,7 +186,7 @@ async function commitPost(
 ) {
   const { identity } = input
   const { channel, re, replyTo, thread, id, participants } = placed
-  const { state: actors } = await ctx.session.state(actorsReducer)
+  const [{ state: actors }, { state: subscriptions }] = await Promise.all([ctx.session.state(actorsReducer), ctx.session.state(subscriptionsReducer)])
   const targets: { target: string; kind: 'channel' | 'thread'; cause: 'config' | 'request' }[] = []
   if (re === null) {
     const originChannel = input.origin ? input.origin.channel ?? channelOf(input.origin.thread) : null
@@ -239,11 +241,47 @@ async function commitPost(
       },
     },
     ...synced,
+    ...follows(subscriptions[thread], thread, identity, mentions),
   )
   const posted = rows.find((row) => row.type === 'message.posted') as BoardEvent
   const message = foldMessages({ byId: {}, replies: {} }, posted).byId[posted.index]!
   const known = seen ? { ...actors, byId: { ...actors.byId, [identity.actor.id]: identity.actor } } : actors
   return view(message, mentionable(ctx, knownWith(known, found)))
+}
+
+/**
+ * What a write makes follow its thread: each declared agent it mentions, and its
+ * author when that's an agent. An agent with a subscription there already, or one
+ * that chose to leave, stays as it is.
+ */
+function follows(current: Record<string, Subscription> | undefined, thread: string, identity: Identity, mentions: string[]) {
+  const events: { type: 'thread.subscribed'; payload: { thread: string; actor: string; cause: 'mention' | 'reply'; by: Author } }[] = []
+  const add = (actor: string, cause: 'mention' | 'reply') => {
+    if (current?.[actor] === undefined && !events.some((event) => event.payload.actor === actor))
+      events.push({ type: 'thread.subscribed', payload: { thread, actor, cause, by: identity.author } })
+  }
+  for (const id of mentions) if (agentKeyOf(id) !== null) add(id, 'mention')
+  if (agentKeyOf(identity.author.actor) !== null) add(identity.author.actor, 'reply')
+  return events
+}
+
+/** The caller follows a message's thread (`on`), or stops: its own choice, which nothing undoes for it. */
+export async function writeSubscription(ctx: WriteContext, input: { identity: Identity; id: number; on: boolean }) {
+  const message = await liveMessage(ctx, input.id)
+  const actor = input.identity.author.actor
+  const { state: subscriptions } = await ctx.session.state(subscriptionsReducer)
+  const current = subscriptions[message.thread]?.[actor]
+  const root = message.re ?? message.id
+  if (current?.chosen && current.subscribed === input.on) return { root, subscribed: input.on }
+  const { state: actors } = await ctx.session.state(actorsReducer)
+  const seen = actorSeen(input.identity.actor, actors)
+  await ctx.session.append(
+    ...(seen ? [seen] : []),
+    input.on
+      ? { type: 'thread.subscribed', payload: { thread: message.thread, actor, cause: 'request', by: input.identity.author } }
+      : { type: 'thread.unsubscribed', payload: { thread: message.thread, actor, by: input.identity.author } },
+  )
+  return { root, subscribed: input.on }
 }
 
 /** The platform users a text mentions that the board hasn't seen: they're recorded with it. */
@@ -297,7 +335,11 @@ export async function writeEdit(ctx: WriteContext, input: EditInput) {
 }
 
 async function commitEdit(ctx: WriteContext, input: EditInput, message: Message) {
-  const [{ state: actors }, { state: messages }] = await Promise.all([ctx.session.state(actorsReducer), ctx.session.state(messagesReducer)])
+  const [{ state: actors }, { state: messages }, { state: subscriptions }] = await Promise.all([
+    ctx.session.state(actorsReducer),
+    ctx.session.state(messagesReducer),
+    ctx.session.state(subscriptionsReducer),
+  ])
   const seen = actorSeen(input.identity.actor, actors)
   const emailed = await withEmailMentions(ctx, input.text)
   const found = [...emailed.found, ...unseen(actors, input.mentionActors)]
@@ -322,7 +364,7 @@ async function commitEdit(ctx: WriteContext, input: EditInput, message: Message)
       by: input.identity.author,
       from: input.from ?? null,
     },
-  })
+  }, ...follows(subscriptions[message.thread], message.thread, input.identity, mentions))
 }
 
 /** A message's links, replaced: a platform edit or unfurl changed what it links to. */

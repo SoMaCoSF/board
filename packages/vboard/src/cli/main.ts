@@ -5,16 +5,14 @@ import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { appendFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join } from 'node:path'
-import { parseArgs } from 'node:util'
-import type { BoardEventView, MessageView } from '../api/routes.ts'
-import { FILTER_FLAGS, withMentions } from '../api/tail.ts'
-import { BoardError, type Filters, type ProfileOption } from '../client/client.ts'
+import type { MessageView } from '../api/routes.ts'
+import { BoardError, type ProfileOption } from '../client/client.ts'
 import { configDir, createClient, detectAgent, projectDir, projectUrl } from '../client/node.ts'
-import { normalizeEmoji } from '../contract/emoji.ts'
-import { ATTACHMENT_BYTES_MAX, type Attachment } from '../contract/schemas.ts'
+import type { Attachment } from '../contract/schemas.ts'
 import { startInspector } from '../inspect/server.ts'
 import { VERSION } from '../version.ts'
-import { formatEvent, formatSchedule, formatSourceRead, formatStuck, formatThreads, who } from './format.ts'
+import { attachments, HELP, parse, runCommand, text, UsageError, type CommandIO, type Flags } from './commands.ts'
+import { who } from './format.ts'
 import {
   AGENTS,
   allow,
@@ -33,192 +31,19 @@ import {
   type HookAgent,
 } from './hooks.ts'
 
-const HELP = `vboard ${VERSION}: a message board you mount in one route
-
-usage: vboard <command> [options]      (also installed as \`vb\`)
-
-  whoami                                   who am I, on which board, and when my token expires
-  link <url>                               link this project to a board (.vboard/config.json)
-  use <url>                                save the default board
-
-  channels                                 channels, grouped by path prefix
-  actors                                   actors and their handles
-  identity                                 your linked Slack and GitHub accounts
-  identity link <key> [--code] [--no-wait] link your account on sync entry <key> (e.g. slack): sign in, or post a code from it
-  identity unlink <account>                unlink one, by handle or actor ID
-
-  read <channel> [filters] [--limit N]     threads in a channel, newest last (no channel: every channel)
-  read <id>                                one thread
-
-  post <channel> ["<text>"] [--label k=v]... [--attach <file>]... [--sync <target>]... [--no-sync] [--id <key>]
-  reply <id> ["<text>"] [--attach <file>]... [--id <key>] [--no-sync]
-  schedule <channel|id> ["<text>"] (--in 1d | --at <time> | --every 30m) [--until <time> | --for 24h | --times N]
-           [--label k=v]... [--attach <file>]... [--no-sync]
-                                           post later, as you: once, or repeating until a stop or until canceled
-  schedules [id] [--by <handle>] [--channel <c>] [--all]
-                                           pending schedules (a thread's, with an id); --all adds done and canceled
-  schedule cancel <schedule>               stop one, e.g. schedule cancel s12 (anyone may)
-  edit <id> "<text>"
-  delete <id>
-  react <id> <emoji> [--remove]
-  label <id> k=v... [--unset k]...
-  typing <id> [status]                     show typing in the thread's synced platform threads (marks WhatsApp read);
-                                           Slack shows the status, if given, instead of "Typing…"
-  sync <id> <target>                       attach the thread to e.g. slack:#incidents, backfilling it
-  inbox <key> [channel] [--limit N]        raw platform events, for debugging sync
-  stuck                                    events that failed 10 times and stopped their thread (full access only)
-  stuck retry|skip <event>                 retry one with a fresh 10 tries, or skip it so its thread goes on,
-                                           e.g. stuck retry inbox:slack:C0123#55
-  sources                                  the board's sources (its sync entries: slack, github, …)
-  sources <key> read <channel|thread|link> [--limit N]
-                                           read a source's channel, thread, or message link without syncing it,
-                                           e.g. sources slack read '#general', or a Slack permalink (full access only)
-  download <attachment> [path]             save an attachment (its name, here, by default; - for stdout)
-
-  update ["<text>"] [--attach <file>]...   post a summary to this branch's work thread (channel \`work\`); --skip if there's none
-  hooks [install|uninstall|status] [claude|codex|cursor|pi]...
-                                           after a turn that didn't update the board, remind the agent to (linked projects only)
-
-  tail [channel] [filters] [--all]         live, until Ctrl-C
-  wait [channel] [filters] [--timeout 30m] block for the next match, print it, then exit (124 on timeout)
-
-  inspect [--port N] [--no-open]           the board in your browser, as you: read, post, react (local only)
-  serve [--port N] [--dir <dir>] [--no-inspect] [--no-open]
-                                           run a board on this machine (127.0.0.1:4100, no sync), link this
-                                           project to it, and open the inspector; its log lives in .vboard/,
-                                           and you're local:user:<your OS user> (or --handle)
-
-filters:  --re <id>  --by <handle>  --from <source>  --label k[=v|w]  --text <words>  --mentions [@handle]  --after <id>
-          labels match a message or its thread's root; repeated flags all must match
-global:   --url <url>  --as <profile>  --avatar <url>  --human  --handle <h>  --json
-text:     pass "-" to read it from stdin; it may be left out when you --attach
-env:      VBOARD_URL  VBOARD_TOKEN  VBOARD_AS  VBOARD_AVATAR  VBOARD_HANDLE`
-
-class UsageError extends Error {}
-
 const parsed = (() => {
   try {
-    return parseArgs({
-      args: withMentions(process.argv.slice(2)),
-      allowPositionals: true,
-      options: {
-        ...FILTER_FLAGS,
-        url: { type: 'string' },
-        as: { type: 'string' },
-        avatar: { type: 'string' },
-        human: { type: 'boolean' },
-        handle: { type: 'string' },
-        json: { type: 'boolean' },
-        help: { type: 'boolean', short: 'h' },
-        version: { type: 'boolean', short: 'v' },
-        unset: { type: 'string', multiple: true },
-        id: { type: 'string' },
-        'no-sync': { type: 'boolean' },
-        sync: { type: 'string', multiple: true },
-        attach: { type: 'string', multiple: true },
-        skip: { type: 'boolean' },
-        channel: { type: 'string' },
-        agent: { type: 'string' },
-        remove: { type: 'boolean' },
-        after: { type: 'string' },
-        limit: { type: 'string' },
-        all: { type: 'boolean' },
-        timeout: { type: 'string' },
-        port: { type: 'string' },
-        'no-open': { type: 'boolean' },
-        'no-inspect': { type: 'boolean' },
-        dir: { type: 'string' },
-        code: { type: 'boolean' },
-        'no-wait': { type: 'boolean' },
-        in: { type: 'string' },
-        at: { type: 'string' },
-        every: { type: 'string' },
-        until: { type: 'string' },
-        for: { type: 'string' },
-        times: { type: 'string' },
-      },
-    })
+    return parse(process.argv.slice(2))
   } catch (error) {
     process.stderr.write(`error: ${(error as Error).message}\n`)
     return null
   }
 })()
 // A misused flag runs nothing: the end of this file exits 2, once the error line is out.
-const { values: flags, positionals } = parsed ?? { values: {} as NonNullable<typeof parsed>['values'], positionals: [] as string[] }
+const { values: flags, positionals } = parsed ?? { values: {} as Flags, positionals: [] as string[] }
 
 const out = (text: string) => process.stdout.write(`${text}\n`)
 const printJson = (value: unknown) => out(JSON.stringify(value))
-
-function messageId(value: string | undefined, what = 'message id'): number {
-  const id = Number(value?.replace(/^#/, ''))
-  if (!value || !Number.isInteger(id) || id <= 0) throw new UsageError(`expected a ${what}, got: ${value ?? '(nothing)'}`)
-  return id
-}
-
-function labelPairs(values: string[] | undefined): Record<string, string> {
-  const pairs: Record<string, string> = {}
-  for (const value of values ?? []) {
-    const at = value.indexOf('=')
-    if (at <= 0) throw new UsageError(`labels look like key=value, got: ${value}`)
-    pairs[value.slice(0, at)] = value.slice(at + 1)
-  }
-  return pairs
-}
-
-async function text(value: string | undefined): Promise<string> {
-  if (value === undefined) throw new UsageError('missing message text')
-  if (value !== '-') return value
-  const chunks: Buffer[] = []
-  for await (const chunk of process.stdin) chunks.push(chunk as Buffer)
-  return Buffer.concat(chunks).toString('utf8').replace(/\n$/, '')
-}
-
-
-/** Uploads each `--attach` file, checking them all before sending any. */
-async function attachments(board: ReturnType<typeof client>): Promise<Attachment[]> {
-  const paths = flags.attach ?? []
-  for (const path of paths) {
-    const info = await stat(path).catch(() => null)
-    if (!info?.isFile()) throw new UsageError(`no such file: ${path}`)
-    if (info.size > ATTACHMENT_BYTES_MAX) throw new UsageError(`${path} is over ${ATTACHMENT_BYTES_MAX / 1024 / 1024} MB, the most an attachment can be`)
-  }
-  const uploaded: Attachment[] = []
-  for (const path of paths)
-    uploaded.push(
-      await board.upload({
-        data: new Uint8Array(await readFile(path)),
-        name: basename(path),
-      }),
-    )
-  return uploaded
-}
-
-/** `s12` or `12`. */
-function scheduleId(value: string | undefined): number {
-  const id = Number(value?.replace(/^s/i, ''))
-  if (!value || !Number.isInteger(id) || id <= 0) throw new UsageError(`expected a schedule id like s12, got: ${value ?? '(nothing)'}`)
-  return id
-}
-
-/** A time flag: anything `Date` reads, as ISO. */
-function instant(flag: string, value: string): string {
-  const time = new Date(value)
-  if (Number.isNaN(time.getTime())) throw new UsageError(`--${flag} takes a time like 2026-10-08T09:00:00Z, got: ${value}`)
-  return time.toISOString()
-}
-
-function filters(channel?: string): Filters & { after?: number } {
-  return {
-    ...(channel ? { channel } : {}),
-    ...(flags.re ? { re: messageId(flags.re) } : {}),
-    ...(flags.by ? { by: flags.by.replace(/^@/, '') } : {}),
-    ...(flags.mentions ? { mentions: flags.mentions.replace(/^@/, '') } : {}),
-    ...(flags.label?.length ? { label: flags.label } : {}),
-    ...(flags.from ? { from: flags.from } : {}),
-    ...(flags.text ? { text: flags.text } : {}),
-    ...(flags.after !== undefined ? { after: Number(flags.after) } : {}),
-  }
-}
 
 function client() {
   const profile: ProfileOption | undefined = flags.human
@@ -364,10 +189,6 @@ function printMessage(message: MessageView) {
   else out(String(message.id))
 }
 
-function printEvent(event: BoardEventView) {
-  if (flags.json) printJson(event)
-  else out(formatEvent(event))
-}
 
 /** Best-effort: the URL is printed either way. */
 function openBrowser(url: string) {
@@ -472,6 +293,26 @@ async function identity(args: string[]): Promise<number> {
   return 124
 }
 
+/** The terminal and your files, for the board's commands. */
+const io = (signal?: AbortSignal): CommandIO => ({
+  client,
+  out,
+  err: (text) => process.stderr.write(`${text}\n`),
+  write: (data) => process.stdout.write(data),
+  stdin: readStdin,
+  files: {
+    stat: async (path) => {
+      const info = await stat(path).catch(() => null)
+      return info?.isFile() ? { size: info.size } : null
+    },
+    read: async (path) => new Uint8Array(await readFile(path)),
+    write: (path, data) => writeFile(path, data),
+    basename,
+  },
+  ...(signal ? { signal } : {}),
+  wrote,
+})
+
 async function run(command: string | undefined, args: string[]): Promise<number> {
   switch (command) {
     case undefined:
@@ -491,154 +332,8 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       return 0
     }
 
-    case 'whoami': {
-      const board = client()
-      const me = await board.me()
-      if (flags.json) {
-        printJson({ ...me, board: board.url })
-        return 0
-      }
-      out(`${who(me)} (${me.actor})`)
-      out(`board  ${board.url}`)
-      if (me.expiresAt) {
-        const minutes = Math.max(0, Math.round((Date.parse(me.expiresAt) - Date.now()) / 60_000))
-        out(`token  expires in ${Math.floor(minutes / 60)}h ${minutes % 60}m`)
-      }
-      if (me.session) out(`session  ${me.session}`)
-      return 0
-    }
-
-    case 'channels': {
-      const channels = await client().channels()
-      if (flags.json) return channels.forEach(printJson), 0
-      if (channels.length === 0) return out('no channels yet'), 0
-      let group = ''
-      for (const channel of channels) {
-        const prefix = channel.path.includes('/') ? channel.path.slice(0, channel.path.lastIndexOf('/') + 1) : ''
-        if (prefix !== group) {
-          if (prefix) out(prefix)
-          group = prefix
-        }
-        out(`${prefix ? '  ' : ''}${channel.path}  ${channel.threads} threads · ${channel.messages} messages · last #${channel.lastIndex}`)
-      }
-      return 0
-    }
-
-    case 'actors': {
-      const actors = await client().actors()
-      if (flags.json) return actors.forEach(printJson), 0
-      for (const actor of actors) out(`@${actor.handle}  ${actor.name}  ${actor.id}${actor.person ? `  → @${actor.person.handle}` : ''}`)
-      return 0
-    }
-
     case 'identity':
       return identity(args)
-
-    case 'read': {
-      const target = args[0]
-      const filtering = !!(flags.re || flags.by || flags.from || flags.text || flags.mentions || flags.label?.length)
-      if (!target && !filtering) throw new UsageError('usage: vboard read <channel|id> [filters], or read [filters] across channels')
-      const board = client()
-      if (target && /^#?\d+$/.test(target)) {
-        const thread = await board.thread(messageId(target))
-        if (flags.json) return [thread.message, ...thread.replies].forEach(printJson), 0
-        out(formatThreads([thread.message, ...thread.replies]))
-        for (const schedule of thread.schedules ?? []) out(formatSchedule(schedule, { pad: '  ' }))
-        return 0
-      }
-      const page = await board.messages({
-        ...filters(target),
-        ...(flags.limit ? { limit: Number(flags.limit) } : {}),
-      })
-      if (flags.json) return page.messages.forEach(printJson), 0
-      out(`${target ?? 'all channels'} · cursor ${page.cursor}\n`)
-      out(page.messages.length ? formatThreads(page.messages) : 'no messages')
-      return 0
-    }
-
-    case 'post': {
-      const [channel, body] = args
-      if (!channel) throw new UsageError('usage: vboard post <channel> "<text>"')
-      if (flags.sync?.length && flags['no-sync']) throw new UsageError('--sync and --no-sync contradict each other')
-      const board = client()
-      const content = body === undefined && flags.attach?.length ? '' : await text(body)
-      const files = await attachments(board)
-      const message = await board.post(channel, {
-        text: content,
-        ...(files.length ? { attachments: files } : {}),
-        ...(flags.label?.length ? { labels: labelPairs(flags.label) } : {}),
-        ...(flags.id ? { id: flags.id } : {}),
-        ...(flags['no-sync'] ? { noSync: true } : {}),
-        ...(flags.sync?.length ? { sync: flags.sync } : {}),
-      })
-      wrote()
-      printMessage(message)
-      return 0
-    }
-
-    case 'reply': {
-      const id = messageId(args[0])
-      const board = client()
-      const content = args[1] === undefined && flags.attach?.length ? '' : await text(args[1])
-      const files = await attachments(board)
-      const message = await board.reply(id, {
-        text: content,
-        ...(files.length ? { attachments: files } : {}),
-        ...(flags.id ? { id: flags.id } : {}),
-        ...(flags['no-sync'] ? { noSync: true } : {}),
-      })
-      wrote()
-      printMessage(message)
-      return 0
-    }
-
-    case 'schedule': {
-      if (args[0] === 'cancel' && args.length === 2) {
-        const { schedule, canceled } = await client().cancelSchedule(scheduleId(args[1]))
-        if (flags.json) printJson(schedule)
-        else out(canceled ? `canceled s${schedule.id}` : `s${schedule.id} is already ${schedule.state}`)
-        return 0
-      }
-      const [target, body] = args
-      if (!target) throw new UsageError('usage: vboard schedule <channel|id> "<text>" (--in 1d | --at <time> | --every 30m)')
-      if (!flags.in && !flags.at && !flags.every) throw new UsageError('say when: --in 1d, --at <time>, or --every 30m')
-      if (flags.sync?.length) throw new UsageError('a schedule posts where you point it: --sync is for post')
-      const times = flags.times === undefined ? undefined : Number(flags.times)
-      if (times !== undefined && !(Number.isInteger(times) && times > 0)) throw new UsageError(`--times takes a count, got: ${flags.times}`)
-      const board = client()
-      const content = body === undefined && flags.attach?.length ? '' : await text(body)
-      const files = await attachments(board)
-      const where = /^#?\d+$/.test(target) ? messageId(target) : target
-      const schedule = await board.schedule(where, {
-        text: content,
-        ...(files.length ? { attachments: files } : {}),
-        ...(flags.label?.length ? { labels: labelPairs(flags.label) } : {}),
-        ...(flags['no-sync'] ? { noSync: true } : {}),
-        ...(flags.in ? { in: flags.in } : {}),
-        ...(flags.at ? { at: instant('at', flags.at) } : {}),
-        ...(flags.every ? { every: flags.every } : {}),
-        ...(flags.until ? { until: instant('until', flags.until) } : {}),
-        ...(flags.for ? { for: flags.for } : {}),
-        ...(times !== undefined ? { times } : {}),
-      })
-      wrote()
-      if (flags.json) printJson(schedule)
-      else out(formatSchedule(schedule))
-      return 0
-    }
-
-    case 'schedules': {
-      const list = await client().schedules({
-        ...(args[0] ? { re: messageId(args[0]) } : {}),
-        ...(flags.by ? { by: flags.by.replace(/^@/, '') } : {}),
-        ...(flags.channel ? { channel: flags.channel } : {}),
-        ...(flags.all ? { all: true } : {}),
-      })
-      if (flags.json) return list.forEach(printJson), 0
-      if (list.length === 0) return out(flags.all ? 'no schedules' : 'no pending schedules'), 0
-      out(list.map((schedule) => formatSchedule(schedule)).join('\n'))
-      return 0
-    }
 
     case 'update': {
       if (flags.skip) {
@@ -647,8 +342,8 @@ async function run(command: string | undefined, args: string[]): Promise<number>
         return 0
       }
       const board = client()
-      const content = args[0] === undefined && flags.attach?.length ? '' : await text(args[0])
-      const message = await postUpdate(board, content, await attachments(board))
+      const content = args[0] === undefined && flags.attach?.length ? '' : await text(io(), args[0])
+      const message = await postUpdate(board, content, await attachments(io(), flags, board))
       wrote()
       printMessage(message)
       return 0
@@ -738,150 +433,6 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       return 0
     }
 
-    case 'edit': {
-      await client().edit(messageId(args[0]), await text(args[1]))
-      return 0
-    }
-
-    case 'delete': {
-      await client().delete(messageId(args[0]))
-      return 0
-    }
-
-    case 'react': {
-      const id = messageId(args[0])
-      if (!args[1]) throw new UsageError('usage: vboard react <id> <emoji> [--remove]')
-      let emoji: string
-      try {
-        emoji = normalizeEmoji(args[1])
-      } catch (error) {
-        throw new UsageError((error as Error).message)
-      }
-      await client().react(id, emoji, flags.remove ? { remove: true } : {})
-      return 0
-    }
-
-    case 'label': {
-      const id = messageId(args[0])
-      const set = labelPairs(args.slice(1))
-      const unset = flags.unset ?? []
-      if (Object.keys(set).length === 0 && unset.length === 0)
-        throw new UsageError('usage: vboard label <id> k=v... [--unset k]...')
-      await client().label(id, { set, unset })
-      return 0
-    }
-
-    case 'typing': {
-      const id = messageId(args[0])
-      const status = args.slice(1).join(' ').trim()
-      const targets = await client().typing(id, status || undefined)
-      if (flags.json) printJson({ targets })
-      return 0
-    }
-
-    case 'sync': {
-      const id = messageId(args[0])
-      if (!args[1]) throw new UsageError('usage: vboard sync <id> <target>   (e.g. slack:#incidents)')
-      const result = await client().sync(id, args[1])
-      if (flags.json) printJson(result)
-      else out(result.attached ? `synced with ${result.target}` : `already synced with ${result.target}`)
-      return 0
-    }
-
-    case 'download': {
-      const id = args[0]
-      if (!id) throw new UsageError('usage: vboard download <attachment> [path]   (the id `vb read` shows on a file line)')
-      const response = await client().download(id)
-      const data = new Uint8Array(await response.arrayBuffer())
-      if (args[1] === '-') return process.stdout.write(data), 0
-      const disposition = response.headers.get('content-disposition') ?? ''
-      const named = /filename\*=UTF-8''([^;]+)/.exec(disposition)?.[1]
-      const path = args[1] ?? basename(named ? decodeURIComponent(named) : id)
-      await writeFile(path, data)
-      out(path)
-      return 0
-    }
-
-    case 'inbox': {
-      const key = args[0]
-      if (!key) throw new UsageError('usage: vboard inbox <key> [channel] [--limit N]')
-      const events = await client().inbox(key, {
-        ...(args[1] ? { channel: args[1] } : {}),
-        ...(flags.limit ? { limit: Number(flags.limit) } : {}),
-      })
-      if (flags.json) return events.forEach(printJson), 0
-      if (events.length === 0) return out('no events'), 0
-      for (const entry of events) {
-        const event = entry.event as { kind: string; thread: string; text?: string; type?: string; emoji?: string; author?: { handle: string } }
-        const detail = event.text ?? event.type ?? event.emoji ?? ''
-        out(`${entry.createdAt}  ${entry.channel}  ${event.kind}  ${event.author?.handle ?? ''}  ${detail.split('\n')[0]}`)
-      }
-      return 0
-    }
-
-    case 'stuck': {
-      const [action, ref] = args
-      if (action === undefined) {
-        const list = await client().stuck()
-        if (flags.json) return list.forEach(printJson), 0
-        if (list.length === 0) return out('nothing is stuck'), 0
-        out(list.map((event) => formatStuck(event)).join('\n'))
-        return 0
-      }
-      const at = ref?.lastIndexOf('#') ?? -1
-      const index = ref === undefined ? NaN : Number(ref.slice(at + 1))
-      if ((action !== 'retry' && action !== 'skip') || at <= 0 || !Number.isInteger(index) || index < 1 || args.length > 2)
-        throw new UsageError('usage: vboard stuck [retry|skip <session>#<index>], e.g. stuck retry board#812')
-      const { redriven } = await client().redrive(ref!.slice(0, at), index, action)
-      if (flags.json) printJson({ redriven })
-      else out(redriven ? `${action === 'retry' ? 'retrying' : 'skipped'} ${ref}` : `${ref} isn't stuck`)
-      return 0
-    }
-
-    case 'sources': {
-      const [key, sub, target] = args
-      if (!key) {
-        const { sync } = await client().discovery()
-        if (flags.json) return sync.forEach(printJson), 0
-        if (sync.length === 0) return out('no sources: this board has no sync configured'), 0
-        for (const entry of sync) out(`${entry.key}  ${entry.platform}`)
-        return 0
-      }
-      if (sub !== 'read' || !target) throw new UsageError('usage: vboard sources <key> read <channel|thread|link> [--limit N]')
-      const read = await client().readSource(key, target, flags.limit ? { limit: Number(flags.limit) } : {})
-      // A board older than this CLI answers an unknown path with its discovery document.
-      if (!Array.isArray((read as { messages?: unknown }).messages))
-        throw new Error("this board can't read sources yet: update vboard where the board is deployed")
-      if (flags.json) return printJson(read), 0
-      return out(formatSourceRead(key, read)), 0
-    }
-
-    case 'tail': {
-      const controller = new AbortController()
-      process.once('SIGINT', () => controller.abort())
-      for await (const event of client().events(
-        { ...filters(args[0]), ...(flags.all ? { all: true } : {}) },
-        { signal: controller.signal },
-      ))
-        printEvent(event)
-      return 0
-    }
-
-    case 'wait': {
-      const controller = new AbortController()
-      process.once('SIGINT', () => controller.abort())
-      const event = await client().wait(filters(args[0]), {
-        timeout: flags.timeout ?? '30m',
-        signal: controller.signal,
-      })
-      if (!event) {
-        if (!controller.signal.aborted) process.stderr.write('timed out\n')
-        return 124
-      }
-      printEvent(event)
-      return 0
-    }
-
     case 'serve': {
       if (args.length > 0) throw new UsageError('usage: vboard serve [--port N] [--dir <dir>] [--no-inspect] [--no-open]')
       const port = portFlag()
@@ -933,10 +484,17 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       await inspector.close()
       return 0
     }
-
-    default:
-      throw new UsageError(`unknown command: ${command} (run \`vboard help\`)`)
   }
+  // The board's own commands, with this terminal and your files.
+  let signal: AbortSignal | undefined
+  if (command === 'tail' || command === 'wait') {
+    const controller = new AbortController()
+    process.once('SIGINT', () => controller.abort())
+    signal = controller.signal
+  }
+  const code = await runCommand(command, args, flags, io(signal))
+  if (code === null) throw new UsageError(`unknown command: ${command} (run \`vboard help\`)`)
+  return code
 }
 
 if (parsed === null) {

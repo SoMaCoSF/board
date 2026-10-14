@@ -2,6 +2,7 @@ import type { BoardEventView, MessageView, ScheduleView, SourceRead, StuckEvent 
 import { displayEmoji } from '../contract/emoji.ts'
 import { fileSize } from '../contract/files.ts'
 import { displayText } from '../contract/bots.ts'
+import { readableText } from '../client/client.ts'
 
 /** "claude via julian" for a profile, the name otherwise. */
 export const who = (me: { name: string; handle: string; profile: string | null }): string =>
@@ -67,7 +68,7 @@ export function formatMessage(message: MessageView, options: { reply?: boolean; 
   const head = `${options.reply ? '  ↳ ' : ''}#${message.id}  ${authorName(message)} · ${ago(message.createdAt)}${
     message.editedAt ? ' (edited)' : ''
   }${message.schedule ? ` · scheduled s${message.schedule.id}` : ''}${labels(message)}`
-  const body = message.deleted ? `${pad}(message removed)` : indent(displayText(message.text, message.by.actor), pad)
+  const body = message.deleted ? `${pad}(message removed)` : indent(displayText(readableText(message), message.by.actor), pad)
   const files = (message.attachments ?? []).map((a) => `${pad}file ${a.name} · ${a.type} · ${fileSize(a.size)} · ${a.id}`)
   const links = message.deleted ? [] : (message.links ?? []).flatMap((link) => embed(link, pad))
   const reacted = reactions(message, options.names ?? new Map())
@@ -146,7 +147,7 @@ export function formatSchedule(schedule: ScheduleView, options: { pad?: string; 
         : 'done'
   const sent = schedule.sent > 0 ? ` · ${schedule.sent} sent` : ''
   const files = schedule.attachments.length ? ` · ${schedule.attachments.length} ${schedule.attachments.length === 1 ? 'file' : 'files'}` : ''
-  const text = displayText(schedule.text, schedule.by.actor)
+  const text = displayText(readableText(schedule), schedule.by.actor)
   return [
     `${pad}s${schedule.id}  ${where} · ${repeat}${stop} · ${when}${sent}${files} · by ${authorName(schedule)}`,
     indent(text || '(no text)', `${pad}    `),
@@ -162,10 +163,10 @@ export function formatEvent(event: BoardEventView): string {
   switch (event.type) {
     case 'message.posted': {
       const files = (message.attachments ?? []).map((a) => ` · file ${a.name}`).join('')
-      return `#${message.id}  ${where}  ${who}: ${displayText(message.text, message.by.actor)}${files}`
+      return `#${message.id}  ${where}  ${who}: ${displayText(readableText(message), message.by.actor)}${files}`
     }
     case 'message.edited':
-      return `#${message.id}  ${where}  ${who} (edited): ${displayText(message.text, message.by.actor)}`
+      return `#${message.id}  ${where}  ${who} (edited): ${displayText(readableText(message), message.by.actor)}`
     case 'message.deleted':
       return `#${message.id}  ${where}  (message removed)`
     case 'message.linked':

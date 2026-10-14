@@ -168,6 +168,8 @@ export const DeleteBody = z.object({}).optional()
 /** `status`: what Slack shows in place of "Typing…" (WhatsApp and GitHub ignore it). */
 export const TypingBody = z.object({ status: z.string().trim().min(1).max(100).optional() }).optional()
 export const ReactBody = z.object({ emoji: Emoji, remove: z.boolean().optional() })
+/** `on`: follow the message's thread, or stop. */
+export const SubscriptionBody = z.object({ on: z.boolean() })
 export const LabelBody = z
   .object({ set: Labels.optional(), unset: z.array(LabelKey).optional() })
   .refine((body) => body.set !== undefined || body.unset !== undefined, {
@@ -190,6 +192,8 @@ export type ScheduleView = {
   /** The thread it replies in, or null when each send starts a new thread in `channel`. */
   re: number | null
   text: string
+  /** Who `text` mentions, by actor ID, as on a message: `readableText()` shows it with this. */
+  mentioned?: Record<string, { handle: string; name: string }>
   labels: Record<string, string>
   noSync: boolean
   attachments: { id: string; name: string; type: string; size: number }[]
@@ -365,6 +369,8 @@ export const routes = {
   delete: { method: 'POST', path: '/messages/:id/delete', body: DeleteBody },
   react: { method: 'POST', path: '/messages/:id/reactions', body: ReactBody },
   label: { method: 'POST', path: '/messages/:id/labels', body: LabelBody },
+  /** The caller follows the message's thread, or stops: `{ root, subscribed }`. */
+  subscription: { method: 'POST', path: '/messages/:id/subscription', body: SubscriptionBody },
   sync: { method: 'POST', path: '/messages/:id/sync', body: SyncBody },
   /** Ephemeral: shows typing in the thread's synced platform threads, and writes nothing to the log. */
   typing: { method: 'POST', path: '/messages/:id/typing', body: TypingBody },
