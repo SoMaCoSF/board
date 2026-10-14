@@ -21,6 +21,10 @@
       "types": "./dist/index.d.mts",
       "default": "./dist/index.mjs"
     },
+    "./agents": {
+      "types": "./dist/agents.d.mts",
+      "default": "./dist/agents.mjs"
+    },
     "./client": {
       "node": {
         "types": "./dist/client.node.d.mts",
@@ -79,6 +83,7 @@
   },
   "peerDependencies": {
     "@vercel/blob": "^2.8.0",
+    "ai": "^7.0.130",
     "experimental-a2": "^0.18.0"
   },
   "devDependencies": {
@@ -103,6 +108,9 @@
   },
   "peerDependenciesMeta": {
     "@vercel/blob": {
+      "optional": true
+    },
+    "ai": {
       "optional": true
     }
   }

@@ -341,6 +341,30 @@ export type WatchEvents = typeof watchContract.events
 /** `watch:triage`: the session for one watcher. */
 export const watchSession = (id: string) => `watch:${id}`
 
+/** What reaches a declared agent the board runs: a board event, before `notify` decides. */
+export const agentsContract = contract({
+  name: 'vboard-agents',
+  events: {
+    'agent.notified': z.object({
+      thread: ThreadKey,
+      /** `mention`: the message mentions the agent. `reply`: it's new in a thread the agent follows. */
+      reason: z.enum(['mention', 'reply']),
+      root: z.object({ id: MessageId, labels: Labels }),
+      /** The board event, as `vb tail --json` prints it. */
+      event: z.unknown(),
+      /** Whether the agent followed the thread before this message. */
+      subscribed: z.boolean(),
+    }),
+    /** The board gave up waking the agent for one notification, so the thread's next one goes on. */
+    'agent.failed': z.object({ notified: z.string().min(1).max(200), thread: ThreadKey, error: z.string().min(1).max(500) }),
+  },
+})
+
+export type AgentEvents = typeof agentsContract.events
+
+/** `agent:helper`: the session where one declared agent's notifications land. */
+export const agentSession = (key: string) => `agent:${key}`
+
 /** Epoch milliseconds. */
 const Millis = z.number().int().nonnegative()
 

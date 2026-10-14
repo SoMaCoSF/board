@@ -91,6 +91,52 @@ describe('sync', () => {
     expect((await julian('GET', '/actors')).body.actors).toContainEqual(expect.objectContaining({ id: 'slack:user:U_JB', handle: 'jb' }))
   })
 
+  it('addresses a declared agent as `@<app> +name` in Slack, and leaves anything else as text', async () => {
+    const { board, webhook } = setup({ agents: { helper: { name: 'Helper' } }, slackNames: { U_BOT: 'vboard-factory' }, slackBot: 'U_BOT' })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    const say = (id: string, raw: string, text: string) => webhook('slack', { type: 'message', threadId: `slack:C1:${id}`, id, text, raw: { text: raw }, user: 'U_ADA' })
+
+    await say('600', '<@U_BOT> +helper can you look?', '@vboard-factory +helper can you look?')
+    await say('601', '<@U_BOT> +nobody hello', '@vboard-factory +nobody hello')
+    await say('602', 'ask +helper later', 'ask +helper later')
+    await vi.waitFor(async () => expect(await read(julian, 'firehose')).toHaveLength(3))
+    const messages = (await julian('GET', '/messages?channel=firehose&from=slack')).body.messages as { text: string; mentions: string[] }[]
+    expect(messages.map(({ text, mentions }) => ({ text, mentions }))).toEqual([
+      { text: '@[vboard:agent:helper] can you look?', mentions: ['vboard:agent:helper'] },
+      { text: '@vboard-factory +nobody hello', mentions: [] },
+      { text: 'ask +helper later', mentions: [] },
+    ])
+  })
+
+  it('addresses a declared agent as `@<app> +name` on GitHub, asking for the app’s login once', async () => {
+    const graphql = vi.fn(async () => ({ viewer: { login: 'vboard-factory[bot]' } }))
+    const { board, webhook } = setup({ agents: { helper: {} }, githubClient: { graphql, rest: { pulls: { get: vi.fn() } } } })
+    const julian = caller(board.fetch, await personToken())
+    await webhook(
+      'github',
+      {
+        action: 'opened',
+        repository: { full_name: 'basehub-ai/vboard' },
+        sender: { login: 'julianbenegas', id: 42 },
+        pull_request: { number: 9, title: 'Agents', html_url: 'https://github.com/basehub-ai/vboard/pull/9', draft: false, merged: false },
+      },
+      { 'x-github-event': 'pull_request', 'x-github-delivery': 'agents-opened' },
+    )
+    await vi.waitFor(async () => expect(await read(julian, 'prs')).toHaveLength(1))
+    const comment = (id: string, text: string) => webhook('github', { type: 'message', threadId: 'github:basehub-ai/vboard:9', id, text, raw: { body: text }, user: '42', name: 'julianbenegas' })
+    await comment('c1', '@vboard-factory[bot] +helper review this?')
+    await comment('c2', '@vboard-factory +helper and this')
+    await comment('c3', 'no agent here')
+    await vi.waitFor(async () => expect(await read(julian, 'prs')).toHaveLength(4))
+
+    expect((await read(julian, 'prs')).slice(1).map((m) => m.text)).toEqual([
+      '@[vboard:agent:helper] review this?',
+      '@[vboard:agent:helper] and this',
+      'no agent here',
+    ])
+    expect(graphql).toHaveBeenCalledTimes(1)
+  })
+
   it("runs watchers on Slack's messages, and syncs their replies back to Slack", async () => {
     const seen: string[] = []
     const { board, s, webhook } = setup({

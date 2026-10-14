@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { idempotentId } from 'experimental-a2'
 import { createServer, type A2Store, type A2Scheduler, type ServerOptions } from 'experimental-a2/server'
-import { boardContract, BOARD_SESSION, inboxSession, SCHEDULES_SESSION, watchSession, type BoardEvents } from '../contract/contract.ts'
+import { agentSession, boardContract, BOARD_SESSION, inboxSession, SCHEDULES_SESSION, watchSession, type BoardEvents } from '../contract/contract.ts'
 import { actorsReducer, channelsReducer, linkedTo, messagesReducer, syncReducer, type ActorsState } from '../contract/reducers.ts'
 import { ATTACHMENT_BYTES_MAX } from '../contract/schemas.ts'
 import {
@@ -42,7 +42,8 @@ import {
   type Principal,
   type TrustedSource,
 } from './auth.ts'
-import { agentActor, declareAgents, KNOWN_AGENTS, resolveActor, withAgents, type AgentIdentity } from './actors.ts'
+import { agentActor, declareAgents, KNOWN_AGENTS, resolveActor, withAgents, type DeclaredAgent } from './actors.ts'
+import { createAgents, type AgentConfig, type AgentHost } from './agents.ts'
 import { avatarSvg } from './avatars.ts'
 import { attachmentResponse, defaultBlob, readAttachment, writeUpload, type BlobStore } from './blob.ts'
 import { badRequest, forbidden, HttpError, json, notFound, toErrorResponse, unauthorized } from './errors.ts'
@@ -84,9 +85,10 @@ export type BoardOptions = {
   /**
    * Agents with a name of their own on the board, keyed by their handle:
    * `{ helper: { name: 'Helper' } }`. Each is the actor `vboard:agent:<key>`, which only
-   * the board's own deployment can write as.
+   * the board's own deployment can write as. With `agent()` from `vboard/agents`, the
+   * board also runs it: mentions and the threads it follows wake it.
    */
-  agents?: Record<string, AgentIdentity>
+  agents?: Record<string, AgentConfig>
   /** The board's Vercel project. Defaults to `VERCEL_PROJECT_ID` or `.vercel/project.json`. */
   project?: { id: string; teamId?: string }
   /** The board's public URL, which every token's audience must equal. Inferred from requests otherwise. */
@@ -177,6 +179,8 @@ function combineHandlers(...sets: BoardHandlers[]): BoardHandlers {
 }
 
 const MIDDLEWARE_IDENTITY = deploymentIdentity(MIDDLEWARE_ACTOR, 'middleware')
+/** The board's own notices about its agents (`helper couldn't finish: …`), which never wake one. */
+const NOTICE_IDENTITY = deploymentIdentity('vboard:agents', 'agents')
 
 const NUMERIC = new Set<RouteName>(['edit', 'delete', 'react', 'label', 'subscription', 'sync', 'typing', 'message', 'cancelSchedule'])
 
@@ -257,7 +261,14 @@ export function board(options: BoardOptions = {}) {
       ? createWatchers({ watch: options.watch, store: options.store, scheduler: options.scheduler, mentionable: (actors) => withAgents(actors, agents, options.url ?? null) })
       : null
   const schedules = createSchedules({ store: options.store, scheduler: options.scheduler })
-  const handlers = [watchers?.boardHandlers, engine?.outboundHandlers].filter((set) => set !== undefined)
+  const runner = createAgents({
+    config: options.agents ?? {},
+    declared: agents,
+    store: options.store,
+    scheduler: options.scheduler,
+    mentionable: (actors) => withAgents(actors, agents, options.url ?? null),
+  })
+  const handlers = [watchers?.boardHandlers, runner.boardHandlers, engine?.outboundHandlers].filter((set) => set !== undefined)
   const server = createServer({
     contract: boardContract,
     ...(options.store ? { store: options.store } : {}),
@@ -301,6 +312,7 @@ export function board(options: BoardOptions = {}) {
       [BOARD_SESSION, server],
       [SCHEDULES_SESSION, schedules.server],
       ...(watchers ? watchers.ids.map((id): [string, typeof watchers.server] => [watchSession(id), watchers.server]) : []),
+      ...runner.keys.map((key): [string, typeof runner.server] => [agentSession(key), runner.server]),
       ...(engine ? (await engine.inboxChannels()).map((channel): [string, typeof engine.inboxServer] => [inboxSession(channel), engine.inboxServer]) : []),
     ]
     return ids.map(([id, owner]) => ({ id, session: owner.session(id) }))
@@ -370,6 +382,34 @@ export function board(options: BoardOptions = {}) {
   engine?.bind({ session, writes, clientAs })
   schedules.bind({ writes })
   watchers?.bind({ clientAs })
+
+  /** An in-process client writing as declared agent `key`. */
+  function agentClient(key: string, agentOptions: { key?: string; session?: string } = {}): BoardClient {
+    const agent = agents.get(key)
+    if (!agent) throw new Error(`agent: no agent named ${key}: declare it in board({ agents })`)
+    const trigger = agentOptions.key === undefined ? null : `agent:${key}:${agentOptions.key}`
+    return clientAs(
+      {
+        principal: { id: agent.id, kind: 'deployment', handle: key, can: 'all', expiresAt: null, own: true },
+        author: { actor: agent.id, principal: agent.id, profile: key, session: agentOptions.session ?? null },
+        actor: agentActor(agent, options.url ?? null),
+      },
+      trigger,
+      { via: { kind: 'agent', key } },
+    )
+  }
+  runner.bind({
+    host: (agent: DeclaredAgent): AgentHost => ({
+      key: agent.key,
+      name: agent.name,
+      store: options.store,
+      scheduler: options.scheduler,
+      client: (clientOptions) => agentClient(agent.key, clientOptions),
+      notice: async (thread, text, key) => {
+        await clientAs(NOTICE_IDENTITY, `agents:${agent.key}:${key}`, { via: { kind: 'client', name: 'agents' } }).reply(thread, { text })
+      },
+    }),
+  })
 
   async function dispatch(request: Request, injected: Identity | null, origin: WriteOrigin = { via: { kind: 'api' } }): Promise<Response> {
     try {
@@ -654,6 +694,7 @@ export function board(options: BoardOptions = {}) {
     ...(engine ? [engine.inboxServer] : []),
     schedules.server,
     ...(watchers ? [watchers.server] : []),
+    ...(runner.keys.length > 0 ? [runner.server, ...runner.servers()] : []),
   ]
   return {
     GET: handle,
@@ -680,20 +721,7 @@ export function board(options: BoardOptions = {}) {
      * a `key` of its own, its posts are idempotent, as with `client()`. `session` is
      * recorded on what it writes.
      */
-    agent(key: string, agentOptions: { key?: string; session?: string } = {}): BoardClient {
-      const agent = agents.get(key)
-      if (!agent) throw new Error(`agent: no agent named ${key}: declare it in board({ agents })`)
-      const trigger = agentOptions.key === undefined ? null : `agent:${key}:${agentOptions.key}`
-      return clientAs(
-        {
-          principal: { id: agent.id, kind: 'deployment', handle: key, can: 'all', expiresAt: null, own: true },
-          author: { actor: agent.id, principal: agent.id, profile: key, session: agentOptions.session ?? null },
-          actor: agentActor(agent, options.url ?? null),
-        },
-        trigger,
-        { via: { kind: 'agent', key } },
-      )
-    },
+    agent: agentClient,
     /** For tests and tools. */
     engine,
     session,

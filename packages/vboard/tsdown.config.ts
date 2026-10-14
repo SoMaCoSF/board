@@ -4,6 +4,7 @@ export default defineConfig([
   {
     entry: {
       index: 'src/server/index.ts',
+      agents: 'src/agents/index.ts',
       client: 'src/client/index.ts',
       'client.node': 'src/client/index.node.ts',
       'adapter-slack': 'src/sync/slack.ts',

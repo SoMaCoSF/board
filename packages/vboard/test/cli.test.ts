@@ -222,6 +222,8 @@ describe('cli', () => {
     expect(await vb(['typing', id])).toMatchObject({ code: 0, stdout: '', stderr: '' })
     expect(await vb(['typing', id, 'running', 'tests…'])).toMatchObject({ code: 0, stdout: '', stderr: '' })
     expect((await vb(['label', id, 'status=investigating'])).code).toBe(0)
+    expect(await vb(['subscribe', id])).toMatchObject({ code: 0, stdout: `subscribed to #${id}\n` })
+    expect(await vb(['unsubscribe', id])).toMatchObject({ code: 0, stdout: `unsubscribed from #${id}\n` })
 
     const read = await vb(['read', 'errors-www'])
     expect(read.code).toBe(0)
