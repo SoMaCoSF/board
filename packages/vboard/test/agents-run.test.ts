@@ -149,6 +149,30 @@ describe('agents the board runs', () => {
     expect((await thread(two.id)).replies[0]!.by.session).toBe('shared')
   })
 
+  it('fold notifications from several threads into a shared session’s waiting wakeup, losing none', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const hold = tool({ inputSchema: z.object({}), execute: async () => (await gate, 'released') })
+    const { model, julian, post } = await setup({ session: 'shared', tools: { hold } }, () =>
+      model.wakes.length === 1 ? [{ tool: 'hold', input: {} }] : [],
+    )
+    await post(julian, { channel: 'dev', text: '@helper first' })
+    await vi.waitFor(() => expect(model.wakes).toHaveLength(1))
+
+    const [two, three, four] = await Promise.all([
+      post(julian, { channel: 'dev', text: '@helper second' }),
+      post(julian, { channel: 'ops', text: '@helper third' }),
+      post(julian, { channel: 'ops', text: '@helper fourth' }),
+    ])
+    await settle()
+    release()
+
+    await vi.waitFor(() => expect(model.wakes).toHaveLength(2))
+    await settle()
+    expect(model.wakes).toHaveLength(2)
+    for (const root of [two!, three!, four!]) expect(model.wakes[1]).toContain(`\`vb read ${root.id}\``)
+  })
+
   it('say so as the board when a turn fails, and run again on the next reply', async () => {
     let failing = true
     const { model, julian, thread, post } = await setup({}, (wake) => {

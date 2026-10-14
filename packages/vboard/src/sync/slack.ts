@@ -449,14 +449,17 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
       async mentionsOf(message) {
         const raw = message.raw as { text?: unknown } | null
         const text = typeof raw?.text === 'string' ? raw.text : ''
-        const users = [...new Set([...text.matchAll(/<@([UW][A-Z0-9_]+)(?:\|[^>]*)?>/g)].map((match) => match[1]!))]
+        // Every mention, in order: two people with one display name show the same `@name`, and only the order tells them apart.
+        const users = [...text.matchAll(/<@([UW][A-Z0-9_]+)(?:\|[^>]*)?>/g)].map((match) => match[1]!)
         const bot = (options.adapter as { botUserId?: string }).botUserId
+        const displays = new Map<string, string>()
+        for (const user of new Set(users)) displays.set(user, await displayOf(user))
         const marked: MarkedMentions = { mentions: [], appMentions: [] }
         for (const user of users) {
-          const display = await displayOf(user)
+          const display = displays.get(user)!
           const forms = [...new Set([mrkdwn(`<@${user}|${display}>`), `@${display}`, `@${user}`])]
-          if (user === bot) marked.appMentions!.push(...forms)
-          else for (const form of forms) marked.mentions!.push({ form, actor: { id: `slack:user:${user}`, handle: display, name: display } })
+          if (user !== bot) for (const form of forms) marked.mentions!.push({ form, actor: { id: `slack:user:${user}`, handle: display, name: display } })
+          else if (!marked.appMentions!.includes(forms[0]!)) marked.appMentions!.push(...forms)
         }
         return marked
       },

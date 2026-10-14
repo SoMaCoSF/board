@@ -399,7 +399,7 @@ export function board(options: BoardOptions = {}) {
     )
   }
   runner.bind({
-    host: (agent: DeclaredAgent): AgentHost => ({
+    host: (agent: DeclaredAgent): Omit<AgentHost, 'retry'> => ({
       key: agent.key,
       name: agent.name,
       store: options.store,

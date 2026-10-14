@@ -58,6 +58,15 @@ describe('exact and display forms', () => {
     expect(exactMentions('@Ada Lovelace and @ada, `@Ada`', marked)).toBe('@[slack:user:U2] and @[slack:user:U1], `@Ada`')
   })
 
+  it('tell apart two people who show the same name by where each appears, or leave both as text', () => {
+    const ada = (n: number) => ({ form: '@Ada', actor: `slack:user:U${n}` })
+    expect(exactMentions('@Ada, then @Ada, then @Ada again', [ada(1), ada(2), ada(1)])).toBe(
+      '@[slack:user:U1], then @[slack:user:U2], then @[slack:user:U1] again',
+    )
+    expect(exactMentions('@Ada and @Ada', [ada(1), ada(2), ada(1)])).toBe('@Ada and @Ada')
+    expect(exactMentions('@Ada and @Ada', [ada(1), ada(1)])).toBe('@[slack:user:U1] and @[slack:user:U1]')
+  })
+
   it('show exact mentions by handle, and leave unknown ones as they are', () => {
     expect(displayMentions('@[vboard:agent:helper] meet @[slack:user:U9]', { 'vboard:agent:helper': { handle: 'helper' } })).toBe(
       '@helper meet @[slack:user:U9]',

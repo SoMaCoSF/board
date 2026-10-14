@@ -99,7 +99,7 @@ function runtime(host: AgentHost, options: Omit<AgentOptions, keyof AgentIdentit
         if (receipt.outcome !== 'rejected') return
         const { state } = await ctx.session.state(pendingEdits, { through: ctx.event.index - 1 })
         const lost = state[receipt.commandId]
-        if (lost) await wake(lost)
+        if (lost) await host.retry(lost, receipt.commandId)
       },
       // A turn that failed would hold every wakeup queued behind it. Stop it, and say so
       // in its threads as the board, never as the agent; the next reply starts a fresh one.

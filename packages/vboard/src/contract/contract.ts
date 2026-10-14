@@ -231,7 +231,7 @@ export const ExternalLocation = z.object({ channel: ExternalTarget, thread: Exte
 export const MarkedMentions = z.object({
   mentions: z
     .array(z.object({ form: z.string().min(1).max(200), actor: ExternalAuthor.pick({ id: true, handle: true, name: true }) }))
-    .max(50)
+    .max(300)
     .optional(),
   appMentions: z.array(z.string().min(1).max(200)).max(8).optional(),
 })
@@ -354,7 +354,11 @@ export const agentsContract = contract({
       event: z.unknown(),
       /** Whether the agent followed the thread before this message. */
       subscribed: z.boolean(),
+      /** The agent's session it wakes, chosen as it's recorded, so one session's notifications take turns. */
+      session: z.string().min(1).max(200),
     }),
+    /** A notification sent again: the wakeup it joined started before it did. */
+    'agent.retried': z.object({ session: z.string().min(1).max(200), notification: z.unknown() }),
     /** The board gave up waking the agent for one notification, so the thread's next one goes on. */
     'agent.failed': z.object({ notified: z.string().min(1).max(200), thread: ThreadKey, error: z.string().min(1).max(500) }),
   },

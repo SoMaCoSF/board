@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { MessageView } from '../src/api/routes.ts'
-import { subscriptionsReducer } from '../src/contract/reducers.ts'
+import { foldSubscriptions, subscriptionOf, subscriptionsReducer, type SubscriptionsState } from '../src/contract/reducers.ts'
 import { caller, personToken, testBoard } from './harness.ts'
 
 async function setup() {
@@ -43,5 +43,20 @@ describe('thread subscriptions', () => {
     expect(actor).toMatch(/^vercel:user:/)
     expect((await julian('POST', `/messages/${root.id}/subscription`, { on: false })).body).toEqual({ root: root.id, subscribed: false })
     expect((await julian('POST', `/messages/${root.id}/subscription`, { on: 'yes' })).status).toBe(400)
+  })
+
+  it('keep every thread key to itself, even one named like a prototype', async () => {
+    const { julian } = await setup()
+    for (const id of ['__proto__', 'constructor', 'toString'])
+      expect((await julian('POST', '/messages', { channel: 'dev', text: '@helper hi', id })).body.error).toMatchObject({ code: 'invalid_request' })
+
+    const by = { actor: 'vboard:agents', principal: 'vboard:agents', profile: null, session: null }
+    const event = (thread: string) =>
+      ({ type: 'thread.subscribed', payload: { thread, actor: 'vboard:agent:helper', cause: 'mention', by } }) as Parameters<typeof foldSubscriptions>[1]
+    const state = foldSubscriptions(foldSubscriptions({} as SubscriptionsState, event('__proto__')), event('t1'))
+    expect(({} as Record<string, unknown>)['vboard:agent:helper']).toBeUndefined()
+    expect(subscriptionOf(state, '__proto__', 'vboard:agent:helper')).toEqual({ subscribed: true, chosen: false })
+    expect(subscriptionOf(state, 'other', 'vboard:agent:helper')).toBeUndefined()
+    expect(subscriptionOf(state, 't1', 'toString')).toBeUndefined()
   })
 })

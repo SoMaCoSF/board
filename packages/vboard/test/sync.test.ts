@@ -1,3 +1,4 @@
+import { readableText } from '../src/client/client.ts'
 import { describe, expect, it, vi } from 'vitest'
 import type { Adapter } from 'chat'
 import { fakePlatform, slackNames, withSlackClient, type WebhookPayload } from './sync-fixtures.ts'
@@ -89,6 +90,33 @@ describe('sync', () => {
     expect(message).toMatchObject({ text: '@[slack:user:U_JB] and @julian, look', mentions: ['slack:user:U_JB'], mentioned: { 'slack:user:U_JB': { handle: 'jb' } } })
     // Mentioned there, so the board knows them by name before they write.
     expect((await julian('GET', '/actors')).body.actors).toContainEqual(expect.objectContaining({ id: 'slack:user:U_JB', handle: 'jb' }))
+  })
+
+  it('tells apart two Slack users who share a display name, by the order Slack marked them', async () => {
+    const { board, webhook } = setup({ slackNames: { U_ADA1: 'ada', U_ADA2: 'ada' } })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    await webhook('slack', { type: 'message', threadId: 'slack:C1:510', id: '510', text: '@ada, meet @ada', raw: { text: '<@U_ADA1>, meet <@U_ADA2>' }, user: 'U_JB' })
+    await vi.waitFor(async () => expect(await read(julian, 'firehose')).toHaveLength(1))
+    const [message] = (await julian('GET', '/messages?channel=firehose&from=slack')).body.messages
+    expect(message).toMatchObject({ text: '@[slack:user:U_ADA1], meet @[slack:user:U_ADA2]', mentions: ['slack:user:U_ADA1', 'slack:user:U_ADA2'] })
+    const events = (await julian('GET', '/events?after=0&all=true')).body.events as { type: string; payload: { actor?: string } }[]
+    expect(events.filter((e) => e.type === 'actor.seen').map((e) => e.payload.actor).sort()).toEqual(['slack:user:U_ADA1', 'slack:user:U_ADA2', 'slack:user:U_JB'])
+  })
+
+  it('keeps a message’s mentions through an edit made from its readable text', async () => {
+    const { board, webhook } = setup({ slackNames: { U_AL: 'Ada Lovelace', U_ADA1: 'ada', U_ADA2: 'ada' } })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    await webhook('slack', { type: 'message', threadId: 'slack:C1:520', id: '520', text: '@Ada Lovelace @ada @ada', raw: { text: '<@U_AL> <@U_ADA1> <@U_ADA2>' }, user: 'U_JB' })
+    await vi.waitFor(async () => expect(await read(julian, 'firehose')).toHaveLength(1))
+
+    const posted = (await julian('POST', '/messages', { channel: 'firehose', text: 'cc @[slack:user:U_AL], @[slack:user:U_ADA2] and @[slack:user:U_ADA1]', noSync: true })).body.message
+    // What the inspector's editor starts from, and an agent reads in `vb read`:
+    expect(readableText(posted)).toBe('cc @Ada Lovelace, @ada and @ada')
+    await julian('POST', `/messages/${posted.id}/edit`, { text: 'cc @Ada Lovelace, @ada and @ada: please look' })
+    expect((await julian('GET', `/messages/${posted.id}`)).body.message).toMatchObject({
+      text: 'cc @[slack:user:U_AL], @[slack:user:U_ADA2] and @[slack:user:U_ADA1]: please look',
+      mentions: ['slack:user:U_AL', 'slack:user:U_ADA2', 'slack:user:U_ADA1'],
+    })
   })
 
   it('addresses a declared agent as `@<app> +name` in Slack, and leaves anything else as text', async () => {

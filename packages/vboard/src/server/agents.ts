@@ -3,7 +3,7 @@ import { createServer, type A2Scheduler, type A2Server, type A2Store, type Handl
 import type { BoardEventView } from '../api/routes.ts'
 import type { BoardClient } from '../client/client.ts'
 import { agentSession, agentsContract, type BoardEvent, type BoardEvents } from '../contract/contract.ts'
-import { actorsReducer, messagesReducer, subscriptionsReducer, type ActorsState } from '../contract/reducers.ts'
+import { actorsReducer, messagesReducer, subscriptionOf, subscriptionsReducer, type ActorsState } from '../contract/reducers.ts'
 import { agentKeyOf, isBoardActor, type ActorKind } from '../contract/schemas.ts'
 import type { AgentIdentity, DeclaredAgent, DeclaredAgents } from './actors.ts'
 import { eventView, foldEvent } from './feed.ts'
@@ -51,6 +51,8 @@ export type AgentHost = {
    * `key` makes it idempotent. It never wakes an agent.
    */
   notice(thread: number, text: string, key: string): Promise<void>
+  /** Wakes the agent for `notification` again, in turn with its session's others. `key` makes it idempotent. */
+  retry(notification: Notification, key: string): Promise<void>
 }
 
 /** How the board runs an agent: `agent()` from `vboard/agents` builds one. */
@@ -103,55 +105,88 @@ export function createAgents(options: {
     return (entry.runtime ??= entry.config.run!(host(entry.agent)))
   }
 
+  /** What `notify` and `session` decide on, from what the board recorded. */
+  const contextOf = (payload: { root: { id: number; labels: Record<string, string> }; event: unknown; reason: 'mention' | 'reply'; subscribed: boolean }): NotifyContext => {
+    const event = payload.event as BoardEventView
+    const message = event.message!
+    const actor = event.actor
+    return {
+      event,
+      thread: { id: payload.root.id, channel: message.channel, labels: payload.root.labels },
+      author: {
+        actor: message.by.actor,
+        principal: message.by.principal,
+        kind: actor?.kind ?? message.author?.kind ?? 'external',
+        handle: actor?.handle ?? message.author?.handle ?? message.by.actor,
+        name: actor?.name ?? message.author?.name ?? message.by.actor,
+      },
+      isMentioned: payload.reason === 'mention',
+      isSubscribed: payload.subscribed,
+    }
+  }
+
+  /** The agent's session for a notification: its `session`, or one per thread. A `session` that throws gets the default. */
+  const sessionOf = (entry: Running, context: NotifyContext) => {
+    const fallback = `thread-${context.thread.id}`
+    try {
+      const chosen = typeof entry.config.session === 'function' ? entry.config.session(context) : entry.config.session
+      return chosen && chosen.length <= 200 ? chosen : fallback
+    } catch (error) {
+      console.error(`[vboard] agent ${entry.agent.key}'s session threw, so this one is ${fallback}:`, describe(error))
+      return fallback
+    }
+  }
+
+  /** Runs `wake` a few times, then records that it gave up: a dead letter would stop the session's notifications for good. */
+  async function attempt(ctx: { attempt: number; event: { id: string }; session: { append: HandlerContext<typeof agentsContract.events>['session']['append'] } }, entry: Running, thread: string, wake: () => Promise<void>) {
+    try {
+      await wake()
+    } catch (error) {
+      if (ctx.attempt < RUN_ATTEMPTS) throw error
+      console.error(`[vboard] agent ${entry.agent.key} gave up on ${ctx.event.id} after ${ctx.attempt} tries:`, describe(error))
+      await ctx.session.append(`failed:${ctx.event.id}`, { type: 'agent.failed', payload: { notified: ctx.event.id, thread, error: describe(error) } })
+    }
+  }
+
+  const entryOf = (session: string) => byKey.get(session.slice('agent:'.length))
+
   const server = createServer({
     contract: agentsContract,
     ...(options.store ? { store: options.store } : {}),
     ...(options.scheduler ? { scheduler: options.scheduler } : {}),
     handlers: {
+      // On the agent's session's lane, not the thread's: two threads that share a session would
+      // otherwise both edit the wakeup waiting in it, and one notification would be lost.
       'agent.notified': {
-        lane: ({ event }) => `thread:${event.payload.thread}`,
+        lane: ({ event }) => `session:${event.payload.session}`,
         handler: async (ctx) => {
           // An agent removed from config since it was notified has nothing left to do.
-          const entry = byKey.get(ctx.session.id.slice('agent:'.length))
+          const entry = entryOf(ctx.session.id)
           if (!entry) return
           const { payload } = ctx.event
-          const event = payload.event as BoardEventView
-          const message = event.message!
-          const actor = event.actor
-          const context: NotifyContext = {
-            event,
-            thread: { id: payload.root.id, channel: message.channel, labels: payload.root.labels },
-            author: {
-              actor: message.by.actor,
-              principal: message.by.principal,
-              kind: actor?.kind ?? message.author?.kind ?? 'external',
-              handle: actor?.handle ?? message.author?.handle ?? message.by.actor,
-              name: actor?.name ?? message.author?.name ?? message.by.actor,
-            },
-            isMentioned: payload.reason === 'mention',
-            isSubscribed: payload.subscribed,
-          }
-          try {
+          const context = contextOf(payload)
+          const message = context.event.message!
+          await attempt(ctx, entry, payload.thread, async () => {
             if (!(await (entry.config.notify ?? defaultNotify)(context))) return
-            const session = typeof entry.config.session === 'function' ? entry.config.session(context) : (entry.config.session ?? `thread-${payload.root.id}`)
             await runtimeOf(entry).wake({
               id: ctx.event.id,
-              session,
+              session: payload.session,
               thread: payload.root.id,
               channel: message.channel,
               message: message.id,
               reason: payload.reason,
               by: { handle: context.author.handle, name: context.author.name },
             })
-          } catch (error) {
-            // A dead letter would stop this agent on the thread for good: a few tries, then move on.
-            if (ctx.attempt < RUN_ATTEMPTS) throw error
-            console.error(`[vboard] agent ${entry.agent.key} gave up on event #${event.index} after ${ctx.attempt} tries:`, describe(error))
-            await ctx.session.append(`failed:${ctx.event.id}`, {
-              type: 'agent.failed',
-              payload: { notified: ctx.event.id, thread: payload.thread, error: describe(error) },
-            })
-          }
+          })
+        },
+      },
+      'agent.retried': {
+        lane: ({ event }) => `session:${event.payload.session}`,
+        handler: async (ctx) => {
+          const entry = entryOf(ctx.session.id)
+          if (!entry) return
+          const notification = ctx.event.payload.notification as Notification
+          await attempt(ctx, entry, String(notification.thread), () => runtimeOf(entry).wake(notification))
         },
       },
     },
@@ -178,19 +213,14 @@ export function createAgents(options: {
       if (by === agent.id) continue
       // An edit notifies only for a mention it adds; a reply in a followed thread, only when it's new.
       const mentioned = after.mentions.includes(agent.id) && !(event.type === 'message.edited' && before?.mentions.includes(agent.id))
-      const subscribed = subscriptions[after.thread]?.[agent.id]?.subscribed === true
+      const subscribed = subscriptionOf(subscriptions, after.thread, agent.id)?.subscribed === true
       if (!mentioned && !(subscribed && event.type === 'message.posted')) continue
       view ??= eventView(event, after, options.mentionable(actors))
+      const recorded = { root: { id: root.id, labels: { ...root.labels } }, event: view, reason: mentioned ? 'mention' : 'reply', subscribed } as const
       await server.session(agentSession(agent.key)).append({
         type: 'agent.notified',
         id: await idempotentId('vboard-agent', agent.key, event.id),
-        payload: {
-          thread: after.thread,
-          reason: mentioned ? 'mention' : 'reply',
-          root: { id: root.id, labels: { ...root.labels } },
-          event: view,
-          subscribed,
-        },
+        payload: { thread: after.thread, ...recorded, session: sessionOf(byKey.get(agent.key)!, contextOf(recorded)) },
       })
     }
   }
@@ -204,8 +234,17 @@ export function createAgents(options: {
     boardHandlers: running.length > 0 ? { 'message.posted': { lane, handler: dispatch }, 'message.edited': { lane, handler: dispatch } } : undefined,
     /** Each agent's own A2 servers, built now so the board's scheduler can serve them. */
     servers: () => running.flatMap((entry) => runtimeOf(entry).servers),
-    bind(binding: { host: (agent: DeclaredAgent) => AgentHost }) {
-      host = binding.host
+    bind(binding: { host: (agent: DeclaredAgent) => Omit<AgentHost, 'retry'> }) {
+      host = (agent) => ({
+        ...binding.host(agent),
+        retry: async (notification, key) => {
+          await server.session(agentSession(agent.key)).append({
+            type: 'agent.retried',
+            id: await idempotentId('vboard-agent-retry', agent.key, key),
+            payload: { session: notification.session, notification },
+          })
+        },
+      })
     },
   }
 }

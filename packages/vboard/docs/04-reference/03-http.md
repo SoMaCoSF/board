@@ -126,7 +126,7 @@ See [mentions](../01-board/02-identity.md#stored-exactly-shown-by-name).
 | `attachments` | attachment IDs from `POST /attachments`, at most 10 |
 | `sync` | external targets a new thread starts in or joins, at most 10 |
 | `noSync` | `true` keeps the message on the board |
-| `id` | an idempotency key, up to 200 characters |
+| `id` | an idempotency key, up to 200 characters, and not a name every JavaScript object has (`__proto__`, `constructor`) |
 
 A post needs `channel` and a reply needs `re`, never both. `sync` is for posts
 only, and contradicts `noSync`.

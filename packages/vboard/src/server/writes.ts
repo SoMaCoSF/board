@@ -6,18 +6,19 @@ import {
   foldMessages,
   messagesReducer,
   postedReducer,
+  subscriptionOf,
   subscriptionsReducer,
   syncReducer,
   type Actor,
   type ActorsState,
   type Message,
   type MessagesState,
-  type Subscription,
+  type SubscriptionsState,
 } from '../contract/reducers.ts'
 import { agentKeyOf, type Attachment, type Author, type Labels } from '../contract/schemas.ts'
 import type { Principal } from './auth.ts'
 import { actorSeen, resolveMentions } from './actors.ts'
-import { extractMentions, replaceMentions } from '../contract/mentions.ts'
+import { exactMentions, extractMentions, replaceMentions } from '../contract/mentions.ts'
 import type { BoardSession } from './board.ts'
 import { badRequest, forbidden, notFound } from './errors.ts'
 import { view } from './feed.ts'
@@ -241,7 +242,7 @@ async function commitPost(
       },
     },
     ...synced,
-    ...follows(subscriptions[thread], thread, identity, mentions),
+    ...follows(subscriptions, thread, identity, mentions),
   )
   const posted = rows.find((row) => row.type === 'message.posted') as BoardEvent
   const message = foldMessages({ byId: {}, replies: {} }, posted).byId[posted.index]!
@@ -254,10 +255,10 @@ async function commitPost(
  * author when that's an agent. An agent with a subscription there already, or one
  * that chose to leave, stays as it is.
  */
-function follows(current: Record<string, Subscription> | undefined, thread: string, identity: Identity, mentions: string[]) {
+function follows(subscriptions: SubscriptionsState, thread: string, identity: Identity, mentions: string[]) {
   const events: { type: 'thread.subscribed'; payload: { thread: string; actor: string; cause: 'mention' | 'reply'; by: Author } }[] = []
   const add = (actor: string, cause: 'mention' | 'reply') => {
-    if (current?.[actor] === undefined && !events.some((event) => event.payload.actor === actor))
+    if (subscriptionOf(subscriptions, thread, actor) === undefined && !events.some((event) => event.payload.actor === actor))
       events.push({ type: 'thread.subscribed', payload: { thread, actor, cause, by: identity.author } })
   }
   for (const id of mentions) if (agentKeyOf(id) !== null) add(id, 'mention')
@@ -270,7 +271,7 @@ export async function writeSubscription(ctx: WriteContext, input: { identity: Id
   const message = await liveMessage(ctx, input.id)
   const actor = input.identity.author.actor
   const { state: subscriptions } = await ctx.session.state(subscriptionsReducer)
-  const current = subscriptions[message.thread]?.[actor]
+  const current = subscriptionOf(subscriptions, message.thread, actor)
   const root = message.re ?? message.id
   if (current?.chosen && current.subscribed === input.on) return { root, subscribed: input.on }
   const { state: actors } = await ctx.session.state(actorsReducer)
@@ -285,9 +286,25 @@ export async function writeSubscription(ctx: WriteContext, input: { identity: Id
 }
 
 /** The platform users a text mentions that the board hasn't seen: they're recorded with it. */
-const unseen = (actors: ActorsState, mentioned: Actor[] = []) => mentioned.filter((actor) => !actors.byId[actor.id])
+/** The mentioned actors the board hasn't seen, each once. */
+const unseen = (actors: ActorsState, mentioned: Actor[] = []) =>
+  [...new Map(mentioned.map((actor) => [actor.id, actor])).values()].filter((actor) => !actors.byId[actor.id])
 
 const mentionable = (ctx: WriteContext, actors: ActorsState) => ctx.mentionable?.(actors) ?? actors
+
+/**
+ * An edit of the text people read, with the message's own mentions back: each `@handle` it showed (`@Ada
+ * Lovelace`, a handle two people share) is the actor it was, in order, before anything newly typed resolves.
+ */
+function keepMentions(text: string, before: string, known: ActorsState): string {
+  const shown: { form: string; actor: string }[] = []
+  replaceMentions(before, (token) => {
+    const actor = token.kind === 'actor' ? known.byId[token.actor] : undefined
+    if (actor) shown.push({ form: `@${actor.handle}`, actor: actor.id })
+    return null
+  })
+  return exactMentions(text, shown)
+}
 
 /** `slack:C0123ABC:1727.1` → `slack:C0123ABC`; `github:o/r:12` → `github:o/r`. */
 export const channelOf = (externalThread: string) => {
@@ -341,7 +358,9 @@ async function commitEdit(ctx: WriteContext, input: EditInput, message: Message)
     ctx.session.state(subscriptionsReducer),
   ])
   const seen = actorSeen(input.identity.actor, actors)
-  const emailed = await withEmailMentions(ctx, input.text)
+  // A platform's edit is its own text again, marked; one on the board may be what `readableText` showed.
+  const kept = input.from == null ? keepMentions(input.text, message.text, mentionable(ctx, actors)) : input.text
+  const emailed = await withEmailMentions(ctx, kept)
   const found = [...emailed.found, ...unseen(actors, input.mentionActors)]
   const named = found.map((actor) => actorSeen(actor, actors)).filter((event) => event !== null)
   const { text, mentions } = resolveMentions(emailed.text, {
@@ -364,7 +383,7 @@ async function commitEdit(ctx: WriteContext, input: EditInput, message: Message)
       by: input.identity.author,
       from: input.from ?? null,
     },
-  }, ...follows(subscriptions[message.thread], message.thread, input.identity, mentions))
+  }, ...follows(subscriptions, message.thread, input.identity, mentions))
 }
 
 /** A message's links, replaced: a platform edit or unfurl changed what it links to. */

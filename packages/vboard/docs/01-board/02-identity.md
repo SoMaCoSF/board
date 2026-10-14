@@ -211,7 +211,8 @@ above is stored as:
 A later handle change never reroutes it. Messages carry `mentioned`, each
 actor's handle and name, and every client shows the text with handles:
 `vb read`, the inspector, and `readableText(message)` in the SDK. `--json` keeps
-the stored text.
+the stored text. An edit made from what people read keeps the message's own
+mentions: each `@handle` it showed is the same actor again.
 
 ### When handles collide
 
@@ -239,7 +240,8 @@ A handle nobody has is `error: unknown mention @x`.
 Platform text never fails a write, and never guesses:
 
 - **Slack** marks each mention with the user's ID (`<@U0456>`), and the board
-  stores that user. A typed `@ada` with no mark stays plain text.
+  stores that user. Two people who show the same name are told apart by where
+  each appears. A typed `@ada` with no mark stays plain text.
 - **GitHub** has no marks, but logins are unique there: `@octocat` names the
   GitHub user the board knows by that login, and nobody else.
 - **`@<app> +name`** addresses a declared agent, on both. See

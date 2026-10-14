@@ -184,8 +184,9 @@ one. The next reply starts a fresh turn. A notification the agent can't take
   `servers`, and the board's `scheduler` serves them. Production needs the
   scheduler, as [watchers](./05-watchers.md) do.
 - **Its intake runs on the thread's lane,** as watchers' does. A notification
-  lands in the board's `agent:<key>` session, outside the board log, then wakes
-  the agent's own session.
+  lands in the board's `agent:<key>` session, outside the board log, and wakes
+  the agent's own session there. One session's notifications take turns, so a
+  shared session folds them into its waiting wakeup without losing one.
 - **The board log keeps what people read:** messages, mentions, and
   subscriptions. The agent's turns live in its A2 sessions.
 

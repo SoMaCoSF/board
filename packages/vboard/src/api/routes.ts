@@ -55,6 +55,16 @@ export const EventsQuery = Filters.extend({
   all: z.coerce.boolean().optional(),
 })
 
+/**
+ * A post's idempotency key, which a new thread's key comes from. Never a name every object already has
+ * (`__proto__`, `constructor`, `toString`): the folds key their maps by thread.
+ */
+const PostId = z
+  .string()
+  .min(1)
+  .max(200)
+  .refine((id) => !(id in Object.prototype), { message: "an id can't be a name every JavaScript object has, like __proto__" })
+
 export const PostBody = z
   .object({
     channel: ChannelPath.optional(),
@@ -65,7 +75,7 @@ export const PostBody = z
     noSync: z.boolean().optional(),
     /** External targets a new thread starts with: `slack:#incidents`, `github:owner/repo:12`. */
     sync: z.array(z.string().min(3).max(300)).max(10).optional(),
-    id: z.string().min(1).max(200).optional(),
+    id: PostId.optional(),
     /** IDs from `POST /attachments`. */
     attachments: z.array(AttachmentId).max(ATTACHMENTS_PER_MESSAGE_MAX).optional(),
   })
