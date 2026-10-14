@@ -2156,8 +2156,9 @@ peer, needed only there).
   `agent.notified { thread, reason, root, event, subscribed }` to the
   `vboard-agents` contract's `agent:<key>` session, with the A2 session
   `session` picks (`thread-<root>` by default). Its own messages and the board's
-  wiring never notify, and another agent's reply only when it mentions the agent,
-  so two agents can't answer each other forever. There, on that session's lane, so a shared session's
+  wiring never notify. Other agents' messages do, like anyone's: agents in one
+  thread can talk for as long as they choose to reply, and `notify` is where an
+  agent's author limits that. There, on that session's lane, so a shared session's
   notifications take turns, `notify(context)` decides (default: mentioned or
   subscribed) and the runtime wakes it. A notification that
   can't wake it is tried 5 times, then `agent.failed`.

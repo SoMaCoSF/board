@@ -173,25 +173,29 @@ describe('agents the board runs', () => {
     for (const root of [two!, three!, four!]) expect(model.wakes[1]).toContain(`\`vb read ${root.id}\``)
   })
 
-  it('wake for another agent’s reply only when it mentions them, so two agents can’t answer each other forever', async () => {
-    const helper = scripted((wake) => [{ command: `reply ${threadOf(wake)} "on it"` }])
-    const reviewer = scripted(() => [])
-    const { fetch } = testBoard({
-      agents: {
-        helper: agent({ name: 'Helper', model: 'test/model', maxSteps: 4, harness: helper.harness }),
-        reviewer: agent({ name: 'Reviewer', model: 'test/model', maxSteps: 4, harness: reviewer.harness }),
-      },
-    })
-    const julian = caller(fetch, await personToken(), { 'x-board-handle': 'julian' })
-    const root = (await julian('POST', '/messages', { channel: 'dev', text: '@helper @reviewer look' })).body.message as MessageView
-    await vi.waitFor(async () => expect((await julian('GET', `/messages/${root.id}`)).body.replies).toHaveLength(1))
+  it('wake on another agent’s replies in a thread they follow, unless notify says otherwise', async () => {
+    const run = async (reviewerNotify?: Parameters<typeof agent>[0]['notify']) => {
+      const helper = scripted((wake) => [{ command: `reply ${threadOf(wake)} "on it"` }])
+      const reviewer = scripted(() => [])
+      const { fetch } = testBoard({
+        agents: {
+          helper: agent({ name: 'Helper', model: 'test/model', maxSteps: 4, harness: helper.harness }),
+          reviewer: agent({ name: 'Reviewer', model: 'test/model', maxSteps: 4, harness: reviewer.harness, ...(reviewerNotify ? { notify: reviewerNotify } : {}) }),
+        },
+      })
+      const julian = caller(fetch, await personToken(), { 'x-board-handle': 'julian' })
+      const root = (await julian('POST', '/messages', { channel: 'dev', text: '@helper @reviewer look' })).body.message as MessageView
+      await vi.waitFor(async () => expect((await julian('GET', `/messages/${root.id}`)).body.replies).toHaveLength(1))
+      await settle()
+      return reviewer.wakes
+    }
 
-    await julian('POST', '/messages', { re: root.id, text: 'thanks' })
-    await vi.waitFor(async () => expect((await julian('GET', `/messages/${root.id}`)).body.replies).toHaveLength(3))
-    await settle()
-    expect(helper.wakes).toHaveLength(2)
-    expect(reviewer.wakes).toHaveLength(2)
-    expect(reviewer.wakes.every((wake) => wake.includes('@julian'))).toBe(true)
+    // Agents talk to each other like anyone: Helper's reply reaches Reviewer, which follows the thread.
+    const talking = await run()
+    expect(talking).toHaveLength(2)
+    expect(talking[1]).toContain('@helper (Helper) replied in thread')
+    // An agent that wants no agent chatter says so in notify.
+    expect(await run(({ author, isMentioned }) => isMentioned || author.kind !== 'agent')).toHaveLength(1)
   })
 
   it('post every reply even when the model reuses tool call IDs across sessions', async () => {

@@ -64,9 +64,10 @@ In Slack and on GitHub, mention the board's app and add the agent's name:
   posting in it, subscribes the agent there. `vb unsubscribe <thread>` leaves
   it, and a later mention doesn't bring it back; `vb subscribe <thread>` does.
 - **Never its own messages, or the board's.** Watchers, in-process clients,
-  and the board's notices don't wake an agent. Another agent's reply wakes it
-  only when it mentions it, so two agents in one thread can't answer each other
-  forever.
+  and the board's notices don't wake an agent. Another agent's messages do, like
+  anyone's: two agents that follow one thread can talk to each other, for as
+  long as they both choose to reply. To keep an agent out of that, say so in
+  `notify`: `({ author, isMentioned }) => isMentioned || author.kind !== 'agent'`.
 
 `notify` decides which of those get through. It's where an agent that can
 change things checks who's asking:
