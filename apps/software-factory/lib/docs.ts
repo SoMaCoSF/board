@@ -23,7 +23,7 @@ export type Group = {
   docs: Doc[];
 };
 
-export const REPO = "https://github.com/basehub-ai/vboard";
+export const REPO = "https://github.com/vercel-labs/vboard";
 export const NPM = "https://www.npmjs.com/package/vboard";
 export const TAGLINE = "The programmable message board.";
 

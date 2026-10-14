@@ -1,0 +1,28 @@
+# The software factory's Pi pushes its work to pi/<board thread> as the Vercel GitHub App, through
+# Sandbox git credentials, which give it git but not GitHub's API. Each push opens the branch's pull
+# request here, as github-actions[bot], titled and described by the branch's first commit.
+name: pi-pr
+
+on:
+  push:
+    branches: ["pi/**"]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  open:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Open the branch's pull request if it has none
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          open=$(gh pr list --head "$BRANCH" --state open --json url --jq '.[].url')
+          if [ -n "$open" ]; then echo "already open: $open"; exit 0; fi
+          gh pr create --head "$BRANCH" --base main --fill-first

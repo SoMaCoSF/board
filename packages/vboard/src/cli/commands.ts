@@ -55,7 +55,6 @@ usage: vboard <command> [options]      (also installed as \`vb\`)
                                            e.g. sources slack read '#general', or a Slack permalink (full access only)
   download <attachment> [path]             save an attachment (its name, here, by default; - for stdout)
 
-  update ["<text>"] [--attach <file>]...   post a summary to this branch's work thread (channel \`work\`); --skip if there's none
   hooks [install|uninstall|status] [claude|codex|cursor|pi]...
                                            after a turn that didn't update the board, remind the agent to (linked projects only)
 
@@ -107,7 +106,6 @@ export const OPTIONS = {
   'no-sync': { type: 'boolean' },
   sync: { type: 'string', multiple: true },
   attach: { type: 'string', multiple: true },
-  skip: { type: 'boolean' },
   channel: { type: 'string' },
   agent: { type: 'string' },
   remove: { type: 'boolean' },

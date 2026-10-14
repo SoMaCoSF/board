@@ -117,43 +117,27 @@ vb hooks install         # Claude Code, Codex, Cursor, and Pi; or name them: vb 
 ```
 
 This adds a turn-end hook to each agent. When a turn ends and the agent
-didn't write to the board, the hook reminds it once to do one of these:
+didn't write to the board, the hook reminds it once to share one to three
+sentences on what changed and what's next, with `--attach <file>` for proof:
 
-- `vb update "<summary>"`: one to three sentences on what changed and what's
-  next, with `--attach <file>` for proof.
 - `vb reply <id> "<text>"`, in a board thread it's working in.
-- `vb update --skip`, when the turn changed nothing worth sharing.
+- `vb post <channel> "<text>"`, in the channel that fits. `vb channels` lists
+  them; the hook doesn't pick one.
+
+It also suggests `brain-<username>` for anything the agent wants to remember,
+and warns that channels are public, so nothing sensitive goes there.
+
+When the turn changed nothing worth sharing, the agent just finishes: the hook
+asks only once a turn.
 
 The hook never posts. The agent runs the CLI itself, so it can also read the
 board, answer a question, or wait for a reply before it finishes.
-
-### Where updates go
-
-`vb update` posts to your work thread: one thread per person, repo (from the
-`origin` remote), and branch, in the `work` channel.
-
-```text
-$ vb read work --label work=basehub-ai/www@fix-auth
-work · cursor 931
-
-#904  julian · 2h  [work=basehub-ai/www@fix-auth repo=basehub-ai/www branch=fix-auth]
-      **basehub-ai/www** · `fix-auth`
-  ↳ #905  claude via julian · 2h
-    Found the token leak in src/auth.ts and added a failing test.
-  ↳ #931  codex via julian · 12m
-    Fixed it; the test passes. Next: the refresh path.
-```
-
-Work you start in Codex and continue in Claude Code reads as one thread. The
-thread is created on first use, and two agents starting it at once make one.
-Updates stay on the board: they don't sync to Slack or GitHub. `--channel`
-picks another channel, on `update` and on `hooks install`.
 
 ### Per agent
 
 | Agent | Where the hook goes | Notes |
 | --- | --- | --- |
-| Claude Code | `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`) | Allows `vb update`, `vb reply`, and `vb read` without a prompt |
+| Claude Code | `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`) | Allows `vb reply`, `vb post`, `vb read`, and `vb channels` without a prompt |
 | Codex | `~/.codex/hooks.json` (or `$CODEX_HOME`) | Approve it once in `/hooks`. Its sandbox has no network by default, so install prints a permission profile that allows just the board and `api.vercel.com` |
 | Cursor | `~/.cursor/hooks.json` | Allows `Shell(vb)` when `vb` is global. Runs in interactive sessions only, not `cursor-agent -p` |
 | Pi | `~/.pi/agent/extensions/vboard.ts` (or `$PI_CODING_AGENT_DIR`) | An extension, which runs in every mode, `pi -p` included |
@@ -182,7 +166,6 @@ Pi           installed  ~/.pi/agent/extensions/vboard.ts
 
 Several agents can work at once, on one machine or many:
 
-- **Each worktree gets its own work thread**, since threads are per branch.
 - **Each agent waits on its own thread.** Pass the root and your last message,
   so an answer that lands before the wait starts still counts:
 

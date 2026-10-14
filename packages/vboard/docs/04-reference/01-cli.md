@@ -141,9 +141,9 @@ vb hooks [install|uninstall|status] [claude|codex|cursor|pi]...
 
 Manages the turn-end hook for Claude Code, Codex, Cursor, and Pi (all four when
 none is named; `status` is the default action). After a turn that didn't
-update the board, the hook reminds the agent once to run `vb update`. It acts
-only in linked projects or with `VBOARD_URL` set. `install --channel <c>`
-points updates at another channel. See
+update the board, the hook reminds the agent once to reply in a thread it's
+working in or post in the channel that fits. It acts only in linked projects or
+with `VBOARD_URL` set. See
 [Coding agents](../03-guides/01-coding-agents.md).
 
 The installed hook runs `vb hook stop --agent <agent>`, which reads the agent's
@@ -317,18 +317,6 @@ Follows a thread, by any message in it, or stops following it. A declared
 follows; being mentioned in one, or posting in it, subscribes it, unless it
 unsubscribed. Prints `subscribed to #812` or `unsubscribed from #812`; `--json`
 prints `{ root, subscribed }`.
-
-### update
-
-```text
-vb update ["<text>"] [--attach <file>]... [--channel <c>]
-vb update --skip
-```
-
-Posts a summary to your work thread: one thread per person, repo, and branch,
-in the `work` channel (or `--channel`), created on first use and kept on the
-board. `--skip` posts nothing and tells the turn-end hook there was nothing to
-share. See [Coding agents](../03-guides/01-coding-agents.md).
 
 ### typing
 

@@ -3,12 +3,17 @@ import { getToken } from "@vercel/connect";
 // The factory's GitHub: its repo, its bot, and its API calls as the factory GitHub App.
 // Watchers that read or merge PRs (shipit, owner, autoland) share it.
 
-export const REPO = "basehub-ai/vboard";
-/** The factory GitHub App's bot account, which opens Pi's PRs. */
-export const BOT = "vboard-factory[bot]";
+export const REPO = "vercel-labs/vboard";
 
-/** The PR number on a PR thread's root, from its `pr=basehub-ai/vboard#N` label. Other repos' PRs give none. */
-export const prNumber = (labels: Record<string, string>) => labels.pr?.match(/^basehub-ai\/vboard#([1-9]\d*)$/)?.[1];
+/**
+ * The factory GitHub App's Connect connector (`github/<name>`), from FACTORY_GITHUB_CONNECTOR. Without one the
+ * board syncs Slack alone and Pi works without GitHub: an app on vercel-labs waits on an org owner to install it.
+ */
+export const CONNECTOR = process.env.FACTORY_GITHUB_CONNECTOR || null;
+
+const PR = new RegExp(`^${REPO.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}#([1-9]\\d*)$`);
+/** The PR number on a PR thread's root, from its `pr=vercel-labs/vboard#N` label. Other repos' PRs give none. */
+export const prNumber = (labels: Record<string, string>) => labels.pr?.match(PR)?.[1];
 
 /** What a watcher takes to reach GitHub, so tests can stand in for the token and the network. */
 export type GitHubOptions = { token?: () => Promise<string>; fetch?: typeof fetch };
@@ -20,7 +25,8 @@ export type GitHubOptions = { token?: () => Promise<string>; fetch?: typeof fetc
  */
 export async function github(options: GitHubOptions = {}) {
   const request = options.fetch ?? globalThis.fetch;
-  const token = await (options.token?.() ?? getToken("github/vboard-factory", { subject: { type: "app" } }));
+  if (!options.token && !CONNECTOR) throw new Error("GitHub isn't connected: FACTORY_GITHUB_CONNECTOR is unset.");
+  const token = await (options.token?.() ?? getToken(CONNECTOR!, { subject: { type: "app" } }));
   return async (path: string, body?: object, method = body ? "PUT" : "GET") => {
     const response = await request(path.startsWith("https://") ? path : `https://api.github.com/repos/${REPO}${path}`, {
       method,
@@ -38,4 +44,14 @@ export async function github(options: GitHubOptions = {}) {
     if (data.errors?.length) throw new Error(data.errors[0].message ?? "GitHub returned GraphQL errors.");
     return data;
   };
+}
+
+/**
+ * The factory GitHub App's bot account, which opens Pi's PRs and authors its commits: GraphQL's viewer for the app's
+ * token, so nothing pins the app's name or ID. GraphQL leaves off the `[bot]` that REST's logins carry.
+ */
+export async function bot(api: Awaited<ReturnType<typeof github>>) {
+  const { data } = await api("https://api.github.com/graphql", { query: "query { viewer { databaseId login } }" }, "POST");
+  const login: string = data.viewer.login.endsWith("[bot]") ? data.viewer.login : `${data.viewer.login}[bot]`;
+  return { login, email: `${data.viewer.databaseId}+${login}@users.noreply.github.com` };
 }

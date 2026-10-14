@@ -1,17 +1,14 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { appendFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join } from 'node:path'
-import type { MessageView } from '../api/routes.ts'
-import { BoardError, type ProfileOption } from '../client/client.ts'
+import type { ProfileOption } from '../client/client.ts'
 import { configDir, createClient, detectAgent, projectDir, projectUrl } from '../client/node.ts'
-import type { Attachment } from '../contract/schemas.ts'
 import { startInspector } from '../inspect/server.ts'
 import { VERSION } from '../version.ts'
-import { attachments, HELP, parse, runCommand, text, UsageError, type CommandIO, type Flags } from './commands.ts'
+import { HELP, parse, runCommand, UsageError, type CommandIO, type Flags } from './commands.ts'
 import { who } from './format.ts'
 import {
   AGENTS,
@@ -23,11 +20,11 @@ import {
   disallow,
   installedHook,
   installHook,
+  legacyRules,
   markPosted,
   reminder,
   tilde,
   uninstallHook,
-  workOf,
   type HookAgent,
 } from './hooks.ts'
 
@@ -131,46 +128,6 @@ function cliCommand(): { command: string; note?: string } {
   }
 }
 
-/**
- * One thread per person, repo, and branch, in `work` (or `--channel`): every
- * agent's updates on a branch land together. Created on first use; board-only.
- */
-async function postUpdate(board: ReturnType<typeof client>, content: string, files: Attachment[] = []) {
-  const channel = flags.channel ?? 'work'
-  const work = workOf(process.cwd())
-  const me = await board.me()
-  // The label matches replies too, so a busy branch can push the root past one page: page back to it.
-  const find = async () => {
-    let before: number | undefined
-    for (let page = 0; page < 20; page++) {
-      const { messages } = await board.messages({ channel, label: { work: work.key }, limit: 500, ...(before ? { before } : {}) })
-      const root = messages.filter((m) => m.re === null && !m.deleted && m.by.principal === me.principal).at(-1)
-      if (root || messages.length < 500) return root
-      before = messages[0]!.id
-    }
-    return undefined
-  }
-  const create = () =>
-    board.post(channel, {
-      text: `**${work.repo}** · \`${work.branch}\``,
-      labels: { work: work.key, repo: work.repo, branch: work.branch },
-      noSync: true,
-      // One root per person and branch: a second agent creating it at the same moment gets a conflict, not a twin.
-      // Hashed, since ids are at most 200 characters and a principal and branch can be longer.
-      id: `work:${createHash('sha256').update(`${me.principal}\n${work.key}`).digest('base64url')}`,
-    })
-  let root = await find()
-  if (!root)
-    try {
-      root = await create()
-    } catch (error) {
-      if (!(error instanceof BoardError && error.code === 'duplicate_id')) throw error
-      root = await find()
-    }
-  if (!root || root.deleted) throw new BoardError('no_work_thread', `couldn't find or start the work thread for ${work.key}`, 0)
-  return board.reply(root.id, { text: content, noSync: true, ...(files.length ? { attachments: files } : {}) })
-}
-
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = []
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer)
@@ -183,12 +140,6 @@ function hookAgents(names: string[]): HookAgent[] {
     if (!known.includes(name as HookAgent)) throw new UsageError(`unknown agent: ${name} (known: ${known.join(', ')})`)
   return names.length ? (names as HookAgent[]) : known
 }
-
-function printMessage(message: MessageView) {
-  if (flags.json) printJson(message)
-  else out(String(message.id))
-}
-
 
 /** Best-effort: the URL is printed either way. */
 function openBrowser(url: string) {
@@ -335,19 +286,8 @@ async function run(command: string | undefined, args: string[]): Promise<number>
     case 'identity':
       return identity(args)
 
-    case 'update': {
-      if (flags.skip) {
-        wrote()
-        out('skipped: nothing to share this turn')
-        return 0
-      }
-      const board = client()
-      const content = args[0] === undefined && flags.attach?.length ? '' : await text(io(), args[0])
-      const message = await postUpdate(board, content, await attachments(io(), flags, board))
-      wrote()
-      printMessage(message)
-      return 0
-    }
+    case 'update':
+      throw new UsageError('`vb update` is gone: reply in the thread you\'re working in (vb reply <id>), or post where it fits (vb post <channel>)')
 
     case 'hooks': {
       const [action = 'status', ...names] = args
@@ -364,8 +304,9 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       if (action === 'uninstall') {
         for (const agent of agents) {
           const installed = installedHook(agent)
-          const rules = installed ? allowRules(agent, cliOf(installed)) : null
-          if (rules) disallow(rules.file, rules.rules)
+          const cli = installed ? cliOf(installed) : null
+          const rules = cli ? allowRules(agent, cli) : null
+          if (rules) disallow(rules.file, [...rules.rules, ...legacyRules(agent, cli!)])
           row(agent, uninstallHook(agent) ? 'removed' : 'not installed', installed ? tilde(AGENTS[agent].file()) : '')
         }
         return 0
@@ -374,13 +315,14 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       const { command: cli, note } = cliCommand()
       // One block per agent: its name and file, then what happened and what's left to do, indented.
       for (const agent of agents) {
-        const changed = installHook(agent, cli, flags.channel ? ` --channel ${flags.channel}` : '')
+        const changed = installHook(agent, cli)
         out(`${AGENTS[agent].name}  ${tilde(AGENTS[agent].file())}`)
         out(`  ${changed ? 'added the turn-end hook' : 'already installed'}`)
-        // The reminder asks for `vb update`, `vb reply`, and `vb read`: no permission prompt for each.
+        // The reminder asks for `vb reply`, `vb post`, `vb read`, and `vb channels`: no permission prompt for each.
         const rules = allowRules(agent, cli)
         const added = rules ? allow(rules.file, rules.rules) : []
-        if (added.length > 0) out(`  ${agent === 'claude' ? 'update, reply, and read run without asking' : 'vb runs without asking'}`)
+        if (rules) disallow(rules.file, legacyRules(agent, cli))
+        if (added.length > 0) out(`  ${agent === 'claude' ? 'reply, post, read, and channels run without asking' : 'vb runs without asking'}`)
         if (agent === 'cursor' && !rules) out('  npm i -g vboard lets Cursor run vb without asking')
         if (agent === 'codex') {
           if (changed) out('  approve it once in Codex with /hooks')
@@ -426,7 +368,7 @@ async function run(command: string | undefined, args: string[]): Promise<number>
         if (payload.status && payload.status !== 'completed') return 0
         const continuing = payload.stop_hook_active === true || (payload.loop_count ?? 0) > 0
         if (decideStop(session, continuing) === 'ask') {
-          const text = reminder(cliCommand().command, flags.channel ?? 'work')
+          const text = reminder(cliCommand().command)
           printJson(agent === 'cursor' ? { followup_message: text } : { decision: 'block', reason: text })
         }
       } catch {}

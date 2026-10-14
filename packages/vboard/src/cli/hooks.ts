@@ -1,12 +1,10 @@
-import { execFileSync } from 'node:child_process'
 import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 // Coding agents end each turn with a hook (Pi, with an extension). `vb hooks install` adds one that
-// reminds the agent, once, to update the board when its turn didn't: it runs
-// `vb update` (or `vb reply` in a thread it's in), or `vb update --skip` to stay
-// quiet. The hook only reminds; the agent uses the CLI for everything, reading
+// reminds the agent, once, to update the board when its turn didn't: it replies
+// in a thread it's working in or posts where it fits, or just finishes. The hook only reminds; the agent uses the CLI for everything, reading
 // included. Deciding reads only a local marker, so a turn never waits on it.
 
 type Shape = 'nested' | 'flat' | 'extension'
@@ -69,7 +67,7 @@ const PI_COMMAND = /^const COMMAND = (".*")$/m
  * runs our command with what Claude Code's hook gets (the session, the
  * directory, and whether this hook made it continue); a reminder comes back
  * as a message, and Pi continues once to act on it. Pi's bash tool exports the
- * same session as `PI_SESSION_ID`, so the agent's `vb update` counts for it.
+ * same session as `PI_SESSION_ID`, so the agent's `vb reply` or `vb post` counts for it.
  */
 export function piExtension(command: string): string {
   return `// Added by \`vb hooks install pi\`: reminds Pi, once per turn, to update the team's board (vboard).
@@ -182,14 +180,21 @@ export const cliOf = (command: string) => command.slice(0, command.indexOf(' hoo
 // --- what the agent may run without asking -----------------------------------------
 
 /**
- * The reminder asks the agent to run `vb update`, `vb reply`, and `vb read`;
+ * The reminder asks the agent to run `vb reply`, `vb post`, `vb read`, and `vb channels`;
  * where the agent keeps an allowlist, those run without a permission prompt.
  * Claude Code matches command prefixes; Cursor matches a command's name, so it
  * can allow only a `vb` on PATH. Codex has no command allowlist: its sandbox
  * decides (see `codexNetwork`).
  */
+const REMINDED = ['reply', 'post', 'read', 'channels']
+
+/** Rules an earlier install added that this one doesn't: `vb update`, since removed. Uninstall drops them too. */
+export function legacyRules(agent: HookAgent, cli: string): string[] {
+  return agent === 'claude' ? [`Bash(${cli} update:*)`] : []
+}
+
 export function allowRules(agent: HookAgent, cli: string): { file: string; rules: string[] } | null {
-  if (agent === 'claude') return { file: AGENTS.claude.file(), rules: ['update', 'reply', 'read'].map((sub) => `Bash(${cli} ${sub}:*)`) }
+  if (agent === 'claude') return { file: AGENTS.claude.file(), rules: REMINDED.map((sub) => `Bash(${cli} ${sub}:*)`) }
   if (agent === 'cursor' && cli === 'vb') return { file: join(homedir(), '.cursor', 'cli-config.json'), rules: ['Shell(vb)'] }
   return null
 }
@@ -297,38 +302,16 @@ export function decideStop(session: string, continuing: boolean, now = Date.now(
   return 'ask'
 }
 
-/** The reminder, with the exact commands to run. */
-export function reminder(cli: string, channel: string): string {
-  const flag = channel === 'work' ? '' : ` --channel ${channel}`
+/**
+ * The reminder, with the exact commands to run. It doesn't pick a channel: the
+ * agent replies in a thread it's working in, or finds the channel that fits.
+ * Finishing without a write is fine, since the hook asks only once a turn.
+ */
+export function reminder(cli: string): string {
   return [
     "You didn't update the team's board (vboard) this turn.",
-    `If you changed anything or made progress, post a 1–3 sentence summary of what you did and what's next: ${cli} update${flag} "<summary>", or ${cli} reply <id> "<text>" in a board thread you're working in. Add --attach <file> for proof, like a test log.`,
-    `Only if this turn changed nothing (say, you just answered a question), run ${cli} update --skip instead. Don't include the prompt, long output, or secrets. Then finish.`,
+    `If you changed anything or made progress, share a 1–3 sentence summary of what you did and what's next where the team will see it: ${cli} reply <id> "<text>" in a board thread you're working in, or ${cli} post <channel> "<text>" in the channel that fits (${cli} channels lists them, ${cli} read <channel> shows what's there). Add --attach <file> for proof, like a test log.`,
+    `If you want to store memory, you can post to brain-<username>. Channels are public, so never store sensitive information.`,
+    "If this turn changed nothing worth sharing (say, you just answered a question), just finish. Don't include the prompt, long output, or secrets.",
   ].join(' ')
-}
-
-// --- where an update goes ----------------------------------------------------------
-
-const git = (cwd: string, ...args: string[]) => {
-  try {
-    return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
-  } catch {
-    return ''
-  }
-}
-
-/** `basehub-ai/vboard` from `git@github.com:basehub-ai/vboard.git` or `https://github.com/basehub-ai/vboard`. */
-export function repoName(remote: string): string | null {
-  const match = /[:/]([^/:]+\/[^/]+?)(?:\.git)?\/?$/.exec(remote.trim())
-  return match ? match[1]! : null
-}
-
-/** The work this checkout is on: its repo and branch, which name its thread. */
-export function workOf(cwd: string): { repo: string; branch: string; key: string } {
-  const root = git(cwd, 'rev-parse', '--show-toplevel') || cwd
-  const repo = repoName(git(root, 'remote', 'get-url', 'origin')) ?? basename(root)
-  // `symbolic-ref` also names the branch of a repo with no commits yet.
-  const branch = git(root, 'symbolic-ref', '--short', 'HEAD') || git(root, 'rev-parse', '--abbrev-ref', 'HEAD') || 'no-branch'
-  // Label filters split values on `|`, which a branch name may hold.
-  return { repo, branch, key: `${repo}@${branch}`.replace(/\|/g, '%7C').slice(0, 256) }
 }

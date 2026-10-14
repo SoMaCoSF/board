@@ -16,7 +16,7 @@ function event() {
     message: {
       id: 59,
       re: null,
-      labels: { pr: "basehub-ai/vboard#53", state: "open" },
+      labels: { pr: "vercel-labs/vboard#53", state: "open" },
       by: { actor: "github:user:40034115", principal: "github:user:40034115" },
     },
   };
@@ -48,7 +48,7 @@ test(":security: on a PR root asks Pi for a deepsec review of the diff, for any 
     assert.equal(n.thread, 59);
     assert.equal(n.key, "security-88");
     assert.ok(n.message.includes(`(slack:user:${user}) reacted with :security:`));
-    assert.ok(n.message.includes("basehub-ai/vboard#53"));
+    assert.ok(n.message.includes("vercel-labs/vboard#53"));
     assert.ok(n.message.includes("gh pr checkout 53"));
     assert.ok(n.message.includes("vb react 59 secure"));
   }
@@ -68,7 +68,7 @@ test("names the requester by handle, or by verified identity without one", async
 for (const [name, change] of [
   ["an unlabeled thread", e => { e.message.labels = { kind: "bug" }; }],
   ["a PR from another repository", e => { e.message.labels.pr = "other/repo#53"; }],
-  ["a malformed PR label", e => { e.message.labels.pr = "basehub-ai/vboard#53/merge"; }],
+  ["a malformed PR label", e => { e.message.labels.pr = "vercel-labs/vboard#53/merge"; }],
 ]) {
   test(`on ${name}, replies that :security: works on PR threads without waking Pi`, async () => {
     const input = event();

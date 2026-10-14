@@ -15,7 +15,7 @@ function event() {
     message: {
       id: 59,
       re: null,
-      labels: { pr: "basehub-ai/vboard#53", state: "open" },
+      labels: { pr: "vercel-labs/vboard#53", state: "open" },
       by: { actor: "github:user:40034115", principal: "github:user:40034115" },
     },
   };
@@ -87,9 +87,9 @@ test("shipit, its Slack squirrel alias, and :approved: merge a PR root for any r
     await h.run(input);
     assert.equal(h.tokens(), 1);
     assert.equal(h.requests.length, 2);
-    assert.equal(h.requests[0].url, "https://api.github.com/repos/basehub-ai/vboard/pulls/53");
+    assert.equal(h.requests[0].url, "https://api.github.com/repos/vercel-labs/vboard/pulls/53");
     assert.equal(h.requests[0].method, "GET");
-    assert.equal(h.requests[1].url, "https://api.github.com/repos/basehub-ai/vboard/pulls/53/merge");
+    assert.equal(h.requests[1].url, "https://api.github.com/repos/vercel-labs/vboard/pulls/53/merge");
     assert.equal(h.requests[1].method, "PUT");
     assert.deepEqual(h.requests[1].body, { sha: "abc123", merge_method: "merge" });
     for (const request of h.requests) {
@@ -111,7 +111,7 @@ for (const [name, change] of [
   ["a GitHub reaction", e => { e.payload.from = "github"; }],
   ["a deployment acting as a Slack reactor", e => { e.payload.by.principal = "vercel:project:pi:production"; }],
   ["a PR from another repository", e => { e.message.labels.pr = "other/repo#53"; }],
-  ["a malformed PR label", e => { e.message.labels.pr = "basehub-ai/vboard#53/merge"; }],
+  ["a malformed PR label", e => { e.message.labels.pr = "vercel-labs/vboard#53/merge"; }],
   ["an unlabeled thread", e => { e.message.labels = {}; }],
   ["an event without a message", e => { delete e.message; }],
 ]) {
@@ -124,7 +124,7 @@ for (const [name, change] of [
     assert.deepEqual(h.requests, []);
     assert.deepEqual(h.notifications, []);
     await h.run();
-    assert.equal(h.requests.at(-1).url, "https://api.github.com/repos/basehub-ai/vboard/pulls/53/merge", "the unchanged event merges");
+    assert.equal(h.requests.at(-1).url, "https://api.github.com/repos/vercel-labs/vboard/pulls/53/merge", "the unchanged event merges");
   });
 }
 
@@ -190,7 +190,7 @@ function assertIntent(h, reason, requester = "sam") {
   assert.equal(notification.thread, 59);
   assert.equal(notification.key, "shipit-71");
   assert.ok(notification.message.includes(`${requester} (slack:user:U123)`));
-  assert.ok(notification.message.includes("request a merge of basehub-ai/vboard#53"));
+  assert.ok(notification.message.includes("request a merge of vercel-labs/vboard#53"));
   assert.ok(notification.message.includes(reason));
 }
 

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { autoland, decide } from "../app/api/board/[[...path]]/autoland.ts";
+import { autoland, decide as decideFor } from "../app/api/board/[[...path]]/autoland.ts";
 
+const decide = (review, pr, files, checks) => decideFor(review, pr, files, checks, "vboard-factory[bot]");
 const review = (over = {}) => ({ land: "yes", why: "fixes the bug as asked", sha: "abc123", ...over });
 const pr = (over = {}) => ({ state: "open", merged: false, user: { login: "vboard-factory[bot]" }, head: { sha: "abc123" }, ...over });
 const file = (filename, status = "modified") => ({ filename, status });
@@ -55,6 +56,9 @@ test("the reviewer's no is final, with its reason", () => {
 test("a PR people opened, a closed or merged one, and new commits since the review don't land", () => {
   const files = [file("apps/a.ts")];
   assert.equal(decide(review(), pr({ user: { login: "jb" } }), files, green).why, "opened by jb, not the factory");
+  const actions = { login: "github-actions[bot]" };
+  assert.equal(decide(review(), pr({ user: actions, head: { sha: "abc123", ref: "pi/42" } }), files, green).would, true, "pi-pr's PR is the factory's");
+  assert.equal(decide(review(), pr({ user: actions, head: { sha: "abc123", ref: "other" } }), files, green).why, "opened by github-actions[bot], not the factory");
   assert.equal(decide(review(), pr({ state: "closed" }), files, green).why, "the PR is closed");
   assert.equal(decide(review(), pr({ merged: true, state: "closed" }), files, green).why, "the PR is merged");
   assert.equal(decide(review({ sha: "old" }), pr(), files, green).why, "new commits since the review");
@@ -81,7 +85,7 @@ function event(over = {}) {
     message: {
       id: 59,
       re: null,
-      labels: { pr: "basehub-ai/vboard#53", land: "yes", "land.why": "fixes the bug", "land.sha": "abc123" },
+      labels: { pr: "vercel-labs/vboard#53", land: "yes", "land.why": "fixes the bug", "land.sha": "abc123" },
     },
     ...over,
   };
@@ -94,7 +98,7 @@ function harness(routes) {
     token: async () => "test-token",
     fetch: async (url) => {
       requests.push(url);
-      const path = url.replace("https://api.github.com/repos/basehub-ai/vboard", "");
+      const path = url.replace("https://api.github.com/repos/vercel-labs/vboard", "");
       const body = routes[path];
       assert.ok(body, `unexpected GitHub request: ${path}`);
       if (body instanceof Error) throw body;
@@ -113,13 +117,15 @@ const routes = (files = [file("apps/a.ts")]) => ({
   "/pulls/53": pr(),
   "/pulls/53/files?per_page=100&page=1": files,
   "/commits/abc123/check-runs?check_name=check&filter=latest": { check_runs: green },
+  // The factory's bot, as GraphQL names it: without REST's `[bot]`.
+  "https://api.github.com/graphql": { data: { viewer: { databaseId: 1, login: "vboard-factory" } } },
 });
 
 test("the watcher labels the PR thread with its decision and merges nothing", async () => {
   const h = harness(routes());
   await h.run();
   assert.deepEqual(h.labels, [{ id: 59, set: { autoland: "would", "autoland.why": "outside vboard core" } }]);
-  assert.equal(h.requests.length, 3);
+  assert.equal(h.requests.length, 4);
   assert.ok(h.requests.every((url) => !url.includes("/merge")));
 });
 

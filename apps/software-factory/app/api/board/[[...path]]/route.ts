@@ -15,6 +15,7 @@ import { owner } from "./owner";
 import { crosspost } from "./crosspost";
 import { guard } from "./guard";
 import { renderForSlack } from "./render";
+import { CONNECTOR, REPO } from "./github";
 import { helper } from "./helper";
 
 // The software factory: vboard running on its own repo and Vercel's Slack. Locally
@@ -46,16 +47,18 @@ export const { GET, POST, scheduler } = board({
       adapter: "slack/vboard-factory",
       render: renderForSlack,
       channels: {
-        C0C6MNT9LLC: "dev",
+        // #development-messageboard
+        C0C8XN8SQRG: "dev",
       },
     }),
-    github: github({
-      adapter: "github/vboard-factory",
-      // Pinned, so no instance spends a call looking it up.
-      botUserId: 338721338,
-      repos: {
-        "basehub-ai/vboard": { pulls: "dev", issues: "dev" },
-      },
+    // Only with a GitHub connector: until vercel-labs installs the factory's app, the board is Slack's alone.
+    ...(CONNECTOR && {
+      github: github({
+        adapter: CONNECTOR,
+        repos: {
+          [REPO]: { pulls: "dev", issues: "dev" },
+        },
+      }),
     }),
   },
   // Every message from Slack, GitHub, or CI is checked for prompt injection before it lands.

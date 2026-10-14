@@ -7,13 +7,13 @@ test("sourceLink: a Slack thread's permalink, a GitHub issue or PR, or nothing",
     platform: "Slack",
     url: "https://vercel.slack.com/archives/C0C6MNT9LLC/p1791394851272189",
   });
-  assert.deepEqual(sourceLink({ thread: "github:basehub-ai/vboard:issue:42" }), {
+  assert.deepEqual(sourceLink({ thread: "github:vercel-labs/vboard:issue:42" }), {
     platform: "GitHub",
-    url: "https://github.com/basehub-ai/vboard/issues/42",
+    url: "https://github.com/vercel-labs/vboard/issues/42",
   });
-  assert.deepEqual(sourceLink({ thread: "github:basehub-ai/vboard:78" }), {
+  assert.deepEqual(sourceLink({ thread: "github:vercel-labs/vboard:78" }), {
     platform: "GitHub",
-    url: "https://github.com/basehub-ai/vboard/pull/78",
+    url: "https://github.com/vercel-labs/vboard/pull/78",
   });
   assert.equal(sourceLink(null), null);
   assert.equal(sourceLink({ thread: "whatsapp:123" }), null);

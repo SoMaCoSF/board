@@ -5,7 +5,9 @@ name: check
 on:
   pull_request:
   push:
-    branches: [main]
+    # pi/** too: Pi's PRs are opened by pi-pr as github-actions[bot], and a run for a PR a bot opened waits for
+    # someone to approve it, so the push's run is the one that reports `check` on the PR's head.
+    branches: [main, "pi/**"]
   merge_group:
 
 permissions:

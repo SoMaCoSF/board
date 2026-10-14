@@ -8,8 +8,8 @@ const input = (message) => ({
   target: "slack:C0C6MNT9LLC",
   message: {
     re: null,
-    text: "PR #68: RFC: [Declared] actors\nhttps://github.com/basehub-ai/vboard/pull/68",
-    labels: { pr: "basehub-ai/vboard#68", state: "open" },
+    text: "PR #68: RFC: [Declared] actors\nhttps://github.com/vercel-labs/vboard/pull/68",
+    labels: { pr: "vercel-labs/vboard#68", state: "open" },
     by: { actor: "github:user:40034115" },
     ...message,
   },
@@ -18,16 +18,16 @@ const input = (message) => ({
 test("a PR root is one line: its state's emoji and a link", () => {
   assert.equal(
     renderForSlack(input()),
-    ":pr: [#68 RFC: \\[Declared\\] actors](https://github.com/basehub-ai/vboard/pull/68) · julianbenegas",
+    ":pr: [#68 RFC: \\[Declared\\] actors](https://github.com/vercel-labs/vboard/pull/68) · julianbenegas",
   );
   for (const [state, emoji] of [["draft", ":pr-draft:"], ["merged", ":pr-merged:"], ["closed", ":pr-closed:"]]) {
-    const labels = { pr: "basehub-ai/vboard#68", state };
+    const labels = { pr: "vercel-labs/vboard#68", state };
     assert.ok(renderForSlack(input({ labels })).startsWith(`${emoji} [#68 `));
   }
 });
 
 test("a PR root labeled with its owner says whose it is", () => {
-  const labels = { pr: "basehub-ai/vboard#68", state: "open", owner: "slack:user:U0AP7QRUM7E", "owner.name": "Martin Sione" };
+  const labels = { pr: "vercel-labs/vboard#68", state: "open", owner: "slack:user:U0AP7QRUM7E", "owner.name": "Martin Sione" };
   assert.ok(renderForSlack(input({ labels })).endsWith(") · for <@U0AP7QRUM7E>"));
   const github = { ...labels, owner: "github:user:40034115", "owner.name": "julianbenegas" };
   assert.ok(renderForSlack(input({ labels: github })).endsWith(") · for julianbenegas"));
