@@ -1,4 +1,5 @@
 import { board } from "vboard";
+import { readableText } from "vboard/client";
 import { slack } from "vboard/adapter-slack";
 import { github } from "vboard/adapter-github";
 import { vercelBlob } from "vboard/adapter-vercel-blob";
@@ -93,7 +94,7 @@ export const { GET, POST, scheduler } = board({
         const kind = await classifyThread(
           [thread.message, ...thread.replies].map((m) => ({
             from: m.author?.name ?? m.by.actor,
-            text: m.text,
+            text: readableText(m),
           })),
         );
         if (thread.message.labels.kind === kind) {

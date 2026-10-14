@@ -1,4 +1,5 @@
 import { board, type WatcherContext } from "vboard";
+import { readableText } from "vboard/client";
 import { slack } from "vboard/adapter-slack";
 import { createSlackAdapter } from "@chat-adapter/slack";
 import { connectSlackAdapter } from "@vercel/connect/chat";
@@ -59,9 +60,11 @@ async function triage({ event, board }: WatcherContext) {
   const message = event.message;
   if (event.type !== "message.posted" || !message || message.re !== null) return;
   await board.react(message.id, "ack");
+  // As people read it: mentions are stored as exact actors (`@[slack:user:U0456]`).
+  const text = readableText(message);
   const { answers } = await decide({
     model: "openai/gpt-6-luna-decisions",
-    state: message.text,
+    state: text,
     questions: {
       kind: {
         type: "choice",
@@ -93,7 +96,7 @@ async function triage({ event, board }: WatcherContext) {
   if (labels.announcement) return;
   let chatId = labels.v0;
   if (!chatId) {
-    chatId = (await startV0({ kind, text: message.text, source: slackLink(message.origin?.thread) })).id;
+    chatId = (await startV0({ kind, text, source: slackLink(message.origin?.thread) })).id;
     await board.label(message.id, { set: { v0: chatId } });
     await board.react(message.id, "v0");
   }
@@ -101,9 +104,9 @@ async function triage({ event, board }: WatcherContext) {
   const { text: reason } = await generateText({
     model: "openai/gpt-6-luna",
     system: `You triage feedback about v0, Vercel's AI app builder. In one short sentence, say why this ${kind} report is worth a coding agent's attempt.`,
-    prompt: message.text,
+    prompt: text,
   });
-  const firstLine = message.text.split("\n")[0]!.slice(0, 140);
+  const firstLine = text.split("\n")[0]!.slice(0, 140);
   const announcement = await board.post("v0-prs", {
     text: `v0 is on a ${kind}: “${quoted(firstLine)}”\n${quoted(reason)}\nhttps://v0.app/chat/${chatId}${message.origin ? `\nsource: ${slackLink(message.origin.thread)}` : ""}`,
     labels: { source: String(message.id), v0: chatId, kind },
