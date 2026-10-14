@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto'
 import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { configDir } from '../client/node.ts'
 
 // Coding agents end each turn with a hook (Pi, with an extension). `vb hooks install` adds one that
 // reminds the agent, once, to update the board when its turn didn't: it replies
@@ -314,4 +316,41 @@ export function reminder(cli: string): string {
     `If you want to store memory, you can post to brain-<username>. Channels are public, so never store sensitive information.`,
     "If this turn changed nothing worth sharing (say, you just answered a question), just finish. Don't include the prompt, long output, or secrets.",
   ].join(' ')
+}
+
+// The first reminder on each board also offers to link the person's accounts, once.
+// The marker lives in the config directory, so it survives reboots.
+
+/** Marks the offer made for `board`. True only for the call that made it, and never when it can't be saved. */
+export function claimLinkOffer(board: string): boolean {
+  const file = join(configDir(), 'link-offered', createHash('sha256').update(board).digest('hex').slice(0, 32))
+  try {
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
+    writeFileSync(file, '', { flag: 'wx' })
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function linkOffer(cli: string): string {
+  return [
+    `One more thing, this time only: run ${cli} identity.`,
+    "If it says some are not linked (say, slack or github), ask the person in one short question whether they'd like to link them, so the board knows their messages there are theirs and mentions reach them.",
+    `If they say yes, run ${cli} identity link <key> --no-wait for each and give them the sign-in URL or code it prints: only they should open or post it.`,
+    "If they say no, or there's nothing to link, drop it. This won't come up again.",
+  ].join(' ')
+}
+
+/**
+ * The reminder as each agent reads it from the hook's stdout. Claude Code
+ * shows a stop's `additionalContext` once, as hook feedback, and continues the
+ * turn; a blocked stop would also show it as a hook error. Codex and Pi's
+ * extension read a blocked stop's `reason`; Cursor, whose stop can't block,
+ * a `followup_message`.
+ */
+export function stopOutput(agent: string, text: string): Record<string, unknown> {
+  if (agent === 'claude') return { hookSpecificOutput: { hookEventName: 'Stop', additionalContext: text } }
+  if (agent === 'cursor') return { followup_message: text }
+  return { decision: 'block', reason: text }
 }

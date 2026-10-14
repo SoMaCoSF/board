@@ -575,9 +575,11 @@ export function createSyncEngine(options: {
           ...mentionInput(platform, event),
           id: await writeId(0),
         }
+        // A reply kept on the board: no other platform gets it. A root always syncs, so its thread can.
+        const reply = { ...base, ...(overrides.noSync ? { noSync: true } : {}) }
         if (rootId !== undefined) {
           await setExtraLabels(identity, rootId)
-          return result(await writePost(writes, { ...base, re: rootId }))
+          return result(await writePost(writes, { ...reply, re: rootId }))
         }
         const fetched = await platform.fetchRoot(native(event.thread))
         if (fetched === null) {
@@ -592,7 +594,7 @@ export function createSyncEngine(options: {
           origin: { channel: event.channel, thread: event.thread, subthread: null, message: `root:${trigger.id}`, context: null },
           from: key, ...mentionInput(platform), id: await writeId(1),
         })
-        return result(await writePost(writes, { ...base, re: root.id }))
+        return result(await writePost(writes, { ...reply, re: root.id }))
       }
       case 'edited':
       case 'deleted':
@@ -635,7 +637,7 @@ export function createSyncEngine(options: {
           const set = Object.fromEntries(Object.entries(desired).filter(([key, value]) => root?.labels[key] !== value))
           const unset = Object.keys(root?.labels ?? {}).filter((key) => !(key in desired) && (event.unset.includes(key) || overrides.unset?.includes(key) || owned(key)))
           if (root && !root.deleted && (Object.keys(set).length || unset.length)) await writeLabels(writes, { identity, id: rootId, set, unset })
-          if (event.reply) return result(await writePost(writes, { ...source, identity, re: rootId, text: clampText(overrides.text ?? event.reply!), from: key, ...mentionInput(platform), id: await writeId(1) }))
+          if (event.reply) return result(await writePost(writes, { ...source, identity, re: rootId, text: clampText(overrides.text ?? event.reply!), from: key, ...mentionInput(platform), ...(overrides.noSync ? { noSync: true } : {}), id: await writeId(1) }))
           return { root: rootId, message: createdHere ? rootId : null }
         }
         if (!event.createRoot) return { root: null, message: null }
@@ -646,7 +648,7 @@ export function createSyncEngine(options: {
           origin: { channel: event.channel, thread: event.thread, subthread: null, message: `lifecycle:${trigger.id}`, context: null },
           from: key, ...mentionInput(platform), id: await writeId(0),
         })
-        if (event.reply) return result(await writePost(writes, { ...source, identity, re: root.id, text: clampText(overrides.text ?? event.reply), from: key, ...mentionInput(platform), id: await writeId(1) }))
+        if (event.reply) return result(await writePost(writes, { ...source, identity, re: root.id, text: clampText(overrides.text ?? event.reply), from: key, ...mentionInput(platform), ...(overrides.noSync ? { noSync: true } : {}), id: await writeId(1) }))
         return result(root)
       }
     }
@@ -684,16 +686,25 @@ export function createSyncEngine(options: {
         token.kind === 'actor'
           ? mentioned.find((candidate) => candidate.id === token.actor)
           : mentioned.find((candidate) => candidate.handle.toLowerCase() === token.handle)
-      return actor ? (platform.mention(actor) ?? linkedMention(platform, actor, actors) ?? actor.name) : null
+      return actor ? (nativeMention(platform, actor.id, actors) ?? actor.name) : null
     })
   }
 
-  /** A person mentioned on the board reads natively where they've linked an account. */
-  function linkedMention(platform: SyncProvider, person: Actor, actors: ActorsState): string | null {
-    for (const id of linkedTo(actors, person.id)) {
+  /**
+   * How `platform` mentions an actor: its own account, its person's, or any account
+   * its person linked there. An agent is just itself.
+   */
+  function nativeMention(platform: SyncProvider, actor: string, actors: ActorsState): string | null {
+    const native = (id: string) => {
       const account = actors.byId[id]
-      const native = account ? platform.mention(account) : null
-      if (native) return native
+      return account ? platform.mention(account) : null
+    }
+    const person = actors.links[actor]?.to ?? actor
+    const direct = native(actor) ?? (person === actor ? null : native(person))
+    if (direct) return direct
+    for (const id of linkedTo(actors, person)) {
+      const linked = native(id)
+      if (linked) return linked
     }
     return null
   }
@@ -752,11 +763,32 @@ export function createSyncEngine(options: {
     const quoted = quote
       ? `> ↪ ${actors.byId[quote.by.actor]?.name ?? 'someone'}${quote.origin?.context ? ` on ${quote.origin.context}` : ''}: ${displayText(displayMentions(quote.text, mentionedIn(quote, actors)), quote.by.actor).slice(0, 140).replace(/\n/g, ' ')}\n\n`
       : ''
-    const body = platformOf(key).render(immutable({ message: { ...structuredClone(message), text: displayText(message.text, message.by.actor) }, author: actor ? { ...actor } : null, label: name, target }))
+    const platform = platformOf(key)
+    const body = platform.render(immutable({
+      message: { ...structuredClone(message), text: displayText(message.text, message.by.actor) },
+      author: actor ? { ...actor } : null,
+      mentionOf: (id: string) => nativeMention(platform, id, actors),
+      label: name,
+      target,
+    }))
     if (typeof body !== 'string') throw badRequest('a provider renderer must return markdown')
-    const markdown = `${quoted}${textFor(platformOf(key), message, actors, body)}`
+    const markdown = `${quoted}${textFor(platform, message, actors, body)}`
     // An agent's message can carry its own name and picture where the platform shows a sender per message.
-    return message.by.profile && !message.from ? { markdown, as: { name, avatar: actor?.avatar ?? null } } : { markdown }
+    return message.by.profile && !message.from ? { markdown, as: { name, avatar: senderAvatar(message, actor, actors) } } : { markdown }
+  }
+
+  /** An agent's own picture, or for the board's built-in one, its person's Vercel avatar: `claude via julian` shows Julian. */
+  function senderAvatar(message: Message, actor: Actor | undefined, actors: ActorsState): string | null {
+    const builtIn = (avatar: string | null | undefined) => !avatar || /\/avatars\/[a-z0-9-]+$/.test(avatar)
+    const own = actor?.avatar ?? null
+    if (!builtIn(own)) return own
+    // The person's own picture, which their CLI sends from Vercel, when they've posted as themselves.
+    const person = actors.byId[message.by.principal]?.avatar
+    if (!builtIn(person)) return person!
+    // Otherwise their handle, which is their Vercel username unless they changed it or the board made one up.
+    const username = actor?.handle.split('/')[0] ?? ''
+    if (!message.by.principal.startsWith('vercel:user:') || !username || /^user-/.test(username)) return own
+    return `https://vercel.com/api/www/avatar?u=${encodeURIComponent(username)}&s=64&format=png`
   }
 
   /** What a platform shows for files it didn't get: one line each, so a reader knows they're on the board. */

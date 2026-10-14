@@ -103,11 +103,25 @@ The third argument changes the default import:
 | `labels` | Merged into the thread root's labels. |
 | `unset` | Label keys removed from the root, applied last. |
 | `root` | A synchronous function that shapes a new root. It receives the default draft (`text`, `labels`, `author`, `raw`) and returns `{ text?, labels? }`. |
+| `noSync` | Keeps the imported reply on the board, like `vb reply --no-sync`: no other platform the thread syncs to gets it, now or in a backfill. A root it creates still syncs. |
 
 `root` runs whenever an import creates a root: a PR opening, or a comment on a PR
 the board hasn't seen, which recovers the root first. Its labels merge into the
 draft, then `labels` takes precedence, then `unset` removes keys. It can't change
 the author or other provenance.
+
+`noSync` keeps a GitHub PR's inline review threads out of its Slack thread, while
+top-level comments and reviews still go through:
+
+```ts
+// in github({ repos: { … } }):
+'acme/www': {
+  channel: 'prs',
+  run: async ({ event, board }) => {
+    await board.sync('prs', event, { noSync: event.subthread !== null })
+  },
+},
+```
 
 Platform reconciliation still applies on later events: GitHub's next event
 rewrites `state`, `review`, `tag.*`, and `assignee.*` unless you override them
@@ -208,6 +222,20 @@ render: ({ message, label }) =>
   message.re === null && message.labels.state === 'merged'
     ? `:pr-merged: ${message.text}`
     : `**${label}**: ${message.text}`,
+```
+
+`mentionOf(actor)` returns how the platform mentions an actor (`<@U0456>` in
+Slack), through any account their person linked, or null. The default label is
+the author's name, so nobody gets pinged unless a renderer asks:
+
+```ts
+// in slack({ … }): a PR's root mentions its owner, or its author
+render: ({ message, label, mentionOf }) => {
+  const who = (message.labels.owner && mentionOf(message.labels.owner)) ?? mentionOf(message.by.actor)
+  return message.re === null && message.labels.pr && who
+    ? `${message.text} · ${who}`
+    : `**${label}**: ${message.text}`
+},
 ```
 
 The default renderer reads no labels, so labels alone never edit a copy. Rendering

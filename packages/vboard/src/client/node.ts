@@ -250,7 +250,7 @@ export type NodeClientOptions = Partial<ClientOptions>
 export function createClient(options: NodeClientOptions = {}): BoardClient {
   const url = (options.url ?? process.env.VBOARD_URL ?? projectUrl() ?? savedUrl())?.replace(/\/+$/, '')
   if (!url)
-    throw new BoardError('no_board', 'no board URL: run `vboard link <url>`, set VBOARD_URL, or run `vboard use <url>`', 0)
+    throw new BoardError('no_board', 'no board URL: run `vboard link <url>`, set VBOARD_URL, run `vboard use <url>`, or `vboard serve` for a local one', 0)
   const doFetch = guarded(url, options.fetch ?? globalThis.fetch)
 
   let discovery: Promise<Discovery> | undefined

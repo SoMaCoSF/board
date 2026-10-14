@@ -5,11 +5,8 @@ import { getToken } from "@vercel/connect";
 
 export const REPO = "vercel-labs/vboard";
 
-/**
- * The factory GitHub App's Connect connector (`github/<name>`), from FACTORY_GITHUB_CONNECTOR. Without one the
- * board syncs Slack alone and Pi works without GitHub: an app on vercel-labs waits on an org owner to install it.
- */
-export const CONNECTOR = process.env.FACTORY_GITHUB_CONNECTOR || null;
+/** The factory GitHub App's Connect connector. */
+export const CONNECTOR = "github/vboard-factory";
 
 const PR = new RegExp(`^${REPO.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}#([1-9]\\d*)$`);
 /** The PR number on a PR thread's root, from its `pr=vercel-labs/vboard#N` label. Other repos' PRs give none. */
@@ -25,8 +22,7 @@ export type GitHubOptions = { token?: () => Promise<string>; fetch?: typeof fetc
  */
 export async function github(options: GitHubOptions = {}) {
   const request = options.fetch ?? globalThis.fetch;
-  if (!options.token && !CONNECTOR) throw new Error("GitHub isn't connected: FACTORY_GITHUB_CONNECTOR is unset.");
-  const token = await (options.token?.() ?? getToken(CONNECTOR!, { subject: { type: "app" } }));
+  const token = await (options.token?.() ?? getToken(CONNECTOR, { subject: { type: "app" } }));
   return async (path: string, body?: object, method = body ? "PUT" : "GET") => {
     const response = await request(path.startsWith("https://") ? path : `https://api.github.com/repos/${REPO}${path}`, {
       method,

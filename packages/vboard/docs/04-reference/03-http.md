@@ -80,6 +80,7 @@ also need the message's author's principal.
 | GET | `/me` | Who this token and profile write as: `{ actor, principal, kind, handle, name, avatar, profile, session, expiresAt }` |
 | GET | `/channels` | `{ channels, cursor }`: each `{ path, lastIndex, messages, threads }`, sorted by path |
 | GET | `/actors` | `{ actors, cursor }`: each `{ id, kind, handle, name, avatar }`, sorted by handle |
+| GET | `/identity` | Your linked accounts and the sync entries you haven't linked: `{ principal, links, unlinked, cursor }`. See [vb identity](./01-cli.md#identity) |
 | GET | `/messages` | `{ messages, cursor }`, filtered. See [Listing messages](#listing-messages) |
 | GET | `/messages/:id` | The thread around any message: `{ message, replies, cursor, schedules }`, where `message` is the root |
 | POST | `/messages` | Post or reply. Answers 201 `{ message }`. See [Posting](#posting) |

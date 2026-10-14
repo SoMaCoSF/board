@@ -5,7 +5,7 @@ import { github } from "vboard/adapter-github";
 import { vercelBlob } from "vboard/adapter-vercel-blob";
 import { redisHttp } from "experimental-a2/store-redis-http";
 import { vercelQueues } from "experimental-a2/scheduler-vercel";
-import { byPi, byWatcher, taskMessage, tellPi } from "./agent";
+import { byAgent, byPi, byWatcher, taskMessage, tellPi } from "./agent";
 import { classifyThread } from "./classify";
 import { forAgent, isPiKind, PI_KINDS, piTask, scheduled, scheduledThread } from "./kinds";
 import { security } from "./security";
@@ -15,6 +15,7 @@ import { owner } from "./owner";
 import { crosspost } from "./crosspost";
 import { guard } from "./guard";
 import { renderForSlack } from "./render";
+import { asksPi, isDraft, reviewStarts } from "./review";
 import { CONNECTOR, REPO } from "./github";
 import { helper } from "./helper";
 
@@ -51,14 +52,21 @@ export const { GET, POST, scheduler } = board({
         C0C8XN8SQRG: "dev",
       },
     }),
-    // Only with a GitHub connector: until vercel-labs installs the factory's app, the board is Slack's alone.
-    ...(CONNECTOR && {
-      github: github({
-        adapter: CONNECTOR,
-        repos: {
-          [REPO]: { pulls: "dev", issues: "dev" },
+    github: github({
+      adapter: CONNECTOR,
+      repos: {
+        [REPO]: {
+          // Inline review threads (comments on lines of code) stay on GitHub and the
+          // board, out of Slack: top-level comments and review verdicts still go through.
+          pulls: {
+            channel: "dev",
+            run: async ({ event, board }) => {
+              await board.sync("dev", event, { noSync: event.subthread !== null });
+            },
+          },
+          issues: "dev",
         },
-      }),
+      },
     }),
   },
   // Every message from Slack, GitHub, or CI is checked for prompt injection before it lands.
@@ -75,8 +83,10 @@ export const { GET, POST, scheduler } = board({
     // A factory PR's Slack thread and the Slack thread it was built for link to each other.
     crosspost: crosspost(),
     security: security({ tellPi }),
-    // Every non-PR dev thread gets a kind, judged from all of it,
+    // Every non-PR dev thread gets a kind, judged from all of it whenever a person posts,
     // so a chat that turns into a bug report becomes kind=bug. Bugs get 🐛 in Slack too.
+    // An agent's post (a coding agent sharing progress) isn't judged: a thread an agent
+    // opens gets a kind once a person replies in it.
     "triage-gpt": {
       tail: "dev",
       run: async ({ event, board }) => {
@@ -86,6 +96,7 @@ export const { GET, POST, scheduler } = board({
           !message ||
           byPi(message.re ?? message.id, message.by) ||
           byWatcher(message.by) ||
+          byAgent(message.by) ||
           scheduledThread(message)
         ) {
           return;
@@ -149,17 +160,19 @@ export const { GET, POST, scheduler } = board({
         }
       },
     },
-    // Pi reviews PRs: a PR's thread opens in `dev` when it's opened or marked ready, and
-    // Pi hears when anyone but a bot (Vercel's deploy comments, CI) replies there. Only PR
-    // threads: `--label pr` matches a reply by its root's labels too.
+    // Pi reviews PRs once they're ready: a PR opened ready when its thread opens in `dev`, a
+    // draft when it's marked ready (its root relabeled state=open). Pi hears when anyone but a
+    // bot (Vercel's deploy comments, CI) replies there, except that in a draft only a reply
+    // asking Pi itself, or a reminder Pi scheduled, wakes it. Only PR threads: `--label pr` matches a reply by its root's
+    // labels too.
     "review-pi": {
       tail: "dev --label pr",
       run: async ({ event, board }) => {
         const message = event.message;
-        if (event.type !== "message.posted" || !message) {
+        if (!message) {
           return;
         }
-        if (message.re === null) {
+        if (reviewStarts(event)) {
           await tellPi({
             board,
             task: "review",
@@ -168,9 +181,15 @@ export const { GET, POST, scheduler } = board({
             message: `There's a pull request to review in board thread #${message.id}.`,
           });
         } else if (
+          event.type === "message.posted" &&
+          message.re !== null &&
           (scheduled(message) || !byPi(message.re, message.by)) &&
           !message.author?.handle.endsWith("[bot]") &&
-          !byWatcher(message.by)
+          !byWatcher(message.by) &&
+          // In a draft, a reminder Pi scheduled for itself still reaches it.
+          ((scheduled(message) && byPi(message.re, message.by)) ||
+            asksPi(message.re, message.text) ||
+            !isDraft((await board.thread(message.re)).message.labels))
         ) {
           await tellPi({
             board,

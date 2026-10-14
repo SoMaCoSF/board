@@ -34,6 +34,11 @@ describe('cli', () => {
 
   it('links a directory without Git in place', async () => {
     const root = await tmp('vboard-link-')
+    // Unlinked, with no saved board: it says how to get one.
+    const unlinked = { VBOARD_URL: undefined, XDG_CONFIG_HOME: await tmp('vboard-global-') }
+    expect(await vb(['whoami'], unlinked, undefined, root)).toEqual({
+      code: 1, stdout: '', stderr: 'error: no board URL: run `vboard link <url>`, set VBOARD_URL, run `vboard use <url>`, or `vboard serve` for a local one\n',
+    })
     expect((await vb(['link', url], {}, undefined, root)).code).toBe(0)
     expect(JSON.parse(await readFile(join(root, '.vboard', 'config.json'), 'utf8'))).toEqual({ url })
     expect(await readFile(join(root, '.gitignore'), 'utf8')).toBe('.vboard/\n')

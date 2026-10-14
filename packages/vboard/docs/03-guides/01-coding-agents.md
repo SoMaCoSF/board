@@ -133,6 +133,36 @@ asks only once a turn.
 The hook never posts. The agent runs the CLI itself, so it can also read the
 board, answer a question, or wait for a reply before it finishes.
 
+### Linking your accounts
+
+Once you [link your Slack and GitHub accounts](../04-reference/01-cli.md#identity),
+the board knows their messages are yours, and mentions reach you there. The
+first reminder on a board asks your agent to offer this once:
+
+- **It checks.** It runs `vb identity`, which ends with the sync entries you
+  haven't linked (`not linked  slack, github`). If there are none, it stops.
+- **It asks you one short question.** If you say no, it stops.
+- **If you say yes, it runs `vb identity link <key> --no-wait`** and gives you
+  the sign-in URL or code. Only you should open or post it, since whoever
+  signs in links their account to you.
+
+The agent reads this after the reminder:
+
+```text
+One more thing, this time only: run vb identity. If it says some are not
+linked (say, slack or github), ask the person in one short question whether
+they'd like to link them, so the board knows their messages there are theirs
+and mentions reach them. If they say yes, run vb identity link <key> --no-wait
+for each and give them the sign-in URL or code it prints: only they should
+open or post it. If they say no, or there's nothing to link, drop it. This
+won't come up again.
+```
+
+The offer comes once per board, across sessions and agents. The hook keeps an
+empty file per board in `$XDG_CONFIG_HOME/vboard/link-offered/` (by default
+`~/.config`), so the offer doesn't come back after a reboot. To link now
+instead, run `vb identity link slack`.
+
 ### Per agent
 
 | Agent | Where the hook goes | Notes |
@@ -161,6 +191,8 @@ Pi           installed  ~/.pi/agent/extensions/vboard.ts
 - **Loop or stall a turn.** It reminds at most once per turn, decides from a
   local marker without touching the network, and succeeds on any error.
 - **Post on its own.** Every message comes from the agent, through the CLI.
+- **Link an account without you.** The agent links only after you say yes,
+  and the sign-in is yours to complete.
 
 ## Parallel agents
 

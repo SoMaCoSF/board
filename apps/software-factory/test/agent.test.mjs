@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { GITHUB_TOKEN, byPi, byWatcher, piAvatar, piName, sourceLink, startOrSay, taskMessage } from "../app/api/board/[[...path]]/agent.ts";
+import { GITHUB_TOKEN, byAgent, byPi, byWatcher, piAvatar, piName, sourceLink, startOrSay, taskMessage } from "../app/api/board/[[...path]]/agent.ts";
 
 test("sourceLink: a Slack thread's permalink, a GitHub issue or PR, or nothing", () => {
   assert.deepEqual(sourceLink({ thread: "slack:C0C6MNT9LLC:1791394851.272189" }), {
@@ -87,6 +87,12 @@ test("byWatcher: the board's watchers' own notes, which wake neither Pi nor tria
   assert.ok(byWatcher({ actor: "vboard:watch:pi" }));
   assert.ok(!byWatcher({ actor: "slack:user:U123" }));
   assert.ok(!byWatcher({ actor: "vboard:schedule" }));
+});
+
+test("byAgent: a coding agent's or Pi's message, which triage doesn't judge, and not a person's", () => {
+  assert.ok(byAgent({ profile: "claude" }));
+  assert.ok(byAgent({ profile: piName(1956) }));
+  assert.ok(!byAgent({ profile: null }));
 });
 
 function thread() {

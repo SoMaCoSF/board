@@ -67,7 +67,7 @@ issue. Resolving review conversations isn't synced.
 | --- | --- |
 | `pr.opened` | A root labeled `pr=owner/repo#123` and `state=open` or `state=draft` |
 | `pr.ready`, `pr.draft` | Sets `state` to `open` or `draft` |
-| `pr.reopened` | A reply ("reopened by julian") and `state=open` |
+| `pr.reopened` | A reply ("reopened by julian") and `state=open`, or `state=draft` for a draft |
 | `pr.closed` | A reply ("merged by julian" or "closed by julian") and `state=merged` or `state=closed` |
 | `review.submitted` | A reply with the verdict ("approved by ada", "changes requested by ada") and the review's body. Approvals and change requests set `review` |
 | `review.dismissed` | Unsets `review` |

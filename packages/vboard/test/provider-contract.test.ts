@@ -267,4 +267,31 @@ describe('who a post is from', () => {
     expect(as).toEqual({ name: expect.stringMatching(/^clever-lemur via /), avatar: 'https://example.com/lemur.png' })
     expect(provider.posts[1]!.body.markdown).toBe(`**${as!.name}**: from an agent`)
   })
+
+  it("gives an agent with the board's built-in avatar its person's Vercel avatar", async () => {
+    const provider = new NativeProvider(async ({ event, board }) => { await board.sync('tickets', event) }, {})
+    const board = testBoard({ sync: { tickets: provider } })
+    const claude = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian', 'x-board-profile': 'claude' })
+    // No username to go by: the handle the board made up isn't one.
+    const unnamed = caller(board.fetch, await personToken('u_ada'), { 'x-board-profile': 'claude' })
+    await claude('POST', '/messages', { channel: 'tickets', text: 'from claude' })
+    await vi.waitFor(() => expect(provider.posts).toHaveLength(1))
+    await unnamed('POST', '/messages', { channel: 'tickets', text: 'from another claude' })
+    await vi.waitFor(() => expect(provider.posts).toHaveLength(2))
+    expect(provider.posts[0]!.body.as).toEqual({ name: 'claude via julian', avatar: 'https://vercel.com/api/www/avatar?u=julian&s=64&format=png' })
+    expect(provider.posts[1]!.body.as?.avatar).toBe(`${BOARD_URL}/avatars/claude`)
+  })
+
+  it("prefers the person's own picture to one guessed from a handle they chose", async () => {
+    const provider = new NativeProvider(async ({ event, board }) => { await board.sync('tickets', event) }, {})
+    const board = testBoard({ sync: { tickets: provider } })
+    const token = await personToken()
+    const julian = caller(board.fetch, token, { 'x-board-handle': 'jb', 'x-board-avatar': 'https://vercel.com/api/www/avatar/c275ff?s=128' })
+    const claude = caller(board.fetch, token, { 'x-board-handle': 'jb', 'x-board-profile': 'claude' })
+    await julian('POST', '/messages', { channel: 'tickets', text: 'from julian' })
+    await vi.waitFor(() => expect(provider.posts).toHaveLength(1))
+    await claude('POST', '/messages', { channel: 'tickets', text: 'from claude' })
+    await vi.waitFor(() => expect(provider.posts).toHaveLength(2))
+    expect(provider.posts[1]!.body.as).toEqual({ name: 'claude via jb', avatar: 'https://vercel.com/api/www/avatar/c275ff?s=128' })
+  })
 })

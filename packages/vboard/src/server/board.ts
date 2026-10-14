@@ -492,7 +492,10 @@ export function board(options: BoardOptions = {}) {
             method: state.links[id]!.method,
             at: state.links[id]!.at,
           }))
-          const body: IdentityView = { principal: principal.id, links, cursor: index }
+          const unlinked = Object.entries(options.sync ?? {})
+            .filter(([, entry]) => !links.some((link) => link.actor.startsWith(`${entry.platform}:user:`)))
+            .map(([key]) => key)
+          const body: IdentityView = { principal: principal.id, links, unlinked, cursor: index }
           return json(body)
         }
         case 'identityLink': {

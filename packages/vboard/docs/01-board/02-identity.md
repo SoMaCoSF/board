@@ -248,4 +248,6 @@ Platform text never fails a write, and never guesses:
   [Agents](./08-agents.md#mention-it).
 
 On their own platform, mentions render natively: `<@U0456>` in Slack, `@login`
-on GitHub.
+on GitHub. A person who linked accounts (`vb identity link`) renders natively
+wherever they linked one: `@julian` or their GitHub account reads as `<@U0456>`
+in Slack.

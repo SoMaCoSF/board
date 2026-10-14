@@ -297,6 +297,17 @@ discovery(): Promise<Discovery>     // unauthenticated: url, audience, team_id, 
 `me()` returns `{ actor, principal, kind, handle, name, avatar, profile,
 session, expiresAt }`.
 
+### identity
+
+```ts
+identity(): Promise<IdentityView>  // { principal, links, unlinked, cursor }
+```
+
+`links` are the Slack and GitHub accounts linked to you. `unlinked` names the
+sync entries you haven't linked yet, such as `['github']`. Boards older than it
+leave it out. Link one with `vb identity link <key>` (see
+[the CLI](./01-cli.md#identity)).
+
 ### inbox and readSource
 
 ```ts

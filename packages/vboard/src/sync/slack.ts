@@ -66,6 +66,47 @@ export function withoutLabel(markdown: string, name: string): string {
   return markdown.replace(label, '$1')
 }
 
+/** HTML elements GitHub renders in comments; anything else in angle brackets (`<@U123>`, `<https://…>`, `a < b`) is left alone. */
+const HTML_TAGS = new Set(
+  'a abbr b bdi bdo blockquote br caption center cite code dd del details dfn div dl dt em figcaption figure font h1 h2 h3 h4 h5 h6 hr i img ins kbd li mark ol p picture pre q rp rt ruby s samp section small source span strike strong sub summary sup table tbody td tfoot th thead time tr tt u ul var video wbr'.split(' '),
+)
+const MARKS: Record<string, string> = { b: '**', strong: '**', i: '_', em: '_', code: '`', kbd: '`', s: '~~', del: '~~', strike: '~~' }
+const BLOCKS = new Set(['p', 'div', 'details', 'table', 'tr', 'ul', 'ol', 'li', 'blockquote', 'pre', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+const attribute = (attrs: string, name: string) => new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(attrs)?.slice(1).find((v) => v !== undefined) ?? ''
+
+/** GitHub's markdown allows inline HTML, which Slack shows as raw tags: as markdown instead, outside code. */
+export function withoutHtml(markdown: string): string {
+  if (!/<\/?[a-z!]/i.test(markdown) || /[\uE000\uE001]/.test(markdown)) return markdown
+  // Code keeps its HTML, byte for byte: it's what someone wanted shown. Read left to right, so a
+  // code span's `<!--` stays code and a comment hides everything in it, backticks and all.
+  const code: string[] = []
+  let hidden = false
+  const text = markdown.replace(
+    /(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|``[^\n]*?``|`[^`\n]+`)|<!--[\s\S]*?(?:-->|$)/g,
+    (_, span: string | undefined) => (span === undefined ? ((hidden = true), '') : `\uE000${code.push(span) - 1}\uE001`),
+  )
+  const out = text
+    .replace(/<img\b([^>]*)>/gi, (_, attrs: string) => attribute(attrs, 'alt'))
+    .replace(/<source\b[^>]*>/gi, '')
+    .replace(/<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi, (_, attrs: string, inner: string) => {
+      const href = attribute(attrs, 'href')
+      const label = inner.replace(/<[^>]*>/g, '').trim()
+      return href ? (label ? `[${label}](${href})` : href) : label
+    })
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/?([a-z][a-z0-9]*)\b(?:\s[^<>]*)?\/?>/gi, (tag, name: string) => {
+      const lower = name.toLowerCase()
+      if (!HTML_TAGS.has(lower)) return tag
+      const closing = tag.startsWith('</')
+      if (lower === 'summary') return closing ? '**\n\n' : '**'
+      return MARKS[lower] ?? (BLOCKS.has(lower) && closing ? '\n' : '')
+    })
+  if (!hidden && out === text) return markdown
+  // Tidied around the code, never inside it: each span is still one placeholder here.
+  const tidy = out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '')
+  return tidy.replace(/\uE000(\d+)\uE001/g, (_, i: string) => code[Number(i)]!)
+}
+
 /**
  * A sender's picture as Slack's `icon_url`: an https image. The board's built-in agent
  * avatars are SVGs, which Slack won't show, so those keep the app's icon.
@@ -631,13 +672,15 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
    * `**name**: ` label dropped. Without `chat:write.customize` it posts as the app, label and all.
    */
   override async post(target: string, kind: ResolvedTarget['kind'], body: ProviderPost): Promise<ProviderDelivery> {
-    const { as, ...post } = body
+    const { as, ...given } = body
+    const post = { ...given, markdown: withoutHtml(given.markdown) }
     return (as && !post.files?.length ? await this.postNamed(target, as, post.markdown) : null) ?? super.post(target, kind, post)
   }
 
   /** An edit keeps the label out only where the message went out under the agent's name. */
   override async edit(thread: string, message: string, body: ProviderPost) {
-    const { as, ...post } = body
+    const { as, ...given } = body
+    const post = { ...given, markdown: withoutHtml(given.markdown) }
     const named = as ? await this.sentAs(thread, message, as.name) : false
     await super.edit(thread, message, named && as ? { ...post, markdown: withoutLabel(post.markdown, as.name) } : post)
   }

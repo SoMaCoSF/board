@@ -130,7 +130,8 @@ function lifecycle(name: string, body: Record<string, unknown>): { lifecycle: Li
         return {
           number: pr.number,
           user: sender ?? {},
-          lifecycle: { ...base, type: 'pr.reopened', labels: { ...pr_label, state: 'open' }, reply: `reopened by ${sender?.login ?? 'someone'}`, createRoot: true },
+          // A draft closed and reopened is still a draft.
+          lifecycle: { ...base, type: 'pr.reopened', labels: { ...pr_label, state: pr.draft ? 'draft' : 'open' }, reply: `reopened by ${sender?.login ?? 'someone'}`, createRoot: true },
         }
       case 'closed':
         return {

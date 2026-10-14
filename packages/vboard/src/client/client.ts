@@ -256,7 +256,7 @@ export function createBoardClient(options: ClientOptions) {
     channels: async () => (await call<{ channels: ChannelView[] }>('GET', '/channels')).channels,
     actors: async () => (await call<{ actors: (Actor & { person?: ActorView['person'] })[] }>('GET', '/actors')).actors,
 
-    /** Your linked platform accounts. */
+    /** Your linked platform accounts, and the sync entries you haven't linked (`unlinked`). */
     identity: () => call<IdentityView>('GET', '/identity'),
     /**
      * Starts linking your account on sync entry `sync`: a sign-in URL to open

@@ -282,7 +282,13 @@ export type Me = {
 
 /** A platform account linked to you, as `GET /identity` lists it. */
 export type LinkedAccount = { actor: string; handle: string | null; name: string | null; method: 'code' | 'consent'; at: string }
-export type IdentityView = { principal: string; links: LinkedAccount[]; cursor: number }
+export type IdentityView = {
+  principal: string
+  links: LinkedAccount[]
+  /** The sync entries you haven't linked an account on. Boards older than it leave it out. */
+  unlinked?: string[]
+  cursor: number
+}
 /**
  * How to prove an account is yours: post `code` from it anywhere the board syncs
  * before `expiresAt`, or open `url` (the platform's sign-in) and approve.

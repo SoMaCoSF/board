@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { renderForSlack } from "../app/api/board/[[...path]]/render.ts";
 
-const input = (message) => ({
+const input = (message, extra = {}) => ({
   label: "julianbenegas (github)",
   author: { name: "julianbenegas" },
+  mentionOf: (actor) => (actor === "slack:user:U0AP7QRUM7E" ? "<@U0AP7QRUM7E>" : null),
   target: "slack:C0C6MNT9LLC",
+  ...extra,
   message: {
     re: null,
     text: "PR #68: RFC: [Declared] actors\nhttps://github.com/vercel-labs/vboard/pull/68",
@@ -31,6 +33,13 @@ test("a PR root labeled with its owner says whose it is", () => {
   assert.ok(renderForSlack(input({ labels })).endsWith(") · for <@U0AP7QRUM7E>"));
   const github = { ...labels, owner: "github:user:40034115", "owner.name": "julianbenegas" };
   assert.ok(renderForSlack(input({ labels: github })).endsWith(") · for julianbenegas"));
+});
+
+test("a PR root mentions its author where Slack can", () => {
+  const martin = input({ by: { actor: "slack:user:U0AP7QRUM7E" } }, { author: { name: "martinsione" } });
+  assert.ok(renderForSlack(martin).endsWith(") · <@U0AP7QRUM7E>"));
+  // Replies keep the default label.
+  assert.equal(renderForSlack({ ...martin, message: { ...martin.message, re: 68, text: "fixed" } }), "**julianbenegas (github)**: fixed");
 });
 
 test("everything else keeps the default", () => {

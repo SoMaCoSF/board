@@ -14,6 +14,7 @@ import {
   AGENTS,
   allow,
   allowRules,
+  claimLinkOffer,
   cliOf,
   codexNetwork,
   decideStop,
@@ -21,8 +22,10 @@ import {
   installedHook,
   installHook,
   legacyRules,
+  linkOffer,
   markPosted,
   reminder,
+  stopOutput,
   tilde,
   uninstallHook,
   type HookAgent,
@@ -191,8 +194,9 @@ async function identity(args: string[]): Promise<number> {
   if (sub === undefined) {
     const view = await board.identity()
     if (flags.json) return printJson(view), 0
-    if (view.links.length === 0) return out('no linked accounts: `vb identity link <key>` links one, where <key> is a sync entry such as slack or github'), 0
+    if (view.links.length === 0) out('no linked accounts')
     for (const link of view.links) out(`${link.handle ? `@${link.handle}  ` : ''}${link.actor}  by ${link.method === 'code' ? 'code' : 'sign-in'} · ${link.at}`)
+    if (view.unlinked?.length) out(`not linked  ${view.unlinked.join(', ')}  (vb identity link <key>)`)
     return 0
   }
   if (sub === 'unlink') {
@@ -364,12 +368,15 @@ async function run(command: string | undefined, args: string[]): Promise<number>
         const cwd = payload.cwd ?? payload.workspace_roots?.[0]
         if (cwd && existsSync(cwd)) process.chdir(cwd)
         const session = turnKey(agent, agent === 'cursor' ? null : (payload.session_id ?? null))
-        if (!session || !(process.env.VBOARD_URL || projectUrl())) return 0
+        const boardUrl = process.env.VBOARD_URL || projectUrl()
+        if (!session || !boardUrl) return 0
         if (payload.status && payload.status !== 'completed') return 0
         const continuing = payload.stop_hook_active === true || (payload.loop_count ?? 0) > 0
         if (decideStop(session, continuing) === 'ask') {
-          const text = reminder(cliCommand().command)
-          printJson(agent === 'cursor' ? { followup_message: text } : { decision: 'block', reason: text })
+          const cli = cliCommand().command
+          // The first reminder on this board also offers, once, to link the person's accounts.
+          const text = claimLinkOffer(boardUrl) ? `${reminder(cli)}\n\n${linkOffer(cli)}` : reminder(cli)
+          printJson(stopOutput(agent, text))
         }
       } catch {}
       return 0

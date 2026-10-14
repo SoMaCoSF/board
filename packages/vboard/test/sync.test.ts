@@ -683,6 +683,22 @@ describe('sync', () => {
     expect(g.posts).toHaveLength(0)
   })
 
+  it('keeps a draft PR a draft when it is closed and reopened', async () => {
+    const { board, webhook } = setup({ githubClient: { rest: { pulls: { get: vi.fn() } } } })
+    const julian = caller(board.fetch, await personToken())
+    const repository = { full_name: 'basehub-ai/vboard' }
+    const sender = { id: 42, login: 'julianbenegas' }
+    const pr = { number: 39, title: 'Spike', html_url: 'https://github.com/basehub-ai/vboard/pull/39', draft: true }
+    const send = (action: string, extra = {}) =>
+      webhook('github', { action, repository, sender, pull_request: { ...pr, ...extra } }, { 'x-github-event': 'pull_request', 'x-github-delivery': `draft-${action}` })
+    await send('opened')
+    await vi.waitFor(async () => expect((await read(julian, 'prs'))[0]?.labels.state).toBe('draft'))
+    await send('closed', { merged: false })
+    await vi.waitFor(async () => expect((await read(julian, 'prs'))[0]?.labels.state).toBe('closed'))
+    await send('reopened')
+    await vi.waitFor(async () => expect((await read(julian, 'prs'))[0]?.labels.state).toBe('draft'))
+  })
+
   it.each([
     { name: 'PR', key: 'pull_request', event: 'pull_request' },
     { name: 'issue', key: 'issue', event: 'issues' },
@@ -731,6 +747,35 @@ describe('sync', () => {
     expect(posted).toContain('**▲ Vercel**\n- ⏳ **[vboard-factory](https://vercel.com/vercel-internal-playground/vboard-factory)** · [Building]')
     expect(posted).not.toContain('[vc]:')
     expect(posted).not.toContain('| Project |')
+  })
+
+  it('keeps a reply imported with `noSync` on the board, and still delivers the rest of its thread', async () => {
+    const { board, s, webhook } = setup({
+      githubClient: { rest: { pulls: { get: vi.fn() } } },
+      repos: {
+        // Inline review threads stay on GitHub and the board.
+        'basehub-ai/vboard': { channel: 'prs', run: async ({ event, board }) => void (await board.sync('prs', event, { noSync: event.subthread !== null })) },
+      },
+    })
+    const julian = caller(board.fetch, await personToken())
+    const repository = { full_name: 'basehub-ai/vboard' }
+    const pr = { number: 40, title: 'Review me', html_url: 'https://github.com/basehub-ai/vboard/pull/40' }
+    await webhook('github', { action: 'opened', repository, sender: { id: 42, login: 'julianbenegas' }, pull_request: pr }, { 'x-github-event': 'pull_request', 'x-github-delivery': 'rv-opened' })
+    await vi.waitFor(() => expect(s.channelPosts).toHaveLength(1))
+    await webhook('github', { type: 'message', threadId: 'github:basehub-ai/vboard:40:rc:9', id: 'rc1', text: 'Fixed in abc123', user: '43', raw: { path: 'src/a.ts', line: 3 } })
+    await webhook('github', { type: 'message', threadId: 'github:basehub-ai/vboard:40', id: 'c1', text: 'Ready for another look', user: '43' })
+    await vi.waitFor(async () => expect(await read(julian, 'prs')).toHaveLength(3))
+    await vi.waitFor(() => expect(s.posts).toHaveLength(1))
+    const [, inline, top] = await read(julian, 'prs')
+    expect(inline).toMatchObject({ text: 'Fixed in abc123', noSync: true })
+    expect(top).toMatchObject({ text: 'Ready for another look', noSync: false })
+    expect(JSON.parse(s.posts[0]!.text).markdown).toContain('Ready for another look')
+
+    // A backfill leaves it out too.
+    await julian('POST', `/messages/${(await read(julian, 'prs'))[0]!.id}/sync`, { target: 'slack:C1' })
+    await vi.waitFor(() => expect(s.channelPosts).toHaveLength(2))
+    await vi.waitFor(() => expect(s.posts).toHaveLength(2))
+    expect(s.posts.map((p) => p.text).join('\n')).not.toContain('Fixed in abc123')
   })
 
   it.each([

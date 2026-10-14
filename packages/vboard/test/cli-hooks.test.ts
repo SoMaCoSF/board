@@ -118,7 +118,7 @@ describe('cli hooks', () => {
       const repo = await tmp('vboard-repo-')
       execFileSync('git', ['init', '-q', '-b', 'feat/shim'], { cwd: repo })
       const { stdout } = await vb(['hook', 'stop', '--agent', 'claude'], at, JSON.stringify({ session_id: `shim-${Date.now()}`, cwd: repo }))
-      const { reason } = JSON.parse(stdout) as { reason: string }
+      const reason = (JSON.parse(stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext
       expect(reason).toContain(': vb reply <id> "<text>" in a board thread')
       expect(reason).not.toContain(process.execPath)
     })
@@ -151,14 +151,21 @@ describe('cli hooks', () => {
     const reminds = async (result: Promise<{ stdout: string; code: number }>) => {
       const { stdout, code } = await result
       expect(code).toBe(0)
-      return stdout ? (JSON.parse(stdout) as { decision: string; reason: string }) : null
+      if (!stdout) return null
+      // Feedback, not a blocked stop: Claude Code shows it once, without a hook error.
+      const output = JSON.parse(stdout) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } }
+      expect(output).toEqual({ hookSpecificOutput: { hookEventName: 'Stop', additionalContext: expect.any(String) } })
+      return { reason: output.hookSpecificOutput.additionalContext }
     }
 
     // A turn that didn't touch the board is reminded once, with the commands to run; the follow-up stops.
     const reminded = await reminds(stop(s1))
-    expect(reminded).toMatchObject({ decision: 'block', reason: expect.stringContaining(' post <channel> "<text>"') })
+    expect(reminded!.reason).toContain(' post <channel> "<text>"')
     expect(reminded!.reason).toContain(' reply <id> "<text>"')
     expect(reminded!.reason).not.toContain('main.ts update')
+    // Codex reads a blocked stop.
+    const codex = await vb(['hook', 'stop', '--agent', 'codex'], {}, JSON.stringify({ session_id: `c1-${Date.now()}`, cwd: repo, stop_hook_active: false }))
+    expect(JSON.parse(codex.stdout)).toEqual({ decision: 'block', reason: expect.stringContaining(' post <channel> "<text>"') })
     expect(await reminds(stop(s1, true))).toBeNull()
 
     // The agent posts in a channel it picked: the turn's end isn't reminded. The next turn, with no write, is.
@@ -181,6 +188,28 @@ describe('cli hooks', () => {
     // Outside a linked project, the hook stays out of the way.
     expect(await reminds(stop(`s2-${Date.now()}`, false, { VBOARD_URL: '' }))).toBeNull()
   }, 60_000)
+
+  it('offers once per board, after the first reminder, to link the person\'s accounts', async () => {
+    const repo = await tmp('vboard-repo-')
+    execFileSync('git', ['init', '-q', '-b', 'feat/link'], { cwd: repo })
+    // Its own config directory: the offer's marker lives there, not with the per-turn markers.
+    const at = { XDG_CONFIG_HOME: await tmp('vboard-config-') }
+    const stop = async (extra: NodeJS.ProcessEnv = {}) => {
+      const payload = JSON.stringify({ session_id: `l-${Math.random()}`, cwd: repo, stop_hook_active: false })
+      const { stdout } = await vb(['hook', 'stop', '--agent', 'claude'], { ...at, ...extra }, payload)
+      return JSON.parse(stdout).hookSpecificOutput.additionalContext as string
+    }
+
+    const first = await stop()
+    expect(first).toContain(' post <channel> "<text>"')
+    expect(first).toContain(' identity link <key> --no-wait')
+    // Every later reminder, in any session, is just the reminder.
+    const later = await stop()
+    expect(later).toContain(' post <channel> "<text>"')
+    expect(later).not.toContain('identity')
+    // Another board gets its own offer.
+    expect(await stop({ VBOARD_URL: `${url}?other` })).toContain(' identity link <key> --no-wait')
+  })
 
   it('reminds Cursor with a follow-up message, keyed by project since its shell has no session', async () => {
     const home = await tmp('vboard-home-')

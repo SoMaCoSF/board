@@ -43,6 +43,12 @@ pnpm dev                                       # the board at /api/board
 VBOARD_URL=https://vboard-factory.playground-vercel.tools/api/board pnpm exec vb inspect
 ```
 
+This repo's board is the factory. `.vboard/` is gitignored, so each checkout
+links itself: `vb whoami` says "no board URL" until you run
+`vb link https://vboard-factory.playground-vercel.tools/api/board` at the
+root. Posts to `dev` reach Slack's #development-messageboard and GitHub, so
+reply in an existing thread rather than starting one.
+
 - Every environment syncs with the real Slack and GitHub, so a local or preview
   board posts there too. `VERCEL_ENV` only picks the log: production's Redis keys,
   a preview's own keys in the same Redis, or SQLite at `.a2/dev.db` locally.
@@ -50,11 +56,9 @@ VBOARD_URL=https://vboard-factory.playground-vercel.tools/api/board pnpm exec vb
   (`vboard-2`). Both are new with A2 0.17, whose Redis layout an existing prefix
   can't take; the factory's log under `vboard-factory` was copied over. Slack channel `C0C8XN8SQRG` (#development-messageboard), GitHub
   PRs, and GitHub issues all mirror `dev`. Connect uses `slack/vboard-factory`,
-  and the GitHub connector named by `FACTORY_GITHUB_CONNECTOR` (`github/<name>`),
-  with production triggers at `/api/board/webhooks/slack` and
-  `/api/board/webhooks/github`. Without that variable the board syncs Slack
-  alone and Pi works without GitHub: a GitHub App on vercel-labs needs an org
-  owner to install it (ask IT in #help-it). The app's bot (its login and commit
+  and `github/vboard-factory`, with production triggers at
+  `/api/board/webhooks/slack` and `/api/board/webhooks/github`. The GitHub
+  app's bot (its login and commit
   email) comes from GraphQL's `viewer` for its token, so nothing pins its name.
 - Watchers do the work. `triage-gpt` labels each non-PR dev thread's `kind` with
   GPT-6 Luna's decision model (`openai/gpt-6-luna-decisions`),
@@ -71,7 +75,10 @@ VBOARD_URL=https://vboard-factory.playground-vercel.tools/api/board pnpm exec vb
   thread `reproduced=no` and says why. It builds clear features the same way
   (asking first when they're not), and answers questions in the thread.
   `review-pi` hands each new `dev --label pr` thread to Pi to review the PR (Pi wears `:looking-bunny:` on the PR root while it reviews), and tells it when
-  someone other than a bot replies. Pi hears every reply in its threads but stays quiet when one is
+  someone other than a bot replies. A draft waits until it's ready (`review.ts`): Pi
+  reviews it once, when its root's `state` turns from `draft` to `open`, and until then
+  only a reply that names Pi (`pi`, `@pi`, or the thread's Pi), or a reminder Pi
+  scheduled, wakes it. Pi hears every reply in its threads but stays quiet when one is
   addressed to someone else, and keeps board replies to a few lines; a review's detail
   goes in a GitHub review on the code. Review is its initial task; people can redirect
   Pi in the thread to fix, push, approve, mark ready, merge, or close the PR.
@@ -147,9 +154,10 @@ VBOARD_URL=https://vboard-factory.playground-vercel.tools/api/board pnpm exec vb
   `vercel[bot]` with Pi's name as co-author. It takes 6 vCPUs (smaller sandboxes
   come from a warm pool without the helper), a branch pushed by name that tracks
   `origin/main`, and no `-q`. The broker gives GitHub's API only as a person, so
-  without a connector Pi has no `gh`: a push to `pi/**` has
-  `.github/workflows/pi-pr.yml` open the PR as `github-actions[bot]` from the
-  branch's first commit, and Pi finds its number by fetching `refs/pull/*/head`.
+  Pi's `gh` goes through `github/vboard-factory`: the sandbox's network policy
+  adds the app's token to requests to `api.github.com`. A push to `pi/**` also
+  has `.github/workflows/pi-pr.yml` open the PR as `github-actions[bot]` from the
+  branch's first commit if it has none yet.
   `check` also runs on `pi/**` pushes, since a run for a bot's PR waits for approval.
 - Attachments live in the project's private Blob store, `vboard-factory-attachments`
   (`BLOB_STORE_ID`, authenticated with OIDC), shared by every deployment; locally
@@ -163,7 +171,11 @@ VBOARD_URL=https://vboard-factory.playground-vercel.tools/api/board pnpm exec vb
   limit sandboxes share.
 - Pi's sandbox also gets the factory's own skills and extensions, from
   `apps/software-factory/skills/` and `extensions/`, written to `~/.pi/agent`
-  every turn (add a new file to `PI_FILES` in `agent.ts`). The `computer`
+  every turn (add a new file to `PI_FILES` in `agent.ts`). `verify-vboard`
+  tests vboard itself: it builds this checkout, a git ref in its own worktree
+  (`origin/main`, to reproduce a bug before fixing it), or an npm version,
+  serves a local board with `vb serve`, and runs each `vb` with only `PATH`
+  and a home of its own, so nothing reaches the factory's board. The `computer`
   extension is computer use, done the way Codex does it: one tool, sequential,
   that does one action on a virtual desktop (Xvfb) per call, with the mouse and
   keyboard through XTEST (`xinput.py`, using ctypes because the sandbox has no
