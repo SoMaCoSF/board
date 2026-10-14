@@ -10,7 +10,7 @@ import { caller, personToken, testBoard } from './harness.ts'
 type Call = { tool?: string; command?: string; input?: unknown }
 
 /** A model that makes the tool calls `script` returns for each wakeup, then stops. */
-function scripted(script: (wake: string) => Call[] | Promise<Call[]>) {
+function scripted(script: (wake: string) => Call[] | Promise<Call[]>, options: { callIds?: (n: number) => string } = {}) {
   const wakes: string[] = []
   const harness: AISDKHarness = {
     type: 'ai-sdk',
@@ -26,7 +26,7 @@ function scripted(script: (wake: string) => Call[] | Promise<Call[]>) {
         wakes.push(text)
         chunks = (await script(text)).map((call, n) => ({
           type: 'tool-input-available',
-          toolCallId: `${id}-${n}`,
+          toolCallId: options.callIds?.(n) ?? `${id}-${n}`,
           toolName: call.tool ?? 'vb',
           input: call.input ?? { command: call.command },
         }))
@@ -171,6 +171,38 @@ describe('agents the board runs', () => {
     await settle()
     expect(model.wakes).toHaveLength(2)
     for (const root of [two!, three!, four!]) expect(model.wakes[1]).toContain(`\`vb read ${root.id}\``)
+  })
+
+  it('wake for another agent’s reply only when it mentions them, so two agents can’t answer each other forever', async () => {
+    const helper = scripted((wake) => [{ command: `reply ${threadOf(wake)} "on it"` }])
+    const reviewer = scripted(() => [])
+    const { fetch } = testBoard({
+      agents: {
+        helper: agent({ name: 'Helper', model: 'test/model', maxSteps: 4, harness: helper.harness }),
+        reviewer: agent({ name: 'Reviewer', model: 'test/model', maxSteps: 4, harness: reviewer.harness }),
+      },
+    })
+    const julian = caller(fetch, await personToken(), { 'x-board-handle': 'julian' })
+    const root = (await julian('POST', '/messages', { channel: 'dev', text: '@helper @reviewer look' })).body.message as MessageView
+    await vi.waitFor(async () => expect((await julian('GET', `/messages/${root.id}`)).body.replies).toHaveLength(1))
+
+    await julian('POST', '/messages', { re: root.id, text: 'thanks' })
+    await vi.waitFor(async () => expect((await julian('GET', `/messages/${root.id}`)).body.replies).toHaveLength(3))
+    await settle()
+    expect(helper.wakes).toHaveLength(2)
+    expect(reviewer.wakes).toHaveLength(2)
+    expect(reviewer.wakes.every((wake) => wake.includes('@julian'))).toBe(true)
+  })
+
+  it('post every reply even when the model reuses tool call IDs across sessions', async () => {
+    const model = scripted((wake) => [{ command: `reply ${threadOf(wake)} "seen"` }], { callIds: () => 'call_0' })
+    const { fetch } = testBoard({ agents: { helper: agent({ name: 'Helper', model: 'test/model', maxSteps: 4, harness: model.harness }) } })
+    const julian = caller(fetch, await personToken(), { 'x-board-handle': 'julian' })
+    const one = (await julian('POST', '/messages', { channel: 'dev', text: '@helper first' })).body.message as MessageView
+    const two = (await julian('POST', '/messages', { channel: 'dev', text: '@helper second' })).body.message as MessageView
+
+    for (const root of [one, two])
+      await vi.waitFor(async () => expect((await julian('GET', `/messages/${root.id}`)).body.replies.map((m: MessageView) => m.text)).toEqual(['seen']))
   })
 
   it('say so as the board when a turn fails, and run again on the next reply', async () => {

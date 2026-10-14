@@ -215,6 +215,9 @@ export function createAgents(options: {
       const mentioned = after.mentions.includes(agent.id) && !(event.type === 'message.edited' && before?.mentions.includes(agent.id))
       const subscribed = subscriptionOf(subscriptions, after.thread, agent.id)?.subscribed === true
       if (!mentioned && !(subscribed && event.type === 'message.posted')) continue
+      // Another agent's reply in a thread both follow wakes no one, or two agents could answer each other
+      // forever. Mentioning an agent still wakes it.
+      if (!mentioned && agentKeyOf(by) !== null) continue
       view ??= eventView(event, after, options.mentionable(actors))
       const recorded = { root: { id: root.id, labels: { ...root.labels } }, event: view, reason: mentioned ? 'mention' : 'reply', subscribed } as const
       await server.session(agentSession(agent.key)).append({

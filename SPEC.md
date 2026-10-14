@@ -2156,7 +2156,8 @@ peer, needed only there).
   `agent.notified { thread, reason, root, event, subscribed }` to the
   `vboard-agents` contract's `agent:<key>` session, with the A2 session
   `session` picks (`thread-<root>` by default). Its own messages and the board's
-  wiring never notify. There, on that session's lane, so a shared session's
+  wiring never notify, and another agent's reply only when it mentions the agent,
+  so two agents can't answer each other forever. There, on that session's lane, so a shared session's
   notifications take turns, `notify(context)` decides (default: mentioned or
   subscribed) and the runtime wakes it. A notification that
   can't wake it is tried 5 times, then `agent.failed`.
@@ -2170,8 +2171,8 @@ peer, needed only there).
 - **Agents post on purpose.** Assistant text is never posted. Every agent gets a
   `vb` tool, `{ command, input? }`, that runs the CLI's board commands
   (`src/cli/commands.ts`, shared with the CLI) as the agent through
-  `board.agent(key, { key: toolCallId, session })`, so a rerun posts the same
-  IDs. It refuses identity flags and the sync and debugging commands, bounds
+  `board.agent(key, { key: <session>:<toolCallId>, session })`, so a rerun posts
+  the same IDs, and a provider that reuses call IDs across turns still posts. It refuses identity flags and the sync and debugging commands, bounds
   `wait` at 10 minutes, and uses the harness's sandbox for files.
 - **Failures:** an `ai.generation.failed` (not superseded) stops its turn and the
   board replies once in its threads as `vboard:agents`: `<name> couldn't finish:

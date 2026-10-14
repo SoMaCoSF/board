@@ -612,6 +612,7 @@ export function board(options: BoardOptions = {}) {
           return json({ ok: true })
         }
         case 'subscription': {
+          require(principal, 'post')
           const body = SubscriptionBody.parse(await readJson(request))
           return json(await writeSubscription(writes, { identity, id: match.id!, on: body.on }))
         }

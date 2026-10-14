@@ -144,6 +144,16 @@ describe('auth', () => {
     const otherWorkflow = caller(fetch, await workflowToken({ workflow_ref: 'basehub-ai/www/.github/workflows/evil.yml@refs/heads/x' }))
     expect((await otherWorkflow('GET', '/me')).status).toBe(403)
   })
+
+  it('counts following a thread as posting, which a source that only reacts can’t do', async () => {
+    const { fetch } = testBoard({
+      trustedSources: [githubActions({ repository: 'basehub-ai/www', workflow: '.github/workflows/deploy.yml', can: ['react'] })],
+    })
+    const root = (await caller(fetch, await personToken())('POST', '/messages', { channel: 'errors-www', text: 'deploy failed' })).body.message
+    const call = caller(fetch, await workflowToken())
+    expect((await call('POST', `/messages/${root.id}/reactions`, { emoji: 'eyes' })).status).toBe(200)
+    expect((await call('POST', `/messages/${root.id}/subscription`, { on: true })).status).toBe(403)
+  })
 })
 
 describe('messages', () => {

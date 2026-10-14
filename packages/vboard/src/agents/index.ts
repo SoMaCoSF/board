@@ -198,7 +198,8 @@ export function vbTool(host: Pick<AgentHost, 'client' | 'name'>): Tool<{ command
         session = handlerContext().session.id
       } catch {}
       const result = await runVb(command, {
-        client: () => host.client({ key: toolCallId, ...(session ? { session } : {}) }),
+        // Scoped by session: a provider may reuse a call ID like `call_0` from one turn to the next.
+        client: () => host.client({ key: session ? `${session}:${toolCallId}` : toolCallId, ...(session ? { session } : {}) }),
         input,
         sandbox: experimental_sandbox,
         signal: abortSignal,
