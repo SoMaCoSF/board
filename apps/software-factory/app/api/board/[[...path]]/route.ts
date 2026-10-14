@@ -6,7 +6,7 @@ import { redisHttp } from "experimental-a2/store-redis-http";
 import { vercelQueues } from "experimental-a2/scheduler-vercel";
 import { byPi, byWatcher, taskMessage, tellPi } from "./agent";
 import { classifyThread } from "./classify";
-import { isPiKind, PI_KINDS, piTask, scheduled, scheduledThread } from "./kinds";
+import { forAgent, isPiKind, PI_KINDS, piTask, scheduled, scheduledThread } from "./kinds";
 import { security } from "./security";
 import { shipit } from "./shipit";
 import { autoland } from "./autoland";
@@ -14,6 +14,7 @@ import { owner } from "./owner";
 import { crosspost } from "./crosspost";
 import { guard } from "./guard";
 import { renderForSlack } from "./render";
+import { helper } from "./helper";
 
 // The software factory: vboard running on its own repo and Vercel's Slack. Locally
 // there's no VERCEL_ENV, so the log is SQLite at .a2/dev.db and attachments are
@@ -59,6 +60,8 @@ export const { GET, POST, scheduler } = board({
   // Every message from Slack, GitHub, or CI is checked for prompt injection before it lands.
   // Shadow mode: a flagged one is labeled guard=injection, and nothing is dropped yet.
   middleware: [guard({ mode: "shadow" })],
+  // Agents with names of their own, which the board runs. `@vboard-factory +helper` wakes Helper.
+  agents: { helper },
   watch: {
     shipit: shipit({ tellPi }),
     // Shadow mode: labels each reviewed factory PR autoland=would|no, and merges nothing.
@@ -84,7 +87,7 @@ export const { GET, POST, scheduler } = board({
           return;
         }
         const thread = await board.thread(message.re ?? message.id);
-        if (thread.message.labels.pr) {
+        if (thread.message.labels.pr || forAgent(thread.message)) {
           return;
         }
         const kind = await classifyThread(

@@ -106,6 +106,17 @@ VBOARD_URL=https://vboard-factory.playground-vercel.tools/api/board pnpm exec vb
   instead of throwing: a watcher that throws dead-letters within half a minute,
   which stops it on that thread for good. The next reply tries again. No
   watcher's own reply wakes Pi or triage (`byWatcher`).
+- `helper` (`helper.ts`) is an agent the board runs (`board({ agents })`, from
+  `vboard/agents`): `@vboard-factory +helper <question>` in Slack or a GitHub
+  comment wakes it as `vboard:agent:helper`, and it answers from the code. It
+  runs on A2 with Pi's loop (`pi({ sandbox })`), in a persistent Vercel Sandbox
+  per thread (`helper-thread-<id>`) whose network policy only reads: git fetches
+  of the repo, GETs on GitHub's REST API, and npm's registry. No board
+  credential goes in it: its `vb` tool runs in the function. Triage skips a
+  thread whose root asks an agent (`forAgent` in `kinds.ts`), so Pi never takes
+  it, and the board's notice that an agent couldn't finish (`vboard:agents`)
+  wakes no one (`byWatcher`). Pi's packages stay out of the bundle
+  (`serverExternalPackages`).
 - `crosspost` (`crosspost.ts`) links a factory PR's Slack thread and the Slack
   thread it was built for, both ways, once the PR's root lands in Slack (its tail
   has `--all`, for the delivery receipt that says where): the PR thread gets `:crosspost: From

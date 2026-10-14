@@ -51,3 +51,9 @@ export function scheduledThread(message: {
   const kind = message.labels.kind;
   return scheduled(message) && message.re === null && kind !== undefined && isPiKind(kind) ? kind : null;
 }
+
+/**
+ * Whether a thread's root asks one of the board's own agents (`@vboard-factory +helper`): that agent answers
+ * it, so triage leaves it without a kind, and Pi never picks it up.
+ */
+export const forAgent = (root: { mentions: string[] }) => root.mentions.some((id) => id.startsWith("vboard:agent:"));
