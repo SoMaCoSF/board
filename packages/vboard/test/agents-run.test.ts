@@ -4,7 +4,7 @@ import { tool } from 'ai'
 import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import type { MessageView } from '../src/api/routes.ts'
-import { agent } from '../src/agents/index.ts'
+import { agent, type Notification } from '../src/agents/index.ts'
 import { caller, personToken, testBoard } from './harness.ts'
 
 type Call = { tool?: string; command?: string; input?: unknown }
@@ -207,6 +207,69 @@ describe('agents the board runs', () => {
 
     for (const root of [one, two])
       await vi.waitFor(async () => expect((await julian('GET', `/messages/${root.id}`)).body.replies.map((m: MessageView) => m.text)).toEqual(['seen']))
+  })
+
+  it('hear everything that happens in a thread they follow: edits, reactions, labels, and deletes', async () => {
+    const { model, julian, post } = await setup({}, (wake) => (model.wakes.length === 1 ? [{ command: `reply ${threadOf(wake)} "on it"` }] : []))
+    const root = await post(julian, { channel: 'dev', text: '@helper ship it?' })
+    await vi.waitFor(() => expect(model.wakes).toHaveLength(1))
+    await settle()
+    const reply = (await julian('GET', `/messages/${root.id}`)).body.replies[0] as MessageView
+
+    const steps = [
+      () => julian('POST', `/messages/${reply.id}/reactions`, { emoji: 'shipit' }),
+      () => julian('POST', `/messages/${root.id}/labels`, { set: { state: 'merged' }, unset: ['kind'] }),
+      () => julian('POST', `/messages/${root.id}/edit`, { text: '@helper ship it? (done)' }),
+      () => julian('POST', `/messages/${reply.id}/reactions`, { emoji: 'shipit', remove: true }),
+    ]
+    for (const [n, step] of steps.entries()) {
+      await step()
+      await vi.waitFor(() => expect(model.wakes).toHaveLength(n + 2))
+    }
+    const thread = `thread #${root.id} in dev, which you follow`
+    expect(model.wakes.slice(1)).toEqual([
+      `New notification: @julian reacted :shipit: to #${reply.id} in ${thread}. Read it with \`vb read ${root.id}\`.`,
+      `New notification: @julian labeled #${root.id}, the thread's root, state=merged -kind in ${thread}. Read it with \`vb read ${root.id}\`.`,
+      `New notification: @julian edited #${root.id}, the thread's root, in ${thread}. Read it with \`vb read ${root.id}\`.`,
+      `New notification: @julian took back their :shipit: on #${reply.id} in ${thread}. Read it with \`vb read ${root.id}\`.`,
+    ])
+  })
+
+  it('say so as the board when they can’t be woken, and try again on the next message', async () => {
+    let down = true
+    const woken: Notification[] = []
+    const board = testBoard({
+      agents: {
+        // A harness of your own: the board hands it each notification.
+        own: {
+          name: 'Own',
+          run: () => ({
+            servers: [],
+            wake: async (notification) => {
+              if (down) throw new Error('sandbox down\nat start()')
+              woken.push(notification)
+            },
+          }),
+        },
+      },
+    })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    const agents = board.servers.find((server) => server.contract.name === 'vboard-agents')!
+    const root = (await julian('POST', '/messages', { channel: 'dev', text: '@own hello?' })).body.message as MessageView
+
+    // Each drain is the queue's next try.
+    await vi.waitFor(async () => {
+      await agents.drain('agent:own')
+      expect((await julian('GET', `/messages/${root.id}`)).body.replies).toHaveLength(1)
+    }, { timeout: 10_000, interval: 5 })
+    expect((await julian('GET', `/messages/${root.id}`)).body.replies[0]).toMatchObject({
+      text: "Own couldn't start: sandbox down. Reply to try again.",
+      by: { actor: 'vboard:agents' },
+    })
+    down = false
+    await julian('POST', '/messages', { re: root.id, text: 'try again' })
+    await vi.waitFor(() => expect(woken).toHaveLength(1))
+    expect(woken[0]).toMatchObject({ reason: 'subscribed', type: 'message.posted', thread: root.id, by: { handle: 'julian' } })
   })
 
   it('say so as the board when a turn fails, and run again on the next reply', async () => {

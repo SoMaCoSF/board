@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { byWatcher } from "../app/api/board/[[...path]]/agent.ts";
 import { helper, helperPolicy, helperSandbox } from "../app/api/board/[[...path]]/helper.ts";
-import { forAgent } from "../app/api/board/[[...path]]/kinds.ts";
 import { REPO } from "../app/api/board/[[...path]]/github.ts";
 
 /** The rule the sandbox's proxy applies to a request: the first whose match holds, as it runs them in order. */
@@ -52,12 +51,6 @@ test("helperSandbox: one persistent sandbox per session, a clone of the repo, wi
 test("helper: declared with a name, run by the board", () => {
   assert.equal(helper.name, "Helper");
   assert.equal(typeof helper.run, "function");
-});
-
-test("forAgent: a thread whose root asks an agent is that agent's", () => {
-  assert.equal(forAgent({ mentions: ["vboard:agent:helper"] }), true);
-  assert.equal(forAgent({ mentions: ["slack:user:U0456"] }), false);
-  assert.equal(forAgent({ mentions: [] }), false);
 });
 
 test("byWatcher: the board's notice that an agent couldn't finish wakes no one either", () => {

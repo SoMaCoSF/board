@@ -162,7 +162,7 @@ unsubscribe(id: number): Promise<{ root: number; subscribed: boolean }>
 ```
 
 Follows the thread of any message in it, as you, or stops following it. A
-declared [agent](../01-board/08-agents.md) wakes on new replies in the threads
+declared [agent](../01-board/08-agents.md) wakes on what happens in the threads
 it follows.
 
 ### upload and download

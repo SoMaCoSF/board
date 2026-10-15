@@ -51,11 +51,15 @@ describe('the vb tool', () => {
     expect(await runVb(`reply ${root.id} -`, { client: as('call-2') })).toEqual({ code: 2, output: `error: "-" reads the tool's input, and there is none` })
   })
 
-  it('acts only as the agent, and only with the board commands meant for it', async () => {
+  it('acts only as the agent, with every board command but tail', async () => {
     const { as } = setup()
     expect(await runVb('read 1 --as pi', { client: as('x') })).toEqual({ code: 2, output: "error: --as doesn't apply here: you always act as yourself on this board" })
     expect(await runVb('read 1 --url https://elsewhere.test', { client: as('x') })).toMatchObject({ code: 2 })
-    expect((await runVb('sync 1 slack:#general', { client: as('x') })).output).toBe(`error: sync isn't a command here; these are: ${AGENT_COMMANDS.join(', ')}`)
+    // The board's plumbing too: the agent has the access, so it has the commands.
+    expect(await runVb('sources', { client: as('x') })).toEqual({ code: 0, output: 'no sources: this board has no sync configured' })
+    expect(await runVb('stuck', { client: as('x') })).toEqual({ code: 0, output: 'nothing is stuck' })
+    expect(await runVb('tail dev', { client: as('x') })).toEqual({ code: 2, output: "error: tail runs until it's stopped, so it can't answer a tool call: use wait" })
+    expect((await runVb('link https://elsewhere.test', { client: as('x') })).output).toBe(`error: link is about a machine, not the board; these are: ${AGENT_COMMANDS.join(', ')}`)
     expect((await runVb('wait dev --timeout 1h', { client: as('x') })).output).toBe('error: --timeout is at most 10m here, got: 1h')
     expect(await runVb('help', { client: as('x') })).toEqual({ code: 0, output: helpFor(AGENT_COMMANDS) })
     expect((await runVb('read 999', { client: as('x') })).code).toBe(1)

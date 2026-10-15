@@ -8,7 +8,11 @@ import { agentKeyOf, isBoardActor, type ActorKind } from '../contract/schemas.ts
 import type { AgentIdentity, DeclaredAgent, DeclaredAgents } from './actors.ts'
 import { eventView, foldEvent } from './feed.ts'
 
-/** What `notify` decides on: a board event that mentions an agent, or is new in a thread it follows. */
+/** What reaches an agent from a thread it follows: anything that happens to its messages. */
+export const THREAD_EVENTS = ['message.posted', 'message.edited', 'message.deleted', 'reaction.added', 'reaction.removed', 'labels.changed'] as const
+export type ThreadEvent = (typeof THREAD_EVENTS)[number]
+
+/** What `notify` decides on: a board event that mentions an agent, or happens in a thread it follows. */
 export type NotifyContext = {
   /** The board event, as `vb tail --json` prints it. */
   event: BoardEventView
@@ -19,9 +23,9 @@ export type NotifyContext = {
    * `vercel:user:…`). Decide here who may wake an agent that can change things.
    */
   author: { actor: string; principal: string; kind: ActorKind; handle: string; name: string }
-  /** The message mentions this agent. */
+  /** A post, or an edit, that mentions this agent. */
   isMentioned: boolean
-  /** The agent followed the thread before this message. */
+  /** The agent followed the thread before this event. */
   isSubscribed: boolean
 }
 
@@ -33,8 +37,16 @@ export type Notification = {
   session: string
   thread: number
   channel: string
+  /** The message it concerns. */
   message: number
-  reason: 'mention' | 'reply'
+  /** `mention`: it mentions the agent. `subscribed`: it happened in a thread the agent follows. */
+  reason: 'mention' | 'subscribed'
+  /** What happened, as the board event's type. */
+  type: ThreadEvent
+  /** For a reaction: the emoji's short name. */
+  emoji?: string
+  /** For a label change: what was set and unset. */
+  labels?: { set: Record<string, string>; unset: string[] }
   by: { handle: string; name: string }
 }
 
@@ -66,8 +78,8 @@ export type AgentRuntime = {
 /** What `board({ agents })` takes for each agent: who it is, and, for one the board runs, how. */
 export type AgentConfig = AgentIdentity & {
   /**
-   * Whether a notification wakes the agent. The default wakes it when it's mentioned or the
-   * message is new in a thread it follows. The board's own watchers and clients never wake one.
+   * Whether a notification wakes the agent. The default wakes it when it's mentioned, and for anything
+   * that happens in a thread it follows. The board's own watchers and clients never wake one.
    */
   notify?: (context: NotifyContext) => boolean | Promise<boolean>
   /** Which of the agent's sessions a notification lands in: one per thread (`thread-<root>`) by default. */
@@ -106,7 +118,7 @@ export function createAgents(options: {
   }
 
   /** What `notify` and `session` decide on, from what the board recorded. */
-  const contextOf = (payload: { root: { id: number; labels: Record<string, string> }; event: unknown; reason: 'mention' | 'reply'; subscribed: boolean }): NotifyContext => {
+  const contextOf = (payload: { root: { id: number; labels: Record<string, string> }; event: unknown; reason: 'mention' | 'subscribed'; subscribed: boolean }): NotifyContext => {
     const event = payload.event as BoardEventView
     const message = event.message!
     const actor = event.actor
@@ -137,14 +149,28 @@ export function createAgents(options: {
     }
   }
 
-  /** Runs `wake` a few times, then records that it gave up: a dead letter would stop the session's notifications for good. */
-  async function attempt(ctx: { attempt: number; event: { id: string }; session: { append: HandlerContext<typeof agentsContract.events>['session']['append'] } }, entry: Running, thread: string, wake: () => Promise<void>) {
+  /**
+   * Runs `wake` a few times, then gives up and says so in the thread, as the board: a dead letter would
+   * stop the session's notifications for good, and a silent one would leave people waiting.
+   */
+  async function attempt(
+    ctx: { attempt: number; event: { id: string }; session: { append: HandlerContext<typeof agentsContract.events>['session']['append'] } },
+    entry: Running,
+    where: { thread: string; root: number },
+    wake: () => Promise<void>,
+  ) {
     try {
       await wake()
     } catch (error) {
       if (ctx.attempt < RUN_ATTEMPTS) throw error
       console.error(`[vboard] agent ${entry.agent.key} gave up on ${ctx.event.id} after ${ctx.attempt} tries:`, describe(error))
-      await ctx.session.append(`failed:${ctx.event.id}`, { type: 'agent.failed', payload: { notified: ctx.event.id, thread, error: describe(error) } })
+      const reason = describe(error).split('\n')[0]!.slice(0, 200)
+      try {
+        await host!(entry.agent).notice(where.root, `${entry.agent.name} couldn't start: ${reason}. Reply to try again.`, `gave-up:${ctx.event.id}`)
+      } catch (failure) {
+        console.error(`[vboard] agent ${entry.agent.key}'s notice failed too:`, describe(failure))
+      }
+      await ctx.session.append(`failed:${ctx.event.id}`, { type: 'agent.failed', payload: { notified: ctx.event.id, thread: where.thread, error: describe(error) } })
     }
   }
 
@@ -166,7 +192,9 @@ export function createAgents(options: {
           const { payload } = ctx.event
           const context = contextOf(payload)
           const message = context.event.message!
-          await attempt(ctx, entry, payload.thread, async () => {
+          const type = context.event.type as ThreadEvent
+          const happened = context.event.payload as { emoji?: string; set?: Record<string, string>; unset?: string[] }
+          await attempt(ctx, entry, { thread: payload.thread, root: payload.root.id }, async () => {
             if (!(await (entry.config.notify ?? defaultNotify)(context))) return
             await runtimeOf(entry).wake({
               id: ctx.event.id,
@@ -175,6 +203,9 @@ export function createAgents(options: {
               channel: message.channel,
               message: message.id,
               reason: payload.reason,
+              type,
+              ...(type.startsWith('reaction.') && happened.emoji ? { emoji: happened.emoji } : {}),
+              ...(type === 'labels.changed' ? { labels: { set: happened.set ?? {}, unset: happened.unset ?? [] } } : {}),
               by: { handle: context.author.handle, name: context.author.name },
             })
           })
@@ -186,7 +217,7 @@ export function createAgents(options: {
           const entry = entryOf(ctx.session.id)
           if (!entry) return
           const notification = ctx.event.payload.notification as Notification
-          await attempt(ctx, entry, String(notification.thread), () => runtimeOf(entry).wake(notification))
+          await attempt(ctx, entry, { thread: String(notification.thread), root: notification.thread }, () => runtimeOf(entry).wake(notification))
         },
       },
     },
@@ -194,8 +225,8 @@ export function createAgents(options: {
 
   async function dispatch(ctx: HandlerContext<BoardEvents>) {
     const event = ctx.event as BoardEvent
-    if (event.type !== 'message.posted' && event.type !== 'message.edited') return
-    const by = event.payload.by.actor
+    if (!(THREAD_EVENTS as readonly string[]).includes(event.type)) return
+    const by = (event.payload as { by: { actor: string } }).by.actor
     // The board's own watchers, clients, and notices never wake an agent: no loops.
     if (isBoardActor(by) && agentKeyOf(by) === null) return
     const through = event.index - 1
@@ -205,18 +236,21 @@ export function createAgents(options: {
       ctx.session.state(subscriptionsReducer, { through }),
     ])
     const { before, after } = foldEvent(messages, actors, event)
-    if (!after || after.deleted) return
+    if (!after || (after.deleted && event.type !== 'message.deleted')) return
     const root = after.re === null ? after : messages.byId[after.re]
     if (!root) return
     let view: BoardEventView | undefined
     for (const { agent } of running) {
       if (by === agent.id) continue
-      // An edit notifies only for a mention it adds; a reply in a followed thread, only when it's new.
-      const mentioned = after.mentions.includes(agent.id) && !(event.type === 'message.edited' && before?.mentions.includes(agent.id))
+      // A post mentions whoever it names; an edit, only those it adds.
+      const mentioned =
+        (event.type === 'message.posted' || event.type === 'message.edited') &&
+        after.mentions.includes(agent.id) &&
+        !(event.type === 'message.edited' && before?.mentions.includes(agent.id))
       const subscribed = subscriptionOf(subscriptions, after.thread, agent.id)?.subscribed === true
-      if (!mentioned && !(subscribed && event.type === 'message.posted')) continue
+      if (!mentioned && !subscribed) continue
       view ??= eventView(event, after, options.mentionable(actors))
-      const recorded = { root: { id: root.id, labels: { ...root.labels } }, event: view, reason: mentioned ? 'mention' : 'reply', subscribed } as const
+      const recorded = { root: { id: root.id, labels: { ...root.labels } }, event: view, reason: mentioned ? 'mention' : 'subscribed', subscribed } as const
       await server.session(agentSession(agent.key)).append({
         type: 'agent.notified',
         id: await idempotentId('vboard-agent', agent.key, event.id),
@@ -231,7 +265,7 @@ export function createAgents(options: {
     server,
     keys: running.map(({ agent }) => agent.key),
     /** Board-contract handlers, on the per-thread lanes sync and watchers use. */
-    boardHandlers: running.length > 0 ? { 'message.posted': { lane, handler: dispatch }, 'message.edited': { lane, handler: dispatch } } : undefined,
+    boardHandlers: running.length > 0 ? Object.fromEntries(THREAD_EVENTS.map((type) => [type, { lane, handler: dispatch }])) : undefined,
     /** Each agent's own A2 servers, built now so the board's scheduler can serve them. */
     servers: () => running.flatMap((entry) => runtimeOf(entry).servers),
     bind(binding: { host: (agent: DeclaredAgent) => Omit<AgentHost, 'retry'> }) {

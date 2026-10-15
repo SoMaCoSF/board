@@ -102,7 +102,7 @@ thread's events in order on its lane.
 | `vboard-inbox` | `inbox:<external channel>`, e.g. `inbox:slack:C0123ABC` | `external.received { sync, event, raw }` | every platform event, stored before the board answers the webhook; the inbound handler runs here |
 | `vboard-watch` | `watch:<id>`, e.g. `watch:triage` | `watch.matched { thread, event }` | each [watcher's](../01-board/05-watchers.md) matches; its `run` happens here |
 | `vboard-schedules` | `schedules` | `schedule.created`, `schedule.canceled`, `schedule.due`, `schedule.fired` | [scheduled messages](../01-board/06-schedules.md) |
-| `vboard-agents` | `agent:<key>`, e.g. `agent:helper` | `agent.notified { thread, reason, root, event, subscribed, session }`, `agent.retried { session, notification }`, `agent.failed { notified, thread, error }` | each [agent's](../01-board/08-agents.md) notifications; `notify` runs, and the agent wakes, here, one at a time per agent session |
+| `vboard-agents` | `agent:<key>`, e.g. `agent:helper` | `agent.notified { thread, reason, root, event, subscribed, session }` (`reason`: `mention` or `subscribed`), `agent.retried { session, notification }`, `agent.failed { notified, thread, error }` | each [agent's](../01-board/08-agents.md) notifications; `notify` runs, and the agent wakes, here, one at a time per agent session |
 
 - **`external.received`** holds the normalized platform event (a message, an
   edit, a delete, a reaction, or a lifecycle event like a PR opening) and the

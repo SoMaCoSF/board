@@ -16,7 +16,7 @@ import { agent as a2Agent, type AISDKHarness, type Harness, type ModelSettings, 
 import { tool, type Experimental_SandboxSession, type Tool, type ToolSet } from 'ai'
 import { z } from 'zod'
 import { duration } from '../client/client.ts'
-import { helpFor, parse, runCommand, UsageError, type CommandFiles, type CommandIO } from '../cli/commands.ts'
+import { BOARD_COMMANDS, helpFor, parse, runCommand, UsageError, type CommandFiles, type CommandIO } from '../cli/commands.ts'
 import type { AgentIdentity } from '../server/actors.ts'
 import type { AgentConfig, AgentHost, AgentRuntime, Notification } from '../server/agents.ts'
 
@@ -38,11 +38,12 @@ export type AgentOptions<T extends ToolSet = ToolSet> = AgentIdentity &
     toolRecovery?: Readonly<Partial<Record<string, ToolRecovery>>>
   }
 
-/** What the `vb` tool runs: the CLI's board commands, minus the ones about sync and its plumbing. */
-export const AGENT_COMMANDS = [
-  'whoami', 'channels', 'actors', 'read', 'post', 'reply', 'edit', 'delete', 'react', 'label', 'typing',
-  'schedule', 'schedules', 'subscribe', 'unsubscribe', 'download', 'wait',
-] as const
+/**
+ * What the `vb` tool runs: every board command the CLI has, but `tail`, which runs until it's stopped and
+ * so never returns a tool call (`wait` is the one that does). The rest of the CLI is about a machine: linking
+ * a checkout, hooks, a local board, the inspector.
+ */
+export const AGENT_COMMANDS = BOARD_COMMANDS.filter((command) => command !== 'tail')
 
 /** Flags about who's calling, which the tool decides: it always acts as the agent. */
 const IDENTITY_FLAGS = ['url', 'as', 'avatar', 'human', 'handle'] as const
@@ -162,22 +163,40 @@ function wakeOf(message: { metadata?: unknown } | undefined): Notification[] | n
   return metadata?.vboard?.notifications ?? null
 }
 
-function wakeMessage(id: string, notifications: Notification[]): UIMessage {
-  const lines = notifications.map((n) => {
-    const who = `@${n.by.handle}${n.by.name && n.by.name !== n.by.handle ? ` (${n.by.name})` : ''}`
-    const where = `thread #${n.thread} in ${n.channel}`
-    const what =
-      n.reason === 'reply' ? `replied in ${where}, which you follow: #${n.message}`
+/** One notification, as the agent reads it: who did what, where, and how to look. */
+export function describeNotification(n: Notification): string {
+  const who = `@${n.by.handle}${n.by.name && n.by.name !== n.by.handle ? ` (${n.by.name})` : ''}`
+  const where = `thread #${n.thread} in ${n.channel}`
+  const message = n.message === n.thread ? `#${n.message}, the thread's root,` : `#${n.message}`
+  const labels = n.labels
+    ? [...Object.entries(n.labels.set).map(([key, value]) => `${key}=${value}`), ...n.labels.unset.map((key) => `-${key}`)].join(' ')
+    : ''
+  let what: string
+  if (n.reason === 'mention')
+    what =
+      n.type === 'message.edited' ? `mentioned you in an edit of #${n.message}, in ${where}`
       : n.message === n.thread ? `mentioned you in a new thread, #${n.thread} in ${n.channel}`
       : `mentioned you in #${n.message}, a reply in ${where}`
-    return `${who} ${what}. Read it with \`vb read ${n.thread}\`.`
-  })
+  else
+    what = {
+      'message.posted': `replied in ${where}, which you follow: #${n.message}`,
+      'message.edited': `edited ${message} in ${where}, which you follow`,
+      'message.deleted': `deleted ${message} in ${where}, which you follow`,
+      'reaction.added': `reacted :${n.emoji}: to ${message} in ${where}, which you follow`,
+      'reaction.removed': `took back their :${n.emoji}: on ${message} in ${where}, which you follow`,
+      'labels.changed': `labeled ${message} ${labels} in ${where}, which you follow`,
+    }[n.type]
+  return `${who} ${what}. Read it with \`vb read ${n.thread}\`.`
+}
+
+function wakeMessage(id: string, notifications: Notification[]): UIMessage {
+  const lines = notifications.map(describeNotification)
   const text = lines.length === 1 ? `New notification: ${lines[0]}` : `New notifications:\n${lines.map((line) => `- ${line}`).join('\n')}`
   return { id, role: 'user', parts: [{ type: 'text', text }], metadata: { vboard: { notifications } } satisfies WakeMetadata }
 }
 
 function preamble(host: AgentHost): string {
-  return `You are ${host.name} (@${host.key}) on a vboard message board. People reach you by mentioning @${host.key}; you also hear about new replies in the threads you follow.
+  return `You are ${host.name} (@${host.key}) on a vboard message board. People reach you by mentioning @${host.key}; you also hear about what happens in the threads you follow: replies, edits, reactions, and labels.
 
 Each user message here is a notification from the board, not a message from a person. It says who, why, and where; read the thread with \`vb read <thread>\` before you act.
 
@@ -241,8 +260,9 @@ export async function runVb(
     const { values: flags, positionals } = parse(argv)
     const [command, ...args] = positionals
     if (!command || command === 'help' || flags.help) return lines.push(helpFor(AGENT_COMMANDS)), done(0)
+    if (command === 'tail') throw new UsageError("tail runs until it's stopped, so it can't answer a tool call: use wait")
     if (!(AGENT_COMMANDS as readonly string[]).includes(command))
-      throw new UsageError(`${command} isn't a command here; these are: ${AGENT_COMMANDS.join(', ')}`)
+      throw new UsageError(`${command} is about a machine, not the board; these are: ${AGENT_COMMANDS.join(', ')}`)
     const identity = IDENTITY_FLAGS.find((flag) => flags[flag] !== undefined)
     if (identity) throw new UsageError(`--${identity} doesn't apply here: you always act as yourself on this board`)
     if (command === 'wait') {

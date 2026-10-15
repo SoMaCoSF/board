@@ -347,8 +347,8 @@ export const agentsContract = contract({
   events: {
     'agent.notified': z.object({
       thread: ThreadKey,
-      /** `mention`: the message mentions the agent. `reply`: it's new in a thread the agent follows. */
-      reason: z.enum(['mention', 'reply']),
+      /** `mention`: the message mentions the agent. `subscribed`: it happened in a thread the agent follows. */
+      reason: z.enum(['mention', 'subscribed']),
       root: z.object({ id: MessageId, labels: Labels }),
       /** The board event, as `vb tail --json` prints it. */
       event: z.unknown(),

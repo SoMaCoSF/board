@@ -7,7 +7,7 @@ import { redisHttp } from "experimental-a2/store-redis-http";
 import { vercelQueues } from "experimental-a2/scheduler-vercel";
 import { byAgent, byPi, byWatcher, taskMessage, tellPi } from "./agent";
 import { classifyThread } from "./classify";
-import { forAgent, isPiKind, PI_KINDS, piTask, scheduled, scheduledThread } from "./kinds";
+import { isPiKind, PI_KINDS, piTask, scheduled, scheduledThread } from "./kinds";
 import { security } from "./security";
 import { shipit } from "./shipit";
 import { autoland } from "./autoland";
@@ -102,7 +102,7 @@ export const { GET, POST, scheduler } = board({
           return;
         }
         const thread = await board.thread(message.re ?? message.id);
-        if (thread.message.labels.pr || forAgent(thread.message)) {
+        if (thread.message.labels.pr) {
           return;
         }
         const kind = await classifyThread(
