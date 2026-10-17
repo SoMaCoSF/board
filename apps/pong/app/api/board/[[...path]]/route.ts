@@ -3,9 +3,10 @@ import { board } from "vboard";
 // A board that keeps no log: the software factory's board is its remote. The factory
 // runs `ping`'s tail and sends each match here, where it runs as this project's code.
 // `pings` isn't synced anywhere and no factory watcher reads it, so this touches no
-// Slack, GitHub, or Pi. Try it with `vb post pings "hello"`.
+// Slack, GitHub, or Pi. Try it with `vb post pings "hello"`. A preview's `VBOARD_URL`
+// points it at a factory preview instead.
 export const { GET, POST } = board({
-  remote: "https://vboard-factory.playground-vercel.tools/api/board",
+  remote: process.env.VBOARD_URL ?? "https://vboard-factory.playground-vercel.tools/api/board",
   watch: {
     ping: {
       tail: "pings",
