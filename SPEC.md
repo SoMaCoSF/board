@@ -207,7 +207,9 @@ Other runtimes pass `token` explicitly (see [Client SDK](#client-sdk)).
   Sources for the calling project and environment separately from the board's
   `trustedSources`. `VERCEL_AUTOMATION_BYPASS_SECRET` takes precedence for
   every client, including hosted callers, without requiring runtime OIDC for
-  discovery. Without it, hosted clients fail with setup guidance when edge
+  discovery. A hosted caller whose secret is rejected falls back to OIDC: Vercel
+  exposes a project's own secret to its deployments, so it opens that project's
+  boards and not another's, such as a remote's. Without it, hosted clients fail with setup guidance when edge
   trust is missing and never read or create a saved bypass. Both OIDC headers
   are stripped on cross-origin redirects.
   The Node client sends an explicit secret in `x-vercel-protection-bypass`.
