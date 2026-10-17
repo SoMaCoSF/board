@@ -12,7 +12,7 @@ export const { GET, POST } = board({
       run: async ({ event, board }) => {
         if (event.type !== "message.posted" || event.message?.re !== null) return;
         const commit = process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? "local";
-        await board.reply(event.message.id, `pong from remote-example at ${commit}`);
+        await board.reply(event.message.id, `pong from ${commit}`);
       },
     },
   },

@@ -257,7 +257,7 @@ VBOARD_URL=https://vboard.playground-vercel.tools/api/board pnpm exec vb inspect
   `/api/v0-hook` also checks `V0_HOOK_KEY`. Tagging the owner in Slack needs the
   Connect Slack app's `users:read.email` scope; without it the email shows as text.
 
-## the remote example (`apps/remote-example`)
+## pong (`apps/pong`)
 
 A board with a remote (`board({ remote })`, see SPEC.md's "Remote boards"): it
 keeps no log, and the factory's board is its remote. Its one watcher, `ping`,

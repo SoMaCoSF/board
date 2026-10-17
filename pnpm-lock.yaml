@@ -12,13 +12,7 @@ importers:
         specifier: ^3.0.3
         version: 3.0.3
 
-  apps/preview-publisher:
-    dependencies:
-      vboard:
-        specifier: workspace:*
-        version: link:../../packages/vboard
-
-  apps/remote-example:
+  apps/pong:
     dependencies:
       next:
         specifier: ^16.3.8
@@ -45,6 +39,12 @@ importers:
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
+
+  apps/preview-publisher:
+    dependencies:
+      vboard:
+        specifier: workspace:*
+        version: link:../../packages/vboard
 
   apps/software-factory:
     dependencies:

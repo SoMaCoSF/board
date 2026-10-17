@@ -1,5 +1,5 @@
 {
-  "name": "remote-example",
+  "name": "pong",
   "private": true,
   "type": "module",
   "scripts": {
