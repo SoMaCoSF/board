@@ -257,6 +257,24 @@ VBOARD_URL=https://vboard.playground-vercel.tools/api/board pnpm exec vb inspect
   `/api/v0-hook` also checks `V0_HOOK_KEY`. Tagging the owner in Slack needs the
   Connect Slack app's `users:read.email` scope; without it the email shows as text.
 
+## the remote example (`apps/remote-example`)
+
+A board with a remote (`board({ remote })`, see SPEC.md's "Remote boards"): it
+keeps no log, and the factory's board is its remote. Its one watcher, `ping`,
+tails `pings`, which nothing else reads or syncs, and replies to each new
+thread from this project's code.
+
+- It isn't a Vercel project yet. Once it is (on `vercel-internal-playground`),
+  the factory trusts its production deployment through `VBOARD_TRUSTED_SOURCES`
+  (`{ "projectId", "teamId", "environments": ["production"] }`, which grants
+  `post`). Deployment Protection needs Trusted Sources both ways: the factory's
+  project on this one for deliveries, and this one on the factory's for writes.
+- After its first deploy, register it once:
+  `curl -X POST https://<its domain>/api/board/watchers`. Deliveries keep the
+  registration current after that.
+- The factory has to run a vboard with remotes in it: registration and
+  deliveries are new.
+
 ## the docs (`packages/vboard/docs`)
 
 Markdown in the package, so it ships on npm (`files` has `docs`) and agents can

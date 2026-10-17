@@ -262,6 +262,7 @@ export function createClient(options: NodeClientOptions = {}): BoardClient {
       const found = (await response.json()) as Discovery
       if (found.audience !== url)
         throw new BoardError('wrong_audience', `the board at ${url} says its URL is ${found.audience}: use that URL`, 0)
+      if (found.remote) throw new BoardError('remote', `${url} keeps no log: use ${found.remote}`, 0)
       return found
     }))
 

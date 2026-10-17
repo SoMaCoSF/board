@@ -14,6 +14,7 @@ import {
   MessageId,
   MessageText,
   MESSAGE_TEXT_MAX,
+  RemoteWatcherId,
 } from './schemas.ts'
 
 /**
@@ -315,6 +316,39 @@ export type WatchEvents = typeof watchContract.events
 
 /** `watch:triage`: the session for one watcher. */
 export const watchSession = (id: string) => `watch:${id}`
+
+/** A watcher as a board with a remote registers it: its tail, and when it runs. */
+export const WatcherSpec = z.object({
+  tail: z.string().max(1000),
+  when: z.enum(['matches', 'enters']),
+})
+
+/**
+ * Watchers that boards with this board as their remote registered, outside the
+ * board log: one session, `registry`. Each principal has one registration, and
+ * its newest replaces the last.
+ */
+export const registryContract = contract({
+  name: 'vboard-registry',
+  events: {
+    'watchers.registered': z.object({
+      /** The principal that registered, which its watchers' writes are by, with their IDs as profiles. */
+      owner: z.string().min(1).max(200),
+      /** The board's URL: matches go to `<url>/deliveries/<id>`. */
+      url: z.string().url().max(500),
+      watch: z.record(RemoteWatcherId, WatcherSpec),
+      /** `watchersHash(watch)`, which every delivery carries so the board can tell it's stale. */
+      hash: z.string().min(1).max(100),
+    }),
+  },
+})
+
+export type RegistryEvents = typeof registryContract.events
+
+export const REGISTRY_SESSION = 'registry'
+
+/** `@vercel:project:prj_v0:production/fix`: a registered watcher, whose session is `watch:<key>`. */
+export const registeredWatchKey = (owner: string, id: string) => `@${owner}/${id}`
 
 /** Epoch milliseconds. */
 const Millis = z.number().int().nonnegative()

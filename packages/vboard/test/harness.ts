@@ -34,7 +34,7 @@ export function testClock() {
 }
 
 /** A board on a memory store whose tokens come from a local test issuer. */
-export function testBoard(options: Partial<BoardOptions> = {}) {
+export function testBoard(options: Partial<Omit<BoardOptions, 'remote'>> = {}) {
   const clock = testClock()
   const store = memory({ clock })
   const created = board({

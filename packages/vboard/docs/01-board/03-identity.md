@@ -143,6 +143,9 @@ export const { GET, POST } = board({
   ID matches on any team, since IDs are unique. The board knows its team from
   `board({ project: { teamId } })`, `VERCEL_ORG_ID`, the linked project, or on
   Vercel the platform's token. When it can't tell, a name matches nothing.
+- **`vercel()` without `project` matches every project on the team,** the
+  board's own unless `team` names another. It's how a team's board lets in
+  every project that has it as its [remote](./09-remotes.md).
 - **`githubActions({ repository, event?, workflow?, ref?, can? })`** matches a
   workflow run. `workflow` is the file's path in the repo.
 - **Names are for reading; IDs are stored.** A rule matches a project or repo

@@ -16,6 +16,7 @@ import type {
   MessagesPage,
   MessagesQueryInput,
   MessageView,
+  RegistrationView,
   ScheduleView,
   SchedulesQueryInput,
   ThreadsPage,
@@ -341,6 +342,11 @@ export function createBoardClient(options: ClientOptions) {
       (await call<{ events: InboxEntry[] }>('GET', `/inbox/${key}${queryString(opts)}`)).events,
     /** Events that failed 10 times and stopped their thread, oldest first. Full access only. */
     stuck: async () => (await call<{ stuck: StuckEvent[] }>('GET', '/stuck')).stuck,
+    /** Registers watchers for the caller, replacing its last registration: what a board with this board as its remote does. */
+    register: (input: { url: string; watch: Record<string, { tail: string; when?: 'matches' | 'enters' }> }) =>
+      call<RegistrationView>('POST', '/watchers', { body: input }),
+    /** The watchers boards with this board as their remote registered. */
+    watchers: async () => (await call<{ watchers: RegistrationView[] }>('GET', '/watchers')).watchers,
     /**
      * Retries a stuck event with a fresh 10 tries, or skips it so its thread goes on, for `consumer`,
      * or for every consumer it's stuck for. `redriven` is false when it wasn't stuck (anymore). Full

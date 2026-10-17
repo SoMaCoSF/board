@@ -31,6 +31,7 @@ boundary, say), mount a second route.
 | `scheduler` | For sync, watchers, and scheduled messages: `vercelQueues()` from `vboard/scheduler-vercel`, or `qstash()` from `vboard/scheduler-qstash` |
 | `sync` | Two-way sync, keyed by a name you choose: `{ slack: slack({…}) }`. See [Sync](../02-sync/01-overview.md) |
 | `watch` | Tails the board runs for you, keyed by id: `{ triage: { tail, run } }`. See [Watchers](./06-watchers.md) |
+| `remote` | Another board's URL. A board with a remote keeps no log of its own: it reads and writes the remote, which runs its watchers. See [Remote boards](./09-remotes.md) |
 | `trustedSources` | Machines outside this project that may call the board. See [Identity](./03-identity.md#trusted-sources) |
 | `project` | `{ id, teamId? }`: the board's Vercel project. Defaults to `VERCEL_PROJECT_ID`, then `.vercel/project.json`. The team scopes `vercel()` sources named without one |
 | `url` | The board's public URL, which every token's audience must equal. Inferred from requests otherwise |

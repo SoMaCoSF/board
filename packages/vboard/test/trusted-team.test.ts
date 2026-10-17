@@ -66,3 +66,44 @@ describe('a trusted Vercel project named without its team', () => {
     expect(await call(await theirs(), platform)).toBe(403)
   })
 })
+
+describe('a trusted Vercel team: vercel() without a project', () => {
+  const preview = () =>
+    new SignJWT({
+      sub: 'owner:test:project:docs:environment:preview',
+      owner: 'test',
+      owner_id: TEAM_ID,
+      project: 'docs',
+      project_id: 'prj_docs',
+      environment: 'preview',
+    })
+      .setProtectedHeader({ alg: 'RS256', kid: 'vercel' })
+      .setIssuer('https://oidc.vercel.com/test')
+      .setAudience(BOARD_URL)
+      .setIssuedAt()
+      .setExpirationTime('1h')
+      .sign(privateKey)
+
+  it("trusts every project on the board's team, and none on another", async () => {
+    const { fetch } = testBoard({ auth, trustedSources: [vercel()] })
+    const me = await caller(fetch, await ours())('GET', '/me')
+    expect({ status: me.status, actor: me.body?.actor }).toEqual({ status: 200, actor: 'vercel:project:prj_marketing:production' })
+    expect((await caller(fetch, await deployment('test', TEAM_ID, 'docs', 'prj_docs'))('GET', '/me')).status).toBe(200)
+    expect((await caller(fetch, await theirs())('GET', '/me')).status).toBe(403)
+  })
+
+  it('trusts the team it names, and the environments it lists', async () => {
+    const named = testBoard({ auth, trustedSources: [vercel({ team: 'attacker' })] })
+    expect((await caller(named.fetch, await theirs())('GET', '/me')).status).toBe(200)
+    expect((await caller(named.fetch, await ours())('GET', '/me')).status).toBe(403)
+
+    const production = testBoard({ auth, trustedSources: [vercel({ environments: ['production'] })] })
+    expect((await caller(production.fetch, await ours())('GET', '/me')).status).toBe(200)
+    expect((await caller(production.fetch, await preview())('GET', '/me')).status).toBe(403)
+  })
+
+  it("matches nothing when the board doesn't know its team", async () => {
+    const { fetch } = board({ store: memory(), url: BOARD_URL, project: { id: PROJECT_ID }, auth, trustedSources: [vercel()] })
+    expect((await caller(fetch, await ours())('GET', '/me')).status).toBe(403)
+  })
+})

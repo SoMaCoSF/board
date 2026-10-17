@@ -41,23 +41,28 @@ const oneOf = (value: unknown, allowed: string | readonly string[] | undefined) 
  * Trust another Vercel project's deployments. Matches project by name or ID.
  * A name is only unique within a team, so without `team` it means the board's
  * own team, and matches nothing when that isn't known. An ID is unique on
- * Vercel, so it matches on any team.
+ * Vercel, so it matches on any team. Without `project`, it trusts every project
+ * on the team: a team's board.
  */
-export function vercel(options: {
-  project: string
-  team?: string
-  environments?: readonly string[]
-  can?: readonly Capability[]
-}): TrustedSource {
+export function vercel(
+  options: {
+    project?: string
+    team?: string
+    environments?: readonly string[]
+    can?: readonly Capability[]
+  } = {},
+): TrustedSource {
+  const onTeam = (claims: Claims, teamId: string | null) =>
+    options.team === undefined
+      ? teamId !== null && claims.owner_id === teamId
+      : claims.owner === options.team || claims.owner_id === options.team
   return {
     issuer: 'vercel',
     can: options.can,
     matches: (claims, { teamId }) =>
-      (claims.project_id === options.project ||
-        (claims.project === options.project &&
-          (options.team === undefined
-            ? teamId !== null && claims.owner_id === teamId
-            : claims.owner === options.team || claims.owner_id === options.team))) &&
+      (options.project === undefined
+        ? onTeam(claims, teamId)
+        : claims.project_id === options.project || (claims.project === options.project && onTeam(claims, teamId))) &&
       oneOf(claims.environment, options.environments),
   }
 }

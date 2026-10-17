@@ -1,9 +1,9 @@
 import { z } from 'zod'
 import { idempotentId } from 'experimental-a2'
 import { createServer, type A2Scheduler } from 'experimental-a2/server'
-import { boardContract, BOARD_SESSION, inboxSession, SCHEDULES_SESSION, watchSession, type BoardEvents } from '../contract/contract.ts'
+import { boardContract, BOARD_SESSION, inboxSession, SCHEDULES_SESSION, type BoardEvents } from '../contract/contract.ts'
 import { actorsReducer, channelsReducer, linkedTo, syncReducer } from '../contract/reducers.ts'
-import { ATTACHMENT_BYTES_MAX } from '../contract/schemas.ts'
+import { ATTACHMENT_BYTES_MAX, RemoteWatcherId } from '../contract/schemas.ts'
 import {
   EditBody,
   EventsQuery,
@@ -18,6 +18,7 @@ import {
   PostBody,
   ReactBody,
   RedriveBody,
+  RegisterBody,
   routes,
   ScheduleBody,
   SchedulesQuery,
@@ -53,7 +54,10 @@ import { createSchedules } from './schedules.ts'
 import { defaultStore } from '../store/default.ts'
 import { TABLES_CONSUMER } from '../store/sql.ts'
 import type { BoardStore } from '../store/types.ts'
-import { createWatchers, ID, type Watcher } from './watch.ts'
+import { compileWatcher, createWatchers, ID, type Match as WatchMatch, type Watcher } from './watch.ts'
+import { createRegistry, type Registration } from './registry.ts'
+import { remoteBoard } from './remote.ts'
+import { transport, type Transport } from './transport.ts'
 import {
   writeAttach,
   writeDelete,
@@ -67,6 +71,7 @@ import {
   type WriteOrigin,
 } from './writes.ts'
 import { MIDDLEWARE_ACTOR, type Middleware } from './middleware.ts'
+import { queryObject, readJson, route } from './routing.ts'
 
 export type BoardOptions = {
   /**
@@ -102,6 +107,14 @@ export type BoardOptions = {
    * in tests, `.a2/attachments` in development, and no uploads in production.
    */
   blob?: BlobStore
+  /**
+   * The board that keeps this one's log, e.g. `https://board.example.com/api/board`. A board
+   * with a remote keeps none: it reads and writes the remote, which runs its watchers' tails
+   * and delivers what matches to it.
+   */
+  remote?: string
+  /** For tests: how the board reaches other boards. Defaults to `fetch` and the deployment's OIDC token. */
+  transport?: Partial<Transport>
 }
 
 const boardServer = (options: BoardOptions) =>
@@ -112,42 +125,6 @@ const boardServer = (options: BoardOptions) =>
   })
 
 export type BoardSession = ReturnType<ReturnType<typeof boardServer>['session']>
-
-type Match = { name: RouteName; base: string; id?: number; param?: string }
-
-// Most specific first; each route is matched as a suffix of the request path.
-const PATTERNS: { method: string; name: RouteName; pattern: RegExp }[] = [
-  { method: 'POST', name: 'identityLink', pattern: /\/identity\/link$/ },
-  { method: 'POST', name: 'identityCheck', pattern: /\/identity\/check$/ },
-  { method: 'POST', name: 'identityUnlink', pattern: /\/identity\/unlink$/ },
-  { method: 'GET', name: 'identity', pattern: /\/identity$/ },
-  { method: 'POST', name: 'edit', pattern: /\/messages\/(\d+)\/edit$/ },
-  { method: 'POST', name: 'delete', pattern: /\/messages\/(\d+)\/delete$/ },
-  { method: 'POST', name: 'react', pattern: /\/messages\/(\d+)\/reactions$/ },
-  { method: 'POST', name: 'label', pattern: /\/messages\/(\d+)\/labels$/ },
-  { method: 'POST', name: 'sync', pattern: /\/messages\/(\d+)\/sync$/ },
-  { method: 'POST', name: 'typing', pattern: /\/messages\/(\d+)\/typing$/ },
-  { method: 'GET', name: 'message', pattern: /\/messages\/(\d+)$/ },
-  { method: 'GET', name: 'messages', pattern: /\/messages$/ },
-  { method: 'POST', name: 'post', pattern: /\/messages$/ },
-  { method: 'GET', name: 'threads', pattern: /\/threads$/ },
-  { method: 'POST', name: 'cancelSchedule', pattern: /\/schedules\/s?(\d+)\/cancel$/ },
-  { method: 'GET', name: 'schedules', pattern: /\/schedules$/ },
-  { method: 'POST', name: 'schedule', pattern: /\/schedules$/ },
-  { method: 'GET', name: 'channels', pattern: /\/channels$/ },
-  { method: 'GET', name: 'actors', pattern: /\/actors$/ },
-  { method: 'GET', name: 'events', pattern: /\/events$/ },
-  { method: 'GET', name: 'me', pattern: /\/me$/ },
-  { method: 'GET', name: 'inbox', pattern: /\/inbox\/([A-Za-z0-9_-]+)$/ },
-  { method: 'POST', name: 'redrive', pattern: /\/stuck\/redrive$/ },
-  { method: 'GET', name: 'stuck', pattern: /\/stuck$/ },
-  { method: 'GET', name: 'sourceRead', pattern: /\/sources\/([A-Za-z0-9_-]+)\/read$/ },
-  { method: 'POST', name: 'webhook', pattern: /\/webhooks\/([A-Za-z0-9_-]+)$/ },
-  { method: 'GET', name: 'avatar', pattern: /\/avatars\/([a-z0-9-]+)$/ },
-  { method: 'GET', name: 'openapi', pattern: /\/openapi\.json$/ },
-  { method: 'POST', name: 'upload', pattern: /\/attachments$/ },
-  { method: 'GET', name: 'attachment', pattern: /\/attachments\/([A-Za-z0-9_-]+)$/ },
-]
 
 /** What `vb stuck` needs of an A2 session, whatever its contract. */
 type Redrivable = {
@@ -174,51 +151,6 @@ const MIDDLEWARE_IDENTITY = deploymentIdentity(MIDDLEWARE_ACTOR, 'middleware')
  */
 const DERIVED_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
-const NUMERIC = new Set<RouteName>(['edit', 'delete', 'react', 'label', 'sync', 'typing', 'message', 'cancelSchedule'])
-
-function route(method: string, pathname: string, basePath?: string): Match | null {
-  const path = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname
-  if (basePath !== undefined) {
-    const base = basePath.replace(/\/+$/, '')
-    if (path !== base && !path.startsWith(`${base}/`)) return null
-    const rest = path.slice(base.length) || '/'
-    if (rest === '/') return method === 'GET' ? { name: 'discovery', base } : null
-    for (const candidate of PATTERNS) {
-      const found = rest.match(new RegExp(`^${candidate.pattern.source}`))
-      if (candidate.method === method && found) return withParam(candidate.name, base, found[1])
-    }
-    return null
-  }
-  for (const candidate of PATTERNS) {
-    if (candidate.method !== method) continue
-    const found = path.match(candidate.pattern)
-    if (found) return withParam(candidate.name, path.slice(0, found.index), found[1])
-  }
-  return method === 'GET' ? { name: 'discovery', base: path === '/' ? '' : path } : null
-}
-
-const withParam = (name: RouteName, base: string, param: string | undefined): Match =>
-  param === undefined ? { name, base } : NUMERIC.has(name) ? { name, base, id: Number(param) } : { name, base, param }
-
-function queryObject(url: URL): Record<string, string | string[]> {
-  const out: Record<string, string | string[]> = {}
-  for (const key of new Set(url.searchParams.keys())) {
-    const values = url.searchParams.getAll(key)
-    out[key] = values.length > 1 ? values : values[0]!
-  }
-  return out
-}
-
-async function readJson(request: Request): Promise<unknown> {
-  const text = await request.text()
-  if (text.trim() === '') return undefined
-  try {
-    return JSON.parse(text)
-  } catch {
-    throw badRequest('request body is not valid JSON')
-  }
-}
-
 const tooLarge = () => new HttpError(413, 'too_large', `attachments are at most ${ATTACHMENT_BYTES_MAX / 1024 / 1024} MB`)
 
 /** The body, refused as soon as it's past `max`: with or without a `content-length`, it never reads more. */
@@ -240,8 +172,18 @@ async function readCapped(request: Request, max: number): Promise<Uint8Array> {
   return body
 }
 
-/** Mounts a board: one log in one route. Create it once, at module scope. */
+/**
+ * Mounts a board: one log in one route, or with a `remote`, a route that keeps none and uses
+ * the remote's. Create it once, at module scope.
+ */
+export function board(options: BoardOptions & { remote: string }): ReturnType<typeof remoteBoard>
+export function board(options?: BoardOptions & { remote?: undefined }): ReturnType<typeof logBoard>
+export function board(options?: BoardOptions): ReturnType<typeof logBoard> | ReturnType<typeof remoteBoard>
 export function board(options: BoardOptions = {}) {
+  return options.remote !== undefined ? remoteBoard({ ...options, remote: options.remote }) : logBoard(options)
+}
+
+function logBoard(options: BoardOptions) {
   const blob = options.blob ?? defaultBlob()
   const store = options.store ?? defaultStore()
   // The same A2 store object for every server: A2 recognizes its own stores by identity.
@@ -250,14 +192,19 @@ export function board(options: BoardOptions = {}) {
     options.sync && Object.keys(options.sync).length > 0
       ? createSyncEngine({ entries: options.sync, store: log, scheduler: options.scheduler, blob })
       : null
-  const watchers =
-    options.watch && Object.keys(options.watch).length > 0
-      ? createWatchers({ watch: options.watch, store: log, scheduler: options.scheduler })
-      : null
+  const net = transport(options.transport)
+  const registry = createRegistry({ store: log, scheduler: options.scheduler })
+  // Always, since boards with this one as their remote may register watchers at any time.
+  const watchers = createWatchers({
+    watch: options.watch ?? {},
+    store: log,
+    scheduler: options.scheduler,
+    registered: { state: registry.state, deliver },
+  })
   const schedules = createSchedules({ store: log, scheduler: options.scheduler })
   const projection = tablesConsumer(store.tables)
   // The tables, watchers, and sync each keep their own place in the board's log.
-  const consumers = [projection, watchers?.boardConsumer, engine?.outbound].filter((consumer) => consumer !== undefined)
+  const consumers = [projection, watchers.boardConsumer, engine?.outbound].filter((consumer) => consumer !== undefined)
   const server = createServer({
     contract: boardContract,
     ...(log ? { store: log } : {}),
@@ -299,7 +246,7 @@ export function board(options: BoardOptions = {}) {
     const ids: [string, { session(id: string): Redrivable }][] = [
       [BOARD_SESSION, server],
       [SCHEDULES_SESSION, schedules.server],
-      ...(watchers ? watchers.ids.map((id): [string, typeof watchers.server] => [watchSession(id), watchers.server]) : []),
+      ...(await watchers.sessions()).map((id): [string, typeof watchers.server] => [id, watchers.server]),
       ...(engine ? (await engine.inboxChannels()).map((channel): [string, typeof engine.inboxServer] => [inboxSession(channel), engine.inboxServer]) : []),
     ]
     return ids.map(([id, owner]) => ({ id, session: owner.session(id) }))
@@ -385,7 +332,33 @@ export function board(options: BoardOptions = {}) {
 
   engine?.bind({ session, writes, clientAs })
   schedules.bind({ writes })
-  watchers?.bind({ clientAs, reads })
+  watchers.bind({ clientAs, reads })
+
+  /** Posts one match to the board that registered its watcher. A 404 means it has no such watcher anymore. */
+  async function deliver(registration: Registration, id: string, match: WatchMatch, signal: AbortSignal) {
+    const token = await net.token(registration.url)
+    const response = await net.fetch(`${registration.url}/deliveries/${id}`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        // Deployment Protection lets it through when the board trusts this board's project.
+        'x-vercel-trusted-oidc-idp-token': token,
+        'x-board-watchers': registration.hash,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ id: match.id, event: match.payload.event }),
+      // A redirect means the registered URL is wrong: say so, rather than post wherever it points.
+      redirect: 'manual',
+      signal,
+    })
+    if (response.ok || response.status === 404) return
+    const text = await response.text().catch(() => '')
+    let message = text.slice(0, 300)
+    try {
+      message = (JSON.parse(text) as { error?: { message?: string } }).error?.message ?? message
+    } catch {}
+    throw new Error(`${registration.url} answered ${response.status}${message ? `: ${message}` : ''}`)
+  }
 
   async function dispatch(request: Request, injected: Identity | null, origin: WriteOrigin = { via: { kind: 'api' } }): Promise<Response> {
     try {
@@ -648,6 +621,24 @@ export function board(options: BoardOptions = {}) {
           const query = SourceReadQuery.parse(queryObject(url))
           return json(await engine.readSource(match.param!, query.target, query.limit ?? 50))
         }
+        case 'watchers':
+          return json({ watchers: await registry.list() })
+        case 'register': {
+          require(principal, 'post')
+          const body = RegisterBody.parse(await readJson(request))
+          for (const [id, spec] of Object.entries(body.watch)) {
+            const name = RemoteWatcherId.safeParse(id)
+            if (!name.success) throw badRequest(`watch ${id}: ${name.error.issues[0]!.message}`, 'bad_watcher')
+            try {
+              compileWatcher(id, spec)
+            } catch (error) {
+              throw badRequest((error as Error).message, 'bad_watcher')
+            }
+          }
+          return json(await registry.register(principal.id, body))
+        }
+        case 'deliver':
+          throw notFound('this board keeps its own log: deliveries go to a board with a remote')
         case 'events': {
           const query = EventsQuery.parse(queryObject(url))
           const lastEventId = Number(request.headers.get('last-event-id'))
@@ -667,12 +658,8 @@ export function board(options: BoardOptions = {}) {
   }
 
   const handle = (request: Request) => dispatch(request, null)
-  const servers = [
-    server,
-    ...(engine ? [engine.inboxServer] : []),
-    schedules.server,
-    ...(watchers ? [watchers.server] : []),
-  ]
+  // The watchers' server stays last, where it's always been.
+  const servers = [server, ...(engine ? [engine.inboxServer] : []), schedules.server, registry.server, watchers.server]
   return {
     GET: handle,
     POST: handle,

@@ -144,6 +144,29 @@ export const InboxQuery = z.object({
   channel: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
 })
+/** What a board with a remote registers there: where it is, and its watchers' tails. */
+export const RegisterBody = z.object({
+  url: z
+    .string()
+    .url()
+    .max(500)
+    .refine((url) => /^https?:\/\//.test(url), 'matches are delivered over http(s)')
+    .transform((url) => url.replace(/\/+$/, '')),
+  // The IDs are checked one by one, so a bad one fails with what a misconfigured boot would.
+  watch: z.record(
+    z.string().max(100),
+    z.object({ tail: z.string().max(1000), when: z.enum(['matches', 'enters']).default('matches') }),
+  ),
+})
+
+/** One match, as a remote delivers it to a board with that remote. */
+export const DeliveryBody = z.object({
+  /** The match's ID, which the watcher's writes derive their IDs from. */
+  id: z.string().min(1).max(200),
+  /** The event, exactly as `vb tail --json` prints it. */
+  event: z.unknown(),
+})
+
 /** A stuck event to retry (with a fresh 10 tries) or skip (so its thread goes on), as `vb stuck` lists it. */
 export const RedriveBody = z.object({
   session: z.string().min(1).max(300),
@@ -254,6 +277,19 @@ export type Discovery = {
   project_id: string | null
   /** The board's sync entries: `key` names its webhook and inbox, `platform` is e.g. `slack`. */
   sync: { key: string; platform: string }[]
+  /** A board with a remote keeps no log: clients read and write this board instead. */
+  remote?: string
+}
+
+/** Watchers a board with this board as its remote registered: one registration per principal. */
+export type RegistrationView = {
+  /** The principal that registered. Its watchers write as it, with their IDs as profiles. */
+  owner: string
+  /** Where matches go: `<url>/deliveries/<id>`. */
+  url: string
+  watch: Record<string, { tail: string; when: 'matches' | 'enters' }>
+  /** Every delivery carries it, so the board can tell its registration is stale. */
+  hash: string
 }
 
 export type Me = {
@@ -413,6 +449,15 @@ export const routes = {
   /** Finishes a sign-in: links the account it authorized, once it has. */
   identityCheck: { method: 'POST', path: '/identity/check', body: IdentityCheckBody },
   identityUnlink: { method: 'POST', path: '/identity/unlink', body: IdentityUnlinkBody },
+  /** Registrations from boards with this one as their remote. */
+  watchers: { method: 'GET', path: '/watchers' },
+  /**
+   * On a board with a log: registers the caller's watchers, replacing its last registration.
+   * On a board with a remote: registers its own with its remote, with no body or token.
+   */
+  register: { method: 'POST', path: '/watchers', body: RegisterBody },
+  /** On a board with a remote: one match for a watcher, from the remote only. */
+  deliver: { method: 'POST', path: '/deliveries/:id', body: DeliveryBody },
 } as const
 
 export type RouteName = keyof typeof routes

@@ -2239,6 +2239,149 @@ vb schedule cancel s12              # ada answered: nothing automatic, whoever r
   so a send further out goes in hops of up to 5.
 - **It needs a scheduler.** Without one, `POST /schedules` answers 501.
 
+## Remote boards
+
+**Status: built on branch `jb/team-board`, not released.** A board with a `remote`
+keeps no log of its own. It reads and writes the board at `remote`, which runs
+its watchers' tails and delivers what matches to it. So every project on a team
+can share one board, with no store, scheduler, or blob in each project: the
+shape a hosted `vc board` would have.
+
+```ts
+// app/api/board/[[...path]]/route.ts, in the team board's own project
+import { board, vercel } from 'vboard'
+import { vercelQueues } from 'vboard/scheduler-vercel'
+import { postgres } from 'vboard/store-postgres'
+
+export const { GET, POST, scheduler } = board({
+  store: postgres({ connectionString: process.env.DATABASE_URL! }),
+  scheduler: vercelQueues({ topic: 'vboard' }),
+  trustedSources: [vercel()], // every project on the team
+})
+```
+
+```ts
+// app/api/board/[[...path]]/route.ts, in any project on the team
+import { board } from 'vboard'
+
+export const { GET, POST } = board({
+  remote: 'https://board.example.com/api/board',
+  watch: { fix: { tail: 'v0/security --label status=open', run: fix } },
+})
+```
+
+### A board with a remote
+
+- **It keeps no log.** It takes no `store`, `scheduler`, `blob`, `sync`,
+  `middleware`, or `trustedSources`, and each is an error at startup:
+  everything they do happens on the remote.
+- **It writes as itself.** `client(name, { key })` and each watcher's `board`
+  are the [Client SDK](#client-sdk) against the remote, with the token the SDK
+  finds for it (on Vercel, the deployment's OIDC token). The profile is the
+  client's name or the watcher's ID, so a watcher's writes are by
+  `vercel:project:prj_v0:production+fix`. Being profiles, those names start
+  with a letter and use up to 32 letters, numbers, and hyphens. Post IDs derive
+  from the `key` or the match, as an in-process client's do, so a retried `run`
+  doesn't post twice. They aren't UUIDv8s, which the API keeps for a board's
+  own writes.
+- **Clients use the remote.** The board answers discovery, with `remote`, and
+  the two routes below. Everything else answers 404 with code `remote`, and the
+  CLI pointed at it says `error: <url> keeps no log: use <remote>`.
+
+| Route | What |
+| --- | --- |
+| `POST /watchers` | Registers the board's watchers with its remote, now. No body and no token |
+| `POST /deliveries/:id` | One match for watcher `:id`, from the remote only |
+
+### Registering
+
+The remote needs to know where the board is and what its watchers' tails are,
+and the board tells it: `POST <remote>/watchers` with
+`{ url, watch: { fix: { tail, when } } }`, as itself. A registration replaces
+the last one from the same principal, so a deployment's replaces the one before
+it. A board registers:
+
+1. **When someone asks:** `curl -X POST https://v0.app/api/board/watchers`.
+   Anyone may ask: the board sends its own config with its own credentials, so
+   the request carries nothing and can change nothing else. A person asks once
+   for a new board, or CI after each deploy.
+2. **When a delivery shows the remote's copy is stale.** Every delivery carries
+   the hash of the registration the remote has (`x-board-watchers`). When it
+   isn't the board's own, the board registers before it runs the match. So the
+   first delivery after a deploy brings the tails up to date, with no one
+   asking.
+3. **When it starts, if it knows its URL** (`url` in its config): a
+   long-running server, or a dev server pointed at a local remote. A function
+   on Vercel doesn't start until something calls it, which is why the first
+   two exist.
+
+What still needs asking: a new watcher whose tail can't match until it's
+registered, on a board whose other tails see no traffic.
+
+### Delivering
+
+- **Registrations are checked like config.** `POST /watchers` takes any
+  principal that may post. A bad tail or ID answers 400 with the error a config
+  watcher would fail its boot with. Registrations live in the `vboard-registry`
+  contract, session `registry`, keyed by principal, and `GET /watchers` lists
+  them.
+- **The remote matches them like its own watchers.** `vboard-watchers` matches
+  each event against the board's config watchers and every registered one, and
+  appends each match to `watch:@<principal>/<id>` in `vboard-watch`. Where `run`
+  would run, the runner posts `{ id, event }` (the match's ID, and the event
+  exactly as `vb tail --json` prints it) to `<url>/deliveries/<id>`, with a
+  token whose audience is `url`.
+- **Same lanes, same retries.** A registered watcher sees a thread's events in
+  order, and threads run in parallel. A delivery that doesn't answer 2xx counts
+  as a `run` that threw (5 tries, then `watch.failed`). A 404 means the board no
+  longer has that watcher, and the match is skipped, as a board skips a removed
+  watcher's.
+- **A watcher's own writes never wake it:** the remote skips events by
+  `<principal>+<id>`.
+- **The URL is read when a match is delivered,** so matches queued before a new
+  registration go where the new one says.
+
+### Trust
+
+- **The remote calls URLs it was given at runtime.** That's the exception to
+  [Watchers](#watchers)' "only code you deployed runs", and it's bounded:
+  - a registration carries no code, only where to send matches; the code runs in
+    the board that registered;
+  - only a principal that may post can register, and it's sent only events it
+    could read anyway;
+  - each delivery's token is bound to the registered URL.
+- **Deliveries prove the remote sent them.** The board checks that the token's
+  audience is its own URL, and that it's a deployment of the remote's project,
+  which it reads from the remote's discovery.
+- **The remote signs deliveries with its platform's token:** on Vercel,
+  `getVercelOidcToken({ audience })`, sent as `authorization` and as
+  `x-vercel-trusted-oidc-idp-token`, so a project's Deployment Protection can
+  trust the remote's project as a Trusted Source. A remote elsewhere can't sign
+  deliveries yet.
+- **`vercel()` without `project` trusts every project on the board's team,** by
+  `owner_id`, in every environment unless `environments` narrows it. It's the
+  rule a team's board uses.
+
+### On Vercel, later
+
+| Now | Later |
+| --- | --- |
+| `remote: '<url>'` | the default when there's no store: `VBOARD_URL` as a team-level shared variable, or a hosted board's URL |
+| registers when asked, when stale, or at startup | Vercel asks on every promotion, at the URL the board last registered (mount path included), so no fixed path is needed. Only a board that never registered needs finding: one request, the deployment's route table, or a fixed path such as `/.well-known/board` |
+| the URL the board registers; the last registration wins | deployment URLs, switched exactly when one is promoted |
+| nothing | Vercel posts each project's deployments, alerts, and security findings into channels like `<project>/deployments` |
+
+### Not yet
+
+- **Middleware and sync on a board with a remote.** Sync writes as
+  `slack:U123`, which needs an `ingest` capability on the remote: it would trust
+  the board to assert a platform author, and record which board did.
+- **Scoped tokens and grants as data** (`vc board token --scope 'feedback/'
+  --can post`). The per-channel access spike (#189) is where that starts.
+- **A remote off Vercel signing deliveries,** such as `vb serve`.
+- **One deployment hosting many teams' boards.** A team's board is a project on
+  that team; how a hosted service runs many of them is its own concern.
+
 ## Non-goals for v1
 
 - Full-text search
@@ -2290,7 +2433,9 @@ vb schedule cancel s12              # ada answered: nothing automatic, whoever r
 | Is there one filter for every write, or one per source? | **One: `middleware` on `board()`** (board thread #4100). Sync callbacks only see synced events, and API writes never pass them, so a filter there misses the CLI, CI, and agents. |
 | How does someone prove a platform account is theirs? | **A one-time code posted from it, or the platform's own sign-in** (board thread #676, issue #6). Never a matching name or email: a link changes who `--by` and mentions mean. Links are per board, and only for display and filtering. |
 | Can Connect user tokens post as a person? | **Assumed yes, not yet verified with a real consent:** both factory connectors answer `user_authorization_required` and return real consent URLs (issue #6). Which scopes the tokens get is unverified until someone signs in; without them, delivery falls back to the app. |
-| Can watchers be added at runtime? | **No: the dynamic part is data.** A runtime registration can't carry code, and one that carries a URL makes the board call wherever it's told. A watcher reads labels and mentions instead (see [Watchers](#watchers)). |
+| Can watchers be added at runtime? | **No: the dynamic part is data.** A runtime registration can't carry code, and one that carries a URL makes the board call wherever it's told. A watcher reads labels and mentions instead (see [Watchers](#watchers)). A board with a remote registers where its deployed watchers run (see [Remote boards](#remote-boards)): the registration carries a URL, never code. |
+| Is a remote board remote at the store or at the API? | **At the API.** If projects shared one A2 store, each project's vboard version would define the team's log. Over the API, the remote owns the contract and boards with a remote are its clients. |
+| When does a board with a remote register its watchers? | **When asked (`POST /watchers`), when a delivery shows the remote's copy is stale, and at startup when it knows its URL** (see [Registering](#registering)). A function can't announce itself, so until a platform asks on each deploy, one request starts a new board. |
 
 ## Benchmarks before release
 

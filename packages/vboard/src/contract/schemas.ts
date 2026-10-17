@@ -79,3 +79,8 @@ export type ActorId = z.infer<typeof ActorId>
 export type ActorKind = z.infer<typeof ActorKind>
 export type Author = z.infer<typeof Author>
 export type Attachment = z.infer<typeof Attachment>
+
+/** A watcher's ID on a board with a remote: a profile name, since its writes are by that profile. */
+export const RemoteWatcherId = z
+  .string()
+  .regex(/^[A-Za-z][A-Za-z0-9-]{0,31}$/, 'ids start with a letter and use up to 32 letters, numbers, and hyphens')
