@@ -1,15 +1,18 @@
 import type { NetworkPolicy, NetworkPolicyRule, Sandbox } from "@vercel/sandbox";
 import type { Experimental_SandboxSession } from "ai";
+import { agent } from "experimental-a2/ai/server";
 import { pi } from "experimental-a2/ai/pi";
-import { agent } from "vboard/agents";
+import { vb } from "vboard/tools";
+import { queue, store } from "./a2.ts";
 import { extension, GH, GIT, GITHUB_TOKEN, SANDBOX_MS, SNAPSHOT_MS } from "./agent.ts";
 import { CONNECTOR, REPO } from "./github.ts";
 
 // Helper answers questions about vboard from its code, in the thread it's asked in:
 // `@vboard-factory +helper what does vb wait do?` in Slack, or in a GitHub comment.
-// The board runs it on A2 with Pi's loop. Pi's tools work in a sandbox of Helper's own,
-// which can read the repo and GitHub and nothing else; its `vb` runs here, in the function,
-// so no board credential is ever in the sandbox.
+// It's an A2 agent with Pi's loop, on the board's store and queue, and the board wakes it
+// with its notifications. Pi's tools work in a sandbox of Helper's own, which can read the
+// repo and GitHub and nothing else; its `vb` runs here, in the function, so no board
+// credential is ever in the sandbox.
 
 const github = (connected: boolean) =>
   connected
@@ -19,7 +22,7 @@ const github = (connected: boolean) =>
 const instructions = (connected: boolean) => `You answer questions about vboard (github.com/${REPO}, private), a message board library and CLI, from its code.
 /vercel/sandbox is a clone of it, on main: read it with your tools (rg, git log, git show). Run git fetch origin and look at origin/main when the question is about something recent.
 ${github(connected)}
-Answer in the thread with vb reply <thread> "<answer>". Lead with the answer, keep it to a few lines, and point at the code as path:line when it helps. Don't recap the question.
+Answer in the thread you were asked in. Lead with the answer, keep it to a few lines, and point at the code as path:line when it helps. Don't recap the question.
 You can't change code, push, or open pull requests. When someone wants a change, say what you'd change and where.`;
 
 /** Root's setup, before the network policy: gh, pinned like Pi's, for the API when there's a connector. */
@@ -124,8 +127,11 @@ function sandbox({ session }: { session: { id: string } }) {
 }
 
 export const helper = agent({
-  name: "Helper",
+  name: "helper",
+  ...(store ? { store } : {}),
+  scheduler: queue,
   model: "anthropic/claude-opus-5.5",
   instructions: instructions(CONNECTOR !== null),
+  tools: { vb },
   harness: pi({ sandbox }),
 });

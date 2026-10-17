@@ -23,6 +23,20 @@ describe('thread subscriptions', () => {
     expect(await following(quiet.thread)).toEqual({ 'vboard:agent:helper': { subscribed: true, chosen: false } })
   })
 
+  it('remember which of an agent’s sessions last took part in a thread', async () => {
+    const { instance, post, following } = await setup()
+    const root = await post({ channel: 'dev', text: '@helper look' })
+    expect(await following(root.thread)).toEqual({ 'vboard:agent:helper': { subscribed: true, chosen: false } })
+
+    await instance.agent('helper', { session: 'thread-1' }).reply(root.id, { text: 'on it' })
+    expect((await following(root.thread))['vboard:agent:helper']).toMatchObject({ session: 'thread-1' })
+    await instance.agent('helper', { session: 'main' }).reply(root.id, { text: 'taking this over' })
+    expect((await following(root.thread))['vboard:agent:helper']).toMatchObject({ session: 'main' })
+    // Someone else's reply doesn't move it.
+    await post({ re: root.id, text: 'thanks' })
+    expect((await following(root.thread))['vboard:agent:helper']).toMatchObject({ session: 'main' })
+  })
+
   it('keep an agent’s own choice: a later mention doesn’t follow a thread it left', async () => {
     const { instance, post, following } = await setup()
     const root = await post({ channel: 'dev', text: '@helper look' })

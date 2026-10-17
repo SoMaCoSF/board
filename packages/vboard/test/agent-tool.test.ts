@@ -1,6 +1,6 @@
 import type { Experimental_SandboxSession } from 'ai'
 import { describe, expect, it } from 'vitest'
-import { AGENT_COMMANDS, runVb, split, vbTool } from '../src/agents/index.ts'
+import { AGENT_COMMANDS, runVb, split, vb, vbFor } from '../src/tools/index.ts'
 import { helpFor } from '../src/cli/commands.ts'
 import { testBoard } from './harness.ts'
 
@@ -82,9 +82,14 @@ describe('the vb tool', () => {
 
   it('describes itself with the CLI’s own help, and reports a failed command’s exit code', async () => {
     const { as } = setup()
-    const vb = vbTool({ name: 'Helper', client: as('call-1') })
-    expect(vb.description).toContain(helpFor(AGENT_COMMANDS))
-    const result = await vb.execute!({ command: 'react 1' }, { toolCallId: 'call-1', messages: [], context: {} })
-    expect(result).toBe('error: usage: vboard react <id> <emoji> [--remove]\n(exit 2)')
+    const tool = vbFor(as('call-1')())
+    expect(tool.description).toContain(helpFor(AGENT_COMMANDS))
+    const options = { toolCallId: 'call-1', messages: [], context: {} }
+    expect(await tool.execute!({ command: 'react 1' }, options)).toBe('error: usage: vboard react <id> <emoji> [--remove]\n(exit 2)')
+    expect(JSON.parse((await tool.execute!({ command: 'whoami --json' }, options)) as string)).toMatchObject({ actor: 'vboard:agent:helper' })
+    // `vb` alone needs an agent a board runs around it.
+    expect(await vb.execute!({ command: 'whoami' }, options)).toBe(
+      "error: vb runs inside an agent a board runs (board({ agents })); anywhere else, use vbFor(board)\n(exit 2)",
+    )
   })
 })

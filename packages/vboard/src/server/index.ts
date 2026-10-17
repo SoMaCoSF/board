@@ -1,5 +1,13 @@
 export { board, type BoardOptions } from './board.ts'
 export { type Watcher, type WatcherContext } from './watch.ts'
+export {
+  type A2Agent,
+  type AgentConfig,
+  type AgentEntry,
+  type AgentRun,
+  type AgentRunContext,
+  type NotifyContext,
+} from './agents.ts'
 export { memoryBlob, fsBlob, type BlobStore } from './blob.ts'
 export {
   vercel,

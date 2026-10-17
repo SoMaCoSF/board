@@ -3,7 +3,7 @@ import { idempotentId } from 'experimental-a2'
 import { createServer, type A2Store, type A2Scheduler, type ServerOptions } from 'experimental-a2/server'
 import { agentSession, boardContract, BOARD_SESSION, inboxSession, SCHEDULES_SESSION, watchSession, type BoardEvents } from '../contract/contract.ts'
 import { actorsReducer, channelsReducer, linkedTo, messagesReducer, syncReducer, type ActorsState } from '../contract/reducers.ts'
-import { ATTACHMENT_BYTES_MAX } from '../contract/schemas.ts'
+import { agentKeyOf, ATTACHMENT_BYTES_MAX } from '../contract/schemas.ts'
 import {
   EditBody,
   EventsQuery,
@@ -13,6 +13,7 @@ import {
   InboxQuery,
   SourceReadQuery,
   LabelBody,
+  ReadNotificationsBody,
   SubscriptionBody,
   MessagesQuery,
   PostBody,
@@ -43,7 +44,7 @@ import {
   type TrustedSource,
 } from './auth.ts'
 import { agentActor, declareAgents, KNOWN_AGENTS, resolveActor, withAgents, type DeclaredAgent } from './actors.ts'
-import { createAgents, type AgentConfig, type AgentHost } from './agents.ts'
+import { agentConfigs, createAgents, type AgentEntry } from './agents.ts'
 import { avatarSvg } from './avatars.ts'
 import { attachmentResponse, defaultBlob, readAttachment, writeUpload, type BlobStore } from './blob.ts'
 import { badRequest, forbidden, HttpError, json, notFound, toErrorResponse, unauthorized } from './errors.ts'
@@ -83,12 +84,11 @@ export type BoardOptions = {
   /** Tails the board runs for you, keyed by an id you choose: `{ triage: { tail: 'firehose', run } }`. */
   watch?: Record<string, Watcher>
   /**
-   * Agents with a name of their own on the board, keyed by their handle:
-   * `{ helper: { name: 'Helper' } }`. Each is the actor `vboard:agent:<key>`, which only
-   * the board's own deployment can write as. With `agent()` from `vboard/agents`, the
-   * board also runs it: mentions and the threads it follows wake it.
+   * Agents with a name of their own, keyed by handle: `{ helper }`, an A2 agent the board wakes, or
+   * `{ pi: { watch, run } }`. Each is the actor `vboard:agent:<key>`, which only the board's own
+   * deployment can write as. Mentions, `watch`, and the threads it follows reach it as notifications.
    */
-  agents?: Record<string, AgentConfig>
+  agents?: Record<string, AgentEntry>
   /** The board's Vercel project. Defaults to `VERCEL_PROJECT_ID` or `.vercel/project.json`. */
   project?: { id: string; teamId?: string }
   /** The board's public URL, which every token's audience must equal. Inferred from requests otherwise. */
@@ -123,6 +123,8 @@ const PATTERNS: { method: string; name: RouteName; pattern: RegExp }[] = [
   { method: 'POST', name: 'identityCheck', pattern: /\/identity\/check$/ },
   { method: 'POST', name: 'identityUnlink', pattern: /\/identity\/unlink$/ },
   { method: 'GET', name: 'identity', pattern: /\/identity$/ },
+  { method: 'POST', name: 'readNotifications', pattern: /\/notifications\/read$/ },
+  { method: 'GET', name: 'notifications', pattern: /\/notifications$/ },
   { method: 'POST', name: 'edit', pattern: /\/messages\/(\d+)\/edit$/ },
   { method: 'POST', name: 'delete', pattern: /\/messages\/(\d+)\/delete$/ },
   { method: 'POST', name: 'react', pattern: /\/messages\/(\d+)\/reactions$/ },
@@ -250,7 +252,8 @@ async function readCapped(request: Request, max: number): Promise<Uint8Array> {
 
 /** Mounts a board: one log in one route. Create it once, at module scope. */
 export function board(options: BoardOptions = {}) {
-  const agents = declareAgents(options.agents)
+  const agentConfig = agentConfigs(options.agents)
+  const agents = declareAgents(agentConfig)
   const blob = options.blob ?? defaultBlob()
   const engine =
     options.sync && Object.keys(options.sync).length > 0
@@ -262,7 +265,7 @@ export function board(options: BoardOptions = {}) {
       : null
   const schedules = createSchedules({ store: options.store, scheduler: options.scheduler })
   const runner = createAgents({
-    config: options.agents ?? {},
+    config: agentConfig,
     declared: agents,
     store: options.store,
     scheduler: options.scheduler,
@@ -399,16 +402,10 @@ export function board(options: BoardOptions = {}) {
     )
   }
   runner.bind({
-    host: (agent: DeclaredAgent): Omit<AgentHost, 'retry'> => ({
-      key: agent.key,
-      name: agent.name,
-      store: options.store,
-      scheduler: options.scheduler,
-      client: (clientOptions) => agentClient(agent.key, clientOptions),
-      notice: async (thread, text, key) => {
-        await clientAs(NOTICE_IDENTITY, `agents:${agent.key}:${key}`, { via: { kind: 'client', name: 'agents' } }).reply(thread, { text })
-      },
-    }),
+    client: (agent, clientOptions) => agentClient(agent.key, clientOptions),
+    notice: async (agent, thread, text, key) => {
+      await clientAs(NOTICE_IDENTITY, `agents:${agent.key}:${key}`, { via: { kind: 'client', name: 'agents' } }).reply(thread, { text })
+    },
   })
 
   async function dispatch(request: Request, injected: Identity | null, origin: WriteOrigin = { via: { kind: 'api' } }): Promise<Response> {
@@ -619,6 +616,17 @@ export function board(options: BoardOptions = {}) {
           const body = SubscriptionBody.parse(await readJson(request))
           return json(await writeSubscription(writes, { identity, id: match.id!, on: body.on }))
         }
+        case 'notifications':
+        case 'readNotifications': {
+          const key = agentKeyOf(identity.author.actor)
+          if (key === null || !runner.keys.includes(key)) throw forbidden("notifications are for the board's agents")
+          const inbox = identity.author.session
+          if (!inbox) throw badRequest('notifications are per session: write from one (x-board-session)', 'no_session')
+          if (match.name === 'notifications') return json({ notifications: await runner.notifications(key, inbox) })
+          const body = ReadNotificationsBody.parse(await readJson(request))
+          await runner.read(key, inbox, body.through)
+          return json({ ok: true })
+        }
         case 'upload': {
           require(principal, 'post')
           const name = request.headers.get('x-board-filename')
@@ -698,7 +706,7 @@ export function board(options: BoardOptions = {}) {
     ...(engine ? [engine.inboxServer] : []),
     schedules.server,
     ...(watchers ? [watchers.server] : []),
-    ...(runner.keys.length > 0 ? [runner.server, ...runner.servers()] : []),
+    ...(runner.keys.length > 0 ? [runner.server, ...runner.a2Agents] : []),
   ]
   return {
     GET: handle,

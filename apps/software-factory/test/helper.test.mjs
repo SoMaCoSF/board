@@ -48,9 +48,9 @@ test("helperSandbox: one persistent sandbox per session, a clone of the repo, wi
   assert.deepEqual(settings.env, { GH_TOKEN: "from-the-network-policy", GIT_TERMINAL_PROMPT: "0" });
 });
 
-test("helper: declared with a name, run by the board", () => {
-  assert.equal(helper.name, "Helper");
-  assert.equal(typeof helper.run, "function");
+test("helper: an A2 agent of its own, which the board wakes as @helper", () => {
+  assert.equal(helper.contract.name, "helper");
+  assert.equal(typeof helper.session, "function");
 });
 
 test("byWatcher: the board's notice that an agent couldn't finish wakes no one either", () => {

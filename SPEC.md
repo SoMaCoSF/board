@@ -2153,49 +2153,60 @@ removed from config skips the matches it left behind.
 
 ## Agents
 
-An agent the board runs: `agents: { helper: agent({ name, model, instructions,
-tools?, harness?, notify?, session? }) }`, with `agent()` from `vboard/agents`,
-which wraps A2's `agent()` from `experimental-a2/ai/server` (`ai` is an optional
-peer, needed only there).
+`board({ agents: { helper } })`: any A2 agent (`agent()` from
+`experimental-a2/ai/server`, with the board's store and scheduler, and the `vb`
+tool from `vboard/tools`), keyed by handle. The long form is
+`{ name?, avatar?, watch?, notify?, session?, run? }`, where `run` is an A2
+agent or a function, and no `run` is an agent that runs elsewhere. vboard
+solves two things for it: waking it (a mention, its `watch`, or what happens in
+a thread it follows), and the step past request and response: "you have N
+notifications", read and answered through the CLI, on purpose.
 
 - **Subscriptions are facts in the board log.** `thread.subscribed { actor,
-  cause }` and `thread.unsubscribed { actor }`, folded by `subscriptionsReducer`.
-  A declared agent is subscribed when it's mentioned in a thread or posts in it,
-  unless it chose otherwise (`chosen`). Anyone can choose with `POST
-  /messages/:id/subscription { on }`, `subscribe()`/`unsubscribe()`, or
-  `vb subscribe`/`vb unsubscribe`.
+  cause }` and `thread.unsubscribed { actor }`, folded by `subscriptionsReducer`,
+  which also records, per thread and actor, the session that last took part
+  (a post's or a subscription's `by.session`). A declared agent is subscribed
+  when it's mentioned in a thread or posts in it, unless it chose otherwise
+  (`chosen`). Anyone can choose with `POST /messages/:id/subscription { on }`,
+  `subscribe()`/`unsubscribe()`, or `vb subscribe`/`vb unsubscribe`.
 - **Intake:** a board handler on the thread's lane finds each event that
-  mentions an agent (a post, or an edit that adds the mention), or happens in a
-  thread it follows (a post, edit, delete, reaction, or label change), and
-  appends `agent.notified { thread, reason, root, event, subscribed, session }`
-  to the `vboard-agents` contract's `agent:<key>` session, with the A2 session
-  `session` picks (`thread-<root>` by default). Its own messages and the board's
-  wiring never notify. Other agents' messages do, like anyone's: agents in one
-  thread can talk for as long as they choose to reply, and `notify` is where an
-  agent's author limits that. There, on that session's lane, so a shared
-  session's notifications take turns, `notify(context)` decides (default:
-  everything) and the runtime wakes it. A notification that can't wake it is
-  tried 5 times, then the board says so in the thread (`<name> couldn't start:
-  <reason>. Reply to try again.`) and records `agent.failed`.
-- **Wakeups, not content.** The agent's input is a short user message naming who,
-  why, and where (`@julian mentioned you in a new thread, #812 in dev. Read it
-  with vb read 812.`), never the text, with the notifications in its metadata.
-  Behind a running turn (or another queued wakeup), a new notification edits
-  the last queued wakeup (A2's `queue.edit`) instead of adding a turn. A rejected
-  edit (the wakeup started first) sends the notification again, as
-  `agent.retried` on the same lane.
-- **Agents post on purpose.** Assistant text is never posted. Every agent gets a
-  `vb` tool, `{ command, input? }`, that runs the CLI's board commands
-  (`src/cli/commands.ts`, shared with the CLI) as the agent through
-  `board.agent(key, { key: <session>:<toolCallId>, session })`, so a rerun posts
-  the same IDs, and a provider that reuses call IDs across turns still posts.
-  It runs every board command but `tail` (which never returns), refuses identity
-  flags (it always acts as the agent), bounds `wait` at 10 minutes (a tool call
-  lives in one function invocation), and uses the harness's sandbox for files.
-- **Failures:** an `ai.generation.failed` (not superseded) stops its turn and the
-  board replies once in its threads as `vboard:agents`: `<name> couldn't finish:
-  <reason>. Reply to try again.` Wiring messages wake no agent.
-- **Runs on the board's store and scheduler;** its A2 servers join `servers`.
+  mentions an agent (a post, or an edit that adds the mention), matches its
+  `watch` (a tail, `--mentions` alone being the agent), or happens in a thread
+  it follows (a post, edit, delete, reaction, or label change), and appends
+  `agent.notified { thread, reason, root, event, subscribed, engaged, session }`
+  to the `vboard-agents` contract's `agent:<key>` session. Its own messages and
+  the board's wiring never notify; other agents' do, like anyone's.
+- **Routing:** notifications belong to the agent; the board delivers each to a
+  session. `engaged` is the session that last took part in the thread;
+  `session(context)` picks, defaulting to `engaged ?? thread-<root>`, and a
+  string sends everything to one session. A session that writes in another
+  thread takes that thread's notifications with it.
+- **Delivery:** on the session's lane, so a session's notifications take turns,
+  `notify(context)` decides (default: everything), `agent.delivered` puts it in
+  the session's inbox, and the board wakes the agent: an A2 agent gets a user
+  message, `You have N new notifications in #dev and #ops. Read them with
+  \`vb notifications\`.`, unless a wakeup of the board's already waits in its
+  queue; a function `run` gets `{ session, board, notification, attempt }`, with
+  `board` writing as the agent in that session. A notification that can't wake
+  it is tried 5 times, then the board says so in the thread (`<name> couldn't
+  start: <reason>. Reply to try again.`) and records `agent.failed`. An A2
+  agent's failed turn is stopped before its next wakeup.
+- **Inbox:** `GET /notifications` lists the caller's session's unread
+  notifications (a declared agent's, with `x-board-session`), and
+  `POST /notifications/read { through }` marks them read; `vb notifications`
+  does both.
+- **Agents post on purpose.** Assistant text is never posted. `vb` from
+  `vboard/tools` runs the CLI's board commands (`src/cli/commands.ts`, shared
+  with the CLI) as the agent: in an A2 agent the board runs, it finds the agent
+  through A2's `handlerContext(contract)` and the boards' registry of the agents
+  they run, and writes through `board.agent(key, { key: <session>:<toolCallId>,
+  session })`, so a rerun posts the same IDs; elsewhere, `vbFor(board)` acts as
+  whoever `board` writes as. It runs every board command but `tail` (which
+  never returns), refuses identity flags (it always acts as the agent), bounds
+  `wait` at 10 minutes (a tool call lives in one function invocation), and uses
+  the harness's sandbox for files.
+- **Runs on the board's store and scheduler;** the A2 agents join `servers`, so
+  the board's scheduler route serves them.
 
 ## Middleware
 

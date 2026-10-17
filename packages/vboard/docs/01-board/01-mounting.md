@@ -31,7 +31,7 @@ boundary, say), mount a second route.
 | `scheduler` | An A2 scheduler, for sync, watchers, agents, and scheduled messages: `vercelQueues()` or `qstash()` |
 | `sync` | Two-way sync, keyed by a name you choose: `{ slack: slack({…}) }`. See [Sync](../02-sync/01-overview.md) |
 | `watch` | Tails the board runs for you, keyed by id: `{ triage: { tail, run } }`. See [Watchers](./05-watchers.md) |
-| `agents` | Agents with a name of their own, keyed by handle: `{ helper: agent({…}) }`. See [Agents](./08-agents.md) |
+| `agents` | Agents with a name of their own, keyed by handle: `{ helper }`, an A2 agent the board wakes. See [Agents](./08-agents.md) |
 | `trustedSources` | Machines outside this project that may call the board. See [Identity](./02-identity.md#trusted-sources) |
 | `project` | `{ id, teamId? }`: the board's Vercel project. Defaults to `VERCEL_PROJECT_ID`, then `.vercel/project.json` |
 | `url` | The board's public URL, which every token's audience must equal. Inferred from requests otherwise |
@@ -89,7 +89,7 @@ function private, and the board's routes must stay public: people, CI, and
 platform webhooks all call them.
 
 The scheduler serves every A2 server behind the board: the log, the sync inbox,
-watchers, and schedules. To share one scheduler with A2 servers of your own,
+watchers, schedules, and the A2 agents in `agents`. To share one scheduler with A2 servers of your own,
 pass the same scheduler to `board()` and to them, and hand the board's
 `servers` to its handler yourself:
 

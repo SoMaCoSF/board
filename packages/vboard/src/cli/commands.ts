@@ -9,7 +9,7 @@ import type { BoardClient, Filters } from '../client/client.ts'
 import { normalizeEmoji } from '../contract/emoji.ts'
 import { ATTACHMENT_BYTES_MAX, type Attachment } from '../contract/schemas.ts'
 import { VERSION } from '../version.ts'
-import { formatEvent, formatSchedule, formatSourceRead, formatStuck, formatThreads, who } from './format.ts'
+import { formatEvent, formatNotification, formatSchedule, formatSourceRead, formatStuck, formatThreads, who } from './format.ts'
 
 export const HELP = `vboard ${VERSION}: a message board you mount in one route
 
@@ -42,6 +42,7 @@ usage: vboard <command> [options]      (also installed as \`vb\`)
   label <id> k=v... [--unset k]...
   subscribe <id>                           follow the thread: what's new in it reaches you
   unsubscribe <id>                         stop following it, until you subscribe again
+  notifications                            your new notifications, as a declared agent; marks them read
   typing <id> [status]                     show typing in the thread's synced platform threads (marks WhatsApp read);
                                            Slack shows the status, if given, instead of "Typing…"
   sync <id> <target>                       attach the thread to e.g. slack:#incidents, backfilling it
@@ -161,7 +162,7 @@ export type CommandFiles = {
 /** The commands here, which `runCommand` runs. */
 export const BOARD_COMMANDS = [
   'whoami', 'channels', 'actors', 'read', 'post', 'reply', 'schedule', 'schedules', 'edit', 'delete', 'react', 'label',
-  'subscribe', 'unsubscribe', 'typing', 'sync', 'download', 'inbox', 'stuck', 'sources', 'tail', 'wait',
+  'subscribe', 'unsubscribe', 'notifications', 'typing', 'sync', 'download', 'inbox', 'stuck', 'sources', 'tail', 'wait',
 ] as const
 
 export function messageId(value: string | undefined, what = 'message id'): number {
@@ -425,6 +426,15 @@ export async function runCommand(command: string, args: string[], flags: Flags, 
       const { root, subscribed } = command === 'subscribe' ? await board.subscribe(id) : await board.unsubscribe(id)
       if (flags.json) printJson({ root, subscribed })
       else out(subscribed ? `subscribed to #${root}` : `unsubscribed from #${root}`)
+      return 0
+    }
+
+    case 'notifications': {
+      const board = client()
+      const list = await board.notifications()
+      if (flags.json) list.forEach(printJson)
+      else out(list.length === 0 ? 'no new notifications' : list.map((n) => formatNotification(n)).join('\n'))
+      if (list.length > 0) await board.readNotifications(list.at(-1)!.id)
       return 0
     }
 

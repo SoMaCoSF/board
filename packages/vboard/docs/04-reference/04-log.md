@@ -102,7 +102,7 @@ thread's events in order on its lane.
 | `vboard-inbox` | `inbox:<external channel>`, e.g. `inbox:slack:C0123ABC` | `external.received { sync, event, raw }` | every platform event, stored before the board answers the webhook; the inbound handler runs here |
 | `vboard-watch` | `watch:<id>`, e.g. `watch:triage` | `watch.matched { thread, event }` | each [watcher's](../01-board/05-watchers.md) matches; its `run` happens here |
 | `vboard-schedules` | `schedules` | `schedule.created`, `schedule.canceled`, `schedule.due`, `schedule.fired` | [scheduled messages](../01-board/06-schedules.md) |
-| `vboard-agents` | `agent:<key>`, e.g. `agent:helper` | `agent.notified { thread, reason, root, event, subscribed, session }` (`reason`: `mention` or `subscribed`), `agent.retried { session, notification }`, `agent.failed { notified, thread, error }` | each [agent's](../01-board/08-agents.md) notifications; `notify` runs, and the agent wakes, here, one at a time per agent session |
+| `vboard-agents` | `agent:<key>`, e.g. `agent:helper` | `agent.notified { thread, reason, root, event, subscribed, engaged, session }` (`reason`: `mention`, `subscribed`, or `watch`), `agent.delivered { session, notification }`, `agent.read { session, through }`, `agent.failed { notified, thread, error }` | each [agent's](../01-board/08-agents.md) notifications and each session's inbox; `notify` runs, and the agent wakes, here, one at a time per session |
 
 - **`external.received`** holds the normalized platform event (a message, an
   edit, a delete, a reaction, or a lifecycle event like a PR opening) and the
@@ -111,9 +111,10 @@ thread's events in order on its lane.
   sessions be thrown away.
 - **`watch.matched`** holds the event exactly as `vb tail --json` prints it.
   One session per watcher means each watcher fails on its own.
-- **`agent.notified`** holds the same event, and why it reached the agent
-  (`mention` or `reply`). The agent's turns live in its own A2 agent,
-  `vboard-agent-<key>`, in one session per thread by default.
+- **`agent.notified`** holds the same event, why it reached the agent, and the
+  session it goes to. `agent.delivered` is what `notify` let through, and what
+  `vb notifications` lists until `agent.read` marks it read. The agent's turns
+  live in its own A2 agent's sessions.
 
 ### Schedule events
 
@@ -152,7 +153,7 @@ the first three.
 | `messagesReducer` | `vboard.messages.v4` | `byId`: message ID → the message as it is now; `replies`: root → reply IDs, in log order | `read`, `/messages`, the event feed |
 | `channelsReducer` | `vboard.channels.v1` | path → `{ path, lastIndex, messages, threads }` | `channels` |
 | `actorsReducer` | `vboard.actors.v2` | `byId`: actor ID → `{ id, kind, handle, name, avatar }`; `byHandle`: lowercased handle → actor IDs | mention resolution, `actors`, rendering |
-| `subscriptionsReducer` | `vboard.subscriptions.v1` | thread key → actor → `{ subscribed, chosen }`, where `chosen` is an actor's own choice | waking agents |
+| `subscriptionsReducer` | `vboard.subscriptions.v1` | thread key → actor → `{ subscribed, chosen, session? }`: `chosen` is an actor's own choice, `session` the one of its sessions that last took part | waking agents, and in which session |
 | sync (internal) | `vboard.sync.v1` | thread → its targets and external threads; external thread → thread; message → its copies on each platform | both sync handlers |
 
 A message, as `messagesReducer` folds it:

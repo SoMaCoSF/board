@@ -4,7 +4,6 @@ export default defineConfig([
   {
     entry: {
       index: 'src/server/index.ts',
-      agents: 'src/agents/index.ts',
       client: 'src/client/index.ts',
       'client.node': 'src/client/index.node.ts',
       'adapter-slack': 'src/sync/slack.ts',
@@ -14,6 +13,7 @@ export default defineConfig([
       contract: 'src/contract/index.ts',
       sync: 'src/sync/index.ts',
       'sync.chat': 'src/sync/chat-provider.ts',
+      tools: 'src/tools/index.ts',
       cli: 'src/cli/main.ts',
     },
     format: 'esm',

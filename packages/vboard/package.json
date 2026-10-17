@@ -21,10 +21,6 @@
       "types": "./dist/index.d.mts",
       "default": "./dist/index.mjs"
     },
-    "./agents": {
-      "types": "./dist/agents.d.mts",
-      "default": "./dist/agents.mjs"
-    },
     "./client": {
       "node": {
         "types": "./dist/client.node.d.mts",
@@ -63,6 +59,10 @@
     "./sync/chat": {
       "types": "./dist/sync.chat.d.mts",
       "default": "./dist/sync.chat.mjs"
+    },
+    "./tools": {
+      "types": "./dist/tools.d.mts",
+      "default": "./dist/tools.mjs"
     }
   },
   "scripts": {

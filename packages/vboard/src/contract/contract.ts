@@ -341,25 +341,47 @@ export type WatchEvents = typeof watchContract.events
 /** `watch:triage`: the session for one watcher. */
 export const watchSession = (id: string) => `watch:${id}`
 
-/** What reaches a declared agent the board runs: a board event, before `notify` decides. */
+const SessionName = z.string().min(1).max(200)
+
+/** What happened, as an agent's notifications say it: who did it, to which message, where. */
+export const AgentNotification = z.object({
+  /** `mention`: it mentions the agent. `subscribed`: it happened in a thread the agent follows. `watch`: the agent's `watch` matched it. */
+  reason: z.enum(['mention', 'subscribed', 'watch']),
+  type: z.enum(['message.posted', 'message.edited', 'message.deleted', 'reaction.added', 'reaction.removed', 'labels.changed']),
+  thread: MessageId,
+  channel: z.string().min(1).max(200),
+  message: MessageId,
+  by: z.object({ handle: z.string().min(1).max(200), name: z.string().min(1).max(200) }),
+  /** A post's or an edit's first line, as people read it. */
+  text: z.string().max(300).optional(),
+  emoji: z.string().min(1).max(100).optional(),
+  labels: z.object({ set: Labels, unset: z.array(z.string()) }).optional(),
+})
+export type AgentNotification = z.infer<typeof AgentNotification>
+
+/** A declared agent's notifications: what reached it, which session took each, and what each session read. */
 export const agentsContract = contract({
   name: 'vboard-agents',
   events: {
+    /** A board event for the agent, before `notify` decides, with the session it goes to. */
     'agent.notified': z.object({
       thread: ThreadKey,
-      /** `mention`: the message mentions the agent. `subscribed`: it happened in a thread the agent follows. */
-      reason: z.enum(['mention', 'subscribed']),
+      reason: AgentNotification.shape.reason,
       root: z.object({ id: MessageId, labels: Labels }),
       /** The board event, as `vb tail --json` prints it. */
       event: z.unknown(),
-      /** Whether the agent followed the thread before this message. */
+      /** Whether the agent followed the thread before this event. */
       subscribed: z.boolean(),
-      /** The agent's session it wakes, chosen as it's recorded, so one session's notifications take turns. */
-      session: z.string().min(1).max(200),
+      /** The agent's session that last took part in the thread, if one has. */
+      engaged: SessionName.nullable(),
+      /** The session it goes to, chosen as it's recorded, so one session's notifications take turns. */
+      session: SessionName,
     }),
-    /** A notification sent again: the wakeup it joined started before it did. */
-    'agent.retried': z.object({ session: z.string().min(1).max(200), notification: z.unknown() }),
-    /** The board gave up waking the agent for one notification, so the thread's next one goes on. */
+    /** `notify` let it through: it's in the session's inbox, unread. */
+    'agent.delivered': z.object({ session: SessionName, notification: AgentNotification }),
+    /** The session read its notifications through this one (an `agent.delivered` event's index). */
+    'agent.read': z.object({ session: SessionName, through: z.number().int().nonnegative() }),
+    /** The board gave up waking the agent for one notification, so the session's next one goes on. */
     'agent.failed': z.object({ notified: z.string().min(1).max(200), thread: ThreadKey, error: z.string().min(1).max(500) }),
   },
 })

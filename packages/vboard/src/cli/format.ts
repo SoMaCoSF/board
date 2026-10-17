@@ -1,4 +1,4 @@
-import type { BoardEventView, MessageView, ScheduleView, SourceRead, StuckEvent } from '../api/routes.ts'
+import type { BoardEventView, MessageView, NotificationView, ScheduleView, SourceRead, StuckEvent } from '../api/routes.ts'
 import { displayEmoji } from '../contract/emoji.ts'
 import { fileSize } from '../contract/files.ts'
 import { displayText } from '../contract/bots.ts'
@@ -208,4 +208,28 @@ export function formatSourceRead(key: string, read: SourceRead, now = Date.now()
   })
   const more = read.more ? [`(${read.thread ? 'later replies' : 'older messages'} not shown: raise --limit, up to 200)`] : []
   return [where, ...blocks, ...more].join('\n')
+}
+
+/** One notification: who did what, to which message, where, then the message's first line. */
+export function formatNotification(n: NotificationView, now = Date.now()): string {
+  const where = `thread #${n.thread} in ${n.channel}`
+  const target = n.message === n.thread ? `#${n.message}, its root,` : `#${n.message}`
+  const labels = n.labels ? [...Object.entries(n.labels.set).map(([k, v]) => `${k}=${v}`), ...n.labels.unset.map((k) => `-${k}`)].join(' ') : ''
+  let what: string
+  if (n.reason === 'mention')
+    what =
+      n.type === 'message.edited' ? `mentioned you in an edit of #${n.message}, in ${where}`
+      : n.message === n.thread ? `mentioned you in a new thread, #${n.thread} in ${n.channel}`
+      : `mentioned you in #${n.message}, in ${where}`
+  else
+    what = {
+      'message.posted': n.message === n.thread ? `started ${where}` : `replied in ${where}: #${n.message}`,
+      'message.edited': `edited ${target} in ${where}`,
+      'message.deleted': `deleted ${target} in ${where}`,
+      'reaction.added': `reacted ${displayEmoji(n.emoji ?? '')} to ${target} in ${where}`,
+      'reaction.removed': `took back their ${displayEmoji(n.emoji ?? '')} on ${target} in ${where}`,
+      'labels.changed': `labeled ${target} ${labels} in ${where}`,
+    }[n.type] + (n.reason === 'watch' ? ', which your watch matches' : ', which you follow')
+  const line = `${ago(n.createdAt, now)}  @${n.by.handle} ${what}`
+  return n.text ? `${line}\n  ${n.text}` : line
 }

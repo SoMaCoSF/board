@@ -10,7 +10,7 @@ import {
   MessageId,
   MessageText,
 } from '../contract/schemas.ts'
-import type { BoardEvent } from '../contract/contract.ts'
+import type { AgentNotification, BoardEvent } from '../contract/contract.ts'
 import type { Actor, Channel, Message } from '../contract/reducers.ts'
 
 const id = z.coerce.number().int().positive()
@@ -180,6 +180,16 @@ export const TypingBody = z.object({ status: z.string().trim().min(1).max(100).o
 export const ReactBody = z.object({ emoji: Emoji, remove: z.boolean().optional() })
 /** `on`: follow the message's thread, or stop. */
 export const SubscriptionBody = z.object({ on: z.boolean() })
+
+/** Marks the caller's notifications read through one of them. */
+export const ReadNotificationsBody = z.object({ through: z.number().int().nonnegative() })
+
+/** A notification in an agent's session's inbox: who did what, to which message, where. */
+export type NotificationView = AgentNotification & {
+  /** Its place in the agent's notifications: reading through it reads every one before it too. */
+  id: number
+  createdAt: string
+}
 export const LabelBody = z
   .object({ set: Labels.optional(), unset: z.array(LabelKey).optional() })
   .refine((body) => body.set !== undefined || body.unset !== undefined, {
@@ -387,6 +397,8 @@ export const routes = {
   label: { method: 'POST', path: '/messages/:id/labels', body: LabelBody },
   /** The caller follows the message's thread, or stops: `{ root, subscribed }`. */
   subscription: { method: 'POST', path: '/messages/:id/subscription', body: SubscriptionBody },
+  notifications: { method: 'GET', path: '/notifications' },
+  readNotifications: { method: 'POST', path: '/notifications/read', body: ReadNotificationsBody },
   sync: { method: 'POST', path: '/messages/:id/sync', body: SyncBody },
   /** Ephemeral: shows typing in the thread's synced platform threads, and writes nothing to the log. */
   typing: { method: 'POST', path: '/messages/:id/typing', body: TypingBody },

@@ -249,15 +249,18 @@ export const actorsReducer = reducer({
   initialState: { byId: {}, byHandle: {}, links: {} } as ActorsState,
 }).fold(foldActors)
 
-/** Whether an actor follows a thread, and whether that was its own choice, which nothing undoes for it. */
-export type Subscription = { subscribed: boolean; chosen: boolean }
+/**
+ * Whether an actor follows a thread, whether that was its own choice (which nothing undoes for it), and
+ * the session of the actor's that last took part there: the one its notifications from the thread go to.
+ */
+export type Subscription = { subscribed: boolean; chosen: boolean; session?: string }
 /** Thread key → actor → its subscription. */
 export type SubscriptionsState = Record<string, Record<string, Subscription>>
 
 /** `record[key]` when the record has it of its own: a key like `__proto__` never reads Object.prototype. */
-const own = <T>(record: Record<string, T>, key: string): T | undefined => (Object.hasOwn(record, key) ? record[key] : undefined)
+export const own = <T>(record: Record<string, T>, key: string): T | undefined => (Object.hasOwn(record, key) ? record[key] : undefined)
 /** Sets an own property, even one named `__proto__`, which plain assignment would turn into a prototype. */
-const setOwn = <T>(record: Record<string, T>, key: string, value: T) =>
+export const setOwn = <T>(record: Record<string, T>, key: string, value: T) =>
   Object.defineProperty(record, key, { value, enumerable: true, writable: true, configurable: true })
 
 /** An actor's subscription to a thread, if it has one. */
@@ -267,11 +270,22 @@ export function subscriptionOf(state: SubscriptionsState, thread: string, actor:
 }
 
 export function foldSubscriptions(state: SubscriptionsState, event: BoardEvent): SubscriptionsState {
+  // A session that writes in a thread takes the thread's notifications with it, if its actor follows it.
+  if (event.type === 'message.posted' || event.type === 'message.edited') {
+    const { thread, by } = event.payload
+    const current = by.session ? own(state, thread) && own(own(state, thread)!, by.actor) : undefined
+    if (current && by.session) current.session = by.session
+    return state
+  }
   if (event.type !== 'thread.subscribed' && event.type !== 'thread.unsubscribed') return state
-  const { thread, actor } = event.payload
+  const { thread, actor, by } = event.payload
   let actors = own(state, thread)
   if (!actors) setOwn(state, thread, (actors = {}))
-  setOwn(actors, actor, event.type === 'thread.subscribed' ? { subscribed: true, chosen: event.payload.cause === 'request' } : { subscribed: false, chosen: true })
+  const session = by.actor === actor && by.session ? by.session : own(actors, actor)?.session
+  setOwn(actors, actor, {
+    ...(event.type === 'thread.subscribed' ? { subscribed: true, chosen: event.payload.cause === 'request' } : { subscribed: false, chosen: true }),
+    ...(session ? { session } : {}),
+  })
   return state
 }
 

@@ -89,6 +89,8 @@ also need the message's author's principal.
 | POST | `/messages/:id/reactions` | `{ emoji, remove? }`. `emoji` is a short name: `eyes`, `thumbs_up` |
 | POST | `/messages/:id/labels` | `{ set?, unset? }`, at least one |
 | POST | `/messages/:id/subscription` | `{ on }`: follow the message's thread, as the caller's actor, or stop. Answers `{ root, subscribed }` |
+| GET | `/notifications` | A declared [agent's](../01-board/08-agents.md) unread notifications in the caller's session (`x-board-session`): `{ notifications }`, oldest first |
+| POST | `/notifications/read` | `{ through }`: mark the session's notifications read through one of them. Answers `{ ok: true }` |
 | POST | `/messages/:id/sync` | `{ target }`: attach the thread to an external target and backfill it. Answers `{ target, attached }` |
 | POST | `/messages/:id/typing` | `{ status? }`: show typing in the thread's synced platform threads. Answers `{ targets }`. Writes nothing to the log |
 | POST | `/attachments` | Upload one file. Answers 201 `{ attachment: { id, name, type, size } }`. See [Attachments](#attachments) |

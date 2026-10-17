@@ -1,26 +1,4 @@
-import type {
-  ActorView,
-  BoardEventView,
-  ChannelView,
-  Discovery,
-  EventsPage,
-  EventsQueryInput,
-  FiltersInput,
-  IdentityChallenge,
-  IdentityCheck,
-  IdentityView,
-  InboxEntry,
-  StuckEvent,
-  SourceRead,
-  Me,
-  MessagesPage,
-  MessagesQueryInput,
-  MessageView,
-  ScheduleView,
-  SchedulesQueryInput,
-  ThreadView,
-  TypingResult,
-} from '../api/routes.ts'
+import type { ActorView, BoardEventView, ChannelView, Discovery, EventsPage, EventsQueryInput, FiltersInput, IdentityChallenge, IdentityCheck, IdentityView, InboxEntry, Me, MessagesPage, MessagesQueryInput, MessageView, NotificationView, SchedulesQueryInput, ScheduleView, SourceRead, StuckEvent, ThreadView, TypingResult } from '../api/routes.ts'
 import type { Actor } from '../contract/reducers.ts'
 import { typeOf } from '../contract/files.ts'
 import type { Attachment } from '../contract/schemas.ts'
@@ -322,6 +300,10 @@ export function createBoardClient(options: ClientOptions) {
     subscribe: (id: number) => call<{ root: number; subscribed: boolean }>('POST', `/messages/${id}/subscription`, { body: { on: true } }),
     /** Stops following the message's thread, and stays out until you subscribe again. */
     unsubscribe: (id: number) => call<{ root: number; subscribed: boolean }>('POST', `/messages/${id}/subscription`, { body: { on: false } }),
+    /** A declared agent's unread notifications in this session, oldest first. */
+    notifications: async () => (await call<{ notifications: NotificationView[] }>('GET', '/notifications')).notifications,
+    /** Marks this session's notifications read, through `through` (a notification's `id`). */
+    readNotifications: (through: number) => call<{ ok: true }>('POST', '/notifications/read', { body: { through } }),
     /**
      * Shows typing in the platform threads the message's thread is synced to
      * (on WhatsApp, also marking the latest inbound message read). Ephemeral:

@@ -3,8 +3,7 @@ import { readableText } from "vboard/client";
 import { slack } from "vboard/adapter-slack";
 import { github } from "vboard/adapter-github";
 import { vercelBlob } from "vboard/adapter-vercel-blob";
-import { redisHttp } from "experimental-a2/store-redis-http";
-import { vercelQueues } from "experimental-a2/scheduler-vercel";
+import { queue, store } from "./a2";
 import { byAgent, byPi, byWatcher, taskMessage, tellPi } from "./agent";
 import { classifyThread } from "./classify";
 import { isPiKind, PI_KINDS, piTask, scheduled, scheduledThread } from "./kinds";
@@ -28,19 +27,12 @@ const env = process.env.VERCEL_ENV;
 export const maxDuration = 300;
 
 export const { GET, POST, scheduler } = board({
-  store: env
-    ? redisHttp({
-        url: process.env.KV_REST_API_URL!,
-        token: process.env.KV_REST_API_TOKEN!,
-        // One Redis serves every environment: a preview never touches production's log.
-        // `-2` since A2 0.17 changed its Redis layout; the log under `vboard-factory` was copied over.
-        keyPrefix: env === "production" ? "vboard-factory-2" : `vboard-factory-2:${env}`,
-      })
-    : undefined,
+  // Shared with Helper, so the board's scheduler route serves Helper's sessions too.
+  store,
   // Attachments (Pi's proof of work) in the project's private Blob store, `vboard-factory-attachments`.
   // Every deployment shares it: a file's ID is random, and only its board can name it.
   blob: env ? vercelBlob() : undefined,
-  scheduler: vercelQueues({ topic: "vboard-factory" }),
+  scheduler: queue,
   sync: {
     // Connect connectors: vboard builds the adapters, and people who sign in
     // (`vb identity link slack`) post as themselves.

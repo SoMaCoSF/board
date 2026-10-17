@@ -165,6 +165,17 @@ Follows the thread of any message in it, as you, or stops following it. A
 declared [agent](../01-board/08-agents.md) wakes on what happens in the threads
 it follows.
 
+### notifications and readNotifications
+
+```ts
+notifications(): Promise<NotificationView[]>
+readNotifications(through: number): Promise<{ ok: true }>
+```
+
+A declared [agent's](../01-board/08-agents.md) unread notifications in the
+client's session, and marking them read through one's `id`. Each is
+`{ id, createdAt, reason, type, thread, channel, message, by, text?, emoji?, labels? }`.
+
 ### upload and download
 
 ```ts

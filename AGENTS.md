@@ -117,18 +117,21 @@ reply in an existing thread rather than starting one.
   instead of throwing: a watcher that throws dead-letters within half a minute,
   which stops it on that thread for good. The next reply tries again. No
   watcher's own reply wakes Pi or triage (`byWatcher`).
-- `helper` (`helper.ts`) is an agent the board runs (`board({ agents })`, from
-  `vboard/agents`): `@vboard-factory +helper <question>` in Slack or a GitHub
-  comment wakes it as `vboard:agent:helper`, and it answers from the code. It
-  runs on A2 with Pi's loop (`pi({ sandbox })`), in a persistent Vercel
-  Sandbox per thread (`helper-thread-<id>`), a clone of the repo through
+- `helper` (`helper.ts`) is an A2 agent (`agent()` from
+  `experimental-a2/ai/server`, with `vb` from `vboard/tools`) that the board
+  wakes: `board({ agents: { helper } })`. `@vboard-factory +helper <question>`
+  in Slack or a GitHub comment reaches it as a notification, as
+  `vboard:agent:helper`, and it answers from the code. It shares the board's
+  store and queue (`a2.ts`), so the board's scheduler route serves its
+  sessions too. It runs with Pi's loop (`pi({ sandbox })`), in a persistent
+  Vercel Sandbox per session (`helper-<session>`), a clone of the repo through
   Sandbox git credentials like Pi's, whose network policy only reads: git
   fetches (a push gets a 403), GETs on GitHub's REST API when there's a
   connector, and npm's registry. No board credential goes in it: its `vb` tool
   runs in the function. Triage and Pi see a thread that asks Helper like any
   other, and Pi's instructions keep it quiet in threads addressed to someone
-  else. The board's notices about an agent (`vboard:agents`: it couldn't start
-  or finish) wake no one (`byWatcher`). Pi's packages stay out of the bundle
+  else. The board's notices about an agent (`vboard:agents`: it couldn't
+  start) wake no one (`byWatcher`). Pi's packages stay out of the bundle
   (`serverExternalPackages`).
 - `crosspost` (`crosspost.ts`) links a factory PR's Slack thread and the Slack
   thread it was built for, both ways, once the PR's root lands in Slack (its tail
