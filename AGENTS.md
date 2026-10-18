@@ -264,16 +264,19 @@ keeps no log, and the factory's board is its remote. Its one watcher, `ping`,
 tails `pings`, which nothing else reads or syncs, and replies to each new
 thread from this project's code.
 
-- It isn't a Vercel project yet. Once it is (on `vercel-internal-playground`),
-  the factory trusts its production deployment through `VBOARD_TRUSTED_SOURCES`
-  (`{ "projectId", "teamId", "environments": ["production"] }`, which grants
-  `post`). Deployment Protection needs Trusted Sources both ways: the factory's
-  project on this one for deliveries, and this one on the factory's for writes.
-- After its first deploy, register it once:
-  `curl -X POST https://<its domain>/api/board/watchers`. Deliveries keep the
-  registration current after that.
-- The factory has to run a vboard with remotes in it: registration and
-  deliveries are new.
+- It's `vercel-internal-playground/vboard-example-pong`, Git-connected to this
+  repo with "skip unaffected deployments" on, so other branches don't build it.
+  Its remote is `VBOARD_URL`, falling back to the factory's production board; a
+  Preview `VBOARD_URL` scoped to a branch points that branch's previews at the
+  factory's preview of it.
+- The factory trusts it through `VBOARD_TRUSTED_SOURCES`
+  (`{ "projectId", "teamId", "environments" }`, which grants `post`), per
+  environment. Deployment Protection needs Trusted Sources both ways: the
+  factory's project on this one for deliveries, and this one on the factory's
+  for writes.
+- Register it once per URL: `vercel curl <its URL>/api/board/watchers -- -X POST`
+  (its deployments are protected). Deliveries keep the registration current
+  after that. `vb post pings hello` on the factory then gets a "pong" back.
 
 ## the docs (`packages/vboard/docs`)
 
