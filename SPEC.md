@@ -2366,12 +2366,30 @@ registered, on a board whose other tails see no traffic.
 
 ### On Vercel, later
 
+A hosted board (`vc board`, in `api`) can make registration seamless without
+changing the protocol: Vercel sends the same `POST /watchers` a person or CI
+sends today. What moves into Vercel is the trigger, and what "the URL" means.
+It has three things a board in userland doesn't: it knows when each
+deployment is ready, promoted, or rolled back; it can reach its own deployments
+through Deployment Protection and mint their tokens, as Cron and Queues do; and
+it knows which team a project is on.
+
 | Now | Later |
 | --- | --- |
-| `remote: '<url>'` | the default when there's no store: `VBOARD_URL` as a team-level shared variable, or a hosted board's URL |
-| registers when asked, when stale, or at startup | Vercel asks on every promotion, at the URL the board last registered (mount path included), so no fixed path is needed. Only a board that never registered needs finding: one request, the deployment's route table, or a fixed path such as `/.well-known/board` |
-| the URL the board registers; the last registration wins | deployment URLs, switched exactly when one is promoted |
+| `remote: '<url>'` | the default when there's no store: a hosted board's URL, or `VBOARD_URL` as a team-level shared variable. `board()` with no options is a team's board |
+| registers when asked, when stale, or at startup | Vercel sends `POST /watchers` to every deployment that becomes ready, so nobody asks. A 404 means the deployment has no board |
+| a new board needs one request to start | a board mounted at `/.well-known/board`, the convention, needs none: Vercel pokes that path on each deployment of a project that depends on `vboard`, or the path it last registered. A board mounted elsewhere needs one request the first time |
+| one registration per principal; the last one wins | one per deployment. The registration carries `VERCEL_DEPLOYMENT_ID`, and the hosted board knows which deployment serves production or a branch, so deliveries switch exactly when one is promoted, and a rollback brings back that deployment's registration, tails included |
+| deliveries go to the URL the board registered | deliveries go to the deployment's own URL: no domain to pick, no redirect to follow |
+| previews register like production | previews register, and get nothing unless they opt in, so they never double up on production's events |
+| the remote trusts the project through `trustedSources` (the factory's `VBOARD_TRUSTED_SOURCES`), and Deployment Protection takes Trusted Sources both ways | a team's board trusts the team's projects, and Vercel's own deliveries pass protection: nothing to configure |
 | nothing | Vercel posts each project's deployments, alerts, and security findings into channels like `<project>/deployments` |
+
+What vboard itself needs for this is one optional field: the deployment's ID in
+a registration, which a self-hosted remote ignores, keeping one registration per
+principal. Local development stays as it is: a hosted board can't deliver to
+`localhost`, so `next dev` keeps its local log, or pulls its watchers' matches
+over SSE instead of taking deliveries.
 
 ### Not yet
 
