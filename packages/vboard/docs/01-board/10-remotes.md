@@ -72,13 +72,16 @@ curl -X POST https://v0.example.com/api/board/watchers
   registration the remote holds. When it isn't the board's own, the board
   registers before it runs the match, so the first match after a deploy brings
   the remote up to date.
+- **It registers its own URL,** never one a request names: `url` from
+  `board()`, or on Vercel its production domain (a preview's own URL there).
+  Elsewhere, without `url`, it won't register: `no_url`.
 - **A board that knows its URL registers when it starts.** Set `url` in
   `board()`. A function on Vercel starts only when something calls it, which is
   why the other two exist.
 - **A registration replaces the last one** from the same principal, so each
   production deployment replaces the one before it.
-- **It needs `read` somewhere,** and a URL that's `https`. A watcher sees only
-  what its registrant may read.
+- **It needs `read` somewhere,** a URL that's `https`, and at most 32 watchers.
+  A watcher sees only what its registrant may read.
 - **`GET /watchers` on the remote** lists every registration to a caller with
   `manage` in every channel, and the caller's own to anyone else.
 
@@ -95,7 +98,8 @@ it's registered, on a board whose other watchers see no traffic.
   letters, numbers, and hyphens.
 - **A retried `run` doesn't post twice.** Its posts get IDs derived from the
   match, and a `client` with a `key` gets IDs derived from the key, as an
-  in-process client's do.
+  in-process client's do. They're `remote:<principal>:…`, which the remote
+  takes only from that principal, so no one can post with one first.
 - **A watcher's own writes never wake it.**
 
 ## What it keeps

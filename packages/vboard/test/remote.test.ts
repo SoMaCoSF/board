@@ -33,6 +33,7 @@ function team(watch: Record<string, Watcher> = {}, access: NonNullable<Parameter
   const v0Board = (watch: Record<string, Watcher>): ReturnType<typeof remoteBoard> =>
     board({
       remote: BOARD_URL,
+      url: V0_URL,
       watch,
       auth: testAuth,
       transport: { fetch: route, token: (audience) => deploymentToken('v0', 'prj_v0', 'production', { audience }) },
@@ -348,9 +349,12 @@ describe('what a registered watcher gets', () => {
     await marketing('POST', '/watchers', { url: 'https://marketing.test/api/board', watch: {} })
     expect((await ci('GET', '/watchers')).body.watchers.map((found: { owner: string }) => found.owner)).toEqual(['vercel:project:prj_ci:production'])
     const julian = await julianOn(remote.fetch)
+    // v0's board, which knows its URL, registered when it started.
+    await vi.waitFor(async () => expect((await julian('GET', '/watchers')).body.watchers).toHaveLength(3))
     expect((await julian('GET', '/watchers')).body.watchers.map((found: { owner: string }) => found.owner)).toEqual([
       'vercel:project:prj_ci:production',
       MARKETING,
+      V0,
     ])
   })
 })
@@ -366,5 +370,50 @@ describe('a delivery', () => {
     await expect(deliver('https://127.0.0.1/deliveries/fix', init)).rejects.toThrow("isn't a public address")
     await expect(deliver('https://[::1]/deliveries/fix', init)).rejects.toThrow("isn't a public address")
     await expect(deliver('https://localhost/deliveries/fix', init)).rejects.toThrow("isn't a public address")
+  })
+})
+
+describe('a board with a remote, against forged requests', () => {
+  it('registers the URL it was given, whatever Host a request names', async () => {
+    const fix = recorder('feedback')
+    const t = team({ fix: fix.watcher })
+    await t.project.register(V0_URL)
+    // Anyone may ask it to register, from any Host.
+    expect((await t.project.fetch(new Request('https://evil.test/api/board/watchers', { method: 'POST' }))).status).toBe(200)
+    const julian = await julianOn(t.remote.fetch)
+    expect((await julian('GET', '/watchers')).body.watchers.map((found: { url: string }) => found.url)).toEqual([V0_URL])
+  })
+
+  it("won't register when it doesn't know its own URL", async () => {
+    const unnamed = board({ remote: BOARD_URL, watch: {}, auth: testAuth, transport: { fetch: async () => new Response(null, { status: 502 }), token: async () => 't' } })
+    const asked = await unnamed.fetch(new Request(`${V0_URL}/watchers`, { method: 'POST' }))
+    expect({ status: asked.status, code: (await asked.json()).error.code }).toEqual({ status: 503, code: 'no_url' })
+  })
+
+  it("keeps a remote watcher's post IDs its own, so no one can take one first", async () => {
+    const fix = recorder('feedback', async ({ event, board }) => {
+      if (event.type === 'message.posted' && event.message?.re === null) await board.reply(event.message.id, 'on it')
+    })
+    const t = team({ fix: fix.watcher })
+    await t.project.register(V0_URL)
+    const marketing = caller(t.remote.fetch, await deploymentToken('marketing', 'prj_marketing', 'production'))
+    const taken = await marketing('POST', '/messages', { channel: 'feedback', text: 'mine now', id: `remote:${V0}:0123456789abcdef0123456789abcdef` })
+    expect(taken.status).toBe(400)
+    expect((await marketing('POST', '/messages', { channel: 'feedback', text: 'fine', id: `remote:${MARKETING}:abc` })).status).toBe(201)
+
+    const julian = await julianOn(t.remote.fetch)
+    const root = (await julian('POST', '/messages', { channel: 'feedback', text: 'export is broken' })).body.message
+    await vi.waitFor(async () => {
+      const { body } = await julian('GET', `/messages/${root.id}`)
+      expect(body.replies.map((reply: { text: string }) => reply.text)).toEqual(['on it'])
+    })
+  })
+
+  it('takes a few watchers a registration, not thousands', async () => {
+    const { remote } = team()
+    const v0 = caller(remote.fetch, await deploymentToken('v0', 'prj_v0'))
+    const many = Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`w${i}`, { tail: 'feedback' }]))
+    const refused = await v0('POST', '/watchers', { url: V0_URL, watch: many })
+    expect(refused).toMatchObject({ status: 400, body: { error: { message: expect.stringContaining('at most 32 watchers') } } })
   })
 })

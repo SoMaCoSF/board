@@ -146,6 +146,9 @@ export const InboxQuery = z.object({
   channel: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
 })
+/** How many watchers one registration holds. */
+export const REGISTERED_WATCHERS_MAX = 32
+
 /** What a board with a remote registers there: where it is, and its watchers' tails. */
 export const RegisterBody = z.object({
   url: z
@@ -155,10 +158,10 @@ export const RegisterBody = z.object({
     .refine((url) => /^https:\/\//.test(url), 'matches are delivered over https')
     .transform((url) => url.replace(/\/+$/, '')),
   // The IDs are checked one by one, so a bad one fails with what a misconfigured boot would.
-  watch: z.record(
-    z.string().max(100),
-    z.object({ tail: z.string().max(1000), when: z.enum(['matches', 'enters']).default('matches') }),
-  ),
+  // The remote matches every event against every registered tail: a board brings a few.
+  watch: z
+    .record(z.string().max(100), z.object({ tail: z.string().max(1000), when: z.enum(['matches', 'enters']).default('matches') }))
+    .refine((watch) => Object.keys(watch).length <= REGISTERED_WATCHERS_MAX, `a board registers at most ${REGISTERED_WATCHERS_MAX} watchers`),
 })
 
 /** One match, as a remote delivers it to a board with that remote. */

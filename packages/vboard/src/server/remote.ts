@@ -24,10 +24,12 @@ function checkName(what: string, name: string) {
 
 /**
  * A post's ID on the remote, derived from what triggered it and its order, as an in-process
- * client's is. It isn't a UUIDv8, which the remote keeps for the writes it makes itself.
+ * client's is, under this board's own principal there: the remote takes a `remote:<principal>:`
+ * ID only from that principal, so no one can post with it first and wedge the watcher. It
+ * isn't a UUIDv8, which the remote keeps for the writes it makes itself.
  */
-const postId = (trigger: string, n: number) =>
-  createHash('sha256').update(`vboard-remote\u001f${trigger}\u001f${n}`).digest('hex').slice(0, 32)
+const postId = (self: string, trigger: string, n: number) =>
+  `remote:${self}:${createHash('sha256').update(`vboard-remote\u001f${trigger}\u001f${n}`).digest('hex').slice(0, 32)}`
 
 /** Registering again this soon after the same registration only repeats it. */
 const REGISTER_EVERY_MS = 10_000
@@ -54,7 +56,7 @@ export function remoteBoard(options: BoardOptions & { remote: string }) {
       const path = new URL(input instanceof Request ? input.url : String(input)).pathname
       if (trigger !== null && init.method === 'POST' && path.endsWith('/messages') && typeof init.body === 'string') {
         const body = JSON.parse(init.body) as Record<string, unknown>
-        body.id ??= postId(trigger, posts++)
+        if (body.id === undefined) body.id = postId(await self(), trigger, posts++)
         init = { ...init, body: JSON.stringify(body) }
       }
       return net.fetch(input, init)
@@ -75,6 +77,24 @@ export function remoteBoard(options: BoardOptions & { remote: string }) {
   let last: { url: string; at: number; result: RegistrationView } | null = null
   /** This board's own principal on its remote, as its last registration came back. */
   let owner: string | null = null
+  /** It, asking the remote when no registration has said yet. */
+  const self = async () => owner ?? (owner = (await registrar.me()).principal)
+
+  /**
+   * This board's URL, which it registers and which deliveries are addressed to: from config, or
+   * on Vercel its production domain (a preview's own URL), and never from a request, whose
+   * Host its sender chooses. `base` is where the board is mounted.
+   */
+  function ownUrl(base: string): string | null {
+    if (options.url) return options.url.replace(/\/+$/, '')
+    const host = process.env.VERCEL_ENV === 'production' ? process.env.VERCEL_PROJECT_PRODUCTION_URL : process.env.VERCEL_URL
+    return host ? `https://${host}${base}`.replace(/\/+$/, '') : null
+  }
+  const needUrl = (base: string) => {
+    const url = ownUrl(base)
+    if (url === null) throw new HttpError(503, 'no_url', "this board doesn't know its own URL to register: set `url` in board()")
+    return url
+  }
   let registering: Promise<RegistrationView> | null = null
   /** Registers this board's watchers with its remote, as itself, replacing its last registration. */
   async function register(url: string): Promise<RegistrationView> {
@@ -121,7 +141,8 @@ export function remoteBoard(options: BoardOptions & { remote: string }) {
       const url = new URL(request.url)
       const match = route(request.method, url.pathname, options.basePath)
       if (!match) throw notFound(`no route: ${request.method} ${url.pathname}`)
-      const boardUrl = (options.url ?? `${url.origin}${match.base}`).replace(/\/+$/, '')
+      // What discovery says, for a person at a terminal; registering and deliveries use `ownUrl`.
+      const boardUrl = ownUrl(match.base) ?? `${url.origin}${match.base}`.replace(/\/+$/, '')
 
       switch (match.name) {
         case 'discovery': {
@@ -139,21 +160,22 @@ export function remoteBoard(options: BoardOptions & { remote: string }) {
         }
         case 'register':
           // Anyone may ask: it sends this board's own watchers, with this board's own credentials.
-          return json(await register(boardUrl))
+          return json(await register(needUrl(match.base)))
         case 'deliver': {
           const token = (request.headers.get('authorization') ?? '').match(/^Bearer\s+(.+)$/i)?.[1]
           if (!token) throw unauthorized('missing bearer token')
-          const principal = await verify(token, boardUrl)
+          const own = needUrl(match.base)
+          const principal = await verify(token, own)
           // The remote's own deployments in this board's environment, not its previews.
           if (principal.kind !== 'deployment' || !principal.access.readsAll) throw forbidden(`deliveries come from ${remote}`)
           // Only matches this board registered: anyone can register a URL, and the remote then
           // sends them their matches there, which this board's watchers must never run on.
           const named = request.headers.get('x-board-owner')
-          const own = owner ?? (await register(boardUrl)).owner
-          if (named !== own) throw new HttpError(403, 'not_owner', `this delivery is for ${named ?? 'nobody'}'s registration, not this board's`)
+          const mine = owner ?? (await register(own)).owner
+          if (named !== mine) throw new HttpError(403, 'not_owner', `this delivery is for ${named ?? 'nobody'}'s registration, not this board's`)
           // The remote holds an older registration (a deploy changed the tails): bring it up to date,
           // even when the watcher this is for is gone, so the remote stops sending its matches.
-          if (request.headers.get('x-board-watchers') !== hash) await tryRegister(boardUrl)
+          if (request.headers.get('x-board-watchers') !== hash) await tryRegister(own)
           const id = match.param!
           const watcher = watch[id]
           if (!watcher) throw notFound(`no watcher ${id} on this board`, 'no_watcher')

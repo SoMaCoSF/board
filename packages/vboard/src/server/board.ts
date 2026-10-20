@@ -635,6 +635,9 @@ function logBoard(options: BoardOptions) {
         case 'post': {
           const body = PostBody.parse(await readJson(request))
           const proofs = await authorizePost(writes, principal.access, body)
+          // A board with a remote derives its posts' IDs under its own principal: no one else's to take first.
+          if (!injected && body.id?.startsWith('remote:') && !body.id.startsWith(`remote:${principal.id}:`))
+            throw badRequest(`id: remote:… IDs are a board's with this as its remote, and only remote:${principal.id}:… is this token's`)
           if (!injected && body.id !== undefined && DERIVED_ID.test(body.id))
             throw badRequest("id: UUIDv8s are the board's own, for the writes it makes itself")
           const attachments = await attachmentsFor(principal, body.attachments)
