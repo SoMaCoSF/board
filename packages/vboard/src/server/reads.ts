@@ -1,13 +1,18 @@
 import { consumer } from 'experimental-a2/server'
-import { boardContract, type BoardEvent } from '../contract/contract.ts'
+import { BOARD_SESSION, boardContract, type BoardEvent } from '../contract/contract.ts'
 import type { Message } from '../contract/reducers.ts'
 import { TABLES_CONSUMER } from '../store/sql.ts'
-import type { MessageTables } from '../store/types.ts'
+import type { MessageFilter, MessageTables, Page } from '../store/types.ts'
+import type { Access } from './access.ts'
 import type { BoardSession } from './board.ts'
+import { linkedIds, type Reader } from './feed.ts'
+import { waitUntil } from './wait-until.ts'
 
 /** Keeps the tables from the board's log, one event at a time, from the first. */
 export function tablesConsumer(tables: MessageTables) {
   return consumer({ contract: boardContract, name: TABLES_CONSUMER, lane: 'tables', backfill: true }).run(async (ctx) => {
+    // The tables keep one position, the board session's: another session's indexes would move it.
+    if (ctx.session.id !== BOARD_SESSION) return
     await tables.apply(ctx.event as BoardEvent)
   })
 }
@@ -20,6 +25,19 @@ export type TablesConsumer = ReturnType<typeof tablesConsumer>
  * say which index they reflect.
  */
 export function createReads(tables: MessageTables, session: BoardSession, projection: TablesConsumer) {
+  /**
+   * The first list read on an instance starts the tables catching up, and doesn't wait: after a deploy
+   * that adds them, or on a quiet board, nothing else may have yet.
+   */
+  let catching: Promise<unknown> | null = null
+  function catchUp(): void {
+    if (catching) return
+    catching = session.consume(projection).catch(() => {
+      catching = null
+    })
+    waitUntil(catching)
+  }
+
   /** Waits until the tables have applied `index`, or the whole log when it's omitted. */
   async function ensure(index?: number, signal?: AbortSignal): Promise<void> {
     if (index !== undefined && (await tables.position()) >= index) return
@@ -49,8 +67,29 @@ export function createReads(tables: MessageTables, session: BoardSession, projec
       await ensure(undefined, signal)
       return tables.byEventId(eventId)
     },
-    messages: tables.messages.bind(tables),
-    threads: tables.threads.bind(tables),
+    /**
+     * The reader of views of `messages`: what a link shows depends on where the
+     * message it points to lives, looked up only for a reader that can't read
+     * every channel. A linked message is older than the one linking it, so the
+     * tables have it.
+     */
+    async reader(access: Access, messages: Iterable<Message>): Promise<Reader> {
+      if (access.readsAll) return { access, channelOf: () => undefined }
+      const ids = [...new Set([...messages].flatMap((message) => linkedIds(message.links)))]
+      const found = ids.length === 0 ? new Map<number, Message>() : await tables.messagesAt(ids, await tables.position())
+      return { access, channelOf: (id) => found.get(id)?.channel }
+    },
+    async messages(filter: MessageFilter, page: Page) {
+      catchUp()
+      // A reader of no channel: nothing to look for.
+      if (filter.channels?.length === 0) return { messages: [], position: await tables.position() }
+      return tables.messages(filter, page)
+    },
+    async threads(filter: MessageFilter, page: Page) {
+      catchUp()
+      if (filter.channels?.length === 0) return { threads: [], position: await tables.position() }
+      return tables.threads(filter, page)
+    },
   }
 }
 

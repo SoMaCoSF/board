@@ -12,10 +12,12 @@ import {
   type BoardEvents,
 } from '../contract/contract.ts'
 import { actorsReducer, type Message, type MessagesState } from '../contract/reducers.ts'
-import { compileFilter, eventView, foldEvent, hasCriteria, loadBefore, type ParsedFilters } from './feed.ts'
+import { FULL_ACCESS, type Access } from './access.ts'
+import { compileFilter, eventView, foldEvent, hasCriteria, loadBefore, OWN_CODE, type ParsedFilters } from './feed.ts'
 import type { BoardReads } from './reads.ts'
-import type { Registration, RegistryState } from './registry.ts'
+import type { Registration, RegistryState, StoredPrincipal } from './registry.ts'
 import { deploymentIdentity, type Identity, type WriteOrigin } from './writes.ts'
+import { A2_TRIES, afterRetry } from './attempts.ts'
 
 /** What a watcher's `run` gets. */
 export type WatcherContext = {
@@ -73,7 +75,7 @@ const RUN_ATTEMPTS = 5
  * last one a watcher sees. Throws give up at RUN_ATTEMPTS, so getting this far
  * means runs keep dying, and the 10th records the failure without running.
  */
-const KILLED_ATTEMPTS = RUN_ATTEMPTS * 2
+const KILLED_ATTEMPTS = A2_TRIES
 
 const describe = (error: unknown) => ((error instanceof Error ? error.message : String(error)) || 'unknown error').slice(0, 500)
 
@@ -102,6 +104,8 @@ type Candidate = Compiled & {
   key: string
   /** Who its writes are by: an event by it never wakes it. */
   actor: string
+  /** A registered one's registration, whose principal decides what it may see. Config ones see everything. */
+  registration?: Registration
 }
 
 /**
@@ -121,11 +125,12 @@ export async function runMatch(input: {
     console.error(`[vboard] watcher ${watcher.id} gave up on event #${event.index} after ${attempt} tries:`, error)
     await input.record({ matched: match.id, thread: match.payload.thread, error })
   }
-  if (attempt >= KILLED_ATTEMPTS) return giveUp(`its run was cut short ${attempt - 1} times (a timeout, or out of memory)`)
+  const early = !afterRetry(attempt)
+  if (early && attempt >= KILLED_ATTEMPTS) return giveUp(`its run was cut short ${attempt - 1} times (a timeout, or out of memory)`)
   try {
     await watcher.run({ event, board: input.board() })
   } catch (error) {
-    if (attempt < RUN_ATTEMPTS) throw error
+    if (!early || attempt < RUN_ATTEMPTS) throw error
     await giveUp(describe(error))
   }
 }
@@ -146,6 +151,8 @@ export function createWatchers(options: {
   registered?: {
     state: () => Promise<RegistryState>
     deliver: (registration: Registration, id: string, match: Match, signal: AbortSignal) => Promise<void>
+    /** What a registrant may do now, under the rules as they are: null once it may do nothing. */
+    accessNow: (principal: StoredPrincipal) => Promise<Access | null>
   }
 }) {
   const watchers = Object.entries(options.watch).map(([id, watcher]) => {
@@ -209,8 +216,10 @@ export function createWatchers(options: {
   // Each registration's tails, parsed once per hash.
   const compiled = new Map<string, { hash: string; candidates: Candidate[] }>()
   function compiledFor(registration: Registration): Candidate[] {
+    // A new principal changes what it may see, so it compiles again too.
+    const version = `${registration.hash}\u001f${JSON.stringify(registration.principal)}`
     const hit = compiled.get(registration.owner)
-    if (hit?.hash === registration.hash) return hit.candidates
+    if (hit?.hash === version) return hit.candidates
     const candidates: Candidate[] = []
     for (const [id, spec] of Object.entries(registration.watch)) {
       try {
@@ -218,13 +227,14 @@ export function createWatchers(options: {
           ...compileWatcher(id, spec),
           key: registeredWatchKey(registration.owner, id),
           actor: `${registration.owner}+${id.toLowerCase()}`,
+          registration,
         })
       } catch (error) {
         // Checked when it was registered: only a tail this version reads differently gets here.
         console.error(`[vboard] skipping a watcher ${registration.owner} registered:`, (error as Error).message)
       }
     }
-    compiled.set(registration.owner, { hash: registration.hash, candidates })
+    compiled.set(registration.owner, { hash: version, candidates })
     return candidates
   }
   async function candidates(): Promise<Candidate[]> {
@@ -244,18 +254,33 @@ export function createWatchers(options: {
     ])
     const { id, before, after } = foldEvent(messages, actors, event)
     const by = (event.payload as { by?: { actor?: string } }).by?.actor
+    const message = after ?? before
     let view: BoardEventView | undefined
+    // Each registrant's access, worked out once per event.
+    const registrants = new Map<string, Promise<Access | null>>()
     for (const watcher of targets) {
       if (by === watcher.actor) continue
       if (RECEIPTS.has(event.type) && !watcher.all) continue
-      const match = compileFilter(watcher.filters, { me: null, actors, messages })
+      const { registration } = watcher
+      let access: Access | null = FULL_ACCESS
+      if (registration) {
+        let found = registrants.get(registration.owner)
+        if (!found) registrants.set(registration.owner, (found = options.registered!.accessNow(registration.principal)))
+        access = await found
+        // A registered watcher sees what its registrant may read, as `/events` shows it: an event
+        // about a message only where it reads the message's channel, one about none only if it reads all.
+        if (!access || (id === null ? !access.readsAll : !message || !access.readable(message.channel))) continue
+      }
+      const match = compileFilter(watcher.filters, { me: null, actors, messages, access: access! })
       if (watcher.enters ? !entered(match, before, after, messages) : !(watcher.criteria ? match(before) || match(after) : id !== null))
         continue
-      view ??= eventView(event, after, actors)
+      const shown = registration
+        ? eventView(event, after, actors, await reads!.reader(access!, after ? [after] : []))
+        : (view ??= eventView(event, after, actors, OWN_CODE))
       await server.session(watchSession(watcher.key)).append({
         type: 'watch.matched',
         id: await idempotentId('vboard-watch', watcher.key, event.id),
-        payload: { thread: (event.payload as { thread: string }).thread, event: view },
+        payload: { thread: (event.payload as { thread: string }).thread, event: shown },
       })
     }
   }

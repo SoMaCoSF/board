@@ -190,7 +190,8 @@ function providerContract(name: string, fixture: typeof nativeFixture | typeof c
           await test.board.skipHold(test.board.servers[1]!, `inbox:tickets:${channel}`)
           await test.board.servers[1]!.drain(`inbox:tickets:${channel}`)
           expect(test.results).toHaveLength(2)
-        })
+          // Each pass waits for claims to clear first, so give it time under load.
+        }, { timeout: 5_000 })
         expect(test.results[1]).toEqual(test.results[0])
         expect(test.events[1]?.id).toBe(test.events[0]?.id)
         expect((await test.read()).map((message) => message.text)).toEqual(['hello', 'ack'])

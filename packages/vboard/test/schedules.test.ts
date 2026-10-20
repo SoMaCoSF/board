@@ -1,4 +1,7 @@
+import { createServer } from 'experimental-a2/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { SCHEDULES_SESSION, schedulesContract } from '../src/contract/contract.ts'
+import { memory } from '../src/store/memory.ts'
 import { caller, personToken, testBoard } from './harness.ts'
 import { fakeQueue } from './queue.ts'
 
@@ -75,7 +78,7 @@ describe('scheduled messages', () => {
     expect((await julian('GET', '/schedules?all=1')).body.schedules[0].state).toBe('done')
   })
 
-  it('repeat until canceled when they have no stop, and anyone may cancel', async () => {
+  it('repeat until canceled when they have no stop, and manage may cancel any of them', async () => {
     const { julian, pi, root, replies, advance } = await setup()
     const { body } = await julian('POST', '/schedules', { re: root.id, text: 'still monitoring?', every: '30m' })
     for (let i = 0; i < 5; i++) await advance(30 * MINUTE)
@@ -104,6 +107,37 @@ describe('scheduled messages', () => {
     await advance(HOUR)
     const { body } = await julian('GET', '/messages?channel=standup')
     expect(body.messages).toMatchObject([{ text: 'standup time', re: null, labels: { kind: 'standup' } }])
+  })
+
+  it('keep sending after a deploy: a timer an earlier deployment armed goes only to it', async () => {
+    // A schedule from before, whose first send waits on the earlier deployment's queue.
+    const store = memory()
+    const by = { actor: 'vercel:user:u_julian', principal: 'vercel:user:u_julian', profile: null, session: null }
+    await createServer({ contract: schedulesContract, store: store.log }).session(SCHEDULES_SESSION).append({
+      type: 'schedule.created',
+      payload: {
+        channel: 'dev', re: null, text: 'standup', labels: {}, noSync: false, first: T0 + HOUR, every: DAY, until: null, times: null,
+        as: {
+          author: by,
+          principal: { id: by.principal, kind: 'person', handle: 'julian' },
+          actor: { id: by.actor, kind: 'person', handle: 'julian', name: 'Julian', avatar: null },
+        },
+      },
+    })
+    const queue = fakeQueue()
+    const board = testBoard({ store, scheduler: queue.scheduler })
+    const julian = fresh(board.fetch, 'u_julian', { 'x-board-handle': 'julian' })
+
+    // Any request starts this deployment arming it again.
+    await julian('GET', '/me')
+    await vi.waitFor(() => expect(queue.timers).toHaveLength(1))
+    vi.setSystemTime(T0 + HOUR)
+    await queue.fire()
+    await vi.waitFor(async () => {
+      const { body } = await julian('GET', '/messages?channel=dev')
+      expect(body.messages.map((m: { text: string }) => m.text)).toEqual(['standup'])
+    })
+    expect((await julian('GET', '/schedules')).body.schedules).toMatchObject([{ sent: 1, next: new Date(T0 + HOUR + DAY).toISOString() }])
   })
 
   it('wait out more than a queue can delay in hops', async () => {

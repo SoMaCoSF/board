@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { idempotentId } from 'experimental-a2'
 import { createServer, type A2Scheduler } from 'experimental-a2/server'
 import { boardContract, BOARD_SESSION, inboxSession, SCHEDULES_SESSION, type BoardEvents } from '../contract/contract.ts'
-import { actorsReducer, channelsReducer, linkedTo, syncReducer } from '../contract/reducers.ts'
+import { actorsReducer, channelsReducer, linkedTo } from '../contract/reducers.ts'
 import { ATTACHMENT_BYTES_MAX, RemoteWatcherId } from '../contract/schemas.ts'
 import {
   EditBody,
@@ -34,31 +34,29 @@ import {
 import { createBoardClient, type BoardClient } from '../client/client.ts'
 import { createSyncEngine } from '../sync/engine.ts'
 import type { SyncProvider } from '../sync/provider.ts'
+import type { BoardEventView } from '../api/routes.ts'
 import { VERSION } from '../version.ts'
-import {
-  allows,
-  createVerifier,
-  type AuthOptions,
-  type Capability,
-  type Principal,
-  type TrustedSource,
-} from './auth.ts'
+import { createVerifier, hostPrincipal, type AccessRule, type AuthOptions, type HostAccess, type Principal } from './auth.ts'
+import { parseScope, type Access } from './access.ts'
 import { KNOWN_AGENTS, resolveActor } from './actors.ts'
 import { avatarSvg } from './avatars.ts'
-import { attachmentResponse, defaultBlob, readAttachment, writeUpload, type BlobStore } from './blob.ts'
+import { attachmentNotFound, attachmentResponse, defaultBlob, readUpload, writeUpload, type BlobStore } from './blob.ts'
 import { badRequest, forbidden, HttpError, json, notFound, toErrorResponse, unauthorized } from './errors.ts'
-import { liveFeed, personView, pollFeed, toMessageFilter, view } from './feed.ts'
+import { liveFeed, personView, pollFeed, readableFilter, toMessageFilter, view } from './feed.ts'
 import { discoveryIdentity, ownProjectId, ownTeamId } from './identity.ts'
 import { createReads, tablesConsumer } from './reads.ts'
-import { createSchedules } from './schedules.ts'
+import { createdBy, createSchedules, type Schedule } from './schedules.ts'
 import { defaultStore } from '../store/default.ts'
 import { TABLES_CONSUMER } from '../store/sql.ts'
-import type { BoardStore } from '../store/types.ts'
+import type { BoardStore, MessageFilter } from '../store/types.ts'
 import { compileWatcher, createWatchers, ID, type Match as WatchMatch, type Watcher } from './watch.ts'
-import { createRegistry, type Registration } from './registry.ts'
+import { createRegistry, storedPrincipal, type Registration } from './registry.ts'
 import { remoteBoard } from './remote.ts'
 import { transport, type Transport } from './transport.ts'
 import {
+  authorizeMessage,
+  authorizeOwn,
+  authorizePost,
   writeAttach,
   writeDelete,
   writeEdit,
@@ -81,8 +79,18 @@ export type BoardOptions = {
   store?: BoardStore
   /** Required for sync in production, and for scheduled messages. Mount the board's `scheduler` as `POST` in its own route. */
   scheduler?: A2Scheduler
-  /** Machines outside this project that may call the board. */
-  trustedSources?: readonly TrustedSource[]
+  /**
+   * Who may call the board besides its people and its own deployments in the
+   * environment it runs in (a production board's previews need a rule), and what
+   * they may do in each channel: `vercelProject()`, `githubActions()`, `oidc()`.
+   * The first rule that matches a token decides.
+   *
+   * Or a function, `(request) => ({ id, kind, handle, can })`, that replaces the built-in
+   * verifier: a host's own credentials, for a host serving many teams' boards. Nothing
+   * else is trusted then, not the board's own project nor any token's audience. To reject,
+   * return or throw a `Response`.
+   */
+  access?: readonly AccessRule[] | HostAccess
   /** Two-way sync, keyed by a name you choose: `{ slack: slack({...}), github: github({...}) }`. */
   sync?: Record<string, SyncProvider>
   /**
@@ -172,18 +180,30 @@ async function readCapped(request: Request, max: number): Promise<Uint8Array> {
   return body
 }
 
+/** A host's `access` function rejected the request with this response. */
+class Rejected {
+  readonly response: Response
+  constructor(response: Response) {
+    this.response = response
+  }
+}
+
 /**
  * Mounts a board: one log in one route, or with a `remote`, a route that keeps none and uses
- * the remote's. Create it once, at module scope.
+ * the remote's. Create it once, at module scope, or one per tenant for a host.
  */
 export function board(options: BoardOptions & { remote: string }): ReturnType<typeof remoteBoard>
 export function board(options?: BoardOptions & { remote?: undefined }): ReturnType<typeof logBoard>
 export function board(options?: BoardOptions): ReturnType<typeof logBoard> | ReturnType<typeof remoteBoard>
 export function board(options: BoardOptions = {}) {
+  if ((options as { trustedSources?: unknown }).trustedSources !== undefined)
+    throw new Error('board: trustedSources is now access: list vercelProject() and githubActions() rules there, each with can')
   return options.remote !== undefined ? remoteBoard({ ...options, remote: options.remote }) : logBoard(options)
 }
 
 function logBoard(options: BoardOptions) {
+  const host = typeof options.access === 'function' ? options.access : null
+  if (host && options.auth) throw new Error('board: an access function replaces the built-in verifier, so drop `auth`')
   const blob = options.blob ?? defaultBlob()
   const store = options.store ?? defaultStore()
   // The same A2 store object for every server: A2 recognizes its own stores by identity.
@@ -199,7 +219,7 @@ function logBoard(options: BoardOptions) {
     watch: options.watch ?? {},
     store: log,
     scheduler: options.scheduler,
-    registered: { state: registry.state, deliver },
+    registered: { state: registry.state, deliver, accessNow: (principal) => accessThen(principal) },
   })
   const schedules = createSchedules({ store: log, scheduler: options.scheduler })
   const projection = tablesConsumer(store.tables)
@@ -226,19 +246,43 @@ function logBoard(options: BoardOptions) {
     middleware: options.middleware ?? [],
     middlewareClient: () => clientAs(MIDDLEWARE_IDENTITY, null, { via: { kind: 'middleware' } }),
   }
-  const verify = createVerifier({
+  const { verify, accessNow } = createVerifier({
     projectId: () => ownProjectId(options.project),
     teamId: () => ownTeamId(options.project),
-    trustedSources: options.trustedSources ?? [],
+    access: typeof options.access === 'function' ? [] : (options.access ?? []),
     ...(options.auth ? { auth: options.auth } : {}),
   })
   const streamMaxMs = options.streamMaxMs ?? 280_000
 
-  async function authenticate(request: Request, boardUrl: string): Promise<Principal> {
+  async function verified(request: Request, boardUrl: string): Promise<Principal> {
+    if (host) {
+      let result: Awaited<ReturnType<HostAccess>>
+      try {
+        result = await host(request)
+      } catch (error) {
+        // A thrown `Response` rejects like a returned one.
+        if (error instanceof Response) throw new Rejected(error)
+        throw error
+      }
+      if (result instanceof Response) throw new Rejected(result)
+      return hostPrincipal(result)
+    }
     const header = request.headers.get('authorization') ?? ''
     const token = header.match(/^Bearer\s+(.+)$/i)?.[1]
     if (!token) throw unauthorized('missing bearer token')
     return verify(token, boardUrl, request.headers.get('x-vercel-oidc-token') ?? undefined)
+  }
+
+  async function authenticate(request: Request, boardUrl: string): Promise<Principal> {
+    const principal = await verified(request, boardUrl)
+    // Set by a proxy that holds the credential (Pi's sandbox); it only narrows.
+    const scope = request.headers.get('x-board-scope')
+    if (scope === null) return principal
+    try {
+      return { ...principal, access: principal.access.narrow(parseScope(scope)), scope }
+    } catch (error) {
+      throw badRequest((error as Error).message, 'invalid_scope')
+    }
   }
 
   /** The sessions whose consumers run on lanes, so a dead letter there stops the rest of its lane. */
@@ -257,7 +301,6 @@ function logBoard(options: BoardOptions) {
     if (found.length === 0) return []
     // The tables first: reads and writes wait on them, so they're what to retry first.
     found.sort((a, b) => Number(b.dead.consumer === TABLES_CONSUMER) - Number(a.dead.consumer === TABLES_CONSUMER))
-    const { state: sync } = await session.state(syncReducer)
     // A thread's key is its root's post's event ID.
     const roots = new Map<string, number | null>()
     const rootOf = async (thread: string) => {
@@ -268,7 +311,7 @@ function logBoard(options: BoardOptions) {
       const laneThread = dead.lane?.startsWith('thread:') ? dead.lane.slice('thread:'.length) : null
       // An inbox's lanes are platform threads; everywhere else they're the board's.
       const inbox = id.startsWith('inbox:')
-      const thread = inbox ? (laneThread && (sync.byExternalThread[laneThread] ?? null)) : laneThread
+      const thread = inbox ? (laneThread && (await store.tables.threadOf(laneThread))) : laneThread
       return {
         session: id,
         index: dead.index,
@@ -304,9 +347,59 @@ function logBoard(options: BoardOptions) {
     return { redriven: done.length > 0 }
   }
 
-  const require = (principal: Principal, capability: Capability) => {
-    if (!allows(principal, capability)) throw forbidden(`this source may not ${capability}`)
+  /** The board's own bookkeeping spans every channel, so it needs `manage` in all of them. */
+  const requireManage = (principal: Principal, what: string) => {
+    if (!principal.access.everywhere('manage'))
+      throw forbidden(`this token can't ${what}: it needs manage in every channel`)
   }
+
+  /**
+   * Whether `principal` may have a file: one it uploaded, or one a message it
+   * can read carries. A deleted message drops its files, so it no longer counts.
+   */
+  async function attachmentReadable(principal: Principal, id: string, uploadedBy: string | null) {
+    if (principal.access.readsAll || uploadedBy === principal.id) return true
+    await reads.ensure()
+    return (await reads.tables.withAttachment(id)).some((message) => principal.access.readable(message.channel))
+  }
+
+  /**
+   * `filter`, narrowed to the channels `access` reads among those the log has,
+   * and the index that list reflects: a read's cursor goes no further, or the
+   * first post in a channel newer than the list would be in neither the page
+   * nor the feed after it.
+   */
+  async function readable(filter: MessageFilter, access: Access): Promise<{ filter: MessageFilter; through: number }> {
+    if (access.readsAll) return { filter, through: Number.POSITIVE_INFINITY }
+    const { state, index } = await session.state(channelsReducer)
+    return { filter: readableFilter(filter, Object.keys(state), access), through: index }
+  }
+
+  /** Who wrote, was mentioned, or reacted in the channels `access` reads, a page at a time. */
+  async function actorsIn(access: Access): Promise<Set<string>> {
+    const ids = new Set<string>()
+    const { filter } = await readable({}, access)
+    for (let before: number | undefined; ; ) {
+      const { messages } = await reads.messages(filter, { limit: 500, ...(before !== undefined ? { before } : {}) })
+      for (const message of messages) {
+        ids.add(message.by.actor)
+        for (const id of message.mentions) ids.add(id)
+        for (const reactors of Object.values(message.reactions)) for (const id of reactors) ids.add(id)
+      }
+      if (messages.length < 500) return ids
+      before = messages[0]!.id
+    }
+  }
+
+  /** Files a write carries, as the board stored them: each one the caller may have, or 404 as if it didn't exist. */
+  const attachmentsFor = (principal: Principal, ids: readonly string[] | undefined) =>
+    Promise.all(
+      [...new Set(ids ?? [])].map(async (id) => {
+        const { attachment, uploadedBy } = await readUpload(blob, id)
+        if (!(await attachmentReadable(principal, id, uploadedBy))) throw attachmentNotFound(id)
+        return attachment
+      }),
+    )
 
   /**
    * A client for inbound functions: in-process, writing as `identity`, its posts idempotent
@@ -331,24 +424,43 @@ function logBoard(options: BoardOptions) {
   }
 
   engine?.bind({ session, writes, clientAs })
-  schedules.bind({ writes })
+  // A schedule sends only under the verifier that made it: one from before the board
+  // switched to or from a host's function is revoked rather than trusted. The board's
+  // own code (`vboard:`, which a host's function can't return) sends under either.
+  /**
+   * What a stored principal (a schedule's creator, a watcher's registrant) may do now, under
+   * the rules as they are. Only under the verifier that made it: one from before the board
+   * switched to or from a host's function is revoked rather than trusted. The board's own
+   * code (`vboard:`, which a host's function can't return) works under either.
+   */
+  function accessThen(principal: Pick<Principal, 'id' | 'kind' | 'facts' | 'scope'>): Promise<Access | null> {
+    return principal.id.startsWith('vboard:') || (principal.facts?.issuer === 'host') === (host !== null)
+      ? accessNow(principal)
+      : Promise.resolve(null)
+  }
+  schedules.bind({ writes, accessNow: accessThen })
   watchers.bind({ clientAs, reads })
 
-  /** Posts one match to the board that registered its watcher. A 404 means it has no such watcher anymore. */
+  /**
+   * Posts one match to the board that registered its watcher, named as its owner's, so a
+   * board refuses matches someone else registered its URL for. A 404 means it has no such
+   * watcher anymore. Its registrant's access is checked again here: it may have lost it since.
+   */
   async function deliver(registration: Registration, id: string, match: WatchMatch, signal: AbortSignal) {
+    const access = await accessThen(registration.principal)
+    const channel = (match.payload.event as BoardEventView).message?.channel
+    if (!access || (channel === undefined ? !access.readsAll : !access.readable(channel))) return
     const token = await net.token(registration.url)
-    const response = await net.fetch(`${registration.url}/deliveries/${id}`, {
-      method: 'POST',
+    const response = await net.deliver(`${registration.url}/deliveries/${id}`, {
       headers: {
         authorization: `Bearer ${token}`,
         // Deployment Protection lets it through when the board trusts this board's project.
         'x-vercel-trusted-oidc-idp-token': token,
         'x-board-watchers': registration.hash,
+        'x-board-owner': registration.owner,
         'content-type': 'application/json',
       },
       body: JSON.stringify({ id: match.id, event: match.payload.event }),
-      // A redirect means the registered URL is wrong: say so, rather than post wherever it points.
-      redirect: 'manual',
       signal,
     })
     if (response.ok || response.status === 404) return
@@ -411,17 +523,28 @@ function logBoard(options: BoardOptions) {
             profile: author.profile,
             session: author.session,
             expiresAt: principal.expiresAt?.toISOString() ?? null,
+            can: principal.access.summary(),
           }
           return json(body)
         }
         case 'channels': {
           const { state, index } = await session.state(channelsReducer)
-          const channels = Object.values(state).sort((a, b) => a.path.localeCompare(b.path))
+          const channels = Object.values(state)
+            .filter((channel) => principal.access.readable(channel.path))
+            .sort((a, b) => a.path.localeCompare(b.path))
           return json({ channels, cursor: index })
         }
         case 'actors': {
           const { state, index } = await session.state(actorsReducer)
+          // A reader of every channel sees everyone; anyone else, who wrote, was mentioned, or reacted where they read, and themselves.
+          let seen: ((id: string) => boolean) | null = null
+          if (!principal.access.readsAll) {
+            const ids = await actorsIn(principal.access)
+            ids.add(actor.id)
+            seen = (id) => ids.has(id)
+          }
           const actors = Object.values(state.byId)
+            .filter((a) => seen === null || seen(a.id))
             .sort((a, b) => a.handle.localeCompare(b.handle))
             .map((a) => {
               const person = personView(state, a.id)
@@ -469,50 +592,56 @@ function logBoard(options: BoardOptions) {
         case 'messages': {
           const query = MessagesQuery.parse(queryObject(url))
           const { state: actors } = await session.state(actorsReducer)
-          const { messages, position } = await reads.messages(toMessageFilter(query, { me: actor.id, actors }), {
+          const { filter, through } = await readable(toMessageFilter(query, { me: actor.id, actors }), principal.access)
+          const { messages, position } = await reads.messages(filter, {
             ...(query.before !== undefined ? { before: query.before } : {}),
             ...(query.after !== undefined ? { after: query.after } : {}),
             limit: query.limit ?? 50,
           })
-          return json({ messages: messages.map((m) => view(m, actors)), cursor: position })
+          const reader = await reads.reader(principal.access, messages)
+          return json({ messages: messages.map((m) => view(m, actors, reader)), cursor: Math.min(position, through) })
         }
         case 'threads': {
           const query = ThreadsQuery.parse(queryObject(url))
           const { state: actors } = await session.state(actorsReducer)
-          const { threads, position } = await reads.threads(toMessageFilter(query, { me: actor.id, actors }), {
+          const { filter, through } = await readable(toMessageFilter(query, { me: actor.id, actors }), principal.access)
+          const { threads, position } = await reads.threads(filter, {
             ...(query.after !== undefined ? { after: query.after } : {}),
             limit: query.limit ?? 50,
           })
+          const reader = await reads.reader(principal.access, threads.flatMap((t) => (t.last ? [t.root, t.last] : [t.root])))
           return json({
-            threads: threads.map((t) => ({ message: view(t.root, actors), replies: t.replies, last: t.last && view(t.last, actors) })),
-            cursor: position,
+            threads: threads.map((t) => ({ message: view(t.root, actors, reader), replies: t.replies, last: t.last && view(t.last, actors, reader) })),
+            cursor: Math.min(position, through),
           })
         }
         case 'message': {
           const message = await reads.message(match.id!, request.signal)
-          if (!message) throw notFound(`message not found: #${match.id}`, 'message_not_found')
+          if (!message || !principal.access.readable(message.channel))
+            throw notFound(`message not found: #${match.id}`, 'message_not_found')
           const [{ messages, cursor }, { state: actors }] = await Promise.all([
             reads.thread(message.re ?? message.id, request.signal),
             session.state(actorsReducer),
           ])
           const [root, ...replies] = messages
+          const reader = await reads.reader(principal.access, messages)
           return json({
-            message: view(root!, actors),
-            replies: replies.map((reply) => view(reply, actors)),
+            message: view(root!, actors, reader),
+            replies: replies.map((reply) => view(reply, actors, reader)),
             cursor,
             schedules: await schedules.forThread(root!.id),
           })
         }
         case 'post': {
-          require(principal, 'post')
           const body = PostBody.parse(await readJson(request))
-          if (body.sync?.length) require(principal, 'sync')
+          const proofs = await authorizePost(writes, principal.access, body)
           if (!injected && body.id !== undefined && DERIVED_ID.test(body.id))
             throw badRequest("id: UUIDv8s are the board's own, for the writes it makes itself")
-          const attachments = await Promise.all([...new Set(body.attachments ?? [])].map((id) => readAttachment(blob, id)))
+          const attachments = await attachmentsFor(principal, body.attachments)
           const { unknownMentions, ...message } = await writePost(writes, {
             attachments,
             identity,
+            proofs,
             channel: body.channel,
             re: body.re,
             text: body.text,
@@ -525,50 +654,47 @@ function logBoard(options: BoardOptions) {
           return json({ message, ...(unknownMentions ? { unknownMentions } : {}) }, 201)
         }
         case 'schedule': {
-          require(principal, 'post')
           const body = ScheduleBody.parse(await readJson(request))
-          const attachments = await Promise.all([...new Set(body.attachments ?? [])].map((id) => readAttachment(blob, id)))
+          // Checked now, where the caller sees it, and again at every send.
+          await authorizePost(writes, principal.access, body)
+          const attachments = await attachmentsFor(principal, body.attachments)
           return json(await schedules.create(identity, body, attachments), 201)
         }
         case 'schedules': {
           const query = SchedulesQuery.parse(queryObject(url))
           let root: number | undefined
-          if (query.re !== undefined) {
-            const message = await reads.message(query.re, request.signal)
-            if (!message) throw notFound(`message not found: #${query.re}`, 'message_not_found')
-            root = message.re ?? message.id
-          }
-          return json({ schedules: await schedules.list({ ...query, ...(root !== undefined ? { root } : {}) }) })
+          if (query.re !== undefined) root = (await authorizeMessage(writes, principal.access, 'read', query.re)).message.re ?? query.re
+          const visible = (schedule: Schedule) => principal.access.readable(schedule.channel) || createdBy(schedule, principal)
+          return json({ schedules: await schedules.list({ ...query, ...(root !== undefined ? { root } : {}) }, visible) })
         }
-        case 'cancelSchedule': {
-          require(principal, 'post')
+        case 'cancelSchedule':
           return json(await schedules.cancel(identity, match.id!))
-        }
         case 'edit': {
-          require(principal, 'post')
+          const authorized = await authorizeOwn(writes, principal, match.id!, 'edit')
           const body = EditBody.parse(await readJson(request))
-          const { unknownMentions } = await writeEdit(writes, { identity, id: match.id!, text: body.text, ...origin })
+          const { unknownMentions } = await writeEdit(writes, { identity, authorized, text: body.text, ...origin })
           return json({ ok: true, ...(unknownMentions ? { unknownMentions } : {}) })
         }
         case 'delete': {
-          require(principal, 'post')
-          await writeDelete(writes, { identity, id: match.id! })
+          const authorized = await authorizeOwn(writes, principal, match.id!, 'delete')
+          await writeDelete(writes, { identity, authorized })
           return json({ ok: true })
         }
         case 'react': {
-          require(principal, 'react')
+          const authorized = await authorizeMessage(writes, principal.access, 'react', match.id!)
           const body = ReactBody.parse(await readJson(request))
-          await writeReaction(writes, { identity, id: match.id!, emoji: body.emoji, remove: body.remove })
+          await writeReaction(writes, { identity, authorized, emoji: body.emoji, remove: body.remove })
           return json({ ok: true })
         }
         case 'label': {
-          require(principal, 'label')
+          const authorized = await authorizeMessage(writes, principal.access, 'label', match.id!)
           const body = LabelBody.parse(await readJson(request))
-          await writeLabels(writes, { identity, id: match.id!, set: body.set, unset: body.unset })
+          await writeLabels(writes, { identity, authorized, set: body.set, unset: body.unset })
           return json({ ok: true })
         }
         case 'upload': {
-          require(principal, 'post')
+          // A file is no use until a post carries it, so uploading needs `post` somewhere.
+          if (!principal.access.anywhere('post')) throw forbidden("this token can't post anywhere, so it can't upload")
           const name = request.headers.get('x-board-filename')
           let decoded: string | null = null
           try {
@@ -580,51 +706,60 @@ function logBoard(options: BoardOptions) {
             data: await readCapped(request, ATTACHMENT_BYTES_MAX),
             name: decoded,
             type: request.headers.get('content-type'),
+            uploadedBy: principal.id,
           })
           return json({ attachment }, 201)
         }
-        case 'attachment':
-          return await attachmentResponse(blob, match.param!)
+        case 'attachment': {
+          const { attachment, uploadedBy } = await readUpload(blob, match.param!)
+          if (!(await attachmentReadable(principal, attachment.id, uploadedBy))) throw attachmentNotFound(attachment.id)
+          return await attachmentResponse(blob, attachment)
+        }
         case 'sync': {
-          require(principal, 'sync')
+          const authorized = await authorizeMessage(writes, principal.access, 'sync', match.id!)
           const body = SyncBody.parse(await readJson(request))
-          return json(await writeAttach(writes, { identity, id: match.id!, target: body.target }))
+          return json(await writeAttach(writes, { identity, authorized, target: body.target }))
         }
         case 'typing': {
-          require(principal, 'post')
-          const message = await reads.message(match.id!, request.signal)
-          if (!message || message.deleted) throw notFound(`message not found: #${match.id}`, 'message_not_found')
+          // Typing is a reply about to come: `post` and `read` where the thread is.
+          const { message } = await authorizeMessage(writes, principal.access, 'post', match.id!)
+          if (message.deleted) throw notFound(`message not found: #${match.id}`, 'message_not_found')
           const { status } = TypingBody.parse(await readJson(request)) ?? {}
           const body: TypingResult = { targets: engine ? await engine.typing(message.thread, status) : [] }
           return json(body)
         }
         case 'inbox': {
-          // Raw platform payloads: full access only.
-          if (principal.can !== 'all') throw forbidden('reading the inbox needs full access')
+          // Raw platform payloads, from every channel.
+          requireManage(principal, 'read the inbox')
           if (!engine) throw notFound('this board has no sync configured')
           const query = InboxQuery.parse(queryObject(url))
           return json({ events: await engine.readInbox(match.param!, query.channel, query.limit ?? 50) })
         }
         case 'stuck': {
-          // What failed, with its errors: full access only, like the inbox.
-          if (principal.can !== 'all') throw forbidden('reading stuck events needs full access')
+          // What failed, with its errors, like the inbox.
+          requireManage(principal, 'read stuck events')
           return json({ stuck: await stuck() })
         }
         case 'redrive': {
-          if (principal.can !== 'all') throw forbidden('retrying or skipping stuck events needs full access')
+          requireManage(principal, 'retry or skip stuck events')
           return json(await redrive(RedriveBody.parse(await readJson(request)), actor.id))
         }
         case 'sourceRead': {
-          // The app's token reads what the app can, not what the caller can: full access only.
-          if (principal.can !== 'all') throw forbidden('reading a source needs full access')
+          // The app's token reads what the app can, not what the caller can.
+          requireManage(principal, 'read a source')
           if (!engine) throw notFound('this board has no sync configured')
           const query = SourceReadQuery.parse(queryObject(url))
           return json(await engine.readSource(match.param!, query.target, query.limit ?? 50))
         }
-        case 'watchers':
-          return json({ watchers: await registry.list() })
+        case 'watchers': {
+          // Each names a board's URL and tails: all of them only for `manage` in every channel, the caller's own for anyone.
+          const all = await registry.list()
+          return json({ watchers: principal.access.everywhere('manage') ? all : all.filter((found) => found.owner === principal.id) })
+        }
         case 'register': {
-          require(principal, 'post')
+          // A registered watcher sees only what its registrant may read.
+          if (!principal.access.anywhere('read'))
+            throw forbidden("this token can't read anywhere, so a watcher it registers would see nothing")
           const body = RegisterBody.parse(await readJson(request))
           for (const [id, spec] of Object.entries(body.watch)) {
             const name = RemoteWatcherId.safeParse(id)
@@ -635,7 +770,7 @@ function logBoard(options: BoardOptions) {
               throw badRequest((error as Error).message, 'bad_watcher')
             }
           }
-          return json(await registry.register(principal.id, body))
+          return json(await registry.register(storedPrincipal(principal), body))
         }
         case 'deliver':
           throw notFound('this board keeps its own log: deliveries go to a board with a remote')
@@ -645,7 +780,7 @@ function logBoard(options: BoardOptions) {
           const after =
             query.after ?? (Number.isInteger(lastEventId) && lastEventId > 0 ? lastEventId : undefined)
           const { state: actors } = await session.state(actorsReducer)
-          const feedOptions = { session, reads, after, filters: query, all: query.all ?? false, me: actor.id, actors }
+          const feedOptions = { session, reads, after, filters: query, all: query.all ?? false, me: actor.id, actors, access: principal.access }
           if ((request.headers.get('accept') ?? '').includes('text/event-stream'))
             return sse(feedOptions, request.signal, streamMaxMs)
           return json(await pollFeed(feedOptions, (query.wait ?? 0) * 1000, request.signal))
@@ -653,11 +788,15 @@ function logBoard(options: BoardOptions) {
       }
       throw notFound(`no route: ${request.method} ${url.pathname}`)
     } catch (error) {
+      if (error instanceof Rejected) return error.response
       return toErrorResponse(error)
     }
   }
 
-  const handle = (request: Request) => dispatch(request, null)
+  const handle = (request: Request) => {
+    schedules.catchUp()
+    return dispatch(request, null)
+  }
   // The watchers' server stays last, where it's always been.
   const servers = [server, ...(engine ? [engine.inboxServer] : []), schedules.server, registry.server, watchers.server]
   return {

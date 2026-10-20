@@ -26,7 +26,7 @@ const env = process.env.VERCEL_ENV;
 export const maxDuration = 300;
 
 const factory = board({
-  trustedSources: vercelTrustedSources(process.env.VBOARD_TRUSTED_SOURCES),
+  access: vercelTrustedSources(process.env.VBOARD_TRUSTED_SOURCES),
   store,
   // Attachments (Pi's proof of work) in the project's private Blob store, `vboard-factory-attachments`.
   // Every deployment shares it: a file's ID is random, and only its board can name it.

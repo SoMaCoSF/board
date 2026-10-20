@@ -52,13 +52,40 @@ create table if not exists vboard_terms (
 --> statement-breakpoint
 create index if not exists vboard_terms_term on vboard_terms (term, value, message_id);
 --> statement-breakpoint
+create table if not exists vboard_sync_threads (
+  thread text primary key,
+  data text not null
+);
+--> statement-breakpoint
+create table if not exists vboard_external_threads (
+  external text primary key,
+  thread text not null
+);
+--> statement-breakpoint
+create table if not exists vboard_copies (
+  message_id bigint not null,
+  target text not null,
+  data text not null,
+  primary key (message_id, target)
+);
+--> statement-breakpoint
+create table if not exists vboard_external_messages (
+  key text primary key,
+  message_id bigint not null
+);
+--> statement-breakpoint
+create index if not exists vboard_messages_recent on vboard_messages (by_principal, created_at) where re is null;
+--> statement-breakpoint
+drop function if exists vboard_apply(text, bigint, boolean, jsonb, jsonb, jsonb);
+--> statement-breakpoint
 create or replace function vboard_apply(
   apply_consumer text,
   apply_index bigint,
   apply_next boolean,
   apply_message jsonb,
   apply_terms jsonb,
-  apply_summary jsonb
+  apply_summary jsonb,
+  apply_sync jsonb
 ) returns boolean language plpgsql as $$
 begin
   if apply_next then
@@ -97,6 +124,21 @@ begin
   if apply_summary is not null then
     update vboard_messages set replies = (apply_summary->>'replies')::int, at = (apply_summary->>'at')::bigint
       where id = (apply_summary->>'root')::bigint;
+  end if;
+  if apply_sync is not null then
+    if jsonb_typeof(apply_sync->'thread') = 'object' then
+      insert into vboard_sync_threads (thread, data) values (apply_sync->'thread'->>'key', apply_sync->'thread'->>'data')
+        on conflict (thread) do update set data = excluded.data;
+    end if;
+    insert into vboard_external_threads (external, thread)
+      select entry->>0, entry->>1 from jsonb_array_elements(apply_sync->'external_threads') as entry
+      on conflict (external) do update set thread = excluded.thread;
+    insert into vboard_copies (message_id, target, data)
+      select (entry->>0)::bigint, entry->>1, entry->>2 from jsonb_array_elements(apply_sync->'copies') as entry
+      on conflict (message_id, target) do update set data = excluded.data;
+    insert into vboard_external_messages (key, message_id)
+      select entry->>0, (entry->>1)::bigint from jsonb_array_elements(apply_sync->'external_messages') as entry
+      on conflict (key) do update set message_id = excluded.message_id;
   end if;
   return true;
 end

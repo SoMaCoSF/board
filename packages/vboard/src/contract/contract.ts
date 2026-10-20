@@ -15,6 +15,8 @@ import {
   MessageText,
   MESSAGE_TEXT_MAX,
   RemoteWatcherId,
+  SCOPE_MAX,
+  storable,
 } from './schemas.ts'
 
 /**
@@ -62,7 +64,7 @@ export const LINKS_PER_MESSAGE_MAX = 10
 const From = z.string().nullable()
 
 /** The thread key: the event ID of the thread's root. Lanes and sync state are keyed by it. */
-const ThreadKey = z.string().min(1).max(200)
+const ThreadKey = z.string().min(1).max(200).refine(storable, 'thread key has a NUL character or a lone surrogate')
 
 /** The board's one log. Every board fact is an event in session `board`. */
 export const boardContract = contract({
@@ -89,6 +91,12 @@ export const boardContract = contract({
       links: z.array(Link).max(LINKS_PER_MESSAGE_MAX).optional(),
       /** (server) Posted by a schedule: its ID and which send this is, from 0. Other messages have none. */
       schedule: z.object({ id: z.number().int().positive(), n: z.number().int().nonnegative() }).optional(),
+      /**
+       * (server) Its author couldn't read the channel it posted in. Where a
+       * caller can't read, it edits and deletes only these of its own. Events
+       * from before channel access have none: everyone read everything then.
+       */
+      blind: z.literal(true).optional(),
     }),
     /** A message's links changed: an edit linked something new, or the platform sent what a link says. */
     'message.linked': z.object({ id: MessageId, thread: ThreadKey, links: z.array(Link).max(LINKS_PER_MESSAGE_MAX), by: Author, from: From }),
@@ -152,7 +160,7 @@ export const boardContract = contract({
       actor: ActorId,
       kind: SeenActorKind,
       handle: Handle,
-      name: z.string().min(1).max(128),
+      name: z.string().min(1).max(128).refine(storable, 'name has a NUL character or a lone surrogate'),
       avatar: z.string().url().nullable(),
     }),
     /**
@@ -317,6 +325,26 @@ export type WatchEvents = typeof watchContract.events
 /** `watch:triage`: the session for one watcher. */
 export const watchSession = (id: string) => `watch:${id}`
 
+/**
+ * A principal as the board keeps it, to work out its access again later under
+ * the rules as they are then: who it is, and the token facts rules match on.
+ */
+export const StoredPrincipal = z.object({
+  id: z.string().min(1),
+  kind: z.enum(['person', 'deployment', 'workflow', 'external']),
+  handle: Handle,
+  facts: z
+    .object({
+      issuer: z.enum(['vercel', 'github', 'oidc', 'host']),
+      iss: z.string().max(1000),
+      claims: z.record(z.string(), z.union([z.string().max(1000), z.number(), z.boolean()])),
+      /** The board's own Vercel team, as the board knew it when it verified the token. */
+      team: z.string().max(200).optional(),
+    })
+    .optional(),
+  scope: z.string().max(SCOPE_MAX).optional(),
+})
+
 /** A watcher as a board with a remote registers it: its tail, and when it runs. */
 export const WatcherSpec = z.object({
   tail: z.string().max(1000),
@@ -334,6 +362,8 @@ export const registryContract = contract({
     'watchers.registered': z.object({
       /** The principal that registered, which its watchers' writes are by, with their IDs as profiles. */
       owner: z.string().min(1).max(200),
+      /** It, to work out what it may read at each match: a watcher sees only what its registrant can. */
+      principal: StoredPrincipal,
       /** The board's URL: matches go to `<url>/deliveries/<id>`. */
       url: z.string().url().max(500),
       watch: z.record(RemoteWatcherId, WatcherSpec),
@@ -353,10 +383,15 @@ export const registeredWatchKey = (owner: string, id: string) => `@${owner}/${id
 /** Epoch milliseconds. */
 const Millis = z.number().int().nonnegative()
 
-/** Who a schedule posts as: the identity that created it, as the board resolved it then. */
+/**
+ * Who a schedule posts as: the identity that created it, as the board resolved
+ * it then. A token's verified claims (`facts`) and the scope it was narrowed by
+ * let each send work out its access again, under the rules as they are then.
+ * Schedules from before they were kept have neither.
+ */
 export const ScheduleIdentity = z.object({
   author: Author,
-  principal: z.object({ id: z.string().min(1), kind: z.enum(['person', 'deployment', 'workflow', 'external']), handle: Handle }),
+  principal: StoredPrincipal,
   actor: z.object({ id: ActorId, kind: SeenActorKind, handle: Handle, name: z.string().min(1).max(128), avatar: z.string().nullable() }),
 })
 
@@ -384,15 +419,22 @@ export const schedulesContract = contract({
       until: Millis.nullable(),
       times: z.number().int().positive().nullable(),
       as: ScheduleIdentity,
+      /**
+       * (server) Its creator couldn't read its channel. Where a caller can't
+       * read, it sees and cancels only these of its own. Schedules from before
+       * channel access have none.
+       */
+      blind: z.literal(true).optional(),
     }),
     'schedule.canceled': z.object({
       id: z.number().int().positive(),
       by: Author,
       /**
        * `canceled`: someone canceled it; `thread_deleted`: the thread it replies in is gone;
-       * `dropped`: the board's middleware dropped a send, so it would drop the rest.
+       * `dropped`: the board's middleware dropped a send, so it would drop the rest;
+       * `revoked`: its creator can no longer post there.
        */
-      reason: z.enum(['canceled', 'thread_deleted', 'dropped']),
+      reason: z.enum(['canceled', 'thread_deleted', 'dropped', 'revoked']),
     }),
     /** (server) A timer: send `n` is due at `at`. */
     'schedule.due': z.object({ id: z.number().int().positive(), n: z.number().int().nonnegative(), at: Millis }),

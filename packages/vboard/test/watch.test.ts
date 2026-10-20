@@ -230,7 +230,7 @@ describe('watchers', () => {
     error.mockRestore()
   })
 
-  it('give up without running once runs keep getting killed, which never throw', async () => {
+  it('give up without running once runs keep getting killed, which never throw, until a retry', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     const run = vi.fn()
     const recorded: unknown[] = []
@@ -246,6 +246,13 @@ describe('watchers', () => {
     expect(run).toHaveBeenCalledTimes(1)
     expect(recorded).toEqual([{ matched: 'm1', thread: 't1', error: 'its run was cut short 9 times (a timeout, or out of memory)' }])
     expect(error).toHaveBeenCalledWith('[vboard] watcher pi gave up on event #7 after 10 tries:', 'its run was cut short 9 times (a timeout, or out of memory)')
+
+    // Retried from a dead letter, A2 keeps counting: the run gets A2's fresh tries, and a throw goes back to A2.
+    await runMatch({ ...input, attempt: 11 })
+    expect(run).toHaveBeenCalledTimes(2)
+    run.mockRejectedValueOnce(new Error('still down'))
+    await expect(runMatch({ ...input, attempt: 16 })).rejects.toThrow('still down')
+    expect(recorded).toHaveLength(1)
     error.mockRestore()
   })
 

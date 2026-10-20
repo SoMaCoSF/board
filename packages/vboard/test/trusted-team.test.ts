@@ -1,7 +1,7 @@
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose'
 import { memory } from '../src/store/memory.ts'
 import { describe, expect, it } from 'vitest'
-import { board, vercel } from '../src/server/index.ts'
+import { board, vercelProject } from '../src/server/index.ts'
 import { BOARD_URL, caller, PROJECT_ID, TEAM_ID, testBoard } from './harness.ts'
 
 // Vercel signs every team's tokens, each under its own issuer
@@ -29,10 +29,10 @@ const deployment = (team: string, teamId: string, project: string, projectId: st
 
 const ours = () => deployment('test', TEAM_ID, 'marketing', 'prj_marketing')
 const theirs = () => deployment('attacker', 'team_attacker', 'marketing', 'prj_attacker')
-const trustedSources = [vercel({ project: 'marketing', environments: ['production'] })]
+const access = [vercelProject({ project: 'marketing', environments: ['production'], can: 'all' })]
 
 describe('a trusted Vercel project named without its team', () => {
-  const configured = () => testBoard({ auth, trustedSources })
+  const configured = () => testBoard({ auth, access })
 
   it("trusts the board's own team's project of that name", async () => {
     const me = await caller(configured().fetch, await ours())('GET', '/me')
@@ -49,12 +49,12 @@ describe('a trusted Vercel project named without its team', () => {
   })
 
   it('trusts a project named by ID on any team, since IDs are unique', async () => {
-    const { fetch } = testBoard({ auth, trustedSources: [vercel({ project: 'prj_attacker' })] })
+    const { fetch } = testBoard({ auth, access: [vercelProject({ project: 'prj_attacker', can: 'all' })] })
     expect((await caller(fetch, await theirs())('GET', '/me')).status).toBe(200)
   })
 
   it('learns its team from the platform token for its own project', async () => {
-    const { fetch } = board({ store: memory(), url: BOARD_URL, project: { id: PROJECT_ID }, auth, trustedSources })
+    const { fetch } = board({ store: memory(), url: BOARD_URL, project: { id: PROJECT_ID }, auth, access })
     const call = async (token: string, platform?: string) =>
       (await caller(fetch, token, platform ? { 'x-vercel-oidc-token': platform } : {})('GET', '/me')).status
     // With no team to scope it to, a name matches nothing.
@@ -67,7 +67,7 @@ describe('a trusted Vercel project named without its team', () => {
   })
 })
 
-describe('a trusted Vercel team: vercel() without a project', () => {
+describe('a trusted Vercel team: vercelProject() without a project', () => {
   const preview = () =>
     new SignJWT({
       sub: 'owner:test:project:docs:environment:preview',
@@ -85,7 +85,7 @@ describe('a trusted Vercel team: vercel() without a project', () => {
       .sign(privateKey)
 
   it("trusts every project on the board's team, and none on another", async () => {
-    const { fetch } = testBoard({ auth, trustedSources: [vercel()] })
+    const { fetch } = testBoard({ auth, access: [vercelProject({ can: 'all' })] })
     const me = await caller(fetch, await ours())('GET', '/me')
     expect({ status: me.status, actor: me.body?.actor }).toEqual({ status: 200, actor: 'vercel:project:prj_marketing:production' })
     expect((await caller(fetch, await deployment('test', TEAM_ID, 'docs', 'prj_docs'))('GET', '/me')).status).toBe(200)
@@ -93,17 +93,17 @@ describe('a trusted Vercel team: vercel() without a project', () => {
   })
 
   it('trusts the team it names, and the environments it lists', async () => {
-    const named = testBoard({ auth, trustedSources: [vercel({ team: 'attacker' })] })
+    const named = testBoard({ auth, access: [vercelProject({ team: 'attacker', can: 'all' })] })
     expect((await caller(named.fetch, await theirs())('GET', '/me')).status).toBe(200)
     expect((await caller(named.fetch, await ours())('GET', '/me')).status).toBe(403)
 
-    const production = testBoard({ auth, trustedSources: [vercel({ environments: ['production'] })] })
+    const production = testBoard({ auth, access: [vercelProject({ environments: ['production'], can: 'all' })] })
     expect((await caller(production.fetch, await ours())('GET', '/me')).status).toBe(200)
     expect((await caller(production.fetch, await preview())('GET', '/me')).status).toBe(403)
   })
 
   it("matches nothing when the board doesn't know its team", async () => {
-    const { fetch } = board({ store: memory(), url: BOARD_URL, project: { id: PROJECT_ID }, auth, trustedSources: [vercel()] })
+    const { fetch } = board({ store: memory(), url: BOARD_URL, project: { id: PROJECT_ID }, auth, access: [vercelProject({ can: 'all' })] })
     expect((await caller(fetch, await ours())('GET', '/me')).status).toBe(403)
   })
 })

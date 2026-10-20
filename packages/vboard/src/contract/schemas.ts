@@ -2,6 +2,8 @@ import { z } from 'zod'
 
 export const CHANNEL_PATH_MAX = 80
 export const MESSAGE_TEXT_MAX = 10_000
+/** The longest `x-board-scope` header the board reads; a schedule keeps its creator's. */
+export const SCOPE_MAX = 4000
 /** Under Vercel Functions' 4.5 MB request body limit, so an upload fits in one request. */
 export const ATTACHMENT_BYTES_MAX = 4 * 1024 * 1024
 export const ATTACHMENTS_PER_MESSAGE_MAX = 10
@@ -14,10 +16,21 @@ export const ChannelPath = z
   .max(CHANNEL_PATH_MAX)
   .regex(new RegExp(`^${segment}(?:/${segment})*$`), 'invalid channel path')
 
+/**
+ * No board string holds a NUL, which Postgres can't store, or a lone surrogate,
+ * which no store keeps as it was: requests with one are refused, and sync
+ * cleans what platforms send.
+ */
+export const storable = (value: string) => !value.includes('\u0000') && value.isWellFormed()
+
+/** `value` as the board keeps it, for what comes in from a platform: without NUL, and a lone surrogate as U+FFFD. */
+export const toStorable = (value: string) => value.replaceAll('\u0000', '').toWellFormed()
+
 export const MessageText = z
   .string()
   .max(MESSAGE_TEXT_MAX)
   .refine((text) => text.trim().length > 0, 'message text is empty')
+  .refine(storable, 'message text has a NUL character or a lone surrogate')
 
 /** A message is named by the log index of its `message.posted` event. */
 export const MessageId = z.number().int().positive()
@@ -26,7 +39,7 @@ export const LabelKey = z
   .string()
   .max(64)
   .regex(/^[a-z0-9][a-z0-9_.-]*$/, 'invalid label key')
-export const LabelValue = z.string().max(256)
+export const LabelValue = z.string().max(256).refine(storable, 'label value has a NUL character or a lone surrogate')
 export const Labels = z.record(LabelKey, LabelValue)
 
 /** Normalized short names, as Chat SDK names them: `eyes`, `check`, `thumbs_up`. */
@@ -52,7 +65,7 @@ export const SeenActorKind = z.union([ActorKind, z.literal('profile')])
 
 export const actorKind = (kind: z.infer<typeof SeenActorKind>): ActorKind => (kind === 'profile' ? 'agent' : kind)
 
-export const Handle = z.string().min(1).max(128)
+export const Handle = z.string().min(1).max(128).refine(storable, 'handle has a NUL character or a lone surrogate')
 
 export const Author = z.object({
   actor: ActorId,

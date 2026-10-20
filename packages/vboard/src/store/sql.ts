@@ -1,6 +1,6 @@
 import type { BoardEvent } from '../contract/contract.ts'
-import type { Message } from '../contract/reducers.ts'
-import { concernedMessageId, project, type Before, type Change } from './project.ts'
+import { externalMessageKey, type ExternalCopy, type Message, type SyncedThread } from '../contract/reducers.ts'
+import { concernedMessageId, project, projectSync, syncReads, type Before, type Change, type SyncChange } from './project.ts'
 import type { MessageFilter, MessageTables, Page, ThreadSummary } from './types.ts'
 
 /** One statement, with `$1`-style placeholders on every dialect. */
@@ -68,7 +68,21 @@ export function ddl(dialect: Db['dialect']): string[] {
   primary key (message_id, term, value)
 )`,
     'create index if not exists vboard_terms_term on vboard_terms (term, value, message_id)',
-    ...(dialect === 'postgres' ? [APPLY_FUNCTION] : []),
+    // The sync state: where each thread and message lives on each platform.
+    'create table if not exists vboard_sync_threads (\n  thread text primary key,\n  data text not null\n)',
+    'create table if not exists vboard_external_threads (\n  external text primary key,\n  thread text not null\n)',
+    `create table if not exists vboard_copies (
+  message_id ${big} not null,
+  target text not null,
+  data text not null,
+  primary key (message_id, target)
+)`,
+    `create table if not exists vboard_external_messages (
+  key text primary key,
+  message_id ${big} not null
+)`,
+    'create index if not exists vboard_messages_recent on vboard_messages (by_principal, created_at) where re is null',
+    ...(dialect === 'postgres' ? ['drop function if exists vboard_apply(text, bigint, boolean, jsonb, jsonb, jsonb)', APPLY_FUNCTION] : []),
   ]
 }
 
@@ -84,7 +98,8 @@ const APPLY_FUNCTION = `create or replace function vboard_apply(
   apply_next boolean,
   apply_message jsonb,
   apply_terms jsonb,
-  apply_summary jsonb
+  apply_summary jsonb,
+  apply_sync jsonb
 ) returns boolean language plpgsql as $$
 begin
   if apply_next then
@@ -124,15 +139,40 @@ begin
     update vboard_messages set replies = (apply_summary->>'replies')::int, at = (apply_summary->>'at')::bigint
       where id = (apply_summary->>'root')::bigint;
   end if;
+  if apply_sync is not null then
+    if jsonb_typeof(apply_sync->'thread') = 'object' then
+      insert into vboard_sync_threads (thread, data) values (apply_sync->'thread'->>'key', apply_sync->'thread'->>'data')
+        on conflict (thread) do update set data = excluded.data;
+    end if;
+    insert into vboard_external_threads (external, thread)
+      select entry->>0, entry->>1 from jsonb_array_elements(apply_sync->'external_threads') as entry
+      on conflict (external) do update set thread = excluded.thread;
+    insert into vboard_copies (message_id, target, data)
+      select (entry->>0)::bigint, entry->>1, entry->>2 from jsonb_array_elements(apply_sync->'copies') as entry
+      on conflict (message_id, target) do update set data = excluded.data;
+    insert into vboard_external_messages (key, message_id)
+      select entry->>0, (entry->>1)::bigint from jsonb_array_elements(apply_sync->'external_messages') as entry
+      on conflict (key) do update set message_id = excluded.message_id;
+  end if;
   return true;
 end
 $$`
 
-/** Postgres refuses NUL in text; nothing a reader filters on needs one. */
-const clean = (value: string) => value.replaceAll('\u0000', '')
+/**
+ * Postgres refuses NUL in text, and a lone surrogate in JSON: the board refuses
+ * both, and a log from before that may hold them. Nothing a reader filters on
+ * needs either, so keys and columns go without NUL and with U+FFFD for a lone
+ * surrogate, and the lookups that find them do the same.
+ */
+const clean = (value: string) => value.replaceAll('\u0000', '').toWellFormed()
 
 /** A mention's term. Label keys start with a letter or digit, so it's never a label's. */
 const MENTION = '@'
+/** An attachment's term, the same way. */
+const ATTACHMENT = '^'
+
+/** Terms one insert takes, three parameters each. */
+const TERMS_PER_INSERT = 300
 
 class Params {
   readonly values: unknown[] = []
@@ -160,6 +200,7 @@ function channelClause(alias: string, channel: NonNullable<MessageFilter['channe
 function clauses(filter: MessageFilter, p: Params): string[] {
   const out: string[] = []
   if (filter.channel) out.push(channelClause('m', filter.channel, p))
+  if (filter.channels) out.push(filter.channels.length ? `m.channel in (${p.list(filter.channels)})` : '1 = 0')
   if (filter.re !== undefined) {
     const re = p.add(filter.re)
     out.push(`(m.id = ${re} or m.re = ${re})`)
@@ -232,8 +273,32 @@ export function sqlTables(db: Db): MessageTables {
     return { message, root }
   }
 
+  async function syncBefore(event: BoardEvent) {
+    const reads = syncReads(event)
+    const [thread] = reads.thread === null ? [] : await db.all({ text: 'select data from vboard_sync_threads where thread = $1', values: [clean(reads.thread)] })
+    const [copy] =
+      reads.copy === null
+        ? []
+        : await db.all({ text: 'select data from vboard_copies where message_id = $1 and target = $2', values: [reads.copy[0], clean(reads.copy[1])] })
+    return {
+      thread: thread ? (JSON.parse(String(thread.data)) as SyncedThread) : undefined,
+      copy: copy ? (JSON.parse(String(copy.data)) as ExternalCopy) : undefined,
+    }
+  }
+
+  /** The sync rows an event writes, as values; null when it writes none. */
+  function syncPayload(change: SyncChange) {
+    if (!change.thread && !change.externalThreads.length && !change.copies.length && !change.externalMessages.length) return null
+    return {
+      thread: change.thread ? { key: clean(change.thread.key), data: JSON.stringify(change.thread.data) } : null,
+      external_threads: change.externalThreads.map(([external, thread]) => [clean(external), clean(thread)]),
+      copies: change.copies.map(([message, target, copy]) => [message, clean(target), JSON.stringify(copy)]),
+      external_messages: change.externalMessages.map(([key, message]) => [clean(key), message]),
+    }
+  }
+
   /** What an event writes, as column values: the one place they're derived. */
-  function payload(event: BoardEvent, change: Change) {
+  function payload(event: BoardEvent, change: Change, sync: SyncChange) {
     const m = change.message?.after
     return {
       message: m && {
@@ -257,14 +322,16 @@ export function sqlTables(db: Db): MessageTables {
           ? [
               ...Object.entries(m.labels).map(([key, value]) => [key, clean(value)] as const),
               ...[...new Set(m.mentions)].map((actor) => [MENTION, clean(actor)] as const),
+              ...[...new Set(m.attachments.map((file) => file.id))].map((id) => [ATTACHMENT, clean(id)] as const),
             ]
           : null,
       summary: change.summary ?? null,
+      sync: syncPayload(sync),
     }
   }
 
   /** The writes as statements, for SQLite. Postgres's `vboard_apply` does the same. */
-  function statements(index: number, { message: m, terms, summary }: ReturnType<typeof payload>): Sql[] {
+  function statements(index: number, { message: m, terms, summary, sync }: ReturnType<typeof payload>): Sql[] {
     const out: Sql[] = []
     if (m) {
       if (m.created)
@@ -279,28 +346,59 @@ export function sqlTables(db: Db): MessageTables {
       out.push({ text: 'insert into vboard_versions (log_index, message_id, data) values ($1, $2, $3)', values: [index, m.id, m.data] })
       if (terms) {
         if (!m.created) out.push({ text: 'delete from vboard_terms where message_id = $1', values: [m.id] })
-        if (terms.length > 0) {
+        // A few hundred rows to a statement: a message's terms can outnumber SQLite's bound parameters.
+        for (let first = 0; first < terms.length; first += TERMS_PER_INSERT) {
           const p = new Params()
-          const tuples = terms.map(([term, value]) => `(${p.add(m.id)}, ${p.add(term)}, ${p.add(value)})`)
+          const tuples = terms
+            .slice(first, first + TERMS_PER_INSERT)
+            .map(([term, value]) => `(${p.add(m.id)}, ${p.add(term)}, ${p.add(value)})`)
           out.push({ text: `insert into vboard_terms (message_id, term, value) values ${tuples.join(', ')}`, values: p.values })
         }
       }
     }
     if (summary)
       out.push({ text: 'update vboard_messages set replies = $1, at = $2 where id = $3', values: [summary.replies, summary.at, summary.root] })
+    if (sync) {
+      if (sync.thread)
+        out.push({
+          text: 'insert into vboard_sync_threads (thread, data) values ($1, $2) on conflict (thread) do update set data = excluded.data',
+          values: [sync.thread.key, sync.thread.data],
+        })
+      for (const [external, thread] of sync.external_threads)
+        out.push({
+          text: 'insert into vboard_external_threads (external, thread) values ($1, $2) on conflict (external) do update set thread = excluded.thread',
+          values: [external, thread],
+        })
+      for (const [message, target, data] of sync.copies)
+        out.push({
+          text: 'insert into vboard_copies (message_id, target, data) values ($1, $2, $3) on conflict (message_id, target) do update set data = excluded.data',
+          values: [message, target, data],
+        })
+      for (const [key, message] of sync.external_messages)
+        out.push({
+          text: 'insert into vboard_external_messages (key, message_id) values ($1, $2) on conflict (key) do update set message_id = excluded.message_id',
+          values: [key, message],
+        })
+    }
     return out
   }
 
   /** Claims `event` (only if it's the next one, with `next`) and writes what it changes, atomically. */
   async function commit(event: BoardEvent, next: boolean): Promise<boolean> {
+    // Only once the event before it has landed: until then, what it reads could be older than the
+    // state it would fold onto. After, only this event moves the position, and its claim checks that.
+    if (next && position(await db.all(positionSql)) !== event.index - 1) return false
     const id = concernedMessageId(event)
-    const change = id === null ? {} : project(await before(event, id), event)
-    const written = payload(event, change)
+    const [change, sync] = await Promise.all([
+      id === null ? {} : before(event, id).then((read) => project(read, event)),
+      syncBefore(event).then((read) => projectSync(read, event)),
+    ])
+    const written = payload(event, change, sync)
     if (db.dialect === 'postgres') {
       const json = (value: unknown) => (value === null || value === undefined ? null : JSON.stringify(value))
       const [row] = await db.all({
-        text: 'select vboard_apply($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb) as applied',
-        values: [TABLES_CONSUMER, event.index, next, json(written.message), json(written.terms), json(written.summary)],
+        text: 'select vboard_apply($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb) as applied',
+        values: [TABLES_CONSUMER, event.index, next, json(written.message), json(written.terms), json(written.summary), json(written.sync)],
       })
       return row?.applied === true
     }
@@ -311,8 +409,9 @@ export function sqlTables(db: Db): MessageTables {
     const p = new Params()
     const where = ['r.re is null']
     // A thread's messages are all in its root's channel: that filter goes on the root, where an index has it.
-    const { channel, ...rest } = filter
+    const { channel, channels, ...rest } = filter
     if (channel) where.push(channelClause('r', channel, p))
+    if (channels) where.push(channels.length ? `r.channel in (${p.list(channels)})` : '1 = 0')
     const matching = clauses(rest, p)
     if (matching.length > 0)
       where.push(`r.id in (select coalesce(m.re, m.id) from vboard_messages m where ${matching.join(' and ')})`)
@@ -345,7 +444,7 @@ order by r.at ${order} limit ${p.add(page.limit)}`,
     },
 
     async byEventId(eventId) {
-      const [found] = await db.all({ text: 'select data from vboard_messages where event_id = $1', values: [eventId] })
+      const [found] = await db.all({ text: 'select data from vboard_messages where event_id = $1', values: [clean(eventId)] })
       return parse(found)
     },
 
@@ -391,6 +490,62 @@ where v.message_id in (${p.list([...new Set(ids)])})
         last: found.last === null || found.last === undefined ? null : (JSON.parse(String(found.last)) as Message),
       }))
       return { threads: page.after !== undefined ? threads : threads.reverse(), position: position(positions!) }
+    },
+
+    async syncOf(thread) {
+      const [found] = await db.all({ text: 'select data from vboard_sync_threads where thread = $1', values: [clean(thread)] })
+      return found ? (JSON.parse(String(found.data)) as SyncedThread) : null
+    },
+
+    async threadOf(external) {
+      const [found] = await db.all({ text: 'select thread from vboard_external_threads where external = $1', values: [clean(external)] })
+      return found ? String(found.thread) : null
+    },
+
+    async copiesOf(ids) {
+      const out = new Map<number, Record<string, ExternalCopy>>()
+      if (ids.length === 0) return out
+      const p = new Params()
+      const rows = await db.all({
+        text: `select message_id, target, data from vboard_copies where message_id in (${p.list([...new Set(ids)])})`,
+        values: p.values,
+      })
+      for (const found of rows) {
+        const copies = out.get(Number(found.message_id)) ?? {}
+        copies[String(found.target)] = JSON.parse(String(found.data)) as ExternalCopy
+        out.set(Number(found.message_id), copies)
+      }
+      return out
+    },
+
+    async messageOf(externalThread, platformMessage) {
+      const [found] = await db.all({
+        text: 'select message_id from vboard_external_messages where key = $1',
+        values: [clean(externalMessageKey(externalThread, platformMessage))],
+      })
+      return found ? Number(found.message_id) : null
+    },
+
+    async externalThreads() {
+      return (await db.all({ text: 'select external from vboard_external_threads', values: [] })).map((found) => String(found.external))
+    },
+
+    async withAttachment(attachment) {
+      const rows = await db.all({
+        text: `select m.data as data from vboard_messages m
+where exists (select 1 from vboard_terms t where t.message_id = m.id and t.term = '${ATTACHMENT}' and t.value = $1)
+order by m.id`,
+        values: [clean(attachment)],
+      })
+      return rows.map((found) => parse(found)!)
+    },
+
+    async recentRoots(principal, since) {
+      const rows = await db.all({
+        text: 'select data from vboard_messages where by_principal = $1 and re is null and created_at >= $2 order by id',
+        values: [principal, since],
+      })
+      return rows.map((found) => parse(found)!)
     },
 
     close: () => db.close(),

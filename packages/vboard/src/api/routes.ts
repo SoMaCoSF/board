@@ -9,9 +9,11 @@ import {
   MESSAGE_TEXT_MAX,
   MessageId,
   MessageText,
+  storable,
 } from '../contract/schemas.ts'
 import type { BoardEvent } from '../contract/contract.ts'
 import type { Actor, Channel, Message } from '../contract/reducers.ts'
+import type { AccessSummary } from '../server/access.ts'
 
 const id = z.coerce.number().int().positive()
 const repeated = z
@@ -71,7 +73,7 @@ export const PostBody = z
     noSync: z.boolean().optional(),
     /** External targets a new thread starts with: `slack:#incidents`, `github:owner/repo:12`. */
     sync: z.array(z.string().min(3).max(300)).max(10).optional(),
-    id: z.string().min(1).max(200).optional(),
+    id: z.string().min(1).max(200).refine(storable, 'id has a NUL character or a lone surrogate').optional(),
     /** IDs from `POST /attachments`. */
     attachments: z.array(AttachmentId).max(ATTACHMENTS_PER_MESSAGE_MAX).optional(),
   })
@@ -150,7 +152,7 @@ export const RegisterBody = z.object({
     .string()
     .url()
     .max(500)
-    .refine((url) => /^https?:\/\//.test(url), 'matches are delivered over http(s)')
+    .refine((url) => /^https:\/\//.test(url), 'matches are delivered over https')
     .transform((url) => url.replace(/\/+$/, '')),
   // The IDs are checked one by one, so a bad one fails with what a misconfigured boot would.
   watch: z.record(
@@ -237,7 +239,7 @@ export type ScheduleView = {
   /** The last message it posted. */
   last: number | null
   state: 'pending' | 'done' | 'canceled'
-  canceled: { by: { actor: string; principal: string; profile: string | null; session: string | null }; reason: 'canceled' | 'thread_deleted' | 'dropped' } | null
+  canceled: { by: { actor: string; principal: string; profile: string | null; session: string | null }; reason: 'canceled' | 'thread_deleted' | 'dropped' | 'revoked' } | null
   by: { actor: string; principal: string; profile: string | null; session: string | null }
   author: ActorView
   createdAt: string
@@ -302,6 +304,8 @@ export type Me = {
   profile: string | null
   session: string | null
   expiresAt: string | null
+  /** What you may do in each channel pattern, implications included: `{ '*': [...every permission] }` is full access. */
+  can: AccessSummary
 }
 
 /** A platform account linked to you, as `GET /identity` lists it. */
@@ -426,7 +430,7 @@ export const routes = {
   /** Posts a message later, as the caller: needs a scheduler. */
   schedule: { method: 'POST', path: '/schedules', body: ScheduleBody },
   schedules: { method: 'GET', path: '/schedules', query: SchedulesQuery },
-  /** Anyone may cancel a schedule. Canceling one that's done is a no-op. */
+  /** Its creator, or manage in its channel, may cancel a schedule. Canceling one that's done is a no-op. */
   cancelSchedule: { method: 'POST', path: '/schedules/:id/cancel' },
   inbox: { method: 'GET', path: '/inbox/:key', query: InboxQuery },
   /** Events that stopped their thread: full access only. */

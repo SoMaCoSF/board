@@ -5,7 +5,7 @@ import { caller, deploymentToken, personToken, testBoard, TEAM_ID } from "../../
 
 const URL = "http://board.test/api/board";
 const grants = JSON.stringify([{ projectId: "prj_factory", teamId: TEAM_ID }]);
-const options = { url: URL, trustedSources: vercelTrustedSources(grants) };
+const options = { url: URL, access: vercelTrustedSources(grants) };
 const token = (environment = "production", overrides) => deploymentToken("factory", "prj_factory", environment, { audience: URL, ...overrides });
 
 test("requires explicit immutable project/team grants and defaults to production", () => {
@@ -49,7 +49,13 @@ test("trusted Factory sessions discover, post, review and respond with verified 
   assert.equal(replay.status, 201);
   assert.equal(replay.body.message.id, root.id);
   assert.equal((await author("GET", "/channels")).body.channels[0].path, channel);
-  assert.equal((await author("POST", `/messages/${root.id}/labels`, { set: { kind: "bug" } })).status, 403);
+  // Labels only in factory/ channels: on dev they'd drive Pi.
+  assert.equal((await author("POST", `/messages/${root.id}/labels`, { set: { "factory-task": "task-2" } })).status, 200);
+  const person = caller(board.fetch, await personToken("u_operator", URL));
+  const dev = (await person("POST", "/messages", { channel: "dev", text: "Existing dev work", noSync: true })).body.message;
+  assert.equal((await author("GET", `/messages/${dev.id}`)).status, 200);
+  assert.equal((await author("POST", `/messages/${dev.id}/labels`, { set: { kind: "bug" } })).status, 403);
+  assert.equal((await author("POST", "/messages", { channel: "dev", text: "Labeled", labels: { kind: "bug" }, noSync: true })).status, 403);
   assert.equal((await author("POST", `/messages/${root.id}/reactions`, { emoji: "eyes" })).status, 403);
 });
 
@@ -79,7 +85,7 @@ test("operators inspect Factory and software-factory discussions in one board", 
 });
 
 test("explicit preview grants work on the same endpoint", async () => {
-  const board = testBoard({ url: URL, trustedSources: vercelTrustedSources(JSON.stringify([
+  const board = testBoard({ url: URL, access: vercelTrustedSources(JSON.stringify([
     { projectId: "prj_factory", teamId: TEAM_ID, environments: ["preview"] },
   ])) });
   assert.equal((await caller(board.fetch, await token("preview"))("GET", "/me")).status, 200);

@@ -61,6 +61,8 @@ export type ClientOptions = {
   handle?: Resolvable<string | null>
   /** Your display name and avatar, shown when you write as yourself (not as a profile). */
   person?: Resolvable<{ name?: string | null; avatar?: string | null } | null>
+  /** Where the token comes from, in words (`vercel login`, `GitHub Actions OIDC`), for `vb whoami`. */
+  source?: Resolvable<string | null>
   /** Extra headers on every request. */
   headers?: Resolvable<Record<string, string>>
   fetch?: typeof fetch
@@ -254,6 +256,8 @@ export function createBoardClient(options: ClientOptions) {
       }),
     discovery: () => call<Discovery>('GET', '/', { auth: false }),
     me: () => call<Me>('GET', '/me'),
+    /** Which credential this client sends, in words, or null when it was handed a token. A client with no token yet gets one first, which can make requests and fail as a call would. */
+    source: async () => (options.source === undefined ? null : await resolve(options.source)),
     channels: async () => (await call<{ channels: ChannelView[] }>('GET', '/channels')).channels,
     actors: async () => (await call<{ actors: (Actor & { person?: ActorView['person'] })[] }>('GET', '/actors')).actors,
 
@@ -299,7 +303,7 @@ export function createBoardClient(options: ClientOptions) {
     /** Pending schedules (`all` for done and canceled too), oldest first. `re` is any message in a thread. */
     schedules: async (query: SchedulesQueryInput = {}) =>
       (await call<{ schedules: ScheduleView[] }>('GET', `/schedules${queryString(query)}`)).schedules,
-    /** Stops a schedule; anyone may. `canceled` is false when it was already done or canceled. */
+    /** Stops a schedule: yours, or any with manage in its channel. `canceled` is false when it was already done or canceled. */
     cancelSchedule: (id: number) =>
       call<{ schedule: ScheduleView; canceled: boolean }>('POST', `/schedules/${id}/cancel`, { body: {} }),
     /** Stores a file on the board, for a post or reply's `attachments`. At most 4 MB. */

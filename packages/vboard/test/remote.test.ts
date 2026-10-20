@@ -2,12 +2,13 @@ import { describe, expect, it, vi } from 'vitest'
 import type { BoardEventView } from '../src/api/routes.ts'
 import { createClient } from '../src/client/node.ts'
 import { memory } from '../src/store/memory.ts'
-import { board, vercel, type Watcher } from '../src/server/index.ts'
+import { board, vercelProject, type Watcher } from '../src/server/index.ts'
+import { isPublicAddress, transport } from '../src/server/transport.ts'
 import type { remoteBoard } from '../src/server/remote.ts'
 import { BOARD_URL, caller, deploymentToken, personToken, PROJECT_ID, testAuth, testBoard } from './harness.ts'
 
 /** Where v0's board is mounted: a board with the team's board as its remote. */
-const V0_URL = 'http://v0.test/api/board'
+const V0_URL = 'https://v0.test/api/board'
 const V0 = 'vercel:project:prj_v0:production'
 const FIX = `watch:@${V0}/fix`
 
@@ -15,13 +16,19 @@ const FIX = `watch:@${V0}/fix`
  * The team's board, and v0's board with it as its remote, calling each other in-process.
  * `deploy` swaps in a new deployment of v0's board: the same principal, new code.
  */
-function team(watch: Record<string, Watcher> = {}) {
+function team(watch: Record<string, Watcher> = {}, access: NonNullable<Parameters<typeof testBoard>[0]>['access'] = [vercelProject({ can: 'all' })]) {
   let project: ReturnType<typeof remoteBoard>
-  const route = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  /** Each delivery v0's board answered: whose registration it was for, and how it went. */
+  const delivered: { owner: string | null; status: number }[] = []
+  const route = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = new Request(input, init)
     if (request.url.startsWith(BOARD_URL)) return remote.fetch(request)
-    if (request.url.startsWith(V0_URL)) return project.fetch(request)
-    return Promise.resolve(new Response('no such host', { status: 502 }))
+    if (request.url.startsWith(V0_URL)) {
+      const response = await project.fetch(request)
+      if (request.url.includes('/deliveries/')) delivered.push({ owner: request.headers.get('x-board-owner'), status: response.status })
+      return response
+    }
+    return new Response('no such host', { status: 502 })
   }
   const v0Board = (watch: Record<string, Watcher>): ReturnType<typeof remoteBoard> =>
     board({
@@ -31,7 +38,7 @@ function team(watch: Record<string, Watcher> = {}) {
       transport: { fetch: route, token: (audience) => deploymentToken('v0', 'prj_v0', 'production', { audience }) },
     })
   const remote = testBoard({
-    trustedSources: [vercel()],
+    access,
     // The team board signs deliveries as its own production deployment.
     transport: { fetch: route, token: (audience) => deploymentToken('board', PROJECT_ID, 'production', { audience }) },
   })
@@ -39,6 +46,7 @@ function team(watch: Record<string, Watcher> = {}) {
   const watches = remote.servers.at(-1)!
   return {
     remote,
+    delivered,
     get project() {
       return project
     },
@@ -75,7 +83,7 @@ describe('a board with a remote', () => {
     expect(() => board({ remote: BOARD_URL, store: memory() })).toThrow(
       'a board with a remote keeps no log: `store` goes on the remote',
     )
-    expect(() => board({ remote: BOARD_URL, trustedSources: [vercel()] })).toThrow('`trustedSources` goes on the remote')
+    expect(() => board({ remote: BOARD_URL, access: [vercelProject({ can: 'all' })] })).toThrow('`access` goes on the remote')
     // A watcher's writes are by its ID as a profile.
     expect(() => board({ remote: BOARD_URL, watch: { review_pi: { tail: 'prs', run: () => {} } } })).toThrow(
       'watch review_pi: ids start with a letter and use up to 32 letters, numbers, and hyphens',
@@ -86,6 +94,8 @@ describe('a board with a remote', () => {
   })
 
   it('sends clients to its remote', async () => {
+    // With a token in the environment, a client skips discovery; this is the one without.
+    vi.stubEnv('VBOARD_TOKEN', '')
     const { project } = team()
     const discovery = await (await project.fetch(new Request(V0_URL))).json()
     expect(discovery).toMatchObject({ url: V0_URL, remote: BOARD_URL })
@@ -100,6 +110,7 @@ describe('a board with a remote', () => {
     await expect(createClient({ url: V0_URL, fetch: route as typeof fetch }).me()).rejects.toThrow(
       `${V0_URL} keeps no log: use ${BOARD_URL}`,
     )
+    vi.unstubAllEnvs()
   })
 
   it('registers its watchers with its remote when asked, as itself', async () => {
@@ -216,12 +227,12 @@ describe('a board with a remote', () => {
   it("refuses deliveries its remote didn't send", async () => {
     const fix = recorder('feedback')
     const { project } = team({ fix: fix.watcher })
-    const deliver = async (token: string | null) =>
+    const deliver = async (token: string | null, owner = V0) =>
       (
         await project.fetch(
           new Request(`${V0_URL}/deliveries/fix`, {
             method: 'POST',
-            headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+            headers: { 'content-type': 'application/json', 'x-board-owner': owner, ...(token ? { authorization: `Bearer ${token}` } : {}) },
             body: JSON.stringify({ id: 'm1', event: { index: 2, type: 'message.posted' } }),
           }),
         )
@@ -232,6 +243,9 @@ describe('a board with a remote', () => {
     expect(await deliver(await deploymentToken('marketing', 'prj_marketing', 'production', { audience: V0_URL }))).toBe(403)
     expect(await deliver(await personToken('u_julian', V0_URL))).toBe(403)
     expect(await deliver(await deploymentToken('board', PROJECT_ID, 'production', { audience: BOARD_URL }))).toBe(401)
+    // The remote's preview, and the remote itself for someone else's registration.
+    expect(await deliver(await deploymentToken('board', PROJECT_ID, 'preview', { audience: V0_URL }))).toBe(403)
+    expect(await deliver(await deploymentToken('board', PROJECT_ID, 'production', { audience: V0_URL }), 'vercel:project:prj_marketing:production')).toBe(403)
     expect(fix.events).toEqual([])
     expect(await deliver(await deploymentToken('board', PROJECT_ID, 'production', { audience: V0_URL }))).toBe(200)
     expect(fix.events).toHaveLength(1)
@@ -264,7 +278,8 @@ describe('registering with a remote', () => {
       'watch fix: a watcher has no "me": use --mentions @handle',
     )
     expect((await register({ review_pi: { tail: 'prs' } })).body.error.message).toBe('watch review_pi: ids start with a letter and use up to 32 letters, numbers, and hyphens')
-    expect((await register({}, 'ftp://v0.test/board')).body.error.message).toContain('delivered over http(s)')
+    expect((await register({}, 'ftp://v0.test/board')).body.error.message).toContain('delivered over https')
+    expect((await register({}, 'http://v0.test/board')).body.error.message).toContain('delivered over https')
     expect((await register({ fix: { tail: 'feedback' } })).status).toBe(200)
   })
 
@@ -272,5 +287,84 @@ describe('registering with a remote', () => {
     const { remote } = team()
     const outsider = caller(remote.fetch, await deploymentToken('v0', 'prj_v0', 'production', { teamId: 'team_other' }))
     expect((await outsider('POST', '/watchers', { url: V0_URL, watch: {} })).status).toBe(403)
+  })
+})
+
+const MARKETING = 'vercel:project:prj_marketing:production'
+
+describe('what a registered watcher gets', () => {
+  it("never runs a board's watchers on matches someone else registered its URL for", async () => {
+    const fix = recorder('feedback')
+    const t = team({ fix: fix.watcher })
+    await t.project.register(V0_URL)
+    // Another project on the team registers v0's URL, with a tail of its own.
+    const marketing = caller(t.remote.fetch, await deploymentToken('marketing', 'prj_marketing', 'production'))
+    expect((await marketing('POST', '/watchers', { url: V0_URL, watch: { fix: { tail: 'random --all' } } })).status).toBe(200)
+    const julian = await julianOn(t.remote.fetch)
+    await julian('POST', '/messages', { channel: 'random', text: 'lunch?' })
+    await julian('POST', '/messages', { channel: 'feedback', text: 'export is broken' })
+
+    await vi.waitFor(() => expect(t.delivered).toContainEqual({ owner: MARKETING, status: 403 }))
+    await vi.waitFor(() => expect(fix.texts()).toEqual(['export is broken']))
+    expect(t.delivered.filter((delivery) => delivery.status === 200).map((delivery) => delivery.owner)).toEqual([V0])
+  })
+
+  it('sees only what its registrant may read, and nothing about no message unless it reads every channel', async () => {
+    const fix = recorder('feedback')
+    const peek = recorder('secret')
+    const every = recorder('dev/ --all')
+    // v0 reads and posts in feedback, reads dev but not under it, and nothing else.
+    const t = team({ fix: fix.watcher, peek: peek.watcher, every: every.watcher }, [
+      vercelProject({ project: 'prj_v0', can: { feedback: ['read', 'post'], dev: ['read'] } }),
+      vercelProject({ can: 'all' }),
+    ])
+    await t.project.register(V0_URL)
+    const julian = await julianOn(t.remote.fetch)
+    await julian('POST', '/messages', { channel: 'secret', text: 'the key is hunter2' })
+    await julian('POST', '/messages', { channel: 'dev/secret', text: 'not this either' })
+    await julian('POST', '/messages', { channel: 'feedback', text: 'export is broken' })
+    await julian('POST', '/messages', { channel: 'dev', text: 'deploys are green' })
+
+    await vi.waitFor(() => expect(fix.texts()).toEqual(['export is broken']))
+    await vi.waitFor(() => expect(every.texts()).toEqual(['deploys are green']))
+    expect(peek.events).toEqual([])
+    expect(JSON.stringify([...fix.events, ...every.events])).not.toContain('hunter2')
+    // `--all` brings receipts and who's who, but about no message only to a reader of every channel.
+    expect(every.events.filter((event) => !event.message)).toEqual([])
+  })
+
+  it('needs a token that reads somewhere: a watcher of one that reads nothing would see nothing', async () => {
+    const { remote } = team({}, [vercelProject({ project: 'prj_ci', can: { ci: ['post'] } }), vercelProject({ can: 'all' })])
+    const ci = caller(remote.fetch, await deploymentToken('ci', 'prj_ci'))
+    const refused = await ci('POST', '/watchers', { url: 'https://ci.test/api/board', watch: {} })
+    expect(refused).toMatchObject({ status: 403, body: { error: { message: expect.stringContaining("can't read anywhere") } } })
+  })
+
+  it('lists every registration to a manager of every channel, and its own to anyone else', async () => {
+    const { remote } = team({}, [vercelProject({ project: 'prj_ci', can: { ci: ['read'] } }), vercelProject({ can: 'all' })])
+    const ci = caller(remote.fetch, await deploymentToken('ci', 'prj_ci'))
+    const marketing = caller(remote.fetch, await deploymentToken('marketing', 'prj_marketing'))
+    await ci('POST', '/watchers', { url: 'https://ci.test/api/board', watch: { deploys: { tail: 'ci' } } })
+    await marketing('POST', '/watchers', { url: 'https://marketing.test/api/board', watch: {} })
+    expect((await ci('GET', '/watchers')).body.watchers.map((found: { owner: string }) => found.owner)).toEqual(['vercel:project:prj_ci:production'])
+    const julian = await julianOn(remote.fetch)
+    expect((await julian('GET', '/watchers')).body.watchers.map((found: { owner: string }) => found.owner)).toEqual([
+      'vercel:project:prj_ci:production',
+      MARKETING,
+    ])
+  })
+})
+
+describe('a delivery', () => {
+  it('goes only to a public address, over https, wherever a name resolves', async () => {
+    const internal = ['127.0.0.1', '10.1.2.3', '100.64.0.1', '169.254.169.254', '172.16.0.1', '192.168.1.1', '::1', 'fe80::1', 'fd00::1', '::ffff:127.0.0.1']
+    expect(internal.filter(isPublicAddress)).toEqual([])
+    expect(['8.8.8.8', '76.76.21.21', '2606:4700::1111'].every(isPublicAddress)).toBe(true)
+    const { deliver } = transport()
+    const init = { headers: {}, body: '{}', signal: AbortSignal.timeout(5000) }
+    await expect(deliver('http://example.com/api/board/deliveries/fix', init)).rejects.toThrow('over https')
+    await expect(deliver('https://127.0.0.1/deliveries/fix', init)).rejects.toThrow("isn't a public address")
+    await expect(deliver('https://[::1]/deliveries/fix', init)).rejects.toThrow("isn't a public address")
+    await expect(deliver('https://localhost/deliveries/fix', init)).rejects.toThrow("isn't a public address")
   })
 })

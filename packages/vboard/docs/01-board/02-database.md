@@ -1,6 +1,6 @@
 ---
 title: Database
-description: "Where a board keeps everything: Postgres in production, SQLite in development, memory in tests."
+description: "Where a board keeps everything: Postgres or Redis in production, SQLite in development, memory in tests."
 ---
 
 ## Pick a store
@@ -21,6 +21,8 @@ export const { GET, POST } = board({
 | Store | From | For |
 | --- | --- | --- |
 | `postgres({ connectionString })` | `vboard/store-postgres` | production; needs `pg` |
+| `redis({ url })` | `vboard/store-redis` | production, on Redis over TCP; needs `ioredis` |
+| `redisHttp({ url, token })` | `vboard/store-redis-http` | production, on Upstash's REST API; needs nothing |
 | `sqlite({ path })` | `vboard/store-sqlite` | development and `vb serve`; `path` defaults to `.a2/dev.db` |
 | `memory({ clock })` | `vboard/store-memory` | tests |
 
@@ -41,7 +43,13 @@ One database holds two things:
 | `vboard_messages` | each message as it is now, with the columns filters use; a root's row also holds its reply count and its latest reply |
 | `vboard_versions` | each message after every event that changed it, so `vb tail` and watchers can show a change before and after |
 | `vboard_terms` | labels and mentions, so `--label` and `--mentions` are an index lookup |
+| `vboard_sync_threads`, `vboard_copies` | where each thread and message lives on each platform: a thread's targets and the platform thread on each, a message's copy on each |
+| `vboard_external_threads`, `vboard_external_messages` | the other way: which board thread and message a platform's thread and message are |
 | `vboard_positions` | the last log index the tables applied |
+
+On Redis the tables are hashes and sorted sets under `<keyPrefix>:vboard`, with
+a sorted set for each channel, thread, author, mention, and label, so the same
+filters are a lookup there too.
 
 A post, a reply, a thread, and a channel's list of threads cost the same on a
 board of a hundred messages or a hundred thousand. Other lists stop as soon as
@@ -99,6 +107,50 @@ query, like Drizzle, applies it as it ships.
 A vboard release that changes the tables says so in its changelog: apply that
 release's `schema.sql` before you deploy it.
 
+## Redis
+
+```package-install
+npm i vboard ioredis
+```
+
+```ts app/api/board/[[...path]]/route.ts
+import { board } from 'vboard'
+import { redis } from 'vboard/store-redis'
+
+export const { GET, POST } = board({
+  store: redis({ url: process.env.REDIS_URL! }),
+})
+```
+
+On Upstash, or anywhere a function can't keep a connection open, use its REST
+API instead. It needs no package:
+
+```ts app/api/board/[[...path]]/route.ts
+import { board } from 'vboard'
+import { redisHttp } from 'vboard/store-redis-http'
+
+export const { GET, POST } = board({
+  store: redisHttp({ url: process.env.KV_REST_API_URL!, token: process.env.KV_REST_API_TOKEN! }),
+})
+```
+
+There's nothing to apply: the keys appear as the board writes them. Each write
+is one script that checks the log index and changes every key the event
+touches, so it applies once or not at all. That needs one server, or a
+provider without cluster mode, like Upstash.
+
+| Option | What it does |
+| --- | --- |
+| `url` | `redis()`: the server, as `ioredis` takes it. `redisHttp()`: the REST endpoint |
+| `token` | `redisHttp()`: the REST token |
+| `client` | `redis()`, instead of `url`: an `ioredis` client you made, shared by A2 and the tables. Closing the store ends it |
+| `keyPrefix` | Where the board's keys go, so boards can share a Redis. Default `a2` |
+
+Redis keeps everything in memory: about 4 KB a message, counting the versions
+`vb tail` and watchers read. A filter without an index, like `text`, reads
+messages until it fills a page, a few thousand to a script, since Redis runs
+nothing else while a script runs.
+
 ## SQLite
 
 `sqlite({ path })` keeps the log and the tables in one file, and creates the
@@ -116,16 +168,22 @@ behind. Three rules make that invisible:
   position in the log.
 - **Lists answer at once.** `vb read dev`, `/messages`, and `/threads` return
   the tables as they are, with `cursor`: the log index they reflect. The
-  [event feed](./05-reading.md) from that cursor on carries the rest.
+  [event feed](./05-reading.md) from that cursor on carries the rest. The
+  first list on each instance also starts the tables catching up, so a deploy
+  that adds them fills them from the log even before anyone writes.
+
+On a board that already has a log, the first deploy with tables fills them from
+it, a few round trips to the database an event. Until they reach the head, a
+read by message ID waits for them, and a write waits up to 10 seconds, then
+answers. Lists answer at once with what's there.
 
 ## FAQ
 
-### Why not Redis?
+### Postgres or Redis?
 
-A board's reads are queries: filter by channel, author, label, mention, or
-text, page them, sort threads by their latest reply. A database answers those
-with indexes. A2's log runs on Redis, but the tables would need a query engine
-built on top.
+Either holds a board of any size, with the same reads. Pick the one your app
+already runs. Postgres keeps the board on disk and reads unindexed filters with
+its own planner; Redis keeps it in memory and needs no schema.
 
 ### Can I pass my own `pg` pool?
 

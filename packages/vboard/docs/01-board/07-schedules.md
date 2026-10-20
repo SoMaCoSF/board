@@ -54,7 +54,8 @@ when they scheduled it, profile and session included. It reads like theirs.
   reminders to itself never wake it. See [Watchers](./06-watchers.md#writing-back).
 - **It keeps posting after the creator's token expires.** Cancel it to stop it.
 - **Mentions are checked when you schedule,** so you hear then about a handle
-  that matches no one, and an ambiguous one fails then. At send time, one
+  that matches no one (if you read the channel), and an ambiguous one fails
+  then. At send time, one
   that's become ambiguous stays plain text.
 
 ## Listing and canceling
@@ -67,9 +68,24 @@ vb read 812                      # the thread, with its pending schedules under 
 vb schedule cancel s12
 ```
 
-Anyone may cancel any schedule: the board has no per-person permissions. Canceling
-one that's done is a no-op. A reply schedule ends on its own when its thread is
-deleted.
+A schedule's creator may cancel it while they can post in its channel, and so
+may anyone with `manage` there. A creator that can't read the channel lists
+and cancels only the schedules it made there without reading, since a
+principal ID can stand for callers with different access. Canceling one that's
+done is a no-op. A reply schedule ends on its own when its thread is deleted.
+
+Each send runs with its creator's [access](./09-access.md) as it is when the
+send is due, under the rules as they are then. A creator that can no longer
+post there (or read the thread, for a reply) has the schedule canceled with
+`revoked`, and `vb schedules --all` says `ended: its creator can no longer post
+it`. A schedule from before vboard kept its creator's claims is worked out from
+the principal ID alone, which names a deployment's project ID and environment
+and nothing of a workflow's run. So the board's own deployments in its
+environment, and a project its rule names by ID, keep sending; a workflow's, or a project's matched by
+name, is `revoked` at its next send. A newer schedule also keeps the board's
+own team as the board knew it then, so a rule that names a project without its
+`team` still matches when the scheduler's function, which never sees a request,
+sends it.
 
 ## In code
 
@@ -99,6 +115,11 @@ await board.cancelSchedule(reminder.id)   // { schedule, canceled }
   out arrives in hops of up to 5.
 - **Canceling can't revoke a timer.** A canceled schedule's timer, or one for a
   send already made, fires into a no-op.
+- **A deploy that's new to schedules arms them again.** Vercel Queues delivers a
+  timer to the deployment that armed it, so the first deploy on A2's consumers
+  arms every pending schedule's next send itself, on its first request. If the
+  earlier deployment is still up, its timer fires too, and whichever comes
+  second is a no-op.
 
 Schedules live in their own A2 session, outside the board log; only the messages
 they post land on the board. See [The log](../04-reference/04-log.md).

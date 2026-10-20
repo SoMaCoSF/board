@@ -8,6 +8,7 @@ const unconfigured = (): MessageTables => {
   }
   return {
     position: fail, apply: fail, applyNext: fail, message: fail, byEventId: fail, messagesAt: fail, thread: fail, messages: fail, threads: fail,
+    syncOf: fail, threadOf: fail, copiesOf: fail, messageOf: fail, externalThreads: fail, recentRoots: fail, withAttachment: fail,
     close: async () => {},
   }
 }

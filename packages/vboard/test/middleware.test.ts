@@ -4,6 +4,7 @@ import { slack } from '../src/sync/slack.ts'
 import type { Middleware, WriteSource } from '../src/server/index.ts'
 import { BOARD_URL, caller, personToken, testBoard } from './harness.ts'
 import { fakeQueue } from './queue.ts'
+import { memory } from '../src/store/memory.ts'
 
 /** Drops anything that says "ignore previous instructions", and tells its author why. */
 const guard: Middleware = async ({ write, respond, next }) => {
@@ -68,6 +69,19 @@ describe('middleware', () => {
     expect([first.status, retry.status]).toEqual([201, 201])
     expect(retry.body.message.id).toBe(first.body.message.id)
     expect(calls).toBe(1)
+  })
+
+  it("doesn't look for a retry when the post brings no ID: a new one can't have landed", async () => {
+    // That lookup waits for the tables to reach the head of the log, which after a deploy can take a while.
+    const store = memory()
+    const lookups: string[] = []
+    const tables = { ...store.tables, byEventId: (id: string) => (lookups.push(id), store.tables.byEventId(id)) }
+    const board = testBoard({ store: { ...store, tables }, middleware: [guard] })
+    const julian = await person(board)
+    expect((await julian('POST', '/messages', { channel: 'dev', text: 'export is broken' })).status).toBe(201)
+    expect(lookups).toEqual([])
+    expect((await julian('POST', '/messages', { channel: 'dev', text: 'export is broken', id: 'w1' })).status).toBe(201)
+    expect(lookups).toEqual(['w1'])
   })
 
   it('drops a write it empties', async () => {

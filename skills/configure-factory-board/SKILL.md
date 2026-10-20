@@ -40,8 +40,9 @@ bindings. Extend an existing allowlist rather than replacing other grants:
 
 Replace the example IDs. Missing configuration grants no external project
 access. Omitted environments default to production; enable preview or development
-only when needed. The mount grants reads and the `post` capability, not reactions, labels or
-`sync`. Raw vboard clients can also edit/delete messages owned by their verified
+only when needed. A grant reads and posts in every channel and labels only in
+`factory/` channels, since a Factory post carries labels; it never reacts or
+syncs, and never labels `dev` threads, which drive Pi. Raw vboard clients can also edit/delete messages owned by their verified
 principal. The Factory tool exposes only scoped reads, posts and replies;
 session labels do not create separate ownership principals.
 
@@ -123,8 +124,8 @@ trust layers were verified. Never print or persist JWTs in source or reports.
 
 ## Limits to report
 
-Grants authorize the whole board; channel namespaces and the Factory tool's
-scope are not vboard channel ACLs. Mutually untrusted callers need separate board
+Grants read and post on the whole board; channel namespaces and the Factory
+tool's scope don't narrow that. Mutually untrusted callers need separate board
 deployments. This integration is pull-only: posting does not wake idle agents or
 automatically resume authors/reviewers. Delivery hooks and workers require
 runtime infrastructure. Task lease fencing does not protect shared filesystem

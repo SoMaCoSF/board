@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { githubActions, vercel } from '../src/server/index.ts'
+import { describe, expect, it, vi } from 'vitest'
+import { memory } from '../src/store/memory.ts'
+import { githubActions, vercelProject } from '../src/server/index.ts'
 import {
   BOARD_URL,
   caller,
@@ -119,18 +120,18 @@ describe('auth', () => {
     expect(await claude.text()).toContain('<path') // the mark, not a letter
   })
 
-  it('rejects other projects unless trusted', async () => {
+  it('rejects other projects unless access lists them', async () => {
     const call = caller(testBoard().fetch, await deploymentToken())
     expect((await call('GET', '/me')).status).toBe(403)
 
-    const trusted = testBoard({ trustedSources: [vercel({ project: 'marketing' })] })
+    const trusted = testBoard({ access: [vercelProject({ project: 'marketing', can: 'all' })] })
     const { body } = await caller(trusted.fetch, await deploymentToken())('GET', '/me')
     expect(body).toMatchObject({ actor: 'vercel:project:prj_marketing:production', handle: 'marketing' })
   })
 
-  it('limits a trusted workflow to what `can` allows', async () => {
+  it('limits a workflow to what `can` allows', async () => {
     const { fetch } = testBoard({
-      trustedSources: [
+      access: [
         githubActions({ repository: 'basehub-ai/www', workflow: '.github/workflows/deploy.yml', can: ['post'] }),
       ],
     })
@@ -138,8 +139,9 @@ describe('auth', () => {
     const posted = await call('POST', '/messages', { channel: 'errors-www', text: 'deploy failed' })
     expect(posted.status).toBe(201)
     expect(posted.body.message.by.principal).toBe('github:repo:123456')
+    // `['post']` is write-only: what it can't read answers as if it didn't exist.
     const react = await call('POST', `/messages/${posted.body.message.id}/reactions`, { emoji: 'eyes' })
-    expect(react.status).toBe(403)
+    expect(react.status).toBe(404)
 
     const otherWorkflow = caller(fetch, await workflowToken({ workflow_ref: 'basehub-ai/www/.github/workflows/evil.yml@refs/heads/x' }))
     expect((await otherWorkflow('GET', '/me')).status).toBe(403)
@@ -357,5 +359,29 @@ describe('events', () => {
     expect(text).toMatch(/id: \d+\nevent: board\ndata: /)
     controller.abort()
     await reader.cancel()
+  })
+})
+
+describe('writes', () => {
+  // A2 clones state at every read, so a board's whole messages state costs its size each time.
+  it('look the message up once: the check and the write share it', async () => {
+    const store = memory()
+    let lookups = 0
+    const tables = { ...store.tables, message: (id: number) => (lookups++, store.tables.message(id)) }
+    const board = testBoard({ store: { ...store, tables } })
+    const julian = caller(board.fetch, await personToken())
+    const id = (await julian('POST', '/messages', { channel: 'dev', text: 'root' })).body.message.id
+    const reads = async (write: () => Promise<{ status: number }>) => {
+      lookups = 0
+      expect((await write()).status).toBeLessThan(300)
+      return lookups
+    }
+    expect({
+      react: await reads(() => julian('POST', `/messages/${id}/reactions`, { emoji: 'eyes' })),
+      label: await reads(() => julian('POST', `/messages/${id}/labels`, { set: { kind: 'bug' } })),
+      reply: await reads(() => julian('POST', '/messages', { re: id, text: 'on it' })),
+      edit: await reads(() => julian('POST', `/messages/${id}/edit`, { text: 'root, edited' })),
+      root: await reads(() => julian('POST', '/messages', { channel: 'dev', text: 'another' })),
+    }).toEqual({ react: 1, label: 1, reply: 1, edit: 1, root: 0 })
   })
 })

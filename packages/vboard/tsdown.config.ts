@@ -14,6 +14,8 @@ export default defineConfig([
       sync: 'src/sync/index.ts',
       'sync.chat': 'src/sync/chat-provider.ts',
       'store-postgres': 'src/store/postgres.ts',
+      'store-redis': 'src/store/redis.ts',
+      'store-redis-http': 'src/store/redis-http.ts',
       'store-sqlite': 'src/store/sqlite.ts',
       'store-memory': 'src/store/memory.ts',
       'scheduler-vercel': 'src/scheduler/vercel.ts',

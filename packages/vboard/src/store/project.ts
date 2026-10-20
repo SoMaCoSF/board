@@ -1,5 +1,5 @@
 import type { BoardEvent } from '../contract/contract.ts'
-import { foldMessages, type Message } from '../contract/reducers.ts'
+import { foldMessages, foldSync, type ExternalCopy, type Message, type SyncedThread, type SyncState } from '../contract/reducers.ts'
 
 /** The message an event concerns, if any. */
 export function concernedMessageId(event: BoardEvent): number | null {
@@ -28,7 +28,7 @@ export type Change = {
   summary?: { root: number } & Summary
 }
 
-const termsOf = (message: Message) => JSON.stringify([message.labels, message.mentions])
+const termsOf = (message: Message) => JSON.stringify([message.labels, message.mentions, message.attachments.map((file) => file.id)])
 
 /**
  * Applies one event to what the tables hold, with the same fold the board has
@@ -56,5 +56,57 @@ export function project(before: Before, event: BoardEvent): Change {
     const at = before.root.at === id ? (before.previousLast ?? current.re) : before.root.at
     change.summary = { root: current.re, replies: before.root.replies - 1, at }
   }
+  return change
+}
+
+/** The sync state an event touches: its thread's sync, and for a file receipt, the copy it's about. */
+export type SyncBefore = { thread: SyncedThread | undefined; copy: ExternalCopy | undefined }
+
+/** What an event changes in the sync state: rows to write, each replacing what was there. */
+export type SyncChange = {
+  thread?: { key: string; data: SyncedThread }
+  externalThreads: [external: string, thread: string][]
+  copies: [message: number, target: string, copy: ExternalCopy][]
+  externalMessages: [key: string, message: number][]
+}
+
+/** The sync rows `event` reads before it applies: none for events that don't touch the sync state. */
+export function syncReads(event: BoardEvent): { thread: string | null; copy: [number, string] | null } {
+  switch (event.type) {
+    case 'message.posted':
+      // A reply's thread is only read for a root, which the event itself creates.
+      return { thread: null, copy: null }
+    case 'thread.synced':
+    case 'message.synced':
+      return { thread: event.payload.thread, copy: null }
+    case 'message.files_synced':
+      return { thread: null, copy: [event.payload.id, event.payload.target] }
+    default:
+      return { thread: null, copy: null }
+  }
+}
+
+/**
+ * Applies one event to the sync state, with the fold the board has always used,
+ * on a state of just what the event touches. Pure, like `project`.
+ */
+export function projectSync(before: SyncBefore, event: BoardEvent): SyncChange {
+  const change: SyncChange = { externalThreads: [], copies: [], externalMessages: [] }
+  if (!['message.posted', 'thread.synced', 'message.synced', 'message.files_synced'].includes(event.type)) return change
+  const key = (event.payload as { thread: string }).thread
+  const state: SyncState = { threads: {}, byExternalThread: {}, copies: {}, byExternalMessage: {} }
+  if (before.thread) state.threads[key] = structuredClone(before.thread)
+  const reads = syncReads(event)
+  if (reads.copy && before.copy) state.copies[reads.copy[0]] = { [reads.copy[1]]: structuredClone(before.copy) }
+  foldSync(state, event)
+  const thread = state.threads[key]
+  if (thread && JSON.stringify(thread) !== JSON.stringify(before.thread)) change.thread = { key, data: thread }
+  for (const [external, owner] of Object.entries(state.byExternalThread)) change.externalThreads.push([external, owner])
+  for (const [message, targets] of Object.entries(state.copies))
+    for (const [target, copy] of Object.entries(targets)) {
+      const unchanged = reads.copy?.[0] === Number(message) && reads.copy[1] === target && JSON.stringify(copy) === JSON.stringify(before.copy)
+      if (!unchanged) change.copies.push([Number(message), target, copy])
+    }
+  for (const [externalKey, message] of Object.entries(state.byExternalMessage)) change.externalMessages.push([externalKey, message])
   return change
 }

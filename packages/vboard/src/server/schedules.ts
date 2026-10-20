@@ -9,12 +9,15 @@ import {
   type ScheduleEvents,
 } from '../contract/contract.ts'
 import { actorKind, type Attachment, type Author, type Labels } from '../contract/schemas.ts'
+import { authorize, type Access } from './access.ts'
+import type { Principal } from './auth.ts'
 import { actorsReducer, type ActorsState } from '../contract/reducers.ts'
 import { replaceMentions } from '../contract/mentions.ts'
 import { resolveMentions } from './actors.ts'
 import { badRequest, HttpError, notFound } from './errors.ts'
-import { deploymentIdentity, writePost, type Identity, type WriteContext } from './writes.ts'
+import { authorizePost, deploymentIdentity, writePost, type Identity, type WriteContext } from './writes.ts'
 import { DroppedError } from './middleware.ts'
+import { waitUntil } from './wait-until.ts'
 
 /** Vercel Queues delays at most 6 days: a send further out than this goes in hops. */
 export const MAX_HOP_MS = 5 * 86_400_000
@@ -37,24 +40,27 @@ export type Schedule = {
   every: number | null
   until: number | null
   times: number | null
-  as: Identity
+  /** Its creator, as plain data: A2 snapshots state, and each send works out the access again. */
+  as: Omit<Identity, 'principal'> & { principal: Omit<Principal, 'access'> }
   createdAt: string
+  /** Its creator couldn't read its channel when it scheduled it. */
+  blind: boolean
   /** Sends posted so far. */
   sent: number
   /** When the next send is due, or null when it's done or canceled. */
   next: number | null
   /** The last message it posted. */
   last: number | null
-  canceled: { by: Author; reason: 'canceled' | 'thread_deleted' | 'dropped' } | null
+  canceled: { by: Author; reason: 'canceled' | 'thread_deleted' | 'dropped' | 'revoked' } | null
 }
 
 export type SchedulesState = { byId: Record<string, Schedule> }
 
-const identityOf = (as: ScheduleEvent & { type: 'schedule.created' }): Identity => {
+const identityOf = (as: ScheduleEvent & { type: 'schedule.created' }): Schedule['as'] => {
   const { author, principal, actor } = as.payload.as
   return {
     author,
-    principal: { ...principal, can: 'all', expiresAt: null },
+    principal: { ...principal, expiresAt: null },
     actor: { ...actor, kind: actorKind(actor.kind) },
   }
 }
@@ -77,6 +83,7 @@ export function foldSchedules(state: SchedulesState, event: ScheduleEvent): Sche
         times: payload.times,
         as: identityOf(event),
         createdAt: new Date(event.createdAt).toISOString(),
+        blind: payload.blind ?? false,
         sent: 0,
         next: payload.first,
         last: null,
@@ -115,6 +122,19 @@ export function nextSend(schedule: Pick<Schedule, 'every' | 'until' | 'times'>, 
   return schedule.until !== null && next > schedule.until ? null : next
 }
 
+/**
+ * Whether `principal` is the schedule's creator, as far as seeing and canceling
+ * it goes. A principal ID is coarser than access (a repo's workflows share one,
+ * and so do the proxies narrowing one token with `x-board-scope`), so it also
+ * needs `post` there now, as it would to create it. Where it can't read, the
+ * schedule is its own only if it was created without reading too, so a
+ * principal ID shared with a caller that reads doesn't reach that caller's.
+ */
+export const createdBy = (schedule: Schedule, principal: Pick<Principal, 'id' | 'access'>) =>
+  schedule.as.principal.id === principal.id &&
+  principal.access.can('post', schedule.channel) &&
+  (schedule.blind || principal.access.readable(schedule.channel))
+
 export const scheduleView = (schedule: Schedule, actors: ActorsState): ScheduleView => {
   const author = actors.byId[schedule.as.actor.id] ?? schedule.as.actor
   return {
@@ -142,12 +162,22 @@ export const scheduleView = (schedule: Schedule, actors: ActorsState): ScheduleV
 
 const SYSTEM = deploymentIdentity('vboard:schedule', 'schedule')
 
+/** The board's `accessNow`: a stored creator's access under the rules as they are now, or null. */
+type AccessNow = (principal: Pick<Principal, 'id' | 'kind' | 'facts' | 'scope'>) => Promise<Access | null>
+
+/** A refusal (a 403, or a 404 for a thread the creator can no longer read) as null; anything else still throws. */
+const refused = (error: unknown): null => {
+  if (error instanceof HttpError && (error.status === 403 || error.status === 404)) return null
+  throw error
+}
+
 /**
  * Scheduled messages: `schedule.created` arms the first send as an A2 timer, and
  * each `schedule.due` posts as the schedule's creator, then arms the next.
  */
 export function createSchedules(options: { store?: A2Store | undefined; scheduler?: A2Scheduler | undefined }) {
   let writes: WriteContext | null = null
+  let accessNow: AccessNow | null = null
 
   /** Arms send `n`, due at `at`: the whole way, or one hop toward it. */
   async function arm(ctx: ConsumerContext<ScheduleEvents>, name: string, id: number, n: number, at: number) {
@@ -156,7 +186,7 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
   }
 
   async function due(ctx: ConsumerContext<ScheduleEvents, 'schedule.due'>) {
-    if (!writes) throw new Error('schedules used before the board bound them')
+    if (!writes || !accessNow) throw new Error('schedules used before the board bound them')
     const { id, n, at } = ctx.event.payload
     const { state } = await ctx.session.state(schedulesReducer)
     const schedule = state.byId[id]
@@ -174,13 +204,23 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
         return
       }
     }
+    // Each send has its creator's access under the rules as they are now, never what it had then.
+    const access = await accessNow(schedule.as.principal)
+    const target = schedule.re === null ? { channel: schedule.channel } : { re: schedule.re }
+    const proofs = access && (await authorizePost(writes, access, { ...target, labels: schedule.labels }).catch(refused))
+    if (!access || !proofs) {
+      console.info(`[vboard] schedule s${id}'s creator can no longer post it in ${schedule.channel}`)
+      await ctx.session.append('ended', { type: 'schedule.canceled', payload: { id, by: SYSTEM.author, reason: 'revoked' } })
+      return
+    }
     // A retry after the post landed gets the same event ID, so A2 hands back the message it already posted.
     let posted: number
     try {
       posted = (
       await writePost(writes, {
         via: { kind: 'schedule', id },
-        identity: schedule.as,
+        identity: { ...schedule.as, principal: { ...schedule.as.principal, access } },
+        proofs,
         id: await idempotentId('vboard-schedule', String(id), String(n)),
         ...(schedule.re === null ? { channel: schedule.channel } : { re: schedule.re }),
         text: schedule.text,
@@ -204,15 +244,23 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
     if (next !== null) await arm(ctx, 'next', id, n + 1, next)
   }
 
-  /** Arms each new schedule's first send. */
+  /**
+   * Arms each schedule's next send, from the first schedule on: a queue delivers a timer to the
+   * deployment that armed it, so one an earlier deployment armed may never reach this one. The
+   * deployment that gets there first sends, and `due` makes the other's a no-op.
+   */
   const arming = consumer({
     contract: schedulesContract,
     name: 'vboard-schedules',
     types: ['schedule.created'],
     lane: 'schedules',
+    backfill: true,
   }).run(async (ctx) => {
     if (!options.scheduler) return
-    await arm(ctx, 'first', ctx.event.index, 0, ctx.event.payload.first)
+    const { state } = await ctx.session.state(schedulesReducer)
+    const schedule = state.byId[ctx.event.index]
+    if (!schedule || schedule.next === null) return
+    await arm(ctx, 'first', schedule.id, schedule.sent, schedule.next)
   })
 
   /** Makes each due send, one schedule at a time. */
@@ -231,13 +279,29 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
   })
   const session = server.session(SCHEDULES_SESSION)
 
-  async function list(query: SchedulesQueryOutput & { root?: number }) {
+  /**
+   * The first request on an instance starts the arming catching up, and doesn't wait: on the
+   * first deploy with it, every schedule from before gets its next send armed here.
+   */
+  let catching: Promise<unknown> | null = null
+  function catchUp(): void {
+    if (catching || !options.scheduler) return
+    catching = session.consume(arming).catch((error: unknown) => {
+      console.warn('[vboard] schedules are not caught up:', (error as Error).message)
+      catching = null
+    })
+    waitUntil(catching)
+  }
+
+  /** `visible`: which schedules the caller may see. */
+  async function list(query: SchedulesQueryOutput & { root?: number }, visible: (schedule: Schedule) => boolean = () => true) {
     if (!writes) throw new Error('schedules used before the board bound them')
     const [{ state }, { state: actors }] = await Promise.all([
       session.state(schedulesReducer),
       writes.session.state(actorsReducer),
     ])
     return Object.values(state.byId)
+      .filter(visible)
       .filter((s) => (query.all ? true : s.next !== null))
       .filter((s) => (query.root === undefined ? true : s.re === query.root))
       .filter((s) => (query.channel === undefined ? true : s.channel === query.channel))
@@ -249,8 +313,10 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
   return {
     server,
     session,
-    bind: (binding: { writes: WriteContext }) => {
+    catchUp,
+    bind: (binding: { writes: WriteContext; accessNow: AccessNow }) => {
       writes = binding.writes
+      accessNow = binding.accessNow
     },
     list,
     /** The pending schedules that reply in the thread rooted at `root`. */
@@ -278,7 +344,7 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
       // A handle nobody has stays plain text, and they hear about it now too.
       const { state: known } = await writes.session.state(actorsReducer)
       const withoutEmails = replaceMentions(body.text, (t) => (t.kind === 'actor' && t.actor.includes('@') ? t.actor : null))
-      const { unknown } = resolveMentions(withoutEmails, known, identity.actor)
+      const { unknown } = resolveMentions(withoutEmails, known, identity.actor, false, identity.principal.access.readsAll)
 
       let channel = body.channel
       let re: number | null = null
@@ -303,23 +369,37 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
           times: body.times ?? null,
           as: {
             author: identity.author,
-            principal: { id: identity.principal.id, kind: identity.principal.kind, handle: identity.principal.handle },
+            principal: {
+              id: identity.principal.id,
+              kind: identity.principal.kind,
+              handle: identity.principal.handle,
+              ...(identity.principal.facts ? { facts: identity.principal.facts } : {}),
+              ...(identity.principal.scope !== undefined ? { scope: identity.principal.scope } : {}),
+            },
             actor: identity.actor,
           },
+          ...(identity.principal.access.readable(channel!) ? {} : { blind: true as const }),
         },
       })
       const { state } = await session.state(schedulesReducer)
       const { state: actors } = await writes.session.state(actorsReducer)
       const schedule = scheduleView(state.byId[row!.index]!, actors)
-      return unknown.length ? { schedule, unknownMentions: unknown } : { schedule }
+      // Which handles matched no one says which ones exist: only for a caller that reads the channel.
+      return unknown.length && identity.principal.access.readable(channel!) ? { schedule, unknownMentions: unknown } : { schedule }
     },
 
-    /** Anyone may cancel: the board has no per-person permissions. Canceling twice is a no-op. */
+    /**
+     * Its creator may cancel it while they can post there, and so may `manage`
+     * in its channel. Anyone else gets 403 where they can read it, and 404
+     * where they can't. Canceling twice is a no-op.
+     */
     async cancel(identity: Identity, id: number): Promise<{ schedule: ScheduleView; canceled: boolean }> {
       if (!writes) throw new Error('schedules used before the board bound them')
       const { state } = await session.state(schedulesReducer)
       const schedule = state.byId[id]
-      if (!schedule) throw notFound(`schedule not found: s${id}`, 'schedule_not_found')
+      const missing = () => notFound(`schedule not found: s${id}`, 'schedule_not_found')
+      if (!schedule) throw missing()
+      if (!createdBy(schedule, identity.principal)) authorize(identity.principal.access, 'manage', schedule.channel, missing)
       const canceled = schedule.next !== null
       if (canceled) await session.append({ type: 'schedule.canceled', payload: { id, by: identity.author, reason: 'canceled' } })
       const { state: after } = await session.state(schedulesReducer)

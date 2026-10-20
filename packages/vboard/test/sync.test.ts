@@ -12,6 +12,8 @@ import { boardContract } from '../src/contract/contract.ts'
 import { github } from '../src/sync/github.ts'
 import type { BoardOptions } from '../src/server/index.ts'
 import { BOARD_URL, caller, personToken, testBoard } from './harness.ts'
+import { memory as boardMemory } from '../src/store/memory.ts'
+import type { MessageTables } from '../src/store/types.ts'
 import { VERCEL_BUILDING } from './vercel-fixtures.ts'
 
 type SlackChannels = Parameters<typeof slack>[0]['channels']
@@ -27,6 +29,7 @@ function setup(
     repos?: Parameters<typeof github>[0]['repos']
     watch?: BoardOptions['watch']
     basePath?: string
+    store?: BoardOptions['store']
   } = {},
 ) {
   const s = fakePlatform('slack', options.slackClient ? withSlackClient(options.slackClient, !!options.asyncToken) : undefined)
@@ -43,6 +46,7 @@ function setup(
     },
     ...(options.watch ? { watch: options.watch } : {}),
     ...(options.basePath !== undefined ? { basePath: options.basePath } : {}),
+    ...(options.store ? { store: options.store } : {}),
   })
   const webhook = (key: string, body: unknown, headers: Record<string, string> = {}) =>
     board.fetch(
@@ -122,7 +126,9 @@ describe('sync', () => {
     const pr = (await julian('POST', '/messages', { channel: 'prs', text: 'PR #12', labels: { pr: 'acme/www#12' } })).body.message
     await vi.waitFor(() => expect(s.channelPosts).toHaveLength(2))
     await vi.waitFor(() => expect(landed).toHaveLength(1))
-    expect(landed[0]).toEqual({ id: pr.id, external: { thread: `slack:C2:${s.channelPosts[1]!.id}`, message: s.channelPosts[1]!.id }, pr: 'acme/www#12' })
+    // Each thread delivers on its own lane, so the two roots reach Slack in either order.
+    const copy = s.channelPosts.find((post) => post.text.includes('PR #12'))!
+    expect(landed[0]).toEqual({ id: pr.id, external: { thread: `slack:C2:${copy.id}`, message: copy.id }, pr: 'acme/www#12' })
   })
 
   it('mirrors a Slack thread into the board, and board replies back into Slack', async () => {
@@ -142,6 +148,75 @@ describe('sync', () => {
     expect(s.posts[0]).toMatchObject({ threadId: 'slack:C1:100' })
     expect(s.posts[0]!.text).toContain('looking into it')
     expect(s.channelPosts).toHaveLength(0) // a thread that came from Slack is never re-posted to its channel
+  })
+
+  it("cleans NUL and lone surrogates from what Slack sends, which the board refuses and stores can't keep", async () => {
+    const { board, webhook } = setup()
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    expect((await julian('POST', '/messages', { channel: 'firehose', text: 'a\u0000b' })).status).toBe(400)
+    expect((await julian('POST', '/messages', { channel: 'firehose', text: 'a\ud800b' })).status).toBe(400)
+    expect((await julian('POST', '/messages', { channel: 'firehose', text: 'ok', id: '\ud800' })).status).toBe(400)
+    expect((await julian('POST', '/messages', { channel: 'firehose', text: 'ok', labels: { kind: '\udc00' } })).status).toBe(400)
+
+    // Markdown turns NUL into U+FFFD on the way in, and the board strips any that gets past.
+    await webhook('slack', { type: 'message', threadId: 'slack:C1:100', id: '100', text: 'export\u0000 is broken', user: 'U_ADA' })
+    await vi.waitFor(async () => expect(await read(julian, 'firehose')).toHaveLength(1))
+    const [root] = await read(julian, 'firehose')
+    expect(root).toMatchObject({ from: 'slack' })
+    expect(root!.text).toContain('is broken')
+    expect(root!.text).not.toContain('\u0000')
+
+    await webhook('slack', { type: 'message', threadId: 'slack:C1:200', id: '200', text: 'half \ud83d of an emoji', user: 'U_ADA' })
+    await vi.waitFor(async () => expect(await read(julian, 'firehose')).toHaveLength(2))
+    expect((await read(julian, 'firehose'))[1]!.text).toContain('half \ufffd of an emoji')
+
+    // Cutting a long message to fit can split an emoji in two.
+    await webhook('slack', { type: 'message', threadId: 'slack:C1:300', id: '300', text: `${'a'.repeat(9998)}\u{1f600} and more`, user: 'U_ADA' })
+    await vi.waitFor(async () => expect(await read(julian, 'firehose')).toHaveLength(3))
+    expect((await read(julian, 'firehose'))[2]!.text.endsWith('a\ufffd…')).toBe(true)
+  })
+
+  it('hears a Slack thread it was just asked to sync, while its tables catch up', async () => {
+    // Writes don't apply their own events, and the tables' consumer is slow: the tables lag the log.
+    const store = boardMemory()
+    const tables: MessageTables = {
+      ...store.tables,
+      applyNext: async () => false,
+      apply: async (event) => {
+        await new Promise((resolve) => setTimeout(resolve, 300))
+        await store.tables.apply(event)
+      },
+    }
+    const { board, webhook } = setup({ store: { ...store, tables } })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    const { body: root } = await julian('POST', '/messages', { channel: 'firehose', text: 'incident', noSync: true })
+    expect((await julian('POST', `/messages/${root.message.id}/sync`, { target: 'slack:C9:900.1' })).status).toBe(200)
+
+    // C9 isn't mapped: only the request that synced the thread lets its replies in.
+    await webhook('slack', { type: 'message', threadId: 'slack:C9:900.1', id: '900.2', text: 'on it', user: 'U_ADA' })
+    await vi.waitFor(async () => {
+      const { body } = await julian('GET', `/messages/${root.message.id}`)
+      expect(body.replies.map((reply: { text: string }) => reply.text)).toEqual(['on it'])
+    }, { timeout: 10_000 })
+  })
+
+  it("never sends text its author edited away, when a label change's delivery runs after the edit", async () => {
+    const { board, s } = setup({ slackRender: ({ message }) => `[${message.labels.state ?? '-'}] ${message.text}` })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    // The thread's deliveries back up behind its root's, which waits on Slack.
+    let open!: () => void
+    const slack = new Promise<void>((resolve) => (open = resolve))
+    const post = s.adapter.postChannelMessage!.bind(s.adapter)
+    s.adapter.postChannelMessage = async (...args) => {
+      await slack
+      return post(...args)
+    }
+    const { body: root } = await julian('POST', '/messages', { channel: 'firehose', text: 'the key is hunter2' })
+    await julian('POST', `/messages/${root.message.id}/labels`, { set: { state: 'open' } })
+    await julian('POST', `/messages/${root.message.id}/edit`, { text: 'the key is in the vault' })
+    open()
+    await vi.waitFor(() => expect(s.edits.at(-1)?.text).toContain('[open] the key is in the vault'))
+    expect([...s.channelPosts, ...s.edits].map((sent) => sent.text).join('\n')).not.toContain('hunter2')
   })
 
   it('posts a reply to Slack as written, with no quote of the message it answers', async () => {
@@ -1408,7 +1483,8 @@ describe('provider callbacks', () => {
     const send = (id: string, text: string) => board.fetch(new Request(`${BOARD_URL}/webhooks/slack`, { method: 'POST', body: JSON.stringify({ type: 'message', threadId: 'slack:C1:100', id, text, user: 'U1' }) }))
     await send('100', 'first')
     await vi.waitFor(async () => expect(await read(call, 'support')).toHaveLength(1))
-    await expect(saved()).rejects.toThrow('callback has finished')
+    // The message is readable as soon as it's written, which can be before the callback returns.
+    await vi.waitFor(() => expect(saved()).rejects.toThrow('callback has finished'))
     await send('101', 'skip')
     await send('102', 'last')
     await vi.waitFor(async () => expect((await read(call, 'support')).map((m) => m.text)).toEqual(['first', 'last']))

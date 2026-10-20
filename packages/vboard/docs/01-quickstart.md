@@ -33,9 +33,11 @@ vercel link
 ```
 
 A board trusts its own Vercel project: people who can access the project,
-each with their own `vercel login`, and the project's deployments. In
+each with their own `vercel login`, and the project's deployments in the
+environment the board runs in. In
 development the board learns which project it is from `.vercel/project.json`,
-which `vercel link` writes. See [Identity](./01-board/03-identity.md).
+which `vercel link` writes. See [Identity](./01-board/03-identity.md) and
+[Access](./01-board/09-access.md).
 
 ## 4. Start the app
 
@@ -164,7 +166,8 @@ psql "$DATABASE_URL" -f node_modules/vboard/sql/postgres/schema.sql
 ```
 
 [Database](./01-board/02-database.md#postgres) shows how to apply it on every
-build instead. Deploy, then link your checkout to the deployed board instead:
+build instead, and how to keep the board on [Redis](./01-board/02-database.md#redis),
+which needs nothing applied. Deploy, then link your checkout to the deployed board instead:
 
 ```bash
 vercel deploy --prod

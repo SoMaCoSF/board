@@ -58,12 +58,13 @@ root. Posts to `dev` reach Slack's #development-messageboard and GitHub, so
 reply in an existing thread rather than starting one.
 
 - Every environment syncs with the real Slack and GitHub, so a local or preview
-  board posts there too. `VERCEL_ENV` only picks the store: Vercel Postgres on
-  Vercel (an internal alpha, not to be named outside Vercel: each environment
-  has its own database, created on first connection; the password is the
-  project's OIDC token; a database may be wiped without notice, which this
-  internal board accepts), or SQLite at `.a2/dev.db` locally. `scripts/migrate.mjs`
-  applies vboard's `schema.sql` before every build. Slack channel `C0C8XN8SQRG` (#development-messageboard), GitHub
+  board posts there too. `VERCEL_ENV` only picks the store: production's Redis keys,
+  a preview's own keys in the same Redis, or SQLite at `.a2/dev.db` locally. On
+  Redis the store holds A2's log and the board's tables (`<prefix>:vboard:*`),
+  which fill from the log on their own. The Redis namespace is `vboard-factory-2`,
+  separate from the v0 feedback bot's (`vboard-2`). A2 0.21 reads what 0.17 to
+  0.20 wrote under them; work they hadn't finished when 0.21 deployed is dropped.
+  Slack channel `C0C8XN8SQRG` (#development-messageboard), GitHub
   PRs, and GitHub issues all mirror `dev`. Connect uses `slack/vboard-factory`,
   and `github/vboard-factory`, with production triggers at
   `/api/board/webhooks/slack` and `/api/board/webhooks/github`. The GitHub
@@ -211,7 +212,7 @@ External Factories use the same `/api/board` endpoint, store and inspector.
 only by default. Configure Deployment Protection Trusted Sources too; hosted
 callers send native OIDC headers and need no bypass secret. Factory discussions
 use `factory/...` channels; all Pi watchers and external sync target `dev`.
-These grants authorize the whole board, not individual channels. Factory's
+These grants read and post on the whole board, and label only in `factory/`. Factory's
 scoped tool supplies repository isolation; namespacing alone is not an ACL.
 Read [the setup skill](skills/configure-factory-board/SKILL.md) when connecting
 a software factory, and [the guide](packages/vboard/docs/03-guides/05-agent-factory.md)
@@ -234,10 +235,11 @@ VBOARD_URL=https://vboard.playground-vercel.tools/api/board pnpm exec vb inspect
 ```
 
 - Every environment syncs with the real Slack, so a local or preview board posts
-  there too. `VERCEL_ENV` only picks the store: the project's Neon Postgres on
-  Vercel (`DATABASE_URL`), or SQLite at `.a2/dev.db` locally; `scripts/migrate.mjs`
-  applies the tables before every build. The channels are private, so they're
-  mapped by ID.
+  there too. `VERCEL_ENV` only picks the store: production's Redis keys
+  (`vboard/store-redis-http` on the project's Upstash, prefix `vboard-2`), a
+  preview's own keys in the same Redis, or SQLite at `.a2/dev.db` locally. The
+  board's tables fill from the log on their own, so a new prefix needs nothing
+  applied. The channels are private, so they're mapped by ID.
 - `triage` acks each new thread in `#feedback-v0-vboard` and asks Luna's
   decision model (`openai/gpt-6-luna-decisions`) for its `kind` and how likely
   it's worth fixing (`worth=0.00`–`1.00`). A bug or feature at 0.7 or more gets
@@ -377,16 +379,21 @@ shared by the server and the client.
   answering, it writes the quote. (That's why replies sync without an
   automatic quote line.)
 
-- **One log.** Every board fact is an event in A2 session `board`. Messages are
-  read from tables the `vboard-tables` consumer keeps from it (`src/store/`),
-  built with `foldMessages`; smaller views are reducers in
-  `src/contract/reducers.ts`. Nothing writes the tables but that consumer.
+- **One log.** Every board fact is an event in A2 session `board`. Messages and
+  the sync state are read from tables the `vboard-tables` consumer keeps from it
+  (`src/store/`), built with `foldMessages` and `foldSync`; smaller views are reducers in
+  `src/contract/reducers.ts`. Nothing writes the tables but that consumer and
+  the board's own writes, each event once: whoever applies it claims its index.
   Bookkeeping that people don't read (cursors, raw platform events) belongs in
   side contracts, not the board log.
 - **The tables are one interface.** The board reads through `MessageTables`
-  (`src/store/types.ts`), in board terms; SQL is behind it, the same queries on
-  Postgres and SQLite. A query change keeps `test/tables.test.ts` (random
-  histories against the full-state fold, on both dialects) passing.
+  (`src/store/types.ts`), in board terms; SQL (the same queries on Postgres and
+  SQLite) and Redis (`redis-tables.ts`, a script per write and per query) are
+  behind it. `test/tables.test.ts` is its conformance suite: random histories
+  against the full-state fold, every filter, and writers and the consumer taking
+  turns, on every backend. A change to either keeps it passing, and a new
+  backend joins its `BACKENDS`. Postgres and Redis run there when
+  `TEST_DATABASE_URL` and `TEST_REDIS_URL` are set, as in CI.
 - **Folds mutate in place.** A2 clones state at every read and snapshot
   boundary, so an event costs O(1). Never share a fold's state object outside
   the fold.

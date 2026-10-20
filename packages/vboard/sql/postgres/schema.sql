@@ -149,13 +149,17 @@ create table if not exists a2_presence (
 -- since this release runs no handlers to finish it. Every event is kept.
 -- Causes gain the dispatcher that appended them, the handlers table
 -- (`a2.handlers`), and its lane. Then the old dispatch columns go, and
--- their indexes with them. The block commits whole, or not at all.
+-- their indexes with them. The block locks the events first, so an earlier
+-- release still writing waits and then fails, rather than committing between
+-- its statements, and it commits whole, or not at all.
 do $$ begin
   if exists (
     select 1 from pg_attribute
      where attrelid = to_regclass('a2_events')
        and attname = 'processed_at' and not attisdropped
   ) then
+    lock table a2_events in access exclusive mode;
+
     update a2_events child
        set cause = jsonb_build_object(
              'consumer', 'a2.handlers',
@@ -188,6 +192,72 @@ end $$;
 -- Earlier releases recorded a schema version here and checked it before
 -- their first query. This one checks nothing up front.
 drop table if exists a2_schema;
+--> statement-breakpoint
+
+-- Runs an operation's statements in one round trip: A2 sends each write that
+-- takes a session's lock as one call, the lock and then the statements that
+-- need it, so it holds the lock only while the server runs them. Each
+-- statement takes its snapshot when it starts, so those after the lock see
+-- what its last holder committed; a single statement can't, since its
+-- snapshot predates the lock. Each statement is a select of jsonb rows: a row
+-- with an `abort` key fails the call and rolls it back, and one with a `stop`
+-- key ends it. It needs read committed, the default: under a stricter level
+-- every statement would share the first one's snapshot, so it refuses to run.
+-- Created only if missing, as the indexes are: a later release that changes it
+-- adds a function with a new name.
+do $$ declare grantee text; begin
+  if to_regprocedure('a2_batch(text[], jsonb)') is null then
+    create function a2_batch(statements text[], params jsonb)
+    returns setof jsonb
+    language plpgsql
+    volatile
+    as $batch$
+    declare
+      statement text;
+      result jsonb;
+    begin
+      if current_setting('transaction_isolation') <> 'read committed' then
+        raise exception using errcode = 'A2002',
+          message = 'a2_batch needs the read committed isolation level';
+      end if;
+      foreach statement in array statements loop
+        for result in execute statement using params loop
+          if result ? 'abort' then
+            raise exception using errcode = 'A2001',
+              message = 'a2_batch aborted', detail = result::text;
+          end if;
+          return next result;
+          if result ? 'stop' then
+            return;
+          end if;
+        end loop;
+      end loop;
+    end
+    $batch$;
+    -- Default privileges can grant a new function to roles besides PUBLIC, as
+    -- platforms that serve functions over an API grant theirs: it starts with
+    -- none but its owner's. Grants made after it exist are left alone.
+    for grantee in
+      select acl.grantee::regrole::text
+        from pg_proc proc, aclexplode(proc.proacl) acl
+       where proc.oid = to_regprocedure('a2_batch(text[], jsonb)')
+         and acl.grantee not in (0, proc.proowner)
+    loop
+      execute format('revoke execute on function a2_batch(text[], jsonb) from %s', grantee);
+    end loop;
+  end if;
+  -- It runs any statement it's handed, as its caller: only its owner, the role
+  -- that applies this file, may call it, and not every role, as Postgres lets
+  -- by default. Platforms that serve functions over an API would serve it too.
+  if pg_has_role(
+    current_user,
+    (select proowner from pg_proc
+      where oid = to_regprocedure('a2_batch(text[], jsonb)')),
+    'usage'
+  ) then
+    revoke execute on function a2_batch(text[], jsonb) from public;
+  end if;
+end $$;
 --> statement-breakpoint
 
 do $$ begin
@@ -267,13 +337,40 @@ create table if not exists vboard_terms (
 --> statement-breakpoint
 create index if not exists vboard_terms_term on vboard_terms (term, value, message_id);
 --> statement-breakpoint
+create table if not exists vboard_sync_threads (
+  thread text primary key,
+  data text not null
+);
+--> statement-breakpoint
+create table if not exists vboard_external_threads (
+  external text primary key,
+  thread text not null
+);
+--> statement-breakpoint
+create table if not exists vboard_copies (
+  message_id bigint not null,
+  target text not null,
+  data text not null,
+  primary key (message_id, target)
+);
+--> statement-breakpoint
+create table if not exists vboard_external_messages (
+  key text primary key,
+  message_id bigint not null
+);
+--> statement-breakpoint
+create index if not exists vboard_messages_recent on vboard_messages (by_principal, created_at) where re is null;
+--> statement-breakpoint
+drop function if exists vboard_apply(text, bigint, boolean, jsonb, jsonb, jsonb);
+--> statement-breakpoint
 create or replace function vboard_apply(
   apply_consumer text,
   apply_index bigint,
   apply_next boolean,
   apply_message jsonb,
   apply_terms jsonb,
-  apply_summary jsonb
+  apply_summary jsonb,
+  apply_sync jsonb
 ) returns boolean language plpgsql as $$
 begin
   if apply_next then
@@ -312,6 +409,21 @@ begin
   if apply_summary is not null then
     update vboard_messages set replies = (apply_summary->>'replies')::int, at = (apply_summary->>'at')::bigint
       where id = (apply_summary->>'root')::bigint;
+  end if;
+  if apply_sync is not null then
+    if jsonb_typeof(apply_sync->'thread') = 'object' then
+      insert into vboard_sync_threads (thread, data) values (apply_sync->'thread'->>'key', apply_sync->'thread'->>'data')
+        on conflict (thread) do update set data = excluded.data;
+    end if;
+    insert into vboard_external_threads (external, thread)
+      select entry->>0, entry->>1 from jsonb_array_elements(apply_sync->'external_threads') as entry
+      on conflict (external) do update set thread = excluded.thread;
+    insert into vboard_copies (message_id, target, data)
+      select (entry->>0)::bigint, entry->>1, entry->>2 from jsonb_array_elements(apply_sync->'copies') as entry
+      on conflict (message_id, target) do update set data = excluded.data;
+    insert into vboard_external_messages (key, message_id)
+      select entry->>0, (entry->>1)::bigint from jsonb_array_elements(apply_sync->'external_messages') as entry
+      on conflict (key) do update set message_id = excluded.message_id;
   end if;
   return true;
 end

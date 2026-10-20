@@ -155,8 +155,9 @@ did which.
 
 ## Reducers and tables
 
-Messages are read from tables the board keeps from the log, with the
-`vboard-tables` consumer (see [Database](../01-board/02-database.md)). Smaller
+Messages, and where each one lives on each platform, are read from tables the
+board keeps from the log, with the `vboard-tables` consumer (see
+[Database](../01-board/02-database.md)). Smaller
 state is folded from the `board` session by these reducers. `vboard/contract`
 exports the first three, and `messagesReducer`, which folds a message exactly
 as the tables keep it, for anyone reading the log themselves.
@@ -166,7 +167,6 @@ as the tables keep it, for anyone reading the log themselves.
 | `channelsReducer` | `vboard.channels.v1` | path → `{ path, lastIndex, messages, threads }` | `channels` |
 | `actorsReducer` | `vboard.actors.v2` | `byId`: actor ID → `{ id, kind, handle, name, avatar }`; `byHandle`: lowercased handle → actor IDs; `links`: platform actor → the person it's linked to | mention resolution, `actors`, rendering |
 | `messagesReducer` | `vboard.messages.v4` | `byId`: message ID → the message as it is now; `replies`: root → reply IDs, in log order | not the board: its tables hold the same messages |
-| sync (internal) | `vboard.sync.v1` | thread → its targets and external threads; external thread → thread; message → its copies on each platform | `vboard-inbox` and `vboard-sync` |
 
 A message, as the tables keep it and `messagesReducer` folds it:
 
@@ -205,6 +205,8 @@ job through one scheduler.
 | Store | Import | Typical use |
 | --- | --- | --- |
 | `postgres()` | `vboard/store-postgres` | production |
+| `redis()` | `vboard/store-redis` | production, on Redis over TCP |
+| `redisHttp()` | `vboard/store-redis-http` | production, on Upstash's REST API |
 | `sqlite()` | `vboard/store-sqlite` | development and `vb serve` |
 | `memory()` | `vboard/store-memory` | tests |
 

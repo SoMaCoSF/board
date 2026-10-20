@@ -8,6 +8,8 @@ export const PROJECT_ID = 'prj_board'
 export const TEAM_ID = 'team_test'
 export const VERCEL_ISS = 'https://oidc.vercel.com/test'
 export const GITHUB_ISS = 'https://token.actions.githubusercontent.com'
+/** Some other OIDC issuer, for `oidc()`. */
+export const OIDC_ISS = 'https://gitlab.test'
 
 const { publicKey, privateKey } = await generateKeyPair('RS256')
 const jwk = { ...(await exportJWK(publicKey)), kid: 'test', alg: 'RS256' }
@@ -17,6 +19,7 @@ const jwks = createLocalJWKSet({ keys: [jwk] })
 export const testAuth = {
   vercel: { issuer: VERCEL_ISS, jwks },
   github: { issuer: GITHUB_ISS, jwks },
+  oidc: { [OIDC_ISS]: jwks },
 }
 
 /**
@@ -50,9 +53,14 @@ export function testBoard(options: Partial<Omit<BoardOptions, 'remote'>> = {}) {
    * over, and run the event twice at once.
    */
   const skipHold = async (server: { contract: { name: string } }, session: string) => {
+    // Skipping the clock lapses every claim in the store, so nothing may be running on the board either:
+    // a delivery in flight there would be taken over, and post twice.
+    const sessions = [`${server.contract.name}\u001f${session}`, 'vboard\u001fboard']
     await vi.waitFor(async () => {
-      const cursors = await store.log!.cursors(`${server.contract.name}\u001f${session}`)
-      expect(cursors.filter((cursor) => cursor.claimHolder !== null)).toEqual([])
+      for (const at of sessions) {
+        const cursors = await store.log!.cursors(at)
+        expect(cursors.filter((cursor) => cursor.claimHolder !== null)).toEqual([])
+      }
     })
     clock.skip()
   }
@@ -118,6 +126,10 @@ export const workflowToken = (claims: Record<string, unknown> = {}) =>
     },
     GITHUB_ISS,
   )
+
+/** A token from another OIDC issuer, GitLab's shape by default. */
+export const oidcToken = (claims: Record<string, unknown> = {}, issuer = OIDC_ISS) =>
+  sign({ sub: 'project_path:acme/api:ref_type:branch:ref:main', project_path: 'acme/api', ref: 'main', ...claims }, issuer)
 
 /** Calls the board in-process, like a client would over HTTP. */
 export function caller(handler: (request: Request) => Promise<Response>, token: string, headers: Record<string, string> = {}) {

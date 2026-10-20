@@ -1,6 +1,6 @@
 import type { A2Store } from 'experimental-a2/server'
 import type { BoardEvent } from '../contract/contract.ts'
-import type { Message } from '../contract/reducers.ts'
+import type { ExternalCopy, Message, SyncedThread } from '../contract/reducers.ts'
 
 /**
  * What a query matches, resolved by the board: handles are already actor and
@@ -9,6 +9,8 @@ import type { Message } from '../contract/reducers.ts'
 export type MessageFilter = {
   /** One channel, or with `subtree` it and every channel under it. */
   channel?: { path: string; subtree: boolean }
+  /** In one of these channels: those a reader may read. None matches nothing. */
+  channels?: readonly string[]
   /** A thread: its root and its replies. */
   re?: number
   /** Written by one of these actors, or by an agent of one of these people. */
@@ -53,6 +55,20 @@ export interface MessageTables {
   messages(filter: MessageFilter, page: Page): Promise<{ messages: Message[]; position: number }>
   /** Threads with a message that matches, by their latest reply. */
   threads(filter: MessageFilter, page: Page): Promise<{ threads: ThreadSummary[]; position: number }>
+  /** A thread's sync: its targets, and the platform thread it lives in on each. */
+  syncOf(thread: string): Promise<SyncedThread | null>
+  /** The board thread a platform thread belongs to. */
+  threadOf(externalThread: string): Promise<string | null>
+  /** Each message's copies, by target: where it went, or came from, on each platform. */
+  copiesOf(ids: readonly number[]): Promise<Map<number, Record<string, ExternalCopy>>>
+  /** The board message a platform message is a copy of, or came in as. */
+  messageOf(externalThread: string, platformMessage: string): Promise<number | null>
+  /** Every platform thread a board thread lives in. */
+  externalThreads(): Promise<string[]>
+  /** A person's own roots posted at or after `since` (epoch ms). */
+  recentRoots(principal: string, since: number): Promise<Message[]>
+  /** The messages that carry an attachment, by ID. A deleted message carries none. */
+  withAttachment(attachment: string): Promise<Message[]>
   close(): Promise<void>
 }
 

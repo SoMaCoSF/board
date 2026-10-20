@@ -4,7 +4,7 @@ import type { BoardClient } from '../client/client.ts'
 import { createClient } from '../client/node.ts'
 import { RemoteWatcherId } from '../contract/schemas.ts'
 import { VERSION } from '../version.ts'
-import { createVerifier } from './auth.ts'
+import { createVerifier, vercelProject } from './auth.ts'
 import type { BoardOptions } from './board.ts'
 import { forbidden, HttpError, json, notFound, toErrorResponse, unauthorized } from './errors.ts'
 import { discoveryIdentity } from './identity.ts'
@@ -14,7 +14,7 @@ import { transport } from './transport.ts'
 import { compileWatcher } from './watch.ts'
 
 /** What a board with a remote can't have: each is the remote's. */
-const THE_REMOTES = ['store', 'scheduler', 'blob', 'sync', 'middleware', 'trustedSources'] as const
+const THE_REMOTES = ['store', 'scheduler', 'blob', 'sync', 'middleware', 'access'] as const
 
 /** A watcher's or client's name on a board with a remote is the profile its writes are by. */
 function checkName(what: string, name: string) {
@@ -73,6 +73,8 @@ export function remoteBoard(options: BoardOptions & { remote: string }) {
 
   const registrar = clientFor(null, null)
   let last: { url: string; at: number; result: RegistrationView } | null = null
+  /** This board's own principal on its remote, as its last registration came back. */
+  let owner: string | null = null
   let registering: Promise<RegistrationView> | null = null
   /** Registers this board's watchers with its remote, as itself, replacing its last registration. */
   async function register(url: string): Promise<RegistrationView> {
@@ -81,6 +83,7 @@ export function remoteBoard(options: BoardOptions & { remote: string }) {
       .register({ url, watch: specs })
       .then((result) => {
         last = { url, at: Date.now(), result }
+        owner = result.owner
         return result
       })
       .finally(() => {
@@ -104,10 +107,12 @@ export function remoteBoard(options: BoardOptions & { remote: string }) {
         remoteProject = null
         throw error
       }))
-  const verify = createVerifier({
+  // Deliveries come from the remote's deployments in this board's own environment (production
+  // when it runs in none): a production board never takes matches from its remote's previews.
+  const { verify } = createVerifier({
     projectId: async () => (await project()).id,
     teamId: async () => (await project()).teamId,
-    trustedSources: [],
+    access: [vercelProject({ project: 'self', environments: [process.env.VERCEL_ENV || 'production'], can: 'all' })],
     ...(options.auth ? { auth: options.auth } : {}),
   })
 
@@ -139,7 +144,13 @@ export function remoteBoard(options: BoardOptions & { remote: string }) {
           const token = (request.headers.get('authorization') ?? '').match(/^Bearer\s+(.+)$/i)?.[1]
           if (!token) throw unauthorized('missing bearer token')
           const principal = await verify(token, boardUrl)
-          if (principal.kind !== 'deployment') throw forbidden(`deliveries come from ${remote}`)
+          // The remote's own deployments in this board's environment, not its previews.
+          if (principal.kind !== 'deployment' || !principal.access.readsAll) throw forbidden(`deliveries come from ${remote}`)
+          // Only matches this board registered: anyone can register a URL, and the remote then
+          // sends them their matches there, which this board's watchers must never run on.
+          const named = request.headers.get('x-board-owner')
+          const own = owner ?? (await register(boardUrl)).owner
+          if (named !== own) throw new HttpError(403, 'not_owner', `this delivery is for ${named ?? 'nobody'}'s registration, not this board's`)
           // The remote holds an older registration (a deploy changed the tails): bring it up to date,
           // even when the watcher this is for is gone, so the remote stops sending its matches.
           if (request.headers.get('x-board-watchers') !== hash) await tryRegister(boardUrl)
