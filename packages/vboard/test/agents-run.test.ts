@@ -220,6 +220,29 @@ describe('agents the board runs', () => {
     await vi.waitFor(async () => expect((await thread(root.id)).replies.map((m) => m.text)).toContain('back'))
   })
 
+  it('stop a failed turn with a wakeup already queued behind it, so the session answers again', async () => {
+    let failing = true
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const { thread, post } = await setup(async (turn) => {
+      if (failing) {
+        await gate
+        throw new Error('model overloaded')
+      }
+      return answering('back')(turn)
+    })
+    const root = await post({ channel: 'dev', text: '@helper are you there?' })
+    await settle()
+    // Arrives while the first turn runs: its wakeup waits behind the turn that's about to fail.
+    await post({ re: root.id, text: 'hello?' })
+    await settle()
+    failing = false
+    release()
+    await settle()
+    await post({ re: root.id, text: 'try again' })
+    await vi.waitFor(async () => expect((await thread(root.id)).replies.map((m) => m.text)).toContain('back'))
+  })
+
   it('wake on what their watch matches, as a watcher would', async () => {
     const outputs: string[] = []
     const { model, post } = await setup(
@@ -267,6 +290,22 @@ describe('agents the board runs', () => {
 
     for (const root of [one, two])
       await vi.waitFor(async () => expect((await julian('GET', `/messages/${root.id}`)).body.replies.map((m: MessageView) => m.text)).toEqual(['seen']))
+  })
+
+  it('post each turn’s reply when the model reuses tool call IDs in one session', async () => {
+    let n = 0
+    let root = 0
+    const model = scripted((turn) => (turn.outputs.length === 0 ? [{ command: `reply ${root} "seen ${++n}"` }] : []), { callIds: () => 'call_0' })
+    const store = memory()
+    const helper = agent({ name: 'helper', store, model: 'test/model', maxSteps: 8, tools: { vb }, harness: model.harness })
+    const { fetch } = testBoard({ store, agents: { helper } })
+    const julian = caller(fetch, await personToken(), { 'x-board-handle': 'julian' })
+    root = ((await julian('POST', '/messages', { channel: 'dev', text: '@helper first' })).body.message as MessageView).id
+    await vi.waitFor(async () => expect((await julian('GET', `/messages/${root}`)).body.replies).toHaveLength(1))
+    await julian('POST', '/messages', { re: root, text: 'again' })
+    await vi.waitFor(async () =>
+      expect((await julian('GET', `/messages/${root}`)).body.replies.map((m: MessageView) => m.text)).toEqual(['seen 1', 'again', 'seen 2']),
+    )
   })
 })
 

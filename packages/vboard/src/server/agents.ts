@@ -253,12 +253,13 @@ export function createAgents(options: {
     const queue: { message: UIMessage; generate: boolean }[] = [...state.inbox.items]
     for (const { command } of state.pendingQueueCommands ?? [])
       if (command.action === 'send') queue.push({ message: command.message, generate: command.generate !== false })
-    if (queue.some((item) => item.generate && (item.message.metadata as { vboard?: unknown } | undefined)?.vboard)) return
-    // A failed turn holds everything behind it: stop it, so this wakeup runs.
+    // A failed turn holds everything behind it: stop it first, so this wakeup runs, or the one already
+    // waiting does. Stopping only when no wakeup waits would leave the session stuck behind the failure.
     if (state.active?.phase === 'failed') {
       const [stop] = inputs.stop({ turnId: state.active.turnId })
       await target.append({ ...stop!, id: await idempotentId('vboard.stop', entry.agent.key, session, state.active.turnId) })
     }
+    if (queue.some((item) => item.generate && (item.message.metadata as { vboard?: unknown } | undefined)?.vboard)) return
     const { unread } = await inboxOf(entry.agent.key, session)
     if (unread.length === 0) return
     const message: UIMessage = {

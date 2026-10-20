@@ -33,15 +33,18 @@ const inputSchema = z.object({
 const result = ({ code, output }: { code: number; output: string }) => (code === 0 ? output : `${output}${output ? '\n' : ''}(exit ${code})`)
 
 /** The A2 agent running this tool call, as a board knows it, and its session. */
-function running(): { client(options: { key?: string; session?: string }): BoardClient; session: string } {
+function running(): { client(options: { key?: string; session?: string }): BoardClient; session: string; generation: string } {
   for (const entry of RUNNING_AGENTS.values()) {
     let session: string
+    let generation: string
     try {
-      session = handlerContext(entry.contract as never).session.id
+      const context = handlerContext(entry.contract as never)
+      session = context.session.id
+      generation = (context.event.payload as { call?: { generationId?: string } }).call?.generationId ?? ''
     } catch {
       continue
     }
-    return { client: entry.client, session }
+    return { client: entry.client, session, generation }
   }
   throw new UsageError("vb runs inside an agent a board runs (board({ agents })); anywhere else, use vbFor(board)")
 }
@@ -62,8 +65,9 @@ export const vb: Tool<VbInput, string> = tool({
     }
     return result(
       await runVb(command, {
-        // Scoped by session: a provider may reuse a call ID like `call_0` from one turn to the next.
-        client: () => agent.client({ key: `${agent.session}:${toolCallId}`, session: agent.session }),
+        // Scoped by session and generation: a provider may reuse a call ID like `call_0` from one turn to the
+        // next. A retry of the same call is the same generation, so it still lands once.
+        client: () => agent.client({ key: `${agent.session}:${agent.generation}:${toolCallId}`, session: agent.session }),
         input,
         sandbox: experimental_sandbox,
         signal: abortSignal,
