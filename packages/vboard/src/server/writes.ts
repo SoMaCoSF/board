@@ -485,7 +485,8 @@ function unclaimed(sync: SyncState, target: ResolvedTarget, thread: string, acce
   if (owner === undefined || owner === thread) return
   const synced = sync.threads[owner]
   const which = synced && access.readable(synced.channel) ? `#${synced.root}` : 'another thread'
-  throw new HttpError(409, 'already_synced', `${target.target} is already synced with ${which}`)}
+  throw new HttpError(409, 'already_synced', `${target.target} is already synced with ${which}`)
+}
 
 /** `slack:C0123ABC:1727.1` → `slack:C0123ABC`; `github:o/r:12` → `github:o/r`. */
 export const channelOf = (externalThread: string) => {
