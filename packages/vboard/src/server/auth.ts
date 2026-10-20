@@ -20,6 +20,8 @@ export type Principal = {
   /** What it may do in each channel, narrowed by `x-board-scope` when a proxy sent one. */
   access: Access
   expiresAt: Date | null
+  /** The board's own deployment, in the board's own environment: the one principal that may write as a declared agent. */
+  own?: true
   /** The verified token's claims, so its access can be worked out again later, as a schedule's sends do. Absent for people and the board's own code. */
   facts?: TokenFacts
   /** The `x-board-scope` it was narrowed by. */
@@ -357,12 +359,14 @@ export function createVerifier(options: {
       : null
     // Kept with the claims, so a later send that can't learn the team still matches as this did.
     const kept = teamId === null ? facts : { ...facts, team: teamId }
-    const access = ruleFor('vercel', claims, { teamId, projectId: ownProject })
-    if (access) return deployment(kept, project, environment, access, expiresAt)
     // A deployment in the board's own environment runs the board's code. A
-    // preview runs any branch's, so a production board doesn't trust them.
+    // preview runs any branch's, so a production board doesn't trust them, and
+    // only the board's own code may write as its declared agents.
     const here = boardEnvironment()
-    if (own && here !== null && environment === here) return deployment(kept, project, environment, FULL_ACCESS, expiresAt)
+    const home = own && here !== null && environment === here
+    const access = ruleFor('vercel', claims, { teamId, projectId: ownProject })
+    if (access) return { ...deployment(kept, project, environment, access, expiresAt), ...(home ? { own: true as const } : {}) }
+    if (home) return { ...deployment(kept, project, environment, FULL_ACCESS, expiresAt), own: true }
     if (own)
       throw forbidden(
         `this token can't use this board: it runs in ${here ?? 'no Vercel environment'}, so its ${environment || 'unnamed'} deployments need vercelProject({ project: 'self', environments: ['${environment}'], can })`,

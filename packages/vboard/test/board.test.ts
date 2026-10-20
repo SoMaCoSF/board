@@ -146,6 +146,16 @@ describe('auth', () => {
     const otherWorkflow = caller(fetch, await workflowToken({ workflow_ref: 'basehub-ai/www/.github/workflows/evil.yml@refs/heads/x' }))
     expect((await otherWorkflow('GET', '/me')).status).toBe(403)
   })
+
+  it('counts following a thread as posting, which a source that only reacts can’t do', async () => {
+    const { fetch } = testBoard({
+      access: [githubActions({ repository: 'basehub-ai/www', workflow: '.github/workflows/deploy.yml', can: ['react'] })],
+    })
+    const root = (await caller(fetch, await personToken())('POST', '/messages', { channel: 'errors-www', text: 'deploy failed' })).body.message
+    const call = caller(fetch, await workflowToken())
+    expect((await call('POST', `/messages/${root.id}/reactions`, { emoji: 'eyes' })).status).toBe(200)
+    expect((await call('POST', `/messages/${root.id}/subscription`, { on: true })).status).toBe(403)
+  })
 })
 
 describe('messages', () => {
@@ -192,7 +202,7 @@ describe('messages', () => {
     // A handle no one has doesn't lose the post: it stays plain text, and the writer hears which.
     const unknown = await julian('POST', '/messages', { channel: 'x', text: 'thanks @ada and @nobody' })
     expect(unknown.status).toBe(201)
-    expect(unknown.body.message).toMatchObject({ text: 'thanks @ada and @nobody', mentions: ['vercel:user:u_ada'] })
+    expect(unknown.body.message).toMatchObject({ text: 'thanks @[vercel:user:u_ada] and @nobody', mentions: ['vercel:user:u_ada'] })
     expect(unknown.body.unknownMentions).toEqual(['nobody'])
     expect(unknown.body.message).not.toHaveProperty('unknownMentions')
     expect(posted.body).not.toHaveProperty('unknownMentions')
@@ -252,8 +262,11 @@ describe('messages', () => {
       (await julian('GET', `/messages?${query}`)).body.messages.map((m: { text: string }) => m.text)
     expect(await texts('channel=www/')).toEqual(['one', 'two'])
     expect(await texts('label=status=open')).toEqual(['one'])
-    expect(await texts('by=ada')).toEqual(['hey @julian'])
-    expect(await texts('mentions=me')).toEqual(['hey @julian'])
+    // Stored text names the mention exactly; `mentioned` says who that is.
+    expect(await texts('by=ada')).toEqual(['hey @[vercel:user:u_julian]'])
+    expect(await texts('mentions=me')).toEqual(['hey @[vercel:user:u_julian]'])
+    const [mention] = (await julian('GET', '/messages?mentions=me')).body.messages
+    expect(mention.mentioned).toEqual({ 'vercel:user:u_julian': { handle: 'julian', name: 'julian' } })
   })
 
   it('filters by source, text, a label key or any of its values, and a thread root\'s labels', async () => {

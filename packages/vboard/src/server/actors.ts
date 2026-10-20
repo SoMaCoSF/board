@@ -1,6 +1,6 @@
 import type { ActorsState, Actor } from '../contract/reducers.ts'
-import type { Author } from '../contract/schemas.ts'
-import { extractMentions } from '../contract/mentions.ts'
+import { AGENT_KEY, agentActorId, agentKeyOf, isBoardActor, type Author } from '../contract/schemas.ts'
+import { replaceMentions } from '../contract/mentions.ts'
 import type { Principal } from './auth.ts'
 import { badRequest } from './errors.ts'
 
@@ -15,11 +15,65 @@ export type ResolvedActor = {
   actor: Actor
 }
 
-/** The actor a request writes as: its principal, plus the profile it selects. */
+/** Who a declared agent is: `board({ agents: { helper: { name: 'Helper' } } })`. */
+export type AgentIdentity = {
+  /** What people see. Defaults to the key. */
+  name?: string
+  /** An https URL. The board serves its own for `claude`, `codex`, `grok`, and `pi`. */
+  avatar?: string
+}
+
+export type DeclaredAgent = { key: string; id: string; name: string; avatar: string | null }
+export type DeclaredAgents = ReadonlyMap<string, DeclaredAgent>
+
+/** Checks each agent the board declares, the way watchers are checked: a bad one fails the boot. */
+export function declareAgents(config: Record<string, AgentIdentity> | undefined): DeclaredAgents {
+  const agents = new Map<string, DeclaredAgent>()
+  for (const [key, agent] of Object.entries(config ?? {})) {
+    if (!AGENT_KEY.test(key))
+      throw new Error(`agents: keys start with a letter, end with a letter or digit, and use up to 32 lowercase letters, numbers, and hyphens, got: ${key}`)
+    const name = agent.name === undefined ? key : agent.name.replace(/[\u0000-\u001f\u007f]/g, '').trim()
+    if (name.length === 0 || name.length > 128) throw new Error(`agents ${key}: names are 1 to 128 characters`)
+    if (agent.avatar !== undefined && !isAvatarUrl(agent.avatar))
+      throw new Error(`agents ${key}: avatars must be https URLs (http only on localhost)`)
+    agents.set(key, { key, id: agentActorId(key), name, avatar: agent.avatar ?? null })
+  }
+  return agents
+}
+
+/** A declared agent's actor. `url` is the board's, for the avatars it serves itself. */
+export function agentActor(agent: DeclaredAgent, url: string | null): Actor {
+  const builtIn = url !== null && (KNOWN_AGENTS as readonly string[]).includes(agent.key) ? `${url}/avatars/${agent.key}` : null
+  return { id: agent.id, kind: 'agent', handle: agent.key, name: agent.name, avatar: agent.avatar ?? builtIn }
+}
+
+/**
+ * The actors, with every declared agent in them: an agent is mentionable and listed
+ * before it ever writes. Only reads use this; `actorSeen` reads what the log holds,
+ * so an agent's first write still records it.
+ */
+export function withAgents(state: ActorsState, agents: DeclaredAgents, url: string | null): ActorsState {
+  if (agents.size === 0) return state
+  const byId = { ...state.byId }
+  const byHandle = { ...state.byHandle }
+  for (const agent of agents.values()) {
+    byId[agent.id] ??= agentActor(agent, url)
+    const ids = byHandle[agent.key] ?? []
+    if (!ids.includes(agent.id)) byHandle[agent.key] = [agent.id, ...ids]
+  }
+  return { ...state, byId, byHandle }
+}
+
+/**
+ * The actor a request writes as: its principal, plus the profile it selects. The
+ * board's own deployment selecting a declared agent's key writes as that agent;
+ * anyone else selecting it gets their own profile of that name.
+ */
 export function resolveActor(
   principal: Principal,
   headers: Headers,
   boardUrl: string,
+  agents: DeclaredAgents = new Map(),
 ): ResolvedActor {
   const profileName = headers.get('x-board-profile')?.trim() || null
   if (profileName !== null && !PROFILE.test(profileName))
@@ -51,6 +105,10 @@ export function resolveActor(
   }
 
   const profile = profileName?.toLowerCase() ?? null
+  const agent = principal.own && profile !== null ? agents.get(profile) : undefined
+  if (agent)
+    return { author: { actor: agent.id, principal: principal.id, profile, session }, actor: agentActor(agent, boardUrl) }
+
   const id = profile === null ? principal.id : `${principal.id}+${profile}`
   const known = profile !== null && (KNOWN_AGENTS as readonly string[]).includes(profile)
   const actor: Actor = {
@@ -66,7 +124,7 @@ export function resolveActor(
   }
 }
 
-function isAvatarUrl(value: string): boolean {
+export function isAvatarUrl(value: string): boolean {
   try {
     const url = new URL(value)
     return (
@@ -82,8 +140,10 @@ function isAvatarUrl(value: string): boolean {
 export function actorSeen(seen: Actor, known: ActorsState) {
   const existing = known.byId[seen.id]
   // Platforms don't always send an avatar (GitHub comments via Chat SDK omit it,
-  // its webhooks include it): a missing one keeps the avatar the board knows.
-  const actor = seen.kind === 'external' && seen.avatar === null ? { ...seen, avatar: existing?.avatar ?? null } : seen
+  // its webhooks include it), and an in-process agent can't build the board's own
+  // avatar URL: a missing one keeps the avatar the board knows.
+  const keeps = (seen.kind === 'external' || agentKeyOf(seen.id) !== null) && seen.avatar === null
+  const actor = keeps ? { ...seen, avatar: existing?.avatar ?? null } : seen
   if (
     existing &&
     existing.kind === actor.kind &&
@@ -104,48 +164,112 @@ export function actorSeen(seen: Actor, known: ActorsState) {
   }
 }
 
+export type MentionContext = {
+  /** The actors a write can mention. */
+  known: ActorsState
+  /** The writer, when the board hasn't seen it yet: it can mention itself. */
+  pending?: Actor | undefined
+  /** Platform text: a mention that doesn't resolve stays as written, and the rest still count. */
+  lenient?: boolean
+  /** Who already wrote in the thread: they win a tie between platform users. */
+  participants?: ReadonlySet<string>
+  /**
+   * Platform text: where a typed `@name` is a mention, as an actor ID prefix
+   * (`github:user:`), or null when only what the platform marked counts. Board text
+   * leaves it out: a typed `@name` there is anyone the board knows.
+   */
+  scope?: string | null
+  /**
+   * Whether an ambiguous mention's error lists who it could be. A caller that can't read
+   * every channel can't list actors either, so it gets `use @[actor-id]` alone.
+   */
+  candidates?: boolean
+}
+
 /**
- * Resolves prose mentions to actor IDs. A `@handle` names the one actor the board
- * has seen with it; `@[actor-id]` names one directly. A handle nobody has stays
- * plain text and comes back in `unknown`, so the writer can be told. A handle
- * several actors share, or an `@[actor-id]` the board doesn't know, fails the
- * write. `lenient` is for platform text: no mention fails it, and one that
- * doesn't resolve stays plain text. Without `candidates`, an ambiguous mention
- * doesn't list who it could be: a caller that can't read every channel can't
- * list actors either.
+ * The order a typed `@handle` resolves in, when several actors share it: a declared
+ * agent, then a person, then an agent profile (`julian/claude`), then a deployment or
+ * workflow, then a platform user. The board's own watchers, clients, and middleware
+ * are never mentioned.
  */
-export function resolveMentions(
-  text: string,
-  known: ActorsState,
-  pending?: Actor,
-  lenient = false,
-  candidates = true,
-): { mentions: string[]; unknown: string[] } {
-  const resolved: string[] = []
+function rank(id: string, actor: Actor | undefined): number | null {
+  if (agentKeyOf(id) !== null) return 0
+  if (isBoardActor(id)) return null
+  switch (actor?.kind) {
+    case 'person':
+      return 1
+    case 'agent':
+      return 2
+    case 'deployment':
+    case 'workflow':
+      return 3
+    default:
+      return 4
+  }
+}
+
+/**
+ * Resolves prose mentions to actors, and rewrites each one it resolves to its exact
+ * form, `@[actor-id]`, so what's stored can never be ambiguous. `@[actor-id]` must
+ * name an actor the board knows. A handle nobody has stays plain text and comes back
+ * in `unknown`, so the writer can be told; one several actors share fails the write.
+ * `lenient` is for platform text: no mention fails it, and `unknown` stays empty.
+ */
+export function resolveMentions(text: string, context: MentionContext): { text: string; mentions: string[]; unknown: string[] } {
+  const mentions: string[] = []
   const unknown: string[] = []
   const add = (id: string) => {
-    if (!resolved.includes(id)) resolved.push(id)
+    if (!mentions.includes(id)) mentions.push(id)
   }
-  const fail = (error: Error) => {
-    if (!lenient) throw error
-  }
-  for (const token of extractMentions(text)) {
+  const rewritten = replaceMentions(text, (token) => {
     if (token.kind === 'actor') {
-      if (known.byId[token.actor] || pending?.id === token.actor) add(token.actor)
-      else fail(badRequest(`unknown actor @[${token.actor}]`, 'unknown_mention'))
-      continue
+      if (actorIn(context, token.actor)) add(token.actor)
+      else if (!context.lenient) throw badRequest(`unknown actor @[${token.actor}]`, 'unknown_mention')
+      return null
     }
-    const ids = new Set(known.byHandle[token.handle] ?? [])
-    if (pending && pending.handle.toLowerCase() === token.handle) ids.add(pending.id)
-    if (ids.size === 1) add([...ids][0]!)
-    else if (ids.size === 0) unknown.push(token.handle)
-    else if (!candidates) fail(badRequest(`ambiguous mention @${token.handle}: use @[actor-id]`, 'ambiguous_mention'))
-    else {
-      const options = [...ids]
-        .map((id) => `@[${id}] (${known.byId[id]?.name ?? pending?.name ?? id})`)
-        .join(' or ')
-      fail(badRequest(`ambiguous mention @${token.handle}: use ${options}`, 'ambiguous_mention'))
+    const id = resolveHandle(token.handle, context)
+    if (id === null) {
+      if (!context.lenient && !unknown.includes(token.handle)) unknown.push(token.handle)
+      return null
     }
+    add(id)
+    return `@[${id}]`
+  })
+  return { text: rewritten, mentions, unknown }
+}
+
+const actorIn = ({ known, pending }: MentionContext, id: string) => known.byId[id] ?? (pending?.id === id ? pending : undefined)
+
+/**
+ * The one actor `@handle` names, in the order `rank` gives. Null when it names none; when it
+ * names several, null if lenient, else an error.
+ */
+export function resolveHandle(handle: string, context: MentionContext): string | null {
+  const { known, pending, lenient = false, participants, scope, candidates = true } = context
+  if (scope === null) return null
+  const ids = new Set(known.byHandle[handle] ?? [])
+  if (pending && pending.handle.toLowerCase() === handle) ids.add(pending.id)
+  if (scope !== undefined) for (const id of ids) if (!id.startsWith(scope)) ids.delete(id)
+  let best: string[] = []
+  let bestRank = Infinity
+  for (const id of ids) {
+    const ranked = rank(id, actorIn(context, id))
+    if (ranked === null || ranked > bestRank) continue
+    if (ranked < bestRank) {
+      best = []
+      bestRank = ranked
+    }
+    best.push(id)
   }
-  return { mentions: resolved, unknown: lenient ? [] : unknown }
+  // Platform accounts linked to one person are that person.
+  if (bestRank === 4) best = [...new Set(best.map((id) => (known.byId[known.links[id]?.to ?? ''] ? known.links[id]!.to : id)))]
+  if (best.length > 1 && participants) {
+    const inThread = best.filter((id) => participants.has(id))
+    if (inThread.length === 1) best = inThread
+  }
+  if (best.length === 1) return best[0]!
+  if (lenient || best.length === 0) return null
+  if (!candidates) throw badRequest(`ambiguous mention @${handle}: use @[actor-id]`, 'ambiguous_mention')
+  const options = best.map((id) => `@[${id}] (${actorIn(context, id)?.name ?? id})`).join(' or ')
+  throw badRequest(`ambiguous mention @${handle}: use ${options}`, 'ambiguous_mention')
 }

@@ -169,3 +169,12 @@ export function withSlackClient(client: unknown, asyncToken: boolean) {
     })
   }
 }
+
+/**
+ * What a fake Slack knows about its users for mentions, as Chat SDK's Slack adapter
+ * does: each user ID's display name (`lookupUser`), and the bot's own ID.
+ */
+export const slackNames = (names: Record<string, string>, bot?: string) => (adapter: Adapter) => {
+  Object.assign(adapter, { lookupUser: async (user: string) => (names[user] ? { displayName: names[user] } : null) })
+  if (bot) Object.defineProperty(adapter, 'botUserId', { value: bot, configurable: true })
+}

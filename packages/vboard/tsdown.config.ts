@@ -13,6 +13,7 @@ export default defineConfig([
       contract: 'src/contract/index.ts',
       sync: 'src/sync/index.ts',
       'sync.chat': 'src/sync/chat-provider.ts',
+      tools: 'src/tools/index.ts',
       cli: 'src/cli/main.ts',
     },
     format: 'esm',

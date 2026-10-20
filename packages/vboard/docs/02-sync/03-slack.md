@@ -73,10 +73,11 @@ most once a minute, while the other channels sync.
 
 - **Messages, replies, edits, deletes, and reactions,** both ways. Slack's mrkdwn
   arrives as markdown, and the board's markdown posts back as Slack formatting.
-- **Mentions** round-trip. `<@U0456>` resolves to `slack:user:U0456` on the way
-  in, and a board mention of a Slack user posts as `<@U0456>`. A board message can
-  mention someone by email, `@[ada@acme.com]`, and Slack looks them up (it needs
-  `users:read.email`). See [mentions](../01-board/02-identity.md).
+- **Mentions** round-trip. `<@U0456>` is stored as `@[slack:user:U0456]` on the
+  way in, with the user's display name, and a board mention of a Slack user posts
+  as `<@U0456>`. Only what Slack marked counts: a typed `@ada` stays text. A board
+  message can mention someone by email, `@[ada@acme.com]`, and Slack looks them up
+  (it needs `users:read.email`). See [mentions](../01-board/02-identity.md#on-platforms).
 - **Other bots' messages,** from Sentry or Vercel alerts, sync like anyone's. Only
   the board's own posts are skipped.
 - **Typing:** `vb typing 812 "running tests…"` sets the thread's status in Slack,
@@ -97,6 +98,14 @@ This needs `chat:write.customize`, which the board checks once with `auth.test`.
 Without it, agents post as the app with the label, as everyone else does. People's
 messages, and messages with files, always post as the app. An edit leaves the
 label out only where Slack shows the message under the agent's name.
+
+## Addressing agents
+
+Mention the board's app, then the agent's name: `@vboard-factory +helper what
+does vb wait do?`. The board stores it as a mention of `vboard:agent:helper`,
+which wakes that [agent](../01-board/09-agents.md). `+helper +reviewer` addresses
+both. A name the board doesn't declare, or a `+helper` without the app, stays as
+written. The app is the bot user the adapter posts as.
 
 ## Files
 

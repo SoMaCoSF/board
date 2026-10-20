@@ -10,7 +10,7 @@ import {
   MessageId,
   MessageText,
 } from '../contract/schemas.ts'
-import type { BoardEvent } from '../contract/contract.ts'
+import type { AgentNotification, BoardEvent } from '../contract/contract.ts'
 import type { Actor, Channel, Message } from '../contract/reducers.ts'
 import type { AccessSummary } from '../server/access.ts'
 
@@ -62,6 +62,16 @@ export const EventsQuery = Filters.extend({
   all: z.coerce.boolean().optional(),
 })
 
+/**
+ * A post's idempotency key, which a new thread's key comes from. Never a name every object already has
+ * (`__proto__`, `constructor`, `toString`): the folds key their maps by thread.
+ */
+const PostId = z
+  .string()
+  .min(1)
+  .max(200)
+  .refine((id) => !(id in Object.prototype), { message: "an id can't be a name every JavaScript object has, like __proto__" })
+
 export const PostBody = z
   .object({
     channel: ChannelPath.optional(),
@@ -72,7 +82,7 @@ export const PostBody = z
     noSync: z.boolean().optional(),
     /** External targets a new thread starts with: `slack:#incidents`, `github:owner/repo:12`. */
     sync: z.array(z.string().min(3).max(300)).max(10).optional(),
-    id: z.string().min(1).max(200).optional(),
+    id: PostId.optional(),
     /** IDs from `POST /attachments`. */
     attachments: z.array(AttachmentId).max(ATTACHMENTS_PER_MESSAGE_MAX).optional(),
   })
@@ -175,6 +185,18 @@ export const DeleteBody = z.object({}).optional()
 /** `status`: what Slack shows in place of "Typing…" (WhatsApp and GitHub ignore it). */
 export const TypingBody = z.object({ status: z.string().trim().min(1).max(100).optional() }).optional()
 export const ReactBody = z.object({ emoji: Emoji, remove: z.boolean().optional() })
+/** `on`: follow the message's thread, or stop. */
+export const SubscriptionBody = z.object({ on: z.boolean() })
+
+/** Marks the caller's notifications read through one of them. */
+export const ReadNotificationsBody = z.object({ through: z.number().int().nonnegative() })
+
+/** A notification in an agent's session's inbox: who did what, to which message, where. */
+export type NotificationView = AgentNotification & {
+  /** Its place in the agent's notifications: reading through it reads every one before it too. */
+  id: number
+  createdAt: string
+}
 export const LabelBody = z
   .object({ set: Labels.optional(), unset: z.array(LabelKey).optional() })
   .refine((body) => body.set !== undefined || body.unset !== undefined, {
@@ -198,6 +220,8 @@ export type ScheduleView = {
   /** The thread it replies in, or null when each send starts a new thread in `channel`. */
   re: number | null
   text: string
+  /** Who `text` mentions, by actor ID, as on a message: `readableText()` shows it with this. */
+  mentioned?: Record<string, { handle: string; name: string }>
   labels: Record<string, string>
   noSync: boolean
   attachments: { id: string; name: string; type: string; size: number }[]
@@ -227,7 +251,14 @@ export type PersonView = { id: string; handle: string; name: string; avatar: str
  * `person` is who a linked platform account belongs to.
  */
 export type ActorView = Pick<Actor, 'kind' | 'handle' | 'name' | 'avatar'> & { person?: PersonView }
-export type MessageView = Message & { author: ActorView | null }
+export type MessageView = Message & {
+  author: ActorView | null
+  /**
+   * Who `text` mentions, by actor ID. Stored text names each mention exactly,
+   * `@[slack:user:U0456]`; `displayText()` shows it as `@ada` with this.
+   */
+  mentioned?: Record<string, { handle: string; name: string }>
+}
 
 /** A board event as subscribers get it. Checking `type` narrows `payload` to that event's. */
 export type BoardEventView = BoardEvent extends infer E
@@ -379,6 +410,10 @@ export const routes = {
   delete: { method: 'POST', path: '/messages/:id/delete', body: DeleteBody },
   react: { method: 'POST', path: '/messages/:id/reactions', body: ReactBody },
   label: { method: 'POST', path: '/messages/:id/labels', body: LabelBody },
+  /** The caller follows the message's thread, or stops: `{ root, subscribed }`. */
+  subscription: { method: 'POST', path: '/messages/:id/subscription', body: SubscriptionBody },
+  notifications: { method: 'GET', path: '/notifications' },
+  readNotifications: { method: 'POST', path: '/notifications/read', body: ReadNotificationsBody },
   sync: { method: 'POST', path: '/messages/:id/sync', body: SyncBody },
   /** Ephemeral: shows typing in the thread's synced platform threads, and writes nothing to the log. */
   typing: { method: 'POST', path: '/messages/:id/typing', body: TypingBody },

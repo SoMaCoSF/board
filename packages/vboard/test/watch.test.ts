@@ -108,7 +108,7 @@ describe('watchers', () => {
     await ada('POST', '/messages', { channel: 'firehose', text: 'hi' })
     await julian('POST', '/messages', { channel: 'firehose', text: '@ada can you look?' })
 
-    await vi.waitFor(() => expect(pinged.events.map((event) => event.message?.text)).toEqual(['@ada can you look?']))
+    await vi.waitFor(() => expect(pinged.events.map((event) => event.message?.text)).toEqual(['@[vercel:user:u_ada] can you look?']))
   })
 
   it('match authors by handle, with or without the @', async () => {

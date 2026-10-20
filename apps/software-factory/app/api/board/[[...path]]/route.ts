@@ -1,4 +1,5 @@
 import { board } from "vboard";
+import { readableText } from "vboard/client";
 import { slack } from "vboard/adapter-slack";
 import { github } from "vboard/adapter-github";
 import { vercelBlob } from "vboard/adapter-vercel-blob";
@@ -16,6 +17,7 @@ import { renderForSlack } from "./render";
 import { boardOnly, unseenPr } from "./quiet";
 import { asksPi, isDraft, reviewStarts } from "./review";
 import { CONNECTOR, REPO } from "./github";
+import { helper } from "./helper";
 import { vercelTrustedSources } from "./trusted-sources";
 
 // The software factory: vboard running on its own repo and Vercel's Slack. Its log is
@@ -27,6 +29,7 @@ export const maxDuration = 300;
 
 const factory = board({
   access: vercelTrustedSources(process.env.VBOARD_TRUSTED_SOURCES),
+  // Shared with Helper, so the board's scheduler route serves Helper's sessions too.
   store,
   // Attachments (Pi's proof of work) in the project's private Blob store, `vboard-factory-attachments`.
   // Every deployment shares it: a file's ID is random, and only its board can name it.
@@ -65,6 +68,8 @@ const factory = board({
   // Every message from Slack, GitHub, or CI is checked for prompt injection before it lands.
   // Shadow mode: a flagged one is labeled guard=injection, and nothing is dropped yet.
   middleware: [guard({ mode: "shadow" })],
+  // Agents with names of their own, which the board runs. `@vboard-factory +helper` wakes Helper.
+  agents: { helper },
   watch: {
     shipit: shipit({ tellPi }),
     // Shadow mode: labels each reviewed factory PR autoland=would|no, and merges nothing.
@@ -99,7 +104,7 @@ const factory = board({
         const kind = await classifyThread(
           [thread.message, ...thread.replies].map((m) => ({
             from: m.author?.name ?? m.by.actor,
-            text: m.text,
+            text: readableText(m),
           })),
         );
         if (thread.message.labels.kind === kind) {

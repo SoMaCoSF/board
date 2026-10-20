@@ -12,8 +12,9 @@ import { actorKind, type Attachment, type Author, type Labels } from '../contrac
 import { authorize, type Access } from './access.ts'
 import type { Principal } from './auth.ts'
 import { actorsReducer, messagesReducer, type ActorsState } from '../contract/reducers.ts'
-import { replaceMentions } from '../contract/mentions.ts'
-import { resolveMentions } from './actors.ts'
+import { extractMentions, replaceMentions } from '../contract/mentions.ts'
+import { mentionedIn } from './feed.ts'
+import { resolveHandle, resolveMentions } from './actors.ts'
 import { badRequest, HttpError, notFound } from './errors.ts'
 import { authorizePost, deploymentIdentity, writePost, type Identity, type WriteContext } from './writes.ts'
 import { DroppedError } from './middleware.ts'
@@ -141,6 +142,7 @@ export const scheduleView = (schedule: Schedule, actors: ActorsState): ScheduleV
     channel: schedule.channel,
     re: schedule.re,
     text: schedule.text,
+    mentioned: mentionedIn({ mentions: extractMentions(schedule.text).flatMap((token) => (token.kind === 'actor' ? [token.actor] : [])) }, actors),
     labels: { ...schedule.labels },
     noSync: schedule.noSync,
     attachments: schedule.attachments,
@@ -310,11 +312,18 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
       if (first > now + MAX_AHEAD_MS || (until !== null && until > now + MAX_AHEAD_MS))
         throw badRequest('a schedule reaches at most a year out: its first send and its stop')
 
-      // Mentions fail now, where the person scheduling sees it, not at send time.
-      // A handle nobody has stays plain text, and they hear about it now too.
-      const { state: known } = await writes.session.state(actorsReducer)
+      // Mentions fail now, where the person scheduling sees it, not at send time, and each
+      // `@handle` is pinned to the actor it names today. A handle nobody has stays plain
+      // text, and they hear about it now too. Emails resolve at each send.
+      const { state: seen } = await writes.session.state(actorsReducer)
+      const mentions = { known: writes.mentionable?.(seen) ?? seen, pending: identity.actor, candidates: identity.principal.access.readsAll }
       const withoutEmails = replaceMentions(body.text, (t) => (t.kind === 'actor' && t.actor.includes('@') ? t.actor : null))
-      const { unknown } = resolveMentions(withoutEmails, known, identity.actor, false, identity.principal.access.readsAll)
+      const { unknown } = resolveMentions(withoutEmails, mentions)
+      const text = replaceMentions(body.text, (t) => {
+        if (t.kind !== 'handle') return null
+        const id = resolveHandle(t.handle, mentions)
+        return id === null ? null : `@[${id}]`
+      })
 
       let channel = body.channel
       let re: number | null = null
@@ -330,7 +339,7 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
         payload: {
           channel: channel!,
           re,
-          text: body.text,
+          text,
           labels: body.labels ?? {},
           noSync: body.noSync ?? false,
           ...(attachments.length ? { attachments } : {}),

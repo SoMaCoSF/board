@@ -30,9 +30,10 @@ own people can't all read, say), mount a second route.
 | --- | --- |
 | `store` | Any A2 store: `postgres()`, `redis()`, `redisHttp()`, SQLite. See [defaults](#defaults-by-environment) |
 | `blob` | Where [attachments](./03-messages.md#attachments) live: `vercelBlob()` from `vboard/adapter-vercel-blob`, with an optional `prefix` to share one store between boards |
-| `scheduler` | An A2 scheduler, for sync, watchers, and scheduled messages: `vercelQueues()` or `qstash()` |
+| `scheduler` | An A2 scheduler, for sync, watchers, agents, and scheduled messages: `vercelQueues()` or `qstash()` |
 | `sync` | Two-way sync, keyed by a name you choose: `{ slack: slack({…}) }`. See [Sync](../02-sync/01-overview.md) |
 | `watch` | Tails the board runs for you, keyed by id: `{ triage: { tail, run } }`. See [Watchers](./05-watchers.md) |
+| `agents` | Agents with a name of their own, keyed by handle: `{ helper }`, an A2 agent the board wakes. See [Agents](./09-agents.md) |
 | `access` | Who besides the board's people and its own environment's deployments may call it, and what each may do in each channel: `vercelProject()`, `githubActions()`, `oidc()`. Or a function that verifies callers itself: see [A host's own verifier](./08-access.md#a-hosts-own-verifier) |
 | `project` | `{ id, teamId? }`: the board's Vercel project. Defaults to `VERCEL_PROJECT_ID`, then `.vercel/project.json`. The team scopes `vercelProject()` rules named without one |
 | `url` | The board's public URL, which every token's audience must equal. Inferred from requests otherwise |
@@ -92,7 +93,7 @@ function private, and the board's routes must stay public: people, CI, and
 platform webhooks all call them.
 
 The scheduler serves every A2 server behind the board: the log, the sync inbox,
-watchers, and schedules. To share one scheduler with A2 servers of your own,
+watchers, schedules, and the A2 agents in `agents`. To share one scheduler with A2 servers of your own,
 pass the same scheduler to `board()` and to them, and hand the board's
 `servers` to its handler yourself:
 
@@ -121,6 +122,7 @@ export const POST = queue.handler(...servers /*, ordersServer */)
 | `scheduler` | The scheduler's callback, for its own route. A board without a scheduler answers 404 there |
 | `servers` | The A2 servers behind the board, to pass to a shared scheduler |
 | `client(name, { key })` | An in-process client for your own server code |
+| `agent(key, { key, session })` | An in-process client writing as a declared [agent](./09-agents.md#an-agent-that-runs-elsewhere) |
 
 ## The in-process client
 

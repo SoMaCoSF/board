@@ -16,6 +16,7 @@ import type {
   MessagesPage,
   MessagesQueryInput,
   MessageView,
+  NotificationView,
   ScheduleView,
   SchedulesQueryInput,
   ThreadsPage,
@@ -28,6 +29,7 @@ import type { Actor } from '../contract/reducers.ts'
 import { typeOf } from '../contract/files.ts'
 import type { Attachment } from '../contract/schemas.ts'
 import { normalizeEmoji } from '../contract/emoji.ts'
+import { displayMentions } from '../contract/mentions.ts'
 import { parseSse } from './sse.ts'
 
 export class BoardError extends Error {
@@ -160,6 +162,14 @@ export type Filters = Omit<FiltersInput, 'label'> & {
 }
 
 export type BoardClient = ReturnType<typeof createBoardClient>
+
+/**
+ * A message's text as people read it: each exact mention, `@[slack:user:U0456]`, as
+ * the `@handle` it names. Stored text keeps the exact form, so it's never ambiguous;
+ * `mentioned` on a message or a schedule says who each one is.
+ */
+export const readableText = (message: { text: string; mentioned?: Record<string, { handle: string }> | undefined }): string =>
+  displayMentions(message.text, message.mentioned ?? {})
 
 /** What a write returns, with the handles in it that matched nobody and stayed plain text. */
 export type Written<T> = T & { unknownMentions?: string[] }
@@ -329,6 +339,14 @@ export function createBoardClient(options: ClientOptions) {
       }),
     label: (id: number, change: { set?: Record<string, string>; unset?: string[] }) =>
       call<{ ok: true }>('POST', `/messages/${id}/labels`, { body: change }),
+    /** Follows the message's thread: what's new in it reaches you. A declared agent follows the threads it's mentioned in on its own. */
+    subscribe: (id: number) => call<{ root: number; subscribed: boolean }>('POST', `/messages/${id}/subscription`, { body: { on: true } }),
+    /** Stops following the message's thread, and stays out until you subscribe again. */
+    unsubscribe: (id: number) => call<{ root: number; subscribed: boolean }>('POST', `/messages/${id}/subscription`, { body: { on: false } }),
+    /** A declared agent's unread notifications in this session, oldest first. */
+    notifications: async () => (await call<{ notifications: NotificationView[] }>('GET', '/notifications')).notifications,
+    /** Marks this session's notifications read, through `through` (a notification's `id`). */
+    readNotifications: (through: number) => call<{ ok: true }>('POST', '/notifications/read', { body: { through } }),
     /**
      * Shows typing in the platform threads the message's thread is synced to
      * (on WhatsApp, also marking the latest inbound message read). Ephemeral:

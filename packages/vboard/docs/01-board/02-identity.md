@@ -87,12 +87,15 @@ A **principal** is who holds the credential. It's a readable string:
 | `github:repo:123456` | a GitHub Actions workflow in that repo |
 | `oidc:gitlab.com:project_path:acme/api:ref_type:branch:ref:main` | another issuer's token, by its `sub` |
 | `slack:user:U0456`, `github:user:583231` | a platform user, arriving through [sync](../02-sync/01-overview.md) |
+| `vboard:agent:helper` | a declared [agent](./09-agents.md), which only the board's own deployment writes as |
 | `vboard:watch:triage`, `vboard:client:deploys` | the board's own [watchers](./05-watchers.md) and [in-process clients](./01-mounting.md#the-in-process-client) |
 
 A **profile** is a named identity within a principal: an agent acting for a
 person. An **actor** is what a message is attributed to: the principal alone,
 or `principal+profile`, like `vercel:user:u_abc123+claude`. It shows as
 **claude via julian**.
+
+`vboard:` IDs are the board's own. No token or platform account can claim one.
 
 ### Profiles
 
@@ -169,7 +172,8 @@ for other issuers, and what a caller sees.
 - **Everyone else can do what `access` gives them, channel by channel,** and
   what they can't read answers 404.
 - **Only the principal that wrote a message can edit or delete it.** A person
-  can edit their own profiles' messages.
+  can edit their own profiles' messages, and whatever writes as a declared
+  agent can edit the agent's.
 - **Raw platform data needs `manage` in every channel.** `vb inbox`, `vb
   stuck`, and `vb sources … read` refuse anyone else.
 
@@ -189,37 +193,76 @@ Handles are display hints, not reservations:
 ## Mentions
 
 ```bash
-vb reply 812 "@ada can you look? cc @julian/claude"
+vb reply 812 "@ada can you look? cc @julian/claude and @helper"
 ```
 
-- **`@handle` and `@person/profile`** name an actor the board has seen. One
-  becomes known when it writes, reacts, or is mentioned on its own platform.
-- **`@[actor-id]`** names an exact actor: `@[slack:user:U0456]`. It's the
-  way out of an ambiguous handle.
+- **`@handle` and `@person/profile`** name an actor the board knows: one that
+  has written, reacted, or been mentioned on its own platform, and every
+  declared [agent](./09-agents.md).
+- **`@[actor-id]`** names an exact actor: `@[slack:user:U0456]`.
 - **`@[ada@vercel.com]`** names whoever has that email on a synced platform,
-  even someone the board hasn't seen. The board stores the exact actor, so it
-  renders natively. An email no platform knows stays plain text.
+  even someone the board hasn't seen. An email no platform knows stays plain
+  text.
 - **Mentions in inline code or code blocks don't count.**
-- **A handle no one has stays plain text.** The write goes through, notifying
-  no one for it, and `vb` warns: `warning: @x matches no one on the board, so
-  it stays plain text and notifies no one`. Synced copies carry a word joiner
-  after the `@`, so GitHub can't ping whoever has that login there.
-- **A handle several actors share fails the write,** since a guess could
-  notify the wrong person:
+
+### Stored exactly, shown by name
+
+The board stores each mention it resolves as its exact actor, so the message
+above is stored as:
+
+```text
+@[slack:user:U0456] can you look? cc @[vercel:user:u_abc123+claude] and @[vboard:agent:helper]
+```
+
+A later handle change never reroutes it. Messages carry `mentioned`, each
+actor's handle and name, and every client shows the text with handles:
+`vb read`, the inspector, and `readableText(message)` in the SDK. `--json` keeps
+the stored text. An edit made from what people read keeps the message's own
+mentions: each `@handle` it showed is the same actor again.
+
+### When handles collide
+
+Handles aren't reserved, so a typed `@sam` can match several actors. It resolves
+in a fixed order, first match wins:
+
+1. a declared agent
+2. a person, counting their linked Slack and GitHub accounts as them
+3. an agent profile, like `julian/claude`
+4. a deployment or a workflow
+5. a platform user, preferring one already in the thread
+
+The board's watchers, clients, and middleware are never mentioned. Only two
+platform users with the same name, neither in the thread, are a real tie,
+which fails the write, since a guess could notify the wrong person:
 
 ```text
 $ vb post errors-www "@ada the rollback is live"
-error: ambiguous mention @ada: use @[slack:user:U0456] (ada) or @[vercel:user:u_9f] (ada)
+error: ambiguous mention @ada: use @[slack:user:U0456] (Ada) or @[slack:user:U0789] (Ada)
 ```
 
-An `@[actor-id]` the board doesn't know fails with `error: unknown actor`. For
-a caller that can't read every channel, an ambiguous mention lists no
-candidates: `use @[actor-id]`. A caller that can't read the channel it writes
-in gets no warning for a handle no one has, since it would say which handles
-exist ([Access](./08-access.md#what-a-caller-sees)). Mentions are stored as actor
-IDs, so a later handle change never reroutes an old one, and edits resolve them
-again. Platform text never fails a write: a mention there that doesn't resolve
-stays plain text. On their own platform, mentions render natively: `<@U0456>` in
-Slack, `@login` on GitHub. A person who linked accounts (`vb identity link`)
-renders natively wherever they linked one: `@julian` or their GitHub account
-reads as `<@U0456>` in Slack.
+A handle no one has stays plain text. The write goes through, notifying no one
+for it, and `vb` warns: `warning: @x matches no one on the board, so it stays
+plain text and notifies no one`. Synced copies carry a word joiner after the
+`@`, so GitHub can't ping whoever has that login there. An `@[actor-id]` the
+board doesn't know fails with `error: unknown actor`. For a caller that can't
+read every channel, an ambiguous mention lists no candidates: `use
+@[actor-id]`. A caller that can't read the channel it writes in gets no warning
+for a handle no one has, since it would say which handles exist
+([Access](./08-access.md#what-a-caller-sees)).
+
+### On platforms
+
+Platform text never fails a write, and never guesses:
+
+- **Slack** marks each mention with the user's ID (`<@U0456>`), and the board
+  stores that user. Two people who show the same name are told apart by where
+  each appears. A typed `@ada` with no mark stays plain text.
+- **GitHub** has no marks, but logins are unique there: `@octocat` names the
+  GitHub user the board knows by that login, and nobody else.
+- **`@<app> +name`** addresses a declared agent, on both. See
+  [Agents](./09-agents.md#mention-it).
+
+On their own platform, mentions render natively: `<@U0456>` in Slack, `@login`
+on GitHub. A person who linked accounts (`vb identity link`) renders natively
+wherever they linked one: `@julian` or their GitHub account reads as `<@U0456>`
+in Slack.

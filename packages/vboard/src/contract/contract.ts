@@ -174,6 +174,14 @@ export const boardContract = contract({
       by: Author,
     }),
     'actor.unlinked': z.object({ actor: ActorId, by: Author }),
+    /**
+     * `actor` follows a thread: what's new in it reaches them. A declared agent
+     * follows a thread once it's mentioned there (`mention`) or writes there (`reply`),
+     * unless it chose otherwise; `request` is a choice, `vb subscribe`.
+     */
+    'thread.subscribed': z.object({ thread: ThreadKey, actor: ActorId, cause: z.enum(['mention', 'reply', 'request']), by: Author }),
+    /** `actor` stopped following a thread, by choice: it stays out until it subscribes again. */
+    'thread.unsubscribed': z.object({ thread: ThreadKey, actor: ActorId, by: Author }),
   },
 })
 
@@ -221,6 +229,21 @@ export type ExternalLink = z.infer<typeof ExternalLink>
 
 export const ExternalLocation = z.object({ channel: ExternalTarget, thread: ExternalTarget, subthread: ExternalTarget.nullable() })
 
+/**
+ * Mentions as the platform marked them, before Chat SDK turned them into names. Each
+ * of `mentions` is a native mention (Slack's `<@U0456>`): `form` is how it reads in
+ * `text` (`@Ada Lovelace`), `actor` who it is. `appMentions` are the ways `text` names
+ * the board's own app, for `@app +helper`. Older events have neither.
+ */
+export const MarkedMentions = z.object({
+  mentions: z
+    .array(z.object({ form: z.string().min(1).max(200), actor: ExternalAuthor.pick({ id: true, handle: true, name: true }) }))
+    .max(300)
+    .optional(),
+  appMentions: z.array(z.string().min(1).max(200)).max(8).optional(),
+})
+export type MarkedMentions = z.infer<typeof MarkedMentions>
+
 /** A platform event, normalized at intake. Thread IDs are external IDs with the sync key prefix. */
 export const ExternalEvent = z.discriminatedUnion('kind', [
   z.object({
@@ -235,6 +258,7 @@ export const ExternalEvent = z.discriminatedUnion('kind', [
     files: z.array(ExternalFile).max(20).optional(),
     /** Platform messages it links to. Older events have none. */
     links: z.array(ExternalLink).max(LINKS_PER_MESSAGE_MAX).optional(),
+    ...MarkedMentions.shape,
   }),
   z.object({
     kind: z.literal('edited'),
@@ -243,6 +267,7 @@ export const ExternalEvent = z.discriminatedUnion('kind', [
     text: z.string(),
     author: ExternalAuthor,
     links: z.array(ExternalLink).max(LINKS_PER_MESSAGE_MAX).optional(),
+    ...MarkedMentions.shape,
     /** Only the links changed (the platform sent what they say), so `text` isn't news. */
     linksOnly: z.boolean().optional(),
   }),
@@ -322,6 +347,56 @@ export type WatchEvents = typeof watchContract.events
 
 /** `watch:triage`: the session for one watcher. */
 export const watchSession = (id: string) => `watch:${id}`
+
+const SessionName = z.string().min(1).max(200)
+
+/** What happened, as an agent's notifications say it: who did it, to which message, where. */
+export const AgentNotification = z.object({
+  /** `mention`: it mentions the agent. `subscribed`: it happened in a thread the agent follows. `watch`: the agent's `watch` matched it. */
+  reason: z.enum(['mention', 'subscribed', 'watch']),
+  type: z.enum(['message.posted', 'message.edited', 'message.deleted', 'reaction.added', 'reaction.removed', 'labels.changed']),
+  thread: MessageId,
+  channel: z.string().min(1).max(200),
+  message: MessageId,
+  by: z.object({ handle: z.string().min(1).max(200), name: z.string().min(1).max(200) }),
+  /** A post's or an edit's first line, as people read it. */
+  text: z.string().max(300).optional(),
+  emoji: z.string().min(1).max(100).optional(),
+  labels: z.object({ set: Labels, unset: z.array(z.string()) }).optional(),
+})
+export type AgentNotification = z.infer<typeof AgentNotification>
+
+/** A declared agent's notifications: what reached it, which session took each, and what each session read. */
+export const agentsContract = contract({
+  name: 'vboard-agents',
+  events: {
+    /** A board event for the agent, before `notify` decides, with the session it goes to. */
+    'agent.notified': z.object({
+      thread: ThreadKey,
+      reason: AgentNotification.shape.reason,
+      root: z.object({ id: MessageId, labels: Labels }),
+      /** The board event, as `vb tail --json` prints it. */
+      event: z.unknown(),
+      /** Whether the agent followed the thread before this event. */
+      subscribed: z.boolean(),
+      /** The agent's session that last took part in the thread, if one has. */
+      engaged: SessionName.nullable(),
+      /** The session it goes to, chosen as it's recorded, so one session's notifications take turns. */
+      session: SessionName,
+    }),
+    /** `notify` let it through: it's in the session's inbox, unread. */
+    'agent.delivered': z.object({ session: SessionName, notification: AgentNotification }),
+    /** The session read its notifications through this one (an `agent.delivered` event's index). */
+    'agent.read': z.object({ session: SessionName, through: z.number().int().nonnegative() }),
+    /** The board gave up waking the agent for one notification, so the session's next one goes on. */
+    'agent.failed': z.object({ notified: z.string().min(1).max(200), thread: ThreadKey, error: z.string().min(1).max(500) }),
+  },
+})
+
+export type AgentEvents = typeof agentsContract.events
+
+/** `agent:helper`: the session where one declared agent's notifications land. */
+export const agentSession = (key: string) => `agent:${key}`
 
 /** Epoch milliseconds. */
 const Millis = z.number().int().nonnegative()

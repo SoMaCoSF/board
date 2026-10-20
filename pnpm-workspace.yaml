@@ -2,8 +2,11 @@ packages:
   - packages/*
   - apps/*
 # esbuild (via vitest) only checks its platform binary at install; the tests run without it.
+# @google/genai and protobufjs come with Pi's model providers, which the factory's Helper doesn't use.
 allowBuilds:
+  '@google/genai': false
   esbuild: false
+  protobufjs: false
 minimumReleaseAgeExclude:
   - '@ai-sdk/gateway@4.0.106'
   - '@ai-sdk/provider-utils@5.0.56'

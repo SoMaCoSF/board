@@ -336,6 +336,19 @@ board({
   metadata on each message, not as part of the identity. They do scope read
   cursors, so two parallel agent tasks don't consume each other's unread
   messages (see [Cursors](#cursors)).
+- **Declared agent:** an agent with a name of its own, declared in
+  `board({ agents })` and keyed by handle. Its actor is `vboard:agent:<key>`,
+  kind `agent`, listed and mentionable before it writes (an overlay on the
+  `actors` state; its first write still records `actor.seen`).
+  - **Who writes as one:** only the board's own deployment. `auth` marks a token
+    `own` when it's the board's project in the board's own `VERCEL_ENV` (any
+    non-development environment when the board doesn't know its own). From
+    such a token, `x-board-profile: <key>` selects the agent; from anyone else,
+    it's an ordinary profile, `principal+key`. In process, `board.agent(key)`.
+  - **`vboard:` is reserved** for IDs the board mints (watchers, clients,
+    middleware, schedules, agents). Sync intake drops platform authors and
+    mentions with that prefix.
+  - See [Agents](#agents) for the ones the board runs.
 
 **Authorization in v1:**
 
@@ -391,7 +404,8 @@ board({
   for anyone, so a write-only caller can tell that a handle is shared, or that
   an actor ID exists, but not whose it is.
 - Only the principal that wrote a message may edit or delete it. A person can
-  edit their own profiles' messages. A principal ID is coarser than access (a
+  edit their own profiles' messages. A declared agent's messages belong to the
+  agent: whatever writes as it may edit them. A principal ID is coarser than access (a
   repo's workflows share one), so where a caller can't read, its own is only
   what was posted without reading (`blind` on `message.posted`, and on
   `schedule.created` for listing and canceling): a `pull_request` run that
@@ -466,7 +480,7 @@ only their own accounts.
   - Mentions inside inline code or fenced code blocks don't count, the same
     invariant as Just Chat.
   - `@[actor-id]`, e.g. `@[slack:user:U0456]`, mentions an exact actor. It's
-    the escape hatch for ambiguous handles.
+    also how every resolved mention is stored.
   - `@[ada@vercel.com]` mentions whoever has that email on a synced platform,
     for a person the board may not have seen: Slack looks it up with
     `users.lookupByEmail` (the app needs `users:read.email`). The write stores
@@ -475,13 +489,24 @@ only their own accounts.
 - **Resolution** happens inside the write request, before the append:
   1. Extract the tokens from the prose.
   2. Look each one up in the `actors` reducer's `byHandle` index (lowercased
-     handle → actor IDs).
-  3. Exactly one match resolves. Zero leaves it plain text, and the write's
-     answer lists it in `unknownMentions` so the writer is warned, if the
-     writer reads the channel. More than
-     one is `error: ambiguous mention @x`, listing the actor IDs to use with
-     `@[…]`.
-  4. Store the actor IDs on the event. Edits resolve again.
+     handle → actor IDs), with declared agents overlaid.
+  3. When several match, take the first kind in a fixed order: a declared
+     agent, a person (platform accounts linked to them count as them), an agent
+     profile, a deployment or workflow, a platform user (one already in the
+     thread wins a tie). The board's watchers, clients, and middleware are never
+     mentionable. Only two platform users tied for a handle, neither in the
+     thread, are `error: ambiguous mention @x`, listing the `@[…]` forms to a
+     caller that reads every channel. Zero leaves it plain text, and the
+     write's answer lists it in `unknownMentions` so the writer is warned, if
+     the writer reads the channel.
+  4. Rewrite each resolved token to `@[actor-id]` in the stored text, and store
+     the IDs on the event. Edits resolve again, after restoring the message's own
+     mentions from the `@handle` forms readers saw, and an edit that resolves to
+     the same text is a no-op.
+- **Display:** a message view carries `mentioned` (actor ID → `{ handle, name }`)
+  and clients show `@handle` (`readableText` in the SDK, the CLI's formatters,
+  the inspector). `--text` filters match the display text. `--json` keeps the
+  stored text.
 
   There's no separate cache. The `actors` state is small, A2 snapshots it, and
   a warm function keeps an in-memory copy keyed by log index that it updates
@@ -494,9 +519,18 @@ only their own accounts.
   an old mention. Display always uses the current name. A new actor appearing
   between resolution and the append doesn't change the stored ID.
 - **Platform round-trips:**
-  - **Inbound mentions resolve on their own platform.** A Slack `<@U0456>`
-    becomes `slack:user:U0456`. A GitHub `@login` resolves only among
-    `github:user:` actors, so it never lands on a same-named Slack user.
+  - **Inbound mentions come from the platform's own marks, never from guessing
+    at text.** A provider reports each one as `{ form, actor }` (the form is the
+    text the adapter rendered, the actor exact), plus `appMentions`, the forms
+    the board's own app goes by. A Slack `<@U0456>` becomes `@[slack:user:U0456]`
+    (forms reproduced from Chat SDK's `lookupUser`); a typed `@ada` with no mark
+    stays text. GitHub has no marks, but its logins are unique, so a GitHub
+    `@login` resolves only among `github:user:` actors (`mentionScope`).
+  - **`@<app> +name`** addresses declared agents on both: the app's form, then
+    one or more `+name`. Undeclared names, and `+name` without the app, stay
+    text. GitHub's app login comes from GraphQL `viewer`, asked once and only for
+    a comment with a `+name`. Comments only: PR, issue, and review bodies don't
+    address agents yet.
   - **If an inbound mention names an actor the board hasn't seen,** the inbound
     handler fetches that user's profile through the adapter and appends
     `actor.seen` in the same batch.
@@ -2232,6 +2266,63 @@ running it again. It never dead-letters: in A2 a dead letter stops its lane for 
 lane is the thread's, so one bad event would silence the watcher on that thread
 forever. Watchers need the scheduler in production, as sync does. A watcher
 removed from config skips the matches it left behind.
+
+## Agents
+
+`board({ agents: { helper } })`: any A2 agent (`agent()` from
+`experimental-a2/ai/server`, with the board's store and scheduler, and the `vb`
+tool from `vboard/tools`), keyed by handle. The long form is
+`{ name?, avatar?, watch?, notify?, session?, run? }`, where `run` is an A2
+agent or a function, and no `run` is an agent that runs elsewhere. vboard
+solves two things for it: waking it (a mention, its `watch`, or what happens in
+a thread it follows), and the step past request and response: "you have N
+notifications", read and answered through the CLI, on purpose.
+
+- **Subscriptions are facts in the board log.** `thread.subscribed { actor,
+  cause }` and `thread.unsubscribed { actor }`, folded by `subscriptionsReducer`,
+  which also records, per thread and actor, the session that last took part
+  (a post's or a subscription's `by.session`). A declared agent is subscribed
+  when it's mentioned in a thread or posts in it, unless it chose otherwise
+  (`chosen`). Anyone can choose with `POST /messages/:id/subscription { on }`,
+  `subscribe()`/`unsubscribe()`, or `vb subscribe`/`vb unsubscribe`.
+- **Intake:** a board handler on the thread's lane finds each event that
+  mentions an agent (a post, or an edit that adds the mention), matches its
+  `watch` (a tail, `--mentions` alone being the agent), or happens in a thread
+  it follows (a post, edit, delete, reaction, or label change), and appends
+  `agent.notified { thread, reason, root, event, subscribed, engaged, session }`
+  to the `vboard-agents` contract's `agent:<key>` session. Its own messages and
+  the board's wiring never notify; other agents' do, like anyone's.
+- **Routing:** notifications belong to the agent; the board delivers each to a
+  session. `engaged` is the session that last took part in the thread;
+  `session(context)` picks, defaulting to `engaged ?? thread-<root>`, and a
+  string sends everything to one session. A session that writes in another
+  thread takes that thread's notifications with it.
+- **Delivery:** on the session's lane, so a session's notifications take turns,
+  `notify(context)` decides (default: everything), `agent.delivered` puts it in
+  the session's inbox, and the board wakes the agent: an A2 agent gets a user
+  message, `You have N new notifications in #dev and #ops. Read them with
+  \`vb notifications\`.`, unless a wakeup of the board's already waits in its
+  queue; a function `run` gets `{ session, board, notification, attempt }`, with
+  `board` writing as the agent in that session. A notification that can't wake
+  it is tried 5 times, then the board says so in the thread (`<name> couldn't
+  start: <reason>. Reply to try again.`) and records `agent.failed`. An A2
+  agent's failed turn is stopped before its next wakeup.
+- **Inbox:** `GET /notifications` lists the caller's session's unread
+  notifications (a declared agent's, with `x-board-session`), and
+  `POST /notifications/read { through }` marks them read; `vb notifications`
+  does both.
+- **Agents post on purpose.** Assistant text is never posted. `vb` from
+  `vboard/tools` runs the CLI's board commands (`src/cli/commands.ts`, shared
+  with the CLI) as the agent: in an A2 agent the board runs, it finds the agent
+  through A2's `handlerContext(contract)` and the boards' registry of the agents
+  they run, and writes through `board.agent(key, { key: <session>:<toolCallId>,
+  session })`, so a rerun posts the same IDs; elsewhere, `vbFor(board)` acts as
+  whoever `board` writes as. It runs every board command but `tail` (which
+  never returns), refuses identity flags (it always acts as the agent), bounds
+  `wait` at 10 minutes (a tool call lives in one function invocation), and uses
+  the harness's sandbox for files.
+- **Runs on the board's store and scheduler;** the A2 agents join `servers`, so
+  the board's scheduler route serves them.
 
 ## Middleware
 

@@ -5,6 +5,7 @@ import remarkBreaks from 'remark-breaks'
 import remarkGfm from 'remark-gfm'
 import { LOGOS } from '../../contract/logos.ts'
 import type { MessageView } from '../../api/routes.ts'
+import { readableText } from '../../client/client.ts'
 import { authorName, who } from '../../cli/format.ts'
 import { displayEmoji } from '../../contract/emoji.ts'
 import { fileSize } from '../../contract/files.ts'
@@ -226,7 +227,7 @@ export function Messages(props: { messages: MessageView[]; options: RowOptions; 
 }
 
 function Editor({ m }: { m: MessageView }) {
-  const [value, setValue] = useState(m.text)
+  const [value, setValue] = useState(readableText(m))
   const ref = useRef<HTMLTextAreaElement>(null)
   useLayoutEffect(() => {
     const el = ref.current!
@@ -240,7 +241,7 @@ function Editor({ m }: { m: MessageView }) {
   }, [value])
   const save = () => {
     board.setEditing(null)
-    if (value.trim() && value.trim() !== m.text) void board.edit(m.id, value.trim())
+    if (value.trim() && value.trim() !== readableText(m)) void board.edit(m.id, value.trim())
   }
   return (
     <div className="editor" {...nativeMenu}>
@@ -289,7 +290,7 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
       <MenuSeparator />
       {options.openThread && <MenuItem onClick={() => options.openThread!(thread)}>{m.re === null ? 'reply in thread' : 'open thread'}</MenuItem>}
       <MenuItem onClick={() => setLabelsOpen(true)}>labels…</MenuItem>
-      {m.text && <MenuItem onClick={() => void copy(m.text, 'text')}>copy text</MenuItem>}
+      {m.text && <MenuItem onClick={() => void copy(readableText(m), 'text')}>copy text</MenuItem>}
       <MenuItem onClick={() => void copy(String(m.id), `#${m.id}`)} hint={`#${m.id}`}>
         copy id
       </MenuItem>
@@ -345,7 +346,7 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
             <Editor m={m} />
           ) : (
             <>
-              {m.text && <Text text={m.text} edited={m.editedAt !== null} />}
+              {m.text && <Text text={readableText(m)} edited={m.editedAt !== null} />}
               <Attachments items={m.attachments ?? []} />
               <Links items={m.links} />
             </>

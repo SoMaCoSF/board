@@ -59,6 +59,10 @@
     "./sync/chat": {
       "types": "./dist/sync.chat.d.mts",
       "default": "./dist/sync.chat.mjs"
+    },
+    "./tools": {
+      "types": "./dist/tools.d.mts",
+      "default": "./dist/tools.mjs"
     }
   },
   "scripts": {
@@ -79,6 +83,7 @@
   },
   "peerDependencies": {
     "@vercel/blob": "^2.8.0",
+    "ai": "^7.0.130",
     "experimental-a2": "^0.18.0"
   },
   "devDependencies": {
@@ -103,6 +108,9 @@
   },
   "peerDependenciesMeta": {
     "@vercel/blob": {
+      "optional": true
+    },
+    "ai": {
       "optional": true
     }
   }

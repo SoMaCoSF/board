@@ -14,6 +14,7 @@ import {
   type MessagesState,
 } from '../contract/reducers.ts'
 import type { BoardSession } from './board.ts'
+import { displayMentions } from '../contract/mentions.ts'
 
 export type ParsedFilters = z.output<typeof Filters>
 
@@ -32,6 +33,16 @@ export function actorView(actors: ActorsState, id: string): ActorView | null {
   if (!author) return null
   const person = personView(actors, id)
   return { kind: author.kind, handle: author.handle, name: author.name, avatar: author.avatar, ...(person ? { person } : {}) }
+}
+
+/** Who a message mentions, by actor ID, so a client can show `@[slack:user:U0456]` as `@ada`. */
+export function mentionedIn(message: Pick<Message, 'mentions'>, actors: ActorsState): Record<string, { handle: string; name: string }> {
+  const mentioned: Record<string, { handle: string; name: string }> = {}
+  for (const id of message.mentions) {
+    const actor = actors.byId[id]
+    if (actor) mentioned[id] = { handle: actor.handle, name: actor.name }
+  }
+  return mentioned
 }
 
 /** Who's reading a view, for what links show: a link to a board message they can't read shows nothing of it. */
@@ -62,6 +73,7 @@ export function view(message: Message, actors: ActorsState, reader: Reader): Mes
       Object.entries(message.reactions).map(([emoji, ids]) => [emoji, [...ids]]),
     ),
     author: actorView(actors, message.by.actor),
+    mentioned: mentionedIn(message, actors),
   }
 }
 
@@ -146,7 +158,9 @@ export function compileFilter(
     if (by !== null && !covers(by, message.by.actor, message.by.principal)) return false
     if (mentions !== null && !message.mentions.some((id) => mentions.has(id))) return false
     if (filters.from !== undefined && (message.from ?? 'board') !== filters.from) return false
-    if (text !== undefined && !message.text.toLowerCase().includes(text)) return false
+    // Searched as people read it: `--text ada` finds `@[slack:user:U0456]` when that's @ada.
+    if (text !== undefined && !displayMentions(message.text, mentionedIn(message, context.actors)).toLowerCase().includes(text))
+      return false
     if (labels.length > 0) {
       const root = message.re === null ? undefined : context.messages?.byId[message.re]
       for (const label of labels)

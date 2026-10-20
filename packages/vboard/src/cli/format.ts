@@ -1,7 +1,8 @@
-import type { BoardEventView, Me, MessageView, ScheduleView, SourceRead, StuckEvent, ThreadSummaryView } from '../api/routes.ts'
+import type { BoardEventView, Me, MessageView, NotificationView, ScheduleView, SourceRead, StuckEvent, ThreadSummaryView } from '../api/routes.ts'
 import { displayEmoji } from '../contract/emoji.ts'
 import { fileSize } from '../contract/files.ts'
 import { displayText } from '../contract/bots.ts'
+import { readableText } from '../client/client.ts'
 
 /** "claude via julian" for a profile, the name otherwise. */
 export const who = (me: { name: string; handle: string; profile: string | null }): string =>
@@ -84,7 +85,7 @@ export function formatMessage(message: MessageView, options: { reply?: boolean; 
   const head = `${options.reply ? '  ↳ ' : ''}#${message.id}  ${authorName(message)} · ${ago(message.createdAt)}${
     message.editedAt ? ' (edited)' : ''
   }${message.schedule ? ` · scheduled s${message.schedule.id}` : ''}${labels(message)}`
-  const body = message.deleted ? `${pad}(message removed)` : indent(displayText(message.text, message.by.actor), pad)
+  const body = message.deleted ? `${pad}(message removed)` : indent(displayText(readableText(message), message.by.actor), pad)
   const files = (message.attachments ?? []).map((a) => `${pad}file ${a.name} · ${a.type} · ${fileSize(a.size)} · ${a.id}`)
   const links = message.deleted ? [] : (message.links ?? []).flatMap((link) => embed(link, pad))
   const reacted = reactions(message, options.names ?? new Map())
@@ -209,7 +210,7 @@ export function formatSchedule(schedule: ScheduleView, options: { pad?: string; 
         : 'done'
   const sent = schedule.sent > 0 ? ` · ${schedule.sent} sent` : ''
   const files = schedule.attachments.length ? ` · ${schedule.attachments.length} ${schedule.attachments.length === 1 ? 'file' : 'files'}` : ''
-  const text = displayText(schedule.text, schedule.by.actor)
+  const text = displayText(readableText(schedule), schedule.by.actor)
   return [
     `${pad}s${schedule.id}  ${where} · ${repeat}${stop} · ${when}${sent}${files} · by ${authorName(schedule)}`,
     indent(text || '(no text)', `${pad}    `),
@@ -225,10 +226,10 @@ export function formatEvent(event: BoardEventView): string {
   switch (event.type) {
     case 'message.posted': {
       const files = (message.attachments ?? []).map((a) => ` · file ${a.name}`).join('')
-      return `#${message.id}  ${where}  ${who}: ${displayText(message.text, message.by.actor)}${files}`
+      return `#${message.id}  ${where}  ${who}: ${displayText(readableText(message), message.by.actor)}${files}`
     }
     case 'message.edited':
-      return `#${message.id}  ${where}  ${who} (edited): ${displayText(message.text, message.by.actor)}`
+      return `#${message.id}  ${where}  ${who} (edited): ${displayText(readableText(message), message.by.actor)}`
     case 'message.deleted':
       return `#${message.id}  ${where}  (message removed)`
     case 'message.linked':
@@ -270,4 +271,28 @@ export function formatSourceRead(key: string, read: SourceRead, now = Date.now()
   })
   const more = read.more ? [`(${read.thread ? 'later replies' : 'older messages'} not shown: raise --limit, up to 200)`] : []
   return [where, ...blocks, ...more].join('\n')
+}
+
+/** One notification: who did what, to which message, where, then the message's first line. */
+export function formatNotification(n: NotificationView, now = Date.now()): string {
+  const where = `thread #${n.thread} in ${n.channel}`
+  const target = n.message === n.thread ? `#${n.message}, its root,` : `#${n.message}`
+  const labels = n.labels ? [...Object.entries(n.labels.set).map(([k, v]) => `${k}=${v}`), ...n.labels.unset.map((k) => `-${k}`)].join(' ') : ''
+  let what: string
+  if (n.reason === 'mention')
+    what =
+      n.type === 'message.edited' ? `mentioned you in an edit of #${n.message}, in ${where}`
+      : n.message === n.thread ? `mentioned you in a new thread, #${n.thread} in ${n.channel}`
+      : `mentioned you in #${n.message}, in ${where}`
+  else
+    what = {
+      'message.posted': n.message === n.thread ? `started ${where}` : `replied in ${where}: #${n.message}`,
+      'message.edited': `edited ${target} in ${where}`,
+      'message.deleted': `deleted ${target} in ${where}`,
+      'reaction.added': `reacted ${displayEmoji(n.emoji ?? '')} to ${target} in ${where}`,
+      'reaction.removed': `took back their ${displayEmoji(n.emoji ?? '')} on ${target} in ${where}`,
+      'labels.changed': `labeled ${target} ${labels} in ${where}`,
+    }[n.type] + (n.reason === 'watch' ? ', which your watch matches' : ', which you follow')
+  const line = `${ago(n.createdAt, now)}  @${n.by.handle} ${what}`
+  return n.text ? `${line}\n  ${n.text}` : line
 }

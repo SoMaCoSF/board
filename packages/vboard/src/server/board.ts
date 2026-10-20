@@ -1,9 +1,9 @@
 import { z } from 'zod'
 import { idempotentId } from 'experimental-a2'
 import { createServer, type A2Store, type A2Scheduler, type ServerOptions } from 'experimental-a2/server'
-import { boardContract, BOARD_SESSION, inboxSession, SCHEDULES_SESSION, watchSession, type BoardEvents } from '../contract/contract.ts'
-import { actorsReducer, channelsReducer, linkedTo, messagesReducer, syncReducer } from '../contract/reducers.ts'
-import { ATTACHMENT_BYTES_MAX } from '../contract/schemas.ts'
+import { agentSession, boardContract, BOARD_SESSION, inboxSession, SCHEDULES_SESSION, watchSession, type BoardEvents } from '../contract/contract.ts'
+import { actorsReducer, channelsReducer, linkedTo, messagesReducer, syncReducer, type ActorsState } from '../contract/reducers.ts'
+import { agentKeyOf, ATTACHMENT_BYTES_MAX } from '../contract/schemas.ts'
 import {
   EditBody,
   EventsQuery,
@@ -13,6 +13,8 @@ import {
   InboxQuery,
   SourceReadQuery,
   LabelBody,
+  ReadNotificationsBody,
+  SubscriptionBody,
   MessagesQuery,
   ThreadsQuery,
   PostBody,
@@ -35,8 +37,10 @@ import { createSyncEngine } from '../sync/engine.ts'
 import type { SyncProvider } from '../sync/provider.ts'
 import { VERSION } from '../version.ts'
 import { createVerifier, hostPrincipal, type AccessRule, type AuthOptions, type HostAccess, type Principal } from './auth.ts'
-import { parseScope } from './access.ts'
+import { authorize, FULL_ACCESS, parseScope } from './access.ts'
 import { KNOWN_AGENTS, resolveActor } from './actors.ts'
+import { agentActor, declareAgents, withAgents, type DeclaredAgent } from './actors.ts'
+import { agentConfigs, createAgents, type AgentEntry } from './agents.ts'
 import { avatarSvg } from './avatars.ts'
 import { attachmentNotFound, attachmentResponse, defaultBlob, readUpload, writeUpload, type BlobStore } from './blob.ts'
 import { badRequest, forbidden, HttpError, json, notFound, toErrorResponse, unauthorized } from './errors.ts'
@@ -54,6 +58,7 @@ import {
   writeLabels,
   writePost,
   writeReaction,
+  writeSubscription,
   deploymentIdentity,
   type Identity,
   type WriteContext,
@@ -87,6 +92,12 @@ export type BoardOptions = {
   middleware?: readonly Middleware[]
   /** Tails the board runs for you, keyed by an id you choose: `{ triage: { tail: 'firehose', run } }`. */
   watch?: Record<string, Watcher>
+  /**
+   * Agents with a name of their own, keyed by handle: `{ helper }`, an A2 agent the board wakes, or
+   * `{ pi: { watch, run } }`. Each is the actor `vboard:agent:<key>`, which only the board's own
+   * deployment can write as. Mentions, `watch`, and the threads it follows reach it as notifications.
+   */
+  agents?: Record<string, AgentEntry>
   /** The board's Vercel project. Defaults to `VERCEL_PROJECT_ID` or `.vercel/project.json`. */
   project?: { id: string; teamId?: string }
   /** The board's public URL, which every token's audience must equal. Inferred from requests otherwise. */
@@ -121,10 +132,13 @@ const PATTERNS: { method: string; name: RouteName; pattern: RegExp }[] = [
   { method: 'POST', name: 'identityCheck', pattern: /\/identity\/check$/ },
   { method: 'POST', name: 'identityUnlink', pattern: /\/identity\/unlink$/ },
   { method: 'GET', name: 'identity', pattern: /\/identity$/ },
+  { method: 'POST', name: 'readNotifications', pattern: /\/notifications\/read$/ },
+  { method: 'GET', name: 'notifications', pattern: /\/notifications$/ },
   { method: 'POST', name: 'edit', pattern: /\/messages\/(\d+)\/edit$/ },
   { method: 'POST', name: 'delete', pattern: /\/messages\/(\d+)\/delete$/ },
   { method: 'POST', name: 'react', pattern: /\/messages\/(\d+)\/reactions$/ },
   { method: 'POST', name: 'label', pattern: /\/messages\/(\d+)\/labels$/ },
+  { method: 'POST', name: 'subscription', pattern: /\/messages\/(\d+)\/subscription$/ },
   { method: 'POST', name: 'sync', pattern: /\/messages\/(\d+)\/sync$/ },
   { method: 'POST', name: 'typing', pattern: /\/messages\/(\d+)\/typing$/ },
   { method: 'GET', name: 'message', pattern: /\/messages\/(\d+)$/ },
@@ -177,6 +191,8 @@ function combineHandlers(...sets: BoardHandlers[]): BoardHandlers {
 }
 
 const MIDDLEWARE_IDENTITY = deploymentIdentity(MIDDLEWARE_ACTOR, 'middleware')
+/** The board's own notices about its agents (`helper couldn't finish: …`), which never wake one. */
+const NOTICE_IDENTITY = deploymentIdentity('vboard:agents', 'agents')
 
 /**
  * `idempotentId`'s shape, a UUIDv8: the IDs the board derives for its own writes (schedule
@@ -184,7 +200,7 @@ const MIDDLEWARE_IDENTITY = deploymentIdentity(MIDDLEWARE_ACTOR, 'middleware')
  */
 const DERIVED_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
-const NUMERIC = new Set<RouteName>(['edit', 'delete', 'react', 'label', 'sync', 'typing', 'message', 'cancelSchedule'])
+const NUMERIC = new Set<RouteName>(['edit', 'delete', 'react', 'label', 'subscription', 'sync', 'typing', 'message', 'cancelSchedule'])
 
 function route(method: string, pathname: string, basePath?: string): Match | null {
   const path = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname
@@ -264,17 +280,26 @@ export function board(options: BoardOptions = {}) {
     throw new Error('board: trustedSources is now access: list vercelProject() and githubActions() rules there, each with can')
   const host = typeof options.access === 'function' ? options.access : null
   if (host && options.auth) throw new Error('board: an access function replaces the built-in verifier, so drop `auth`')
+  const agentConfig = agentConfigs(options.agents)
+  const agents = declareAgents(agentConfig)
   const blob = options.blob ?? defaultBlob()
   const engine =
     options.sync && Object.keys(options.sync).length > 0
-      ? createSyncEngine({ entries: options.sync, store: options.store, scheduler: options.scheduler, blob })
+      ? createSyncEngine({ entries: options.sync, store: options.store, scheduler: options.scheduler, blob, agents })
       : null
   const watchers =
     options.watch && Object.keys(options.watch).length > 0
-      ? createWatchers({ watch: options.watch, store: options.store, scheduler: options.scheduler })
+      ? createWatchers({ watch: options.watch, store: options.store, scheduler: options.scheduler, mentionable: (actors) => withAgents(actors, agents, options.url ?? null) })
       : null
   const schedules = createSchedules({ store: options.store, scheduler: options.scheduler })
-  const handlers = [watchers?.boardHandlers, engine?.outboundHandlers].filter((set) => set !== undefined)
+  const runner = createAgents({
+    config: agentConfig,
+    declared: agents,
+    store: options.store,
+    scheduler: options.scheduler,
+    mentionable: (actors) => withAgents(actors, agents, options.url ?? null),
+  })
+  const handlers = [watchers?.boardHandlers, runner.boardHandlers, engine?.outboundHandlers].filter((set) => set !== undefined)
   const server = createServer({
     contract: boardContract,
     ...(options.store ? { store: options.store } : {}),
@@ -293,7 +318,10 @@ export function board(options: BoardOptions = {}) {
         },
     middleware: options.middleware ?? [],
     middlewareClient: () => clientAs(MIDDLEWARE_IDENTITY, null, { via: { kind: 'middleware' } }),
+    mentionable: (actors) => withAgents(actors, agents, options.url ?? null),
   }
+  /** The actors as reads show them: the log's, plus declared agents that haven't written yet. */
+  const actorsAt = (actors: ActorsState, boardUrl: string | null) => withAgents(actors, agents, boardUrl)
   const { verify, accessNow } = createVerifier({
     projectId: () => ownProjectId(options.project),
     teamId: () => ownTeamId(options.project),
@@ -339,6 +367,7 @@ export function board(options: BoardOptions = {}) {
       [BOARD_SESSION, server],
       [SCHEDULES_SESSION, schedules.server],
       ...(watchers ? watchers.ids.map((id): [string, typeof watchers.server] => [watchSession(id), watchers.server]) : []),
+      ...runner.keys.map((key): [string, typeof runner.server] => [agentSession(key), runner.server]),
       ...(engine ? (await engine.inboxChannels()).map((channel): [string, typeof engine.inboxServer] => [inboxSession(channel), engine.inboxServer]) : []),
     ]
     return ids.map(([id, owner]) => ({ id, session: owner.session(id) }))
@@ -442,6 +471,28 @@ export function board(options: BoardOptions = {}) {
   })
   watchers?.bind({ clientAs })
 
+  /** An in-process client writing as declared agent `key`. */
+  function agentClient(key: string, agentOptions: { key?: string; session?: string } = {}): BoardClient {
+    const agent = agents.get(key)
+    if (!agent) throw new Error(`agent: no agent named ${key}: declare it in board({ agents })`)
+    const trigger = agentOptions.key === undefined ? null : `agent:${key}:${agentOptions.key}`
+    return clientAs(
+      {
+        principal: { id: agent.id, kind: 'deployment', handle: key, access: FULL_ACCESS, expiresAt: null, own: true },
+        author: { actor: agent.id, principal: agent.id, profile: key, session: agentOptions.session ?? null },
+        actor: agentActor(agent, options.url ?? null),
+      },
+      trigger,
+      { via: { kind: 'agent', key } },
+    )
+  }
+  runner.bind({
+    client: (agent, clientOptions) => agentClient(agent.key, clientOptions),
+    notice: async (agent, thread, text, key) => {
+      await clientAs(NOTICE_IDENTITY, `agents:${agent.key}:${key}`, { via: { kind: 'client', name: 'agents' } }).reply(thread, { text })
+    },
+  })
+
   async function dispatch(request: Request, injected: Identity | null, origin: WriteOrigin = { via: { kind: 'api' } }): Promise<Response> {
     try {
       const url = new URL(request.url)
@@ -478,7 +529,9 @@ export function board(options: BoardOptions = {}) {
       }
 
       const principal = injected?.principal ?? (await authenticate(request, boardUrl))
-      const { author, actor } = injected ?? resolveActor(principal, request.headers, boardUrl)
+      const { author, actor } = injected ?? resolveActor(principal, request.headers, boardUrl, agents)
+      // In-process clients have no public URL; the board's own avatars need one.
+      const publicUrl = injected ? (options.url ?? null) : boardUrl
       const identity: Identity = { principal, author, actor }
 
       switch (match.name) {
@@ -505,12 +558,14 @@ export function board(options: BoardOptions = {}) {
           return json({ channels, cursor: index })
         }
         case 'actors': {
-          const { state, index } = await session.state(actorsReducer)
+          const { state: logged, index } = await session.state(actorsReducer)
+          // Declared agents are the board's config, not anyone's message: every caller sees them.
+          const state = actorsAt(logged, publicUrl)
           // A reader of every channel sees everyone; anyone else, who wrote, was mentioned, or reacted where they read, and themselves.
           let seen: ((id: string) => boolean) | null = null
           if (!principal.access.readsAll) {
             const { state: messages } = await session.state(messagesReducer)
-            const ids = new Set([actor.id])
+            const ids = new Set([actor.id, ...[...agents.values()].map((agent) => agent.id)])
             for (const message of Object.values(messages.byId)) {
               if (!principal.access.readable(message.channel)) continue
               ids.add(message.by.actor)
@@ -567,10 +622,11 @@ export function board(options: BoardOptions = {}) {
         }
         case 'messages': {
           const query = MessagesQuery.parse(queryObject(url))
-          const [{ state, index }, { state: actors }] = await Promise.all([
+          const [{ state, index }, { state: seen }] = await Promise.all([
             session.state(messagesReducer),
             session.state(actorsReducer),
           ])
+          const actors = actorsAt(seen, publicUrl)
           const matches = compileFilter(query, { me: actor.id, actors, messages: state, access: principal.access })
           let found = Object.values(state.byId)
             .filter(matches)
@@ -608,10 +664,11 @@ export function board(options: BoardOptions = {}) {
           })
         }
         case 'message': {
-          const [{ state, index }, { state: actors }] = await Promise.all([
+          const [{ state, index }, { state: seen }] = await Promise.all([
             session.state(messagesReducer),
             session.state(actorsReducer),
           ])
+          const actors = actorsAt(seen, publicUrl)
           const message = state.byId[match.id!]
           if (!message || !principal.access.readable(message.channel))
             throw notFound(`message not found: #${match.id}`, 'message_not_found')
@@ -658,13 +715,13 @@ export function board(options: BoardOptions = {}) {
         case 'cancelSchedule':
           return json(await schedules.cancel(identity, match.id!))
         case 'edit': {
-          const authorized = await authorizeOwn(writes, principal, match.id!, 'edit')
+          const authorized = await authorizeOwn(writes, identity, match.id!, 'edit')
           const body = EditBody.parse(await readJson(request))
           const { unknownMentions } = await writeEdit(writes, { identity, authorized, text: body.text, ...origin })
           return json({ ok: true, ...(unknownMentions ? { unknownMentions } : {}) })
         }
         case 'delete': {
-          const authorized = await authorizeOwn(writes, principal, match.id!, 'delete')
+          const authorized = await authorizeOwn(writes, identity, match.id!, 'delete')
           await writeDelete(writes, { identity, authorized })
           return json({ ok: true })
         }
@@ -678,6 +735,24 @@ export function board(options: BoardOptions = {}) {
           const authorized = await authorizeMessage(writes, principal.access, 'label', match.id!)
           const body = LabelBody.parse(await readJson(request))
           await writeLabels(writes, { identity, authorized, set: body.set, unset: body.unset })
+          return json({ ok: true })
+        }
+        case 'subscription': {
+          // Following a thread is a write: `post` in its channel, and `read`, since it's about what's said there.
+          const authorized = await authorizeMessage(writes, principal.access, 'read', match.id!)
+          authorize(principal.access, 'post', authorized.message.channel)
+          const body = SubscriptionBody.parse(await readJson(request))
+          return json(await writeSubscription(writes, { identity, authorized, on: body.on }))
+        }
+        case 'notifications':
+        case 'readNotifications': {
+          const key = agentKeyOf(identity.author.actor)
+          if (key === null || !runner.keys.includes(key)) throw forbidden("notifications are for the board's agents")
+          const inbox = identity.author.session
+          if (!inbox) throw badRequest('notifications are per session: write from one (x-board-session)', 'no_session')
+          if (match.name === 'notifications') return json({ notifications: await runner.notifications(key, inbox) })
+          const body = ReadNotificationsBody.parse(await readJson(request))
+          await runner.read(key, inbox, body.through)
           return json({ ok: true })
         }
         case 'upload': {
@@ -744,7 +819,7 @@ export function board(options: BoardOptions = {}) {
           const lastEventId = Number(request.headers.get('last-event-id'))
           const after =
             query.after ?? (Number.isInteger(lastEventId) && lastEventId > 0 ? lastEventId : undefined)
-          const { state: actors } = await session.state(actorsReducer)
+          const actors = actorsAt((await session.state(actorsReducer)).state, publicUrl)
           const feedOptions = { session, after, filters: query, all: query.all ?? false, me: actor.id, actors, access: principal.access }
           if ((request.headers.get('accept') ?? '').includes('text/event-stream'))
             return sse(feedOptions, request.signal, streamMaxMs)
@@ -764,6 +839,7 @@ export function board(options: BoardOptions = {}) {
     ...(engine ? [engine.inboxServer] : []),
     schedules.server,
     ...(watchers ? [watchers.server] : []),
+    ...(runner.keys.length > 0 ? [runner.server, ...runner.a2Agents] : []),
   ]
   return {
     GET: handle,
@@ -785,6 +861,12 @@ export function board(options: BoardOptions = {}) {
       const key = clientOptions.key === undefined ? null : `client:${name}:${clientOptions.key}`
       return clientAs(deploymentIdentity(`vboard:client:${name}`, name), key, { via: { kind: 'client', name } })
     },
+    /**
+     * An in-process client writing as declared agent `key`, `vboard:agent:<key>`. With
+     * a `key` of its own, its posts are idempotent, as with `client()`. `session` is
+     * recorded on what it writes.
+     */
+    agent: agentClient,
     /** For tests and tools. */
     engine,
     session,

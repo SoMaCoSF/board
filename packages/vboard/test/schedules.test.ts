@@ -46,14 +46,14 @@ describe('scheduled messages', () => {
     expect(status).toBe(201)
     expect(body.schedule).toMatchObject({ state: 'pending', re: root.id, next: new Date(T0 + DAY).toISOString(), sent: 0 })
 
-    // `vb read` lists what's pending in the thread.
-    expect((await julian('GET', `/messages/${root.id}`)).body.schedules).toMatchObject([{ id: body.schedule.id, text: '@pi is the PR still open?' }])
+    // `vb read` lists what's pending in the thread, with `@pi` pinned to the actor it named.
+    expect((await julian('GET', `/messages/${root.id}`)).body.schedules).toMatchObject([{ id: body.schedule.id, text: '@[vercel:user:u_pi] is the PR still open?' }])
     await advance(DAY - MINUTE)
     expect(await replies()).toHaveLength(1)
 
     await advance(MINUTE)
     const sent = (await replies()).slice(1)
-    expect(sent).toMatchObject([{ text: '@pi is the PR still open?', by: { actor: root.by.actor }, schedule: { id: body.schedule.id, n: 0 } }])
+    expect(sent).toMatchObject([{ text: '@[vercel:user:u_pi] is the PR still open?', by: { actor: root.by.actor }, schedule: { id: body.schedule.id, n: 0 } }])
     expect((await julian('GET', `/messages/${root.id}`)).body.schedules).toEqual([])
     expect((await julian('GET', '/schedules?all=1')).body.schedules).toMatchObject([{ state: 'done', sent: 1 }])
   })

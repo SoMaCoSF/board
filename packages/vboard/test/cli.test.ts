@@ -230,6 +230,8 @@ describe('cli', () => {
     expect(await vb(['typing', id])).toMatchObject({ code: 0, stdout: '', stderr: '' })
     expect(await vb(['typing', id, 'running', 'tests…'])).toMatchObject({ code: 0, stdout: '', stderr: '' })
     expect((await vb(['label', id, 'status=investigating'])).code).toBe(0)
+    expect(await vb(['subscribe', id])).toMatchObject({ code: 0, stdout: `subscribed to #${id}\n` })
+    expect(await vb(['unsubscribe', id])).toMatchObject({ code: 0, stdout: `unsubscribed from #${id}\n` })
 
     const read = await vb(['read', id])
     expect(read.code).toBe(0)
@@ -324,8 +326,8 @@ describe('cli', () => {
       const { stdout } = await vb(['read', 'pings', ...args, '--json'])
       return stdout.trim().split('\n').map((line) => (JSON.parse(line) as { message: { text: string } }).message.text)
     }
-    expect(await texts(['--mentions'])).toEqual(['hey @julian, look'])
-    expect(await texts(['--mentions', '@julian'])).toEqual(['hey @julian, look'])
+    expect(await texts(['--mentions'])).toEqual(['hey @[vercel:user:u_julian], look'])
+    expect(await texts(['--mentions', '@julian'])).toEqual(['hey @[vercel:user:u_julian], look'])
   })
 
   it('filters by author, with or without the @', async () => {

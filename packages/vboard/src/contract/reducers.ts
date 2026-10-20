@@ -252,6 +252,52 @@ export const actorsReducer = reducer({
   initialState: { byId: {}, byHandle: {}, links: {} } as ActorsState,
 }).fold(foldActors)
 
+/**
+ * Whether an actor follows a thread, whether that was its own choice (which nothing undoes for it), and
+ * the session of the actor's that last took part there: the one its notifications from the thread go to.
+ */
+export type Subscription = { subscribed: boolean; chosen: boolean; session?: string }
+/** Thread key → actor → its subscription. */
+export type SubscriptionsState = Record<string, Record<string, Subscription>>
+
+/** `record[key]` when the record has it of its own: a key like `__proto__` never reads Object.prototype. */
+export const own = <T>(record: Record<string, T>, key: string): T | undefined => (Object.hasOwn(record, key) ? record[key] : undefined)
+/** Sets an own property, even one named `__proto__`, which plain assignment would turn into a prototype. */
+export const setOwn = <T>(record: Record<string, T>, key: string, value: T) =>
+  Object.defineProperty(record, key, { value, enumerable: true, writable: true, configurable: true })
+
+/** An actor's subscription to a thread, if it has one. */
+export function subscriptionOf(state: SubscriptionsState, thread: string, actor: string): Subscription | undefined {
+  const actors = own(state, thread)
+  return actors && own(actors, actor)
+}
+
+export function foldSubscriptions(state: SubscriptionsState, event: BoardEvent): SubscriptionsState {
+  // A session that writes in a thread takes the thread's notifications with it, if its actor follows it.
+  if (event.type === 'message.posted' || event.type === 'message.edited') {
+    const { thread, by } = event.payload
+    const current = by.session ? own(state, thread) && own(own(state, thread)!, by.actor) : undefined
+    if (current && by.session) current.session = by.session
+    return state
+  }
+  if (event.type !== 'thread.subscribed' && event.type !== 'thread.unsubscribed') return state
+  const { thread, actor, by } = event.payload
+  let actors = own(state, thread)
+  if (!actors) setOwn(state, thread, (actors = {}))
+  const session = by.actor === actor && by.session ? by.session : own(actors, actor)?.session
+  setOwn(actors, actor, {
+    ...(event.type === 'thread.subscribed' ? { subscribed: true, chosen: event.payload.cause === 'request' } : { subscribed: false, chosen: true }),
+    ...(session ? { session } : {}),
+  })
+  return state
+}
+
+export const subscriptionsReducer = reducer({
+  contract: boardContract,
+  name: 'vboard.subscriptions.v1',
+  initialState: {} as SubscriptionsState,
+}).fold(foldSubscriptions)
+
 /** A copy of a board message on a platform. */
 /** `files`: the platform's IDs for the message's files, or null when it refused them; unset until they're sent. */
 /** `asUser`: posted with its author's own token, so editing or deleting it needs that token too. */

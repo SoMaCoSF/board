@@ -92,6 +92,13 @@ const WALK: Record<RouteName, Walk> = {
     { method: 'POST', path: `/messages/${secret.reply}/typing`, body: {}, status: 404 },
     { method: 'POST', path: `/messages/${open.root}/typing`, body: {}, status: 403 },
   ],
+  subscription: ({ secret, open }) => [
+    { method: 'POST', path: `/messages/${secret.reply}/subscription`, body: { on: true }, status: 404 },
+    { method: 'POST', path: `/messages/${open.root}/subscription`, body: { on: true }, status: 403 },
+  ],
+  // A declared agent's own inbox: nobody else has one.
+  notifications: () => [{ method: 'GET', path: '/notifications', status: 403 }],
+  readNotifications: () => [{ method: 'POST', path: '/notifications/read', body: { through: 1 }, status: 403 }],
   cancelSchedule: ({ secret, open }) => [
     { method: 'POST', path: `/schedules/${secret.schedule}/cancel`, status: 404 },
     { method: 'POST', path: `/schedules/s${open.schedule}/cancel`, status: 403 },

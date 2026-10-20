@@ -18,6 +18,9 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@ai-sdk/sandbox-vercel": "1.0.143",
+    "@earendil-works/pi-ai": "^1.2.0",
+    "@earendil-works/pi-coding-agent": "^1.2.0",
     "@vercel/blob": "^2.8.0",
     "@vercel/connect": "^2.3.4",
     "@vercel/oidc": "^3.8.9",

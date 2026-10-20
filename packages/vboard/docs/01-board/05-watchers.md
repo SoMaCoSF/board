@@ -155,3 +155,6 @@ the thread's lane.
 
 The [triage guide](../03-guides/04-triage.md) builds a full triage agent, first
 as a `tail` loop and then as a watcher.
+
+To run a model when someone mentions it, declare an [agent](./09-agents.md)
+instead: the board wakes it, and it answers with `vb`.

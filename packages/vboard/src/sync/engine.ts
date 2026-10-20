@@ -31,9 +31,9 @@ import {
   type Message,
 } from '../contract/reducers.ts'
 import { fileSize, typeOf } from '../contract/files.ts'
-import { ATTACHMENT_BYTES_MAX, ATTACHMENTS_PER_MESSAGE_MAX, MESSAGE_TEXT_MAX, type Attachment, type Author } from '../contract/schemas.ts'
+import { ATTACHMENT_BYTES_MAX, ATTACHMENTS_PER_MESSAGE_MAX, MESSAGE_TEXT_MAX, isBoardActor, type Attachment, type Author } from '../contract/schemas.ts'
 import type { IdentityChallenge, LinkedAccount } from '../api/routes.ts'
-import { actorSeen } from '../server/actors.ts'
+import { actorSeen, withAgents, type DeclaredAgents } from '../server/actors.ts'
 import { readAttachmentData, writeUpload, type BlobStore } from '../server/blob.ts'
 import type { Principal } from '../server/auth.ts'
 import { FULL_ACCESS, type Permission } from '../server/access.ts'
@@ -54,7 +54,9 @@ import {
 } from '../server/writes.ts'
 import { DroppedError } from '../server/middleware.ts'
 import type { SyncProvider } from './provider.ts'
-import { replaceMentions } from '../contract/mentions.ts'
+import { addressAgents, displayMentions, exactMentions, replaceMentions } from '../contract/mentions.ts'
+import type { MarkedMentions } from '../contract/contract.ts'
+import { mentionedIn } from '../server/feed.ts'
 import { SyncOverrides, immutable, type SyncRoot, type ProviderEvent, type SyncResult } from './events.ts'
 import { ReceivedEvent, ResolvedTarget, UnreadableError, type ProviderMapping, type ProviderSender, type SyncClient, type SyncContext } from './provider.ts'
 import { ChannelPath } from '../contract/schemas.ts'
@@ -126,8 +128,11 @@ export function createSyncEngine(options: {
   scheduler?: A2Scheduler | undefined
   /** Where attachments' bytes are, for platforms that take uploads. */
   blob?: BlobStore | null
+  /** The board's declared agents: `@app +helper` in platform text addresses one. */
+  agents?: DeclaredAgents
 }) {
   const entries = options.entries
+  const agents: DeclaredAgents = options.agents ?? new Map()
   let binding: BoardBinding | null = null
   const bound = () => {
     if (!binding) throw new Error('sync engine used before the board bound it')
@@ -211,6 +216,9 @@ export function createSyncEngine(options: {
     const { event, raw, dedupe } = ReceivedEvent.parse(received)
     for (const location of [event.channel, event.thread, 'subthread' in event ? event.subthread : null])
       if (location !== null && !location.startsWith(`${key}:`)) throw badRequest(`provider locations must belong to sync entry ${key}`)
+    // `vboard:` actors are the board's own; no platform speaks for them.
+    const named = ['author' in event ? event.author.id : null, ...('mentions' in event ? (event.mentions ?? []).map((m) => m.actor.id) : [])]
+    if (named.some((id) => id !== null && isBoardActor(id))) throw badRequest('platform actors can\'t be vboard: actors')
     const map = await mappings(key)
     const { state: sync } = await bound().session.state(syncReducer)
     if (!map.has(event.channel) && !sync.byExternalThread[event.thread]) return
@@ -232,6 +240,22 @@ export function createSyncEngine(options: {
   }
 
   // --- inbound: inbox → board -------------------------------------------------------
+
+  /**
+   * Platform text with what the platform marked made exact: each user it mentioned as
+   * `@[slack:user:U0456]`, and `@app +helper` as that agent. A typed `@name` is a mention
+   * only where the provider says it is (GitHub's logins); anywhere else it stays text.
+   */
+  const markedText = (text: string, marked: MarkedMentions) =>
+    exactMentions(
+      addressAgents(text, marked.appMentions ?? [], (name) => agents.has(name)),
+      (marked.mentions ?? []).map(({ form, actor }) => ({ form, actor: actor.id })),
+    )
+  const mentionInput = (platform: SyncProvider, marked: MarkedMentions = {}) => ({
+    lenientMentions: true,
+    mentionScope: platform.mentionScope,
+    mentionActors: (marked.mentions ?? []).map(({ actor }): Actor => ({ id: actor.id, kind: 'external', handle: actor.handle, name: actor.name, avatar: null })),
+  })
 
   const externalIdentity = (author: { id: string; handle: string; name: string; avatar: string | null }): Identity => {
     const principal: Principal = { id: author.id, kind: 'external', handle: author.handle, access: FULL_ACCESS, expiresAt: null }
@@ -262,7 +286,7 @@ export function createSyncEngine(options: {
       if (copy && !copy.deleted) {
         resolved.push({ url: link.url, message: copy.id, unavailable: null, snapshot: {
           author: actors.byId[copy.by.actor]?.name ?? copy.by.actor,
-          text: copy.text, createdAt: copy.createdAt,
+          text: displayMentions(copy.text, mentionedIn(copy, withAgents(actors, agents, null))), createdAt: copy.createdAt,
           files: copy.attachments.map((file) => ({ name: file.name, url: null })),
         } })
         continue
@@ -554,11 +578,11 @@ export function createSyncEngine(options: {
           ...source,
           ...(links.length ? { links } : {}),
           identity,
-          text: clampText(withNotes(overrides.text ?? event.text, notes), attachments.length > 0),
+          text: clampText(withNotes(overrides.text ?? markedText(event.text, event), notes), attachments.length > 0),
           ...(attachments.length ? { attachments } : {}),
           origin: { channel: event.channel, thread: event.thread, subthread: event.subthread, message: event.message, context: event.context },
           from: key,
-          lenientMentions: true,
+          ...mentionInput(platform, event),
           id: await writeId(0),
         }
         // A reply kept on the board: no other platform gets it. A root always syncs, so its thread can.
@@ -569,7 +593,7 @@ export function createSyncEngine(options: {
         }
         const fetched = await platform.fetchRoot(native(event.thread))
         if (fetched === null) {
-          const draft = rootDraft({ text: event.text, labels: {}, author: event.author, raw: trigger.payload.raw })
+          const draft = rootDraft({ text: markedText(event.text, event), labels: {}, author: event.author, raw: trigger.payload.raw })
           return result(await post({ ...base, channel, text: clampText(withNotes(overrides.text ?? draft.text, notes), attachments.length > 0), labels: labels(draft.labels) }))
         }
         const draft = rootDraft({ ...fetched, raw: fetched.raw ?? null })
@@ -578,7 +602,7 @@ export function createSyncEngine(options: {
           identity: externalIdentity(fetched.author), channel,
           text: clampText(draft.text), labels: labels(draft.labels),
           origin: { channel: event.channel, thread: event.thread, subthread: null, message: `root:${trigger.id}`, context: null },
-          from: key, lenientMentions: true, id: await writeId(1),
+          from: key, ...mentionInput(platform), id: await writeId(1),
         })
         return result(await post({ ...reply, re: root.id }))
       }
@@ -594,8 +618,9 @@ export function createSyncEngine(options: {
         else if (event.kind === 'edited') {
           const { state: messages } = await session.state(messagesReducer)
           const stored = messages.byId[id]
-          const text = clampText(withNotes(overrides.text ?? event.text, stored ? notesIn(stored.text) : []), (stored?.attachments.length ?? 0) > 0)
-          if (stored && !event.linksOnly && stored.text !== text) await writeEdit(writes, { ...source, identity, authorized: await authorized('post', id), text, from: key, asAuthor: false })
+          const text = clampText(withNotes(overrides.text ?? markedText(event.text, event), stored ? notesIn(stored.text) : []), (stored?.attachments.length ?? 0) > 0)
+          if (stored && !event.linksOnly && stored.text !== text)
+            await writeEdit(writes, { ...source, identity, authorized: await authorized('post', id), text, from: key, asAuthor: false, ...mentionInput(platform, event) })
           const links = stored ? await resolveLinks(platform, event.links ?? [], stored.links) : []
           if (stored && !sameLinks(links, stored.links)) await writeLinks(writes, { identity, authorized: await authorized('post', id), links, from: key })
         } else {
@@ -622,7 +647,7 @@ export function createSyncEngine(options: {
           const set = Object.fromEntries(Object.entries(desired).filter(([key, value]) => root?.labels[key] !== value))
           const unset = Object.keys(root?.labels ?? {}).filter((key) => !(key in desired) && (event.unset.includes(key) || overrides.unset?.includes(key) || owned(key)))
           if (root && !root.deleted && (Object.keys(set).length || unset.length)) await writeLabels(writes, { identity, authorized: await authorized('label', rootId), set, unset })
-          if (event.reply) return result(await post({ ...source, identity, re: rootId, text: clampText(overrides.text ?? event.reply!), from: key, lenientMentions: true, ...(overrides.noSync ? { noSync: true } : {}), id: await writeId(1) }))
+          if (event.reply) return result(await post({ ...source, identity, re: rootId, text: clampText(overrides.text ?? event.reply!), from: key, ...mentionInput(platform), ...(overrides.noSync ? { noSync: true } : {}), id: await writeId(1) }))
           return { root: rootId, message: createdHere ? rootId : null }
         }
         if (!event.createRoot) return { root: null, message: null }
@@ -631,9 +656,9 @@ export function createSyncEngine(options: {
           ...source,
           identity, channel, text: clampText(event.reply ? draft.text : overrides.text ?? draft.text), labels: labels(draft.labels),
           origin: { channel: event.channel, thread: event.thread, subthread: null, message: `lifecycle:${trigger.id}`, context: null },
-          from: key, lenientMentions: true, id: await writeId(0),
+          from: key, ...mentionInput(platform), id: await writeId(0),
         })
-        if (event.reply) return result(await post({ ...source, identity, re: root.id, text: clampText(overrides.text ?? event.reply), from: key, lenientMentions: true, ...(overrides.noSync ? { noSync: true } : {}), id: await writeId(1) }))
+        if (event.reply) return result(await post({ ...source, identity, re: root.id, text: clampText(overrides.text ?? event.reply), from: key, ...mentionInput(platform), ...(overrides.noSync ? { noSync: true } : {}), id: await writeId(1) }))
         return result(root)
       }
     }
@@ -796,7 +821,8 @@ export function createSyncEngine(options: {
       ctx.session.state(messagesReducer, { through: 'latest' }),
       ctx.session.state(actorsReducer, { through: 'latest' }),
     ])
-    return { sync: sync.state, messages: messages.state, actors: actors.state }
+    // Declared agents render by name before they've written.
+    return { sync: sync.state, messages: messages.state, actors: withAgents(actors.state, agents, null) }
   }
 
   async function postReply(

@@ -16,6 +16,8 @@ export type WriteSource =
   | { kind: 'watcher'; id: string }
   /** A scheduled message's send. */
   | { kind: 'schedule'; id: number }
+  /** A declared agent's in-process client, from `board(...).agent(key)` or the agent's own `vb` tool. */
+  | { kind: 'agent'; key: string }
 
 /** The message a write would put on the board. */
 export type Write =

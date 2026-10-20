@@ -28,7 +28,7 @@ const VBOARD: string = vboard.version;
  * credentials (setup runs before the network policy), and sandboxes share that rate limit, so new
  * threads' setup failed on a 403.
  */
-const GH = "2.102.0";
+export const GH = "2.102.0";
 /** What installs the Chrome Pi uses on its desktop (and drives headless, when it wants), pinned like gh. */
 const AGENT_BROWSER = "0.38.2";
 /** ffmpeg 6.0, a static build with libass, so captions can be burned in. */
@@ -54,8 +54,8 @@ const PI_FILES = [
  * A sandbox session ends at a fixed deadline, not after idling; its files come back with the next one.
  * Each message gets at least this long before it, so a turn that starts late in a session isn't cut off.
  */
-const SANDBOX_MS = 45 * 60_000;
-const SNAPSHOT_MS = 7 * 24 * 60 * 60_000;
+export const SANDBOX_MS = 45 * 60_000;
+export const SNAPSHOT_MS = 7 * 24 * 60 * 60_000;
 /**
  * The factory GitHub App's token for a sandbox: one that outlives the session it's handed to. Connect
  * caches tokens and by default hands out any with 30s left, so a turn could start with a token that dies
@@ -71,7 +71,7 @@ export const GITHUB_TOKEN = { subject: { type: "app" }, validityBufferMs: SANDBO
  * vercel[bot] as author and `__commitAs` as co-author. Smaller sandboxes come from a warm pool that lacks the
  * credential helper, so it takes 6 vCPUs.
  */
-const GIT = {
+export const GIT = {
   source: { type: "git", url: `https://github.com/${REPO}.git` },
   resources: { vcpus: 6 },
   __source_credentials: true,
@@ -123,10 +123,10 @@ export const byPi = (thread: number, by: { principal: string; profile: string | 
   by.session === piSession(thread);
 
 /**
- * Whether a message is one of the board's watchers' own notes (a crosspost, `:security:`'s answer, or saying Pi
- * couldn't start), not a person's: it doesn't wake Pi or triage.
+ * Whether a message is one of the board's own notes (a watcher's crosspost, `:security:`'s answer, saying Pi
+ * couldn't start, or the board saying an agent couldn't finish), not a person's: it doesn't wake Pi or triage.
  */
-export const byWatcher = (by: { actor: string }) => by.actor.startsWith("vboard:watch:");
+export const byWatcher = (by: { actor: string }) => by.actor.startsWith("vboard:watch:") || by.actor === "vboard:agents";
 
 /**
  * Whether a message was written by an agent profile (someone's coding agent, like `julian/claude`, or a Pi), not

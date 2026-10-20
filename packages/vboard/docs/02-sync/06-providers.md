@@ -127,6 +127,14 @@ optional methods are native, without it: `support:t_812`. The board records each
 target's `kind` from `resolveTarget`, so it never parses your ID syntax, and a
 channel target on a provider whose `canStartThreads` is false is refused.
 
+**Mentions.** A `message` or `edited` event marks its mentions, so the board never
+guesses from text: `mentions` pairs each one's form in `text` (`@Ada Lovelace`)
+with its exact author (`{ id, handle, name }`), and `appMentions` lists the forms
+the board's own app goes by (`@desk`), which `@desk +helper` uses to address an
+[agent](../01-board/09-agents.md). The board stores each mention as its actor and
+records a mentioned user it hasn't seen. Through Chat SDK, the `mentionsOf`
+hook returns them.
+
 **Dedupe.** `dedupe` is the identity of one occurrence. A platform redelivering the
 same event must produce the same value, so the retry does nothing; a later
 identical action (a reaction added, removed, and added again) must produce a new
@@ -145,6 +153,7 @@ dropped. If storing fails, the webhook answers 500 so the platform retries.
 | `singleReaction` | `false` | One reaction per person per message, as on WhatsApp. |
 | `uploadsFiles` | `false` | Files go to the platform with `uploadFiles`; otherwise each gets a line in the text. |
 | `render` | the label and text | The outgoing body; see [render](./02-callbacks.md#render). |
+| `mentionScope` | none | An actor ID prefix (`github:user:`) where a typed `@name` in the platform's text resolves, for a platform whose names are unique. Without it, only the mentions an event marks count. |
 
 ## Optional methods
 
@@ -215,7 +224,8 @@ platform knows one reaction occurrence from the next.
 The constructor also takes hooks for what differs between platforms, among them:
 `groupThread` (which board thread an external thread belongs to, like GitHub's
 review threads), `channelOf`, `toChatId` and `fromChatId` (ID encodings),
-`markdown` and `author` (reading a message), `context`, `fetchRoot`, `links`,
+`markdown` and `author` (reading a message), `mentionsOf` (its marked mentions,
+from the raw payload), `context`, `fetchRoot`, `links`,
 `read`, `uploadFiles`, `refusesFiles`, `startTyping`, and `intercept` and `missed`
 (webhook events the adapter doesn't emit). The built-in providers in
 `vboard/adapter-slack`, `vboard/adapter-github`, and `vboard/adapter-kapso` are

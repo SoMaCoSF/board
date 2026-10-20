@@ -4,7 +4,7 @@ import type { BoardEventView } from '../api/routes.ts'
 import { parseWatchTail } from '../api/tail.ts'
 import type { BoardClient } from '../client/client.ts'
 import { watchContract, watchSession, type BoardEvent, type BoardEvents } from '../contract/contract.ts'
-import { actorsReducer, messagesReducer, type Message, type MessagesState } from '../contract/reducers.ts'
+import { actorsReducer, messagesReducer, type ActorsState, type Message, type MessagesState } from '../contract/reducers.ts'
 import { FULL_ACCESS } from './access.ts'
 import { compileFilter, eventView, foldEvent, hasCriteria, OWN_CODE, type ParsedFilters } from './feed.ts'
 import { deploymentIdentity, type Identity, type WriteOrigin } from './writes.ts'
@@ -107,6 +107,8 @@ export function createWatchers(options: {
   watch: Record<string, Watcher>
   store?: A2Store | undefined
   scheduler?: A2Scheduler | undefined
+  /** The actors filters see: the board's, plus its declared agents. */
+  mentionable?: (actors: ActorsState) => ActorsState
 }) {
   const watchers = Object.entries(options.watch).map(([id, watcher]) => {
     if (!ID.test(id)) throw new Error(`watch: ids use lowercase letters, numbers, - and _, got: ${id}`)
@@ -160,15 +162,16 @@ export function createWatchers(options: {
       ctx.session.state(actorsReducer, { through }),
     ])
     const { id, before, after } = foldEvent(messages, actors, event)
+    const known = options.mentionable?.(actors) ?? actors
     const by = (event.payload as { by?: { actor?: string } }).by?.actor
     let view: BoardEventView | undefined
     for (const watcher of watchers) {
       if (by === watcher.identity.actor.id) continue
       if (RECEIPTS.has(event.type) && !watcher.all) continue
-      const match = compileFilter(watcher.filters, { me: null, actors, messages, access: FULL_ACCESS })
+      const match = compileFilter(watcher.filters, { me: null, actors: known, messages, access: FULL_ACCESS })
       if (watcher.enters ? !entered(match, before, after, messages) : !(watcher.criteria ? match(before) || match(after) : id !== null))
         continue
-      view ??= eventView(event, after, actors, OWN_CODE)
+      view ??= eventView(event, after, known, OWN_CODE)
       await server.session(watchSession(watcher.id)).append({
         type: 'watch.matched',
         id: await idempotentId('vboard-watch', watcher.id, event.id),

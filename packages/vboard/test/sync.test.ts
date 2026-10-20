@@ -1,6 +1,7 @@
+import { readableText } from '../src/client/client.ts'
 import { describe, expect, it, vi } from 'vitest'
 import type { Adapter } from 'chat'
-import { fakePlatform, withSlackClient, type WebhookPayload } from './sync-fixtures.ts'
+import { fakePlatform, slackNames, withSlackClient, type WebhookPayload } from './sync-fixtures.ts'
 import { slack } from '../src/sync/slack.ts'
 import { ChatSyncProvider } from '../src/sync/chat-provider.ts'
 import type { SyncContext, EventMapping } from '../src/sync/provider.ts'
@@ -26,10 +27,19 @@ function setup(
     githubClient?: unknown
     repos?: Parameters<typeof github>[0]['repos']
     watch?: BoardOptions['watch']
+    agents?: BoardOptions['agents']
     basePath?: string
+    /** Slack user IDs' display names, and the bot's ID, for mentions. */
+    slackNames?: Record<string, string>
+    slackBot?: string
   } = {},
 ) {
-  const s = fakePlatform('slack', options.slackClient ? withSlackClient(options.slackClient, !!options.asyncToken) : undefined)
+  const extendSlack = options.slackClient ? withSlackClient(options.slackClient, !!options.asyncToken) : undefined
+  const names = slackNames(options.slackNames ?? {}, options.slackBot)
+  const s = fakePlatform('slack', (adapter) => {
+    extendSlack?.(adapter)
+    names(adapter)
+  })
   const g = fakePlatform('github', options.githubClient ? (adapter) => Object.assign(adapter, { octokit: options.githubClient }) : undefined)
   const board = testBoard({
     sync: {
@@ -42,6 +52,7 @@ function setup(
       github: github({ adapter: g.adapter, repos: options.repos ?? { 'basehub-ai/vboard': 'prs' } }),
     },
     ...(options.watch ? { watch: options.watch } : {}),
+    ...(options.agents ? { agents: options.agents } : {}),
     ...(options.basePath !== undefined ? { basePath: options.basePath } : {}),
   })
   const webhook = (key: string, body: unknown, headers: Record<string, string> = {}) =>
@@ -67,15 +78,91 @@ const read = async (call: ReturnType<typeof caller>, channel: string) =>
   }[]
 
 describe('sync', () => {
-  it('keeps the mentions it can resolve in platform text, and leaves the rest as text', async () => {
-    const { board, webhook } = setup()
+  it('resolves the mentions Slack marked to exact users, and leaves typed handles as text', async () => {
+    const { board, webhook } = setup({ slackNames: { U_JB: 'jb' } })
     const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
     await julian('POST', '/messages', { channel: 'firehose', text: 'hi' })
 
-    await webhook('slack', { type: 'message', threadId: 'slack:C1:500', id: '500', text: '@julian and @nobody, look', user: 'U_ADA' })
+    // Slack sends `<@U_JB>`; Chat SDK hands over `@jb`. A typed `@julian` isn't a Slack mention.
+    await webhook('slack', { type: 'message', threadId: 'slack:C1:500', id: '500', text: '@jb and @julian, look', raw: { text: '<@U_JB> and @julian, look' }, user: 'U_ADA' })
     await vi.waitFor(async () => expect(await read(julian, 'firehose')).toHaveLength(2))
-    const messages = (await julian('GET', '/messages?channel=firehose&from=slack')).body.messages as { mentions: string[] }[]
-    expect(messages[0]!.mentions).toEqual(['vercel:user:u_julian'])
+    const [message] = (await julian('GET', '/messages?channel=firehose&from=slack')).body.messages
+    expect(message).toMatchObject({ text: '@[slack:user:U_JB] and @julian, look', mentions: ['slack:user:U_JB'], mentioned: { 'slack:user:U_JB': { handle: 'jb' } } })
+    // Mentioned there, so the board knows them by name before they write.
+    expect((await julian('GET', '/actors')).body.actors).toContainEqual(expect.objectContaining({ id: 'slack:user:U_JB', handle: 'jb' }))
+  })
+
+  it('tells apart two Slack users who share a display name, by the order Slack marked them', async () => {
+    const { board, webhook } = setup({ slackNames: { U_ADA1: 'ada', U_ADA2: 'ada' } })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    await webhook('slack', { type: 'message', threadId: 'slack:C1:510', id: '510', text: '@ada, meet @ada', raw: { text: '<@U_ADA1>, meet <@U_ADA2>' }, user: 'U_JB' })
+    await vi.waitFor(async () => expect(await read(julian, 'firehose')).toHaveLength(1))
+    const [message] = (await julian('GET', '/messages?channel=firehose&from=slack')).body.messages
+    expect(message).toMatchObject({ text: '@[slack:user:U_ADA1], meet @[slack:user:U_ADA2]', mentions: ['slack:user:U_ADA1', 'slack:user:U_ADA2'] })
+    const events = (await julian('GET', '/events?after=0&all=true')).body.events as { type: string; payload: { actor?: string } }[]
+    expect(events.filter((e) => e.type === 'actor.seen').map((e) => e.payload.actor).sort()).toEqual(['slack:user:U_ADA1', 'slack:user:U_ADA2', 'slack:user:U_JB'])
+  })
+
+  it('keeps a message’s mentions through an edit made from its readable text', async () => {
+    const { board, webhook } = setup({ slackNames: { U_AL: 'Ada Lovelace', U_ADA1: 'ada', U_ADA2: 'ada' } })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    await webhook('slack', { type: 'message', threadId: 'slack:C1:520', id: '520', text: '@Ada Lovelace @ada @ada', raw: { text: '<@U_AL> <@U_ADA1> <@U_ADA2>' }, user: 'U_JB' })
+    await vi.waitFor(async () => expect(await read(julian, 'firehose')).toHaveLength(1))
+
+    const posted = (await julian('POST', '/messages', { channel: 'firehose', text: 'cc @[slack:user:U_AL], @[slack:user:U_ADA2] and @[slack:user:U_ADA1]', noSync: true })).body.message
+    // What the inspector's editor starts from, and an agent reads in `vb read`:
+    expect(readableText(posted)).toBe('cc @Ada Lovelace, @ada and @ada')
+    await julian('POST', `/messages/${posted.id}/edit`, { text: 'cc @Ada Lovelace, @ada and @ada: please look' })
+    expect((await julian('GET', `/messages/${posted.id}`)).body.message).toMatchObject({
+      text: 'cc @[slack:user:U_AL], @[slack:user:U_ADA2] and @[slack:user:U_ADA1]: please look',
+      mentions: ['slack:user:U_AL', 'slack:user:U_ADA2', 'slack:user:U_ADA1'],
+    })
+  })
+
+  it('addresses a declared agent as `@<app> +name` in Slack, and leaves anything else as text', async () => {
+    const { board, webhook } = setup({ agents: { helper: { name: 'Helper' } }, slackNames: { U_BOT: 'vboard-factory' }, slackBot: 'U_BOT' })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    const say = (id: string, raw: string, text: string) => webhook('slack', { type: 'message', threadId: `slack:C1:${id}`, id, text, raw: { text: raw }, user: 'U_ADA' })
+
+    await say('600', '<@U_BOT> +helper can you look?', '@vboard-factory +helper can you look?')
+    await say('601', '<@U_BOT> +nobody hello', '@vboard-factory +nobody hello')
+    await say('602', 'ask +helper later', 'ask +helper later')
+    await vi.waitFor(async () => expect(await read(julian, 'firehose')).toHaveLength(3))
+    const messages = (await julian('GET', '/messages?channel=firehose&from=slack')).body.messages as { text: string; mentions: string[] }[]
+    expect(messages.map(({ text, mentions }) => ({ text, mentions }))).toEqual([
+      { text: '@[vboard:agent:helper] can you look?', mentions: ['vboard:agent:helper'] },
+      { text: '@vboard-factory +nobody hello', mentions: [] },
+      { text: 'ask +helper later', mentions: [] },
+    ])
+  })
+
+  it('addresses a declared agent as `@<app> +name` on GitHub, asking for the app’s login once', async () => {
+    const graphql = vi.fn(async () => ({ viewer: { login: 'vboard-factory[bot]' } }))
+    const { board, webhook } = setup({ agents: { helper: {} }, githubClient: { graphql, rest: { pulls: { get: vi.fn() } } } })
+    const julian = caller(board.fetch, await personToken())
+    await webhook(
+      'github',
+      {
+        action: 'opened',
+        repository: { full_name: 'basehub-ai/vboard' },
+        sender: { login: 'julianbenegas', id: 42 },
+        pull_request: { number: 9, title: 'Agents', html_url: 'https://github.com/basehub-ai/vboard/pull/9', draft: false, merged: false },
+      },
+      { 'x-github-event': 'pull_request', 'x-github-delivery': 'agents-opened' },
+    )
+    await vi.waitFor(async () => expect(await read(julian, 'prs')).toHaveLength(1))
+    const comment = (id: string, text: string) => webhook('github', { type: 'message', threadId: 'github:basehub-ai/vboard:9', id, text, raw: { body: text }, user: '42', name: 'julianbenegas' })
+    await comment('c1', '@vboard-factory[bot] +helper review this?')
+    await comment('c2', '@vboard-factory +helper and this')
+    await comment('c3', 'no agent here')
+    await vi.waitFor(async () => expect(await read(julian, 'prs')).toHaveLength(4))
+
+    expect((await read(julian, 'prs')).slice(1).map((m) => m.text)).toEqual([
+      '@[vboard:agent:helper] review this?',
+      '@[vboard:agent:helper] and this',
+      'no agent here',
+    ])
+    expect(graphql).toHaveBeenCalledTimes(1)
   })
 
   it("runs watchers on Slack's messages, and syncs their replies back to Slack", async () => {
