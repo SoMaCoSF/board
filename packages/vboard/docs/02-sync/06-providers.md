@@ -41,6 +41,7 @@ type Delivery = {
   ticket: string
   message: string
   text: string
+  url: string
   user: { id: string; name: string }
 }
 
@@ -69,6 +70,7 @@ export class DeskProvider extends SyncProvider<DeskEvent> {
         text: body.text,
         isRoot: false,
         context: null,
+        url: body.url,
         author: { id: `desk:user:${body.user.id}`, handle: body.user.name, name: body.user.name, avatar: null, isBot: false },
       },
     })
@@ -87,8 +89,8 @@ export class DeskProvider extends SyncProvider<DeskEvent> {
   override async post(target: string, kind: ResolvedTarget['kind'], body: ProviderPost) {
     // your platform's API, e.g. a new ticket for a channel target, a reply for a thread:
     // const sent = await desk.post(target, body.markdown)
-    const sent = { ticket: 't_812', message: 'm_1' }
-    return { thread: kind === 'channel' ? `${target}:${sent.ticket}` : target, message: sent.message }
+    const sent = { ticket: 't_812', message: 'm_1', url: 'https://desk.example.com/t_812#m_1' }
+    return { thread: kind === 'channel' ? `${target}:${sent.ticket}` : target, message: sent.message, url: sent.url }
   }
 
   override event(context: Pick<SyncContext, 'id' | 'key' | 'event' | 'raw'>): DeskEvent {
@@ -118,7 +120,7 @@ string, function, and `{ channel, run }` values as the built-in ones.
 | `receive(key, request, emit)` | Authenticates the request, then emits normalized `{ event, raw, dedupe }` records, and answers what the platform expects. |
 | `resolveChannel(key)` | Turns a mapping key (`'#prs'`, `'support'`) into the platform's channel ID. |
 | `resolveTarget(target)` | Turns a sync target into `{ target, channel, kind }`, where `kind` is `channel` or `thread`. |
-| `post(target, kind, body)` | Posts `body` (`{ markdown, files?, as? }`) and returns `{ thread, message, files? }`. |
+| `post(target, kind, body)` | Posts `body` (`{ markdown, files?, as? }`) and returns `{ thread, message, files?, url? }`. |
 | `event(context)` | Builds the typed envelope your callbacks receive, usually `envelope(…)` parsed by an `eventSchema`. |
 
 **IDs.** Incoming locations (`channel`, `thread`, `subthread`) carry the entry's key
@@ -126,6 +128,13 @@ as a prefix: `desk:support:t_812`. Targets handed to `post`, `resolveTarget`, an
 optional methods are native, without it: `support:t_812`. The board records each
 target's `kind` from `resolveTarget`, so it never parses your ID syntax, and a
 channel target on a provider whose `canStartThreads` is false is refused.
+
+**Links.** A `message` event's `url` and `post`'s are the message's link on the
+platform. The board keeps the first as the board message's `origin.url` and the
+second in the delivery receipt, `message.synced`'s `external.url`, so a watcher
+links to either without knowing your ID syntax. Build them from what the
+platform sent or answered: they're asked for on every message, so they shouldn't
+cost an API call each. Leave them out, or `null`, where the platform has no links.
 
 **Dedupe.** `dedupe` is the identity of one occurrence. A platform redelivering the
 same event must produce the same value, so the retry does nothing; a later
@@ -215,7 +224,8 @@ platform knows one reaction occurrence from the next.
 The constructor also takes hooks for what differs between platforms, among them:
 `groupThread` (which board thread an external thread belongs to, like GitHub's
 review threads), `channelOf`, `toChatId` and `fromChatId` (ID encodings),
-`markdown` and `author` (reading a message), `context`, `fetchRoot`, `links`,
+`markdown` and `author` (reading a message), `url(thread, message, raw)` (a
+message's link, for each one in and each one posted), `context`, `fetchRoot`, `links`,
 `read`, `uploadFiles`, `refusesFiles`, `startTyping`, and `intercept` and `missed`
 (webhook events the adapter doesn't emit). The built-in providers in
 `vboard/sync-slack`, `vboard/sync-github`, and `vboard/sync-kapso` are

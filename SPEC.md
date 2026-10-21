@@ -839,7 +839,7 @@ export const boardContract = contract({
       noSync: z.boolean().default(false),   // keep this message on the board
       mentions: z.array(ActorId),           // (server)
       by: Author,                           // (server) { actor, principal, profile, session? }
-      origin: Origin.nullable(),            // (server) { thread, message, context? } when it came from a platform
+      origin: Origin.nullable(),            // (server) { thread, message, context?, url } when it came from a platform
       attachments: z.array(Attachment).max(10).optional(), // (server) { id, name, type, size }, as the board stored them
       links: z.array(Link).max(10).optional(), // (server) platform messages it links to: { url, message, snapshot, unavailable }
       blind: z.literal(true).optional(),     // (server) its author couldn't read the channel
@@ -851,7 +851,7 @@ export const boardContract = contract({
     'reaction.removed':  z.object({ id: MessageId, emoji: Emoji, by: Author }),
     'labels.changed':    z.object({ id: MessageId, set: Labels, unset: z.array(LabelKey), by: Author }),
     'thread.synced':     z.object({ root: MessageId, target: ExternalTarget, cause: z.enum(['config', 'request']), by: Author }),
-    'message.synced':    z.object({ id: MessageId, target: ExternalTarget, external: ExternalMessage }), // (server)
+    'message.synced':    z.object({ id: MessageId, target: ExternalTarget, external: ExternalMessage }), // (server) { thread, message, url, asUser? }
     'message.files_synced': z.object({ id: MessageId, target: ExternalTarget, files: z.array(z.string()).nullable() }), // (server) null: the platform refused files
     'message.sync_failed': z.object({ id: MessageId, target: ExternalTarget, error: z.string() }),      // (server)
     'actor.seen':        z.object({ actor: ActorId, kind: ActorKind, handle: Handle, name: z.string(), avatar: z.string().url().optional() }),
@@ -1004,6 +1004,15 @@ doubling each time), then recorded as failed, and the thread moves on.
 
 `origin`, on messages that came in from a platform, is the inbound counterpart:
 it records the external-to-board direction.
+
+**Links.** Target IDs stay private to each provider, so the board never builds a
+URL from one. The provider does, once, without an extra API call: a message
+event's `url` becomes `origin.url`, and the URL `post` returns becomes the
+receipt's `external.url`. Slack builds both on the workspace's host from one
+cached `auth.test`; GitHub takes the item's or the comment's `html_url` from the
+webhook or from its answer to the post; a provider without links leaves them
+null. Events from before links have neither: message views show `origin.url`
+as null, and there's no backfill.
 
 **Consumers.** There are two, and both exist only when `sync` is configured.
 
@@ -2182,7 +2191,10 @@ The required methods are `receive(key, request, emit)`, `resolveChannel(key)`,
 `receive` authenticates the request before emitting normalized
 `{ event, raw, dedupe }` records. Incoming locations have the configured sync
 key prefix. Outgoing targets passed to provider methods are native IDs, without
-that prefix. `post` returns native `{ thread, message, files? }` receipt data.
+that prefix. `post` returns native `{ thread, message, files?, url? }` receipt data,
+and a `message` record may carry its `url`. Both are the message's link on the
+platform, built from what it sent or answered, never fetched per message; the
+Chat bridge asks its `url(thread, message, raw)` hook for each.
 The engine validates incoming records, persists them before acknowledging,
 orders imports and delivery, handles retries and echo suppression, and records
 copy/file receipts. Intake failures answer 500 so the sender can retry.
@@ -2261,7 +2273,9 @@ ID (`'C0123ABC'`).
 `permalink()` calls `chat.getPermalink` with the provider's client, so the link
 has the workspace's own host (Enterprise Grid included) and a reply's
 `thread_ts`. It's `null` for a deleted message, which Slack can no longer link;
-any other Slack refusal throws, and the callback retries.
+any other Slack refusal throws, and the callback retries. A message event's
+`url` needs no call: it's the same link, built at intake on the host the app's
+one `auth.test` gave (`null` if that failed).
 
 **Setup:**
 
@@ -2412,7 +2426,8 @@ vb read issues --label tag.bug                     # issues labeled bug
   label overrides or call `board.label` themselves.
 
 - **A function receives `{ event, board, permalink }`,** with `event` typed as the union
-  above. `permalink()` returns `null` on GitHub. Every event carries `thread`.
+  above. `permalink()` returns `null` on GitHub; a comment event's `url` is its
+  `html_url`, and a root's `origin.url` is the PR's or issue's. Every event carries `thread`.
 - **A comment on a PR or issue the board hasn't seen** fetches it through the
   adapter's `.octokit`, creates a root from its title and URL with its author,
   state, labels, and assignees, then posts the comment as a reply. Known threads

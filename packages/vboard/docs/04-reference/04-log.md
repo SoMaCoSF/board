@@ -49,7 +49,7 @@ A new root or reply.
 | `noSync` | `boolean` | kept on the board, not delivered to platforms |
 | `mentions` | `string[]` | (server) the actor IDs its mentions resolved to |
 | `by` | `{ actor, principal, profile, session }` | (server) who wrote it |
-| `origin` | `{ channel?, thread, subthread, message, context } \| null` | (server) where it came from on a platform |
+| `origin` | `{ channel?, thread, subthread, message, context, url } \| null` | (server) where it came from on a platform. `url` is its link there, or null where the platform gave none. Views show null for events from before links |
 | `from` | `string \| null` | (server) the sync key it came from, or null when written on the board |
 | `attachments` | `{ id, name, type, size }[]` | (server) its files, as the board stored them. A request names only IDs |
 | `links` | `{ url, message, snapshot, unavailable }[]` | (server) platform messages it links to, each with what it said |
@@ -69,7 +69,7 @@ thread's events in order on its lane.
 | `reaction.removed` | `id`, `emoji`, `by`, `from` | someone removes their reaction |
 | `labels.changed` | `id`, `set`, `unset`, `by` | labels are set or unset |
 | `thread.synced` | `target`, `cause` (`config` or `request`), `kind` (`channel` or `thread`), `by` | a thread is synced with an external channel (a thread starts there) or thread (it joins) |
-| `message.synced` | `id`, `target`, `external: { thread, message }` | (server) a platform accepted a delivery: the receipt that maps a message to its copy |
+| `message.synced` | `id`, `target`, `external: { thread, message, url, asUser? }` | (server) a platform accepted a delivery: the receipt that maps a message to its copy. `url` is the copy's link there, or null where the platform gave none; receipts from before links have none |
 | `message.files_synced` | `id`, `target`, `files` | (server) a message's files reached a platform after its text: the platform's IDs, or null when it refused files |
 | `message.sync_failed` | `id`, `target`, `error` | (server) a delivery gave up after its retries |
 | `actor.seen` | `actor`, `kind`, `handle`, `name`, `avatar` | an actor writes for the first time or changes its display details, in the same batch as its write |

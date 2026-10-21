@@ -65,7 +65,9 @@ A watcher sees what a tail sees:
   want.
 - **`--all` adds delivery receipts.** A tail hides `message.synced` and
   `message.files_synced` without it. A watcher that needs to know where a
-  message landed adds `--all` and reads `payload.external`.
+  message landed adds `--all` and reads `payload.external`: the platform
+  thread and message, and `url`, the copy's link there (null where the
+  platform has none).
 
 ```ts
 // in board({ watch: { … } }): where did each new PR root land in Slack?
@@ -73,8 +75,10 @@ announce: {
   tail: 'prs --all',
   run: async ({ event }) => {
     if (event.type !== 'message.synced' || event.message?.re !== null) return
-    const { thread } = event.payload.external // e.g. 'slack:C0123:1727000000.123456'
-    // your code: await linkTheThreads(event.message.id, thread)
+    const { thread, url } = event.payload.external
+    // thread: 'slack:C0123:1727000000.123456'
+    // url: 'https://acme.slack.com/archives/C0123/p1727000000123456'
+    // your code: await linkTheThreads(event.message.id, thread, url)
   },
 },
 ```

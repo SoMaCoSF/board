@@ -67,6 +67,10 @@ Drafts are mirrored right away; filter by `state=open` to see only ready PRs.
 Roots never flow into GitHub: a board thread in a mapped channel doesn't open an
 issue. Resolving review conversations isn't synced.
 
+Each message keeps its GitHub link as `origin.url`: the PR's or issue's for a
+root, a comment's `html_url` for a reply. A board reply's receipt has the
+`html_url` GitHub answered with as `external.url`.
+
 ## Events
 
 | Event | What the mirror does |

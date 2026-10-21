@@ -74,7 +74,8 @@ Then, by kind:
 
 - **`message`:** `message` (the platform's ID), `text` (markdown), `author`
   (`{ id, handle, name, avatar, isBot }`), `isRoot`, `context` (a GitHub review
-  comment's `path:line`), and `files` and `links` when it has them.
+  comment's `path:line`), `url` (its link on the platform, or `null`), and
+  `files` and `links` when it has them.
 - **`edited`:** `message`, `text`, `author`, `links`.
 - **`deleted`:** `message`.
 - **`reaction`:** `message`, `emoji`, `added`, `author`.
@@ -105,6 +106,12 @@ the workspace's own host (Enterprise Grid included) and a reply's `thread_ts`. I
 only reads the URL: the thread isn't synced and no channel is joined. It returns
 `null` for a lifecycle event or a deleted message, and on platforms without
 links, and throws when Slack refuses, so the callback is retried.
+
+A `message` event already has `event.url`, built when it came in from what the
+platform sent, with no API call: Slack's on the workspace's host from one
+`auth.test`, GitHub's from the comment's `html_url`. The import keeps it as the
+board message's `origin.url`, so a watcher reads it there later. Ask
+`permalink()` for an edit, a reaction, or a message whose `url` is `null`.
 
 ## Overrides
 

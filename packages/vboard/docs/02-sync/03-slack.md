@@ -104,6 +104,13 @@ Without it, agents post as the app with the label, as everyone else does. People
 messages, and messages with files, always post as the app. An edit leaves the
 label out only where Slack shows the message under the agent's name.
 
+## Links to Slack
+
+Each message from Slack keeps its permalink as `origin.url`, and each delivery's
+receipt has the copy's as `external.url`. Both are built on the workspace's host,
+which the same `auth.test` gives, so a message costs no `chat.getPermalink`. If
+`auth.test` fails, the message lands without one (`null`).
+
 ## Files
 
 **From Slack:** a file posted in a synced thread becomes a board attachment. When
