@@ -1,7 +1,8 @@
+import { idempotentId } from 'experimental-a2'
 import { describe, expect, it, vi } from 'vitest'
 import type { BoardEventView } from '../src/api/routes.ts'
 import { parseTail, parseWatchTail, words } from '../src/api/tail.ts'
-import type { Watcher } from '../src/server/index.ts'
+import type { Json, Watcher } from '../src/server/index.ts'
 import { runMatch } from '../src/server/watch.ts'
 import { caller, personToken, testBoard } from './harness.ts'
 
@@ -436,5 +437,192 @@ describe('once', () => {
       ['B', 'vboard:watch:w'],
     ])
     expect(calls, 'fn ran once').toBe(1)
+  })
+
+  it('gives a retry what fn returned, without running it again', async () => {
+    let calls = 0
+    const got: unknown[] = []
+    const board = testBoard({
+      watch: {
+        w: {
+          tail: 'firehose',
+          run: async ({ once }) => {
+            got.push(
+              await once('k', async () => {
+                calls++
+                return { pr: 12 }
+              }),
+            )
+            if (got.length === 1) throw new Error('cut short after once')
+          },
+        },
+      },
+    })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    await julian('POST', '/messages', { channel: 'firehose', text: 'export is broken' })
+    const watches = board.servers.at(-1)!
+    await vi.waitFor(async () => {
+      await board.skipHold(watches, 'watch:w')
+      await watches.drain('watch:w')
+      expect(got).toHaveLength(2)
+    })
+    expect(got).toEqual([{ pr: 12 }, { pr: 12 }])
+    expect(calls, 'fn ran once').toBe(1)
+  })
+
+  it('runs fn again when a run dies after its effect and before its record, and the effect lands once', async () => {
+    let calls = 0
+    let finished = false
+    const board = testBoard({
+      watch: {
+        w: {
+          tail: 'firehose',
+          run: async ({ event, board, once }) => {
+            if (event.message?.re !== null) return
+            const root = event.message.id
+            await once('k', async () => {
+              calls++
+              await board.reply(root, 'on it')
+            })
+            finished = true
+          },
+        },
+      },
+    })
+    vi.spyOn(board.backend, 'recordOnce').mockRejectedValueOnce(new Error('killed'))
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    const root = (await julian('POST', '/messages', { channel: 'firehose', text: 'export is broken' })).body.message
+    const watches = board.servers.at(-1)!
+    await vi.waitFor(async () => {
+      await board.skipHold(watches, 'watch:w')
+      await watches.drain('watch:w')
+      expect(finished).toBe(true)
+    })
+    expect(calls, 'fn ran again after the kill').toBe(2)
+    expect(await repliesOf(julian, root.id)).toEqual([['on it', 'vboard:watch:w']])
+    const record = await watches.session(`once:${await idempotentId('vboard-once', 'vboard:watch:w', 'k')}`).history()
+    expect(record.map((event) => [event.type, event.payload])).toEqual([['watch.once', { actor: 'vboard:watch:w', key: 'k' }]])
+  })
+
+  it("keeps a watcher's keys across its events and its failed hook, apart from another watcher's", async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const ran: string[] = []
+    const seen = { review: 0, other: 0 }
+    const reviewer = (name: 'review' | 'other'): Watcher => ({
+      tail: 'firehose',
+      run: async ({ event, once }) => {
+        const thread = event.message!.re ?? event.message!.id
+        await once(`review:${thread}`, async () => void ran.push(name))
+        seen[name]++
+      },
+    })
+    const hooked: unknown[] = []
+    const board = testBoard({
+      watch: {
+        review: reviewer('review'),
+        other: reviewer('other'),
+        flaky: {
+          tail: 'firehose',
+          run: async ({ event, once }) => {
+            if (event.message?.re !== null) return
+            await once(`start:${event.message.id}`, async () => 'started')
+            throw new Error('sandbox setup failed')
+          },
+          failed: async ({ event, once }) => {
+            hooked.push(await once(`start:${event.message!.id}`, async () => 'from the hook'))
+          },
+        },
+      },
+    })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    const root = (await julian('POST', '/messages', { channel: 'firehose', text: 'review #12' })).body.message
+    await julian('POST', '/messages', { re: root.id, text: 'and again' })
+    const watches = board.servers.at(-1)!
+    await vi.waitFor(async () => {
+      await board.skipHold(watches, 'watch:flaky')
+      await watches.drain('watch:flaky')
+      expect(hooked).toHaveLength(1)
+    })
+    await vi.waitFor(() => expect(seen).toEqual({ review: 2, other: 2 }))
+    expect(ran.sort(), "each watcher's fn ran once, for both events").toEqual(['other', 'review'])
+    expect(hooked, "the failed hook got run's record").toEqual(['started'])
+    error.mockRestore()
+  })
+
+  it("keeps posts beside fn on the run's count, and a keyed client's inside fn on its own", async () => {
+    let runs = 0
+    let finished = false
+    let inside: string | undefined
+    const app: ReturnType<typeof testBoard> = testBoard({
+      watch: {
+        w: {
+          tail: 'firehose',
+          run: async ({ event, board, once }) => {
+            if (event.message?.re !== null) return
+            const root = event.message.id
+            await Promise.all([
+              once('k', async () => {
+                await board.reply(root, 'A')
+                inside = (await app.client('hook', { key: 'd1' }).reply(root, 'C')).id
+              }),
+              board.reply(root, 'B'),
+            ])
+            if (++runs === 1) throw new Error('cut short after once')
+            await board.reply(root, 'D')
+            finished = true
+          },
+        },
+      },
+    })
+    const julian = caller(app.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    const root = (await julian('POST', '/messages', { channel: 'firehose', text: 'export is broken' })).body.message
+    const watches = app.servers.at(-1)!
+    await vi.waitFor(async () => {
+      await app.skipHold(watches, 'watch:w')
+      await watches.drain('watch:w')
+      expect(finished).toBe(true)
+    })
+    expect((await repliesOf(julian, root.id)).map(([text]) => text).sort(), 'each reply landed once').toEqual(['A', 'B', 'C', 'D'])
+    expect((await app.client('hook', { key: 'd1' }).reply(root.id, 'C')).id, "the keyed client's post outside fn").toBe(inside)
+  })
+
+  it('returns the JSON of what fn returned on a miss and a hit alike, and checks its key and size', async () => {
+    const ran: string[] = []
+    const got: Record<string, unknown> = {}
+    const board = testBoard({
+      watch: {
+        w: {
+          tail: 'firehose',
+          run: async ({ once }) => {
+            const at = () =>
+              once('at', async () => {
+                ran.push('at')
+                return { at: new Date(0) } as unknown as Json
+              })
+            got.miss = await at()
+            got.hit = await at()
+            const nothing = () => once('nothing', async () => void ran.push('nothing'))
+            got.nothing = [await nothing(), await nothing()]
+            got.big = await once('big', async () => 'x'.repeat(16_384)).catch((error: Error) => error.message)
+            got.small = await once('big', async () => {
+              ran.push('big')
+              return 'an ID'
+            })
+            got.keys = await Promise.all(['', 'a\u0000b', 'k'.repeat(201)].map((key) => once(key, async () => void ran.push(key)).catch((error: Error) => error.message)))
+            got.done = true
+          },
+        },
+      },
+    })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    await julian('POST', '/messages', { channel: 'firehose', text: 'export is broken' })
+    await vi.waitFor(() => expect(got.done).toBe(true))
+    expect(got.miss).toStrictEqual({ at: '1970-01-01T00:00:00.000Z' })
+    expect(got.hit).toStrictEqual(got.miss)
+    expect(got.nothing).toStrictEqual([undefined, undefined])
+    expect(got.big).toBe('once big: its result is 16386 bytes as JSON, over 16384: return an ID')
+    expect(got.small, 'an oversized result recorded nothing').toBe('an ID')
+    expect(got.keys).toEqual(['once: key is empty', 'once: key has a NUL character or a lone surrogate', 'once: key is over 200 characters'])
+    expect(ran, 'fn ran once per key it recorded, and never for a bad key').toEqual(['at', 'nothing', 'big'])
   })
 })
