@@ -8,14 +8,16 @@ const root = (labels = { pr: "vercel-labs/vboard#105", state: "open" }) => ({
   text: "PR #105: Link [PR] threads\nhttps://github.com/vercel-labs/vboard/pull/105",
   labels,
 });
-const synced = (message = root(), thread = "slack:C0C6MNT9LLC:1791405000.000100") => ({
+const SLACK = "https://vercel.enterprise.slack.com/archives/C0C6MNT9LLC";
+const synced = (message = root(), target = "slack:C0C6MNT9LLC", url = `${SLACK}/p1791405000000100`) => ({
   type: "message.synced",
-  payload: { id: message.id, target: "slack:C0C6MNT9LLC", external: { thread, message: thread.split(":")[2] } },
+  payload: { id: message.id, target, external: { thread: `${target}:1791405000.000100`, message: "1791405000.000100", url } },
   message,
 });
 const slackSource = {
   id: "2326",
-  origin: { thread: "slack:C0C6MNT9LLC:1791404203.820609" },
+  from: "slack",
+  origin: { thread: "slack:C0C6MNT9LLC:1791404203.820609", url: `${SLACK}/p1791404203820609` },
   author: { handle: "JB", name: "Julian Benegas" },
 };
 
@@ -46,20 +48,21 @@ test("a factory PR's Slack thread and its source's Slack thread link to each oth
   assert.deepEqual(h.replies, [
     {
       id: "2400",
-      text: ":crosspost: From [Julian Benegas's Slack thread](https://vercel.slack.com/archives/C0C6MNT9LLC/p1791404203820609) · board #2326",
+      text: `:crosspost: From [Julian Benegas's Slack thread](${SLACK}/p1791404203820609) · board #2326`,
     },
     {
       id: "2326",
-      text: ":crosspost: [#105 Link \\[PR\\] threads](https://vercel.slack.com/archives/C0C6MNT9LLC/p1791405000000100)",
+      text: `:crosspost: [#105 Link \\[PR\\] threads](${SLACK}/p1791405000000100)`,
     },
   ]);
 });
 
-test("skips posts, replies, GitHub receipts, crossposted roots, other branches, and sources not from Slack", async () => {
+test("skips posts, replies, GitHub receipts, receipts without a link, crossposted roots, other branches, and sources not from Slack", async () => {
   const h = harness();
   await h.run({ ...synced(), type: "message.posted" });
   await h.run(synced({ ...root(), re: "2399" }));
-  await h.run(synced(root(), "github:vercel-labs/vboard:105"));
+  await h.run(synced(root(), "github:vercel-labs/vboard", "https://github.com/vercel-labs/vboard/pull/105#issuecomment-1"));
+  await h.run(synced(root(), "slack:C0C6MNT9LLC", null));
   await h.run(synced(root({ pr: "vercel-labs/vboard#105", crosspost: "yes" })));
   await h.run(synced(root({ pr: "vercel/v0#1" })));
   assert.equal(h.requests.length, 0);
@@ -68,7 +71,9 @@ test("skips posts, replies, GitHub receipts, crossposted roots, other branches, 
 
   const other = harness({ ref: "jb/some-branch" });
   await other.run(synced());
-  const github = harness({ source: { ...slackSource, origin: { thread: "github:vercel-labs/vboard:issue:7" } } });
+  const github = harness({ source: { ...slackSource, from: "github", origin: { thread: "github:vercel-labs/vboard:issue:7", url: "https://github.com/vercel-labs/vboard/issues/7" } } });
   await github.run(synced());
-  assert.deepEqual([...other.replies, ...github.replies, ...other.labels, ...github.labels], []);
+  const unlinked = harness({ source: { ...slackSource, origin: { ...slackSource.origin, url: null } } });
+  await unlinked.run(synced());
+  assert.deepEqual([...other.replies, ...github.replies, ...unlinked.replies, ...other.labels, ...github.labels, ...unlinked.labels], []);
 });
