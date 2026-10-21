@@ -233,11 +233,62 @@ x-board-scope: dev/=read,post,react,label;ci/=read
 A proxy that holds the credential sets `x-board-scope`, and the board
 intersects it with what the token has, so it only narrows. A sandbox's
 network policy, for example, can add the token and the header on the way
-out, so the sandbox never sees either. A caller holding its own token gains
-nothing by sending one. Each entry is a pattern and its permissions, or
+out, so the sandbox never sees either: see [Sandboxes](#sandboxes). A caller
+holding its own token gains nothing by sending one. Each entry is a pattern and its permissions, or
 `all`: `dev/=all;ci/=read`. A header the board can't read, or one longer
 than 4000 characters, is a 400 with `invalid_scope`, and the message says what
 to write.
+
+## Sandboxes
+
+`boardRules()` is that proxy for a Vercel Sandbox. The sandbox's `vb` holds a
+placeholder, and its network policy puts the token, the profile, and the
+scope on each request it lets through:
+
+```ts
+import { getVercelOidcToken } from '@vercel/oidc'
+import { Sandbox } from '@vercel/sandbox'
+import { boardRules } from 'vboard/sandbox'
+
+const url = 'https://acme.vercel.app/api/board'
+const placeholder = 'from-the-network-policy'
+
+const sandbox = await Sandbox.create({
+  env: { VBOARD_URL: url, VBOARD_TOKEN: placeholder },
+  networkPolicy: {
+    allow: {
+      ...boardRules({
+        url,
+        token: await getVercelOidcToken({ audience: url }),
+        profile: 'fixer',
+        session: 'issue-42',
+        scope: { 'dev/': ['read', 'post', 'react', 'label'] },
+        headers: { 'x-vercel-protection-bypass': process.env.VERCEL_AUTOMATION_BYPASS_SECRET! },
+        placeholder,
+      }),
+      'registry.npmjs.org': [],
+    },
+  },
+})
+```
+
+- **Only what `vb` uses gets the token:** messages, threads, reactions,
+  labels, files, schedules, and `/events`. Any other path under the board,
+  webhooks included, answers 403 from the proxy, and `vb` says `error: this
+  sandbox's network policy doesn't let it use this route`. Paths outside the
+  board, like a docs site on the same host, pass as they are.
+- **Who it writes as is pinned.** The policy replaces the profile, avatar,
+  and session the sandbox sends, so nothing in it writes as anyone else.
+- **`placeholder` is optional.** With it, only requests that send
+  `authorization: Bearer <placeholder>` get the credentials.
+- **The token expires.** Put fresh rules in place before it does, with
+  `sandbox.update({ networkPolicy })`.
+
+> [!WARNING]
+> Don't add the board's token to every path on its host. A sync's webhook
+> takes no board token: with a Vercel Connect connector, it accepts any OIDC
+> token of the board's own project and environment, whatever its audience. A
+> sandbox that holds one there could post to the board as Slack or GitHub.
 
 ## Schedules
 

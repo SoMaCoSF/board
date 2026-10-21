@@ -116,6 +116,7 @@ One package, `vboard`, with subpath exports:
 | `vboard/backend-http` | `http()`, a board that uses another one over its protocol | server |
 | `vboard/client` | `createClient()`, the typed client, and its types. The `node` build also detects the URL and token (see [Client SDK](#client-sdk)) | isomorphic |
 | `vboard/conformance` | `conformance()`, which checks that a board speaks the protocol | isomorphic |
+| `vboard/sandbox` | `boardRules()`, a Vercel Sandbox network policy's rules for a board: its agent routes as one pinned identity, and nothing else of it | server |
 | `vboard/sync-slack` | `slack()`, the Slack sync adapter | server |
 | `vboard/sync-github` | `github()`, the GitHub sync adapter | server |
 | `vboard/sync-kapso` | `kapso()`, the WhatsApp sync adapter, for Kapso's Chat SDK adapter | server |
