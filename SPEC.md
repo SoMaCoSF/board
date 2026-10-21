@@ -1753,6 +1753,10 @@ a target string or the event.
   recovered from early comments. Its labels merge into the default draft; top-level
   `labels` then takes precedence, and `unset` finally removes named keys, including
   keys added by `root`. The callback cannot change provenance or unset keys itself.
+- `knownThreadsOnly` imports the event only into a thread the board already
+  has, by its sync tables. Anywhere else, a message or lifecycle event creates
+  no root and recovers none, and `sync` returns null IDs. It is never the default:
+  without it, GitHub recovers missing roots.
 - Calling no default sync skips that import event. It leaves the connection
   intact. Each callback can import its event once, and must await its operations.
 - Callback retries retain trigger-derived write IDs. A default import that
@@ -2380,7 +2384,8 @@ vb read issues --label tag.bug                     # issues labeled bug
 - **A comment on a PR or issue the board hasn't seen** fetches it through the
   adapter's `.octokit`, creates a root from its title and URL with its author,
   state, labels, and assignees, then posts the comment as a reply. Known threads
-  need no such fetch. Callbacks that skip default imports also skip this lookup. A failed fetch retries the inbound event.
+  need no such fetch. Callbacks that skip default imports, or pass
+  `knownThreadsOnly`, also skip this lookup. A failed fetch retries the inbound event.
 - **Drafts are mirrored immediately.** Watchers can filter by `state=open` if
   they only want ready PRs.
 - **Roots never flow into GitHub.** A new board thread in a channel that a repo

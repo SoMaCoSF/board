@@ -129,7 +129,9 @@ A comment on a PR or issue that opened before you mapped the repo still lands.
 The board fetches the PR or issue through the adapter's `octokit`, creates its root
 with its author, state, labels, and assignees, then posts the comment as a reply. A
 failed fetch retries the event. A [function](./02-callbacks.md) that doesn't call
-`board.sync` skips the fetch too.
+`board.sync`, or passes it
+[`knownThreadsOnly`](./02-callbacks.md#overrides), skips the fetch too, and the
+comment stays on GitHub.
 
 ## Vercel's deployment comment
 

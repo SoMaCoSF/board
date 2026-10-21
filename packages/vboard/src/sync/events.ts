@@ -50,6 +50,7 @@ export const SyncOverrides = z.object({
   labels: Labels.optional(),
   unset: z.array(LabelKey).optional(),
   noSync: z.boolean().optional(),
+  knownThreadsOnly: z.boolean().optional(),
 }).strict()
 
 export type SyncOverrides = z.infer<typeof SyncOverrides>

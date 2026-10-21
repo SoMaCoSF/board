@@ -602,6 +602,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
     const threadKey = (await find({ thread: event.thread })).thread ?? undefined
     const synced = threadKey ? await syncOf(threadKey) : null
     const rootId = synced?.root
+    if (overrides.knownThreadsOnly && rootId === undefined) return { root: null, message: null }
     const writeId = (n: number) => idempotentId('vboard-inbound', meta.id, String(n))
     // The middleware sees each post and edit first, and `respond` answers in the platform thread.
     const screen = <W extends Write, T>(author: ExternalAuthor, write: W, commit: (write: W) => Promise<T>) =>
