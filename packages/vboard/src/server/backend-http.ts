@@ -137,7 +137,7 @@ export function http(url: string, options: HttpOptions = {}) {
         throw error
       }))
   /**
-   * A post's ID, from the one board() derived for it, under this deployment's own principal: the
+   * A write's ID, from the one board() derived for it, under this deployment's own principal: the
    * remote takes a `key:<principal>:` ID only from that principal, so no one can post with it first.
    */
   const keyId = async (derived: string) =>
@@ -187,9 +187,9 @@ export function http(url: string, options: HttpOptions = {}) {
         const client = clientOf(caller)
         // Sync's records name its entries, which the board it uses knows from its registration.
         if ('self' in caller && caller.origin.via?.kind === 'engine') await registering
-        // A post board() gave an ID derived from a trigger: the remote takes it as this deployment's key,
-        // and a retry's lookup asks for the same.
-        if ((method === 'post' || method === 'posted') && 'self' in caller && typeof input.id === 'string' && DERIVED_ID.test(input.id))
+        // A post or schedule board() gave an ID derived from a trigger: the remote takes it as this
+        // deployment's key, and a retry's lookup asks for the same.
+        if ((method === 'post' || method === 'posted' || method === 'schedule') && 'self' in caller && typeof input.id === 'string' && DERIVED_ID.test(input.id))
           input = { ...input, id: await keyId(input.id).catch(rethrow) }
         const response = await call(client, method, input, signal)
         return method === 'attachment' ? attachmentOf(String(input.id), response) : response.json()

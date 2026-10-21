@@ -192,8 +192,8 @@ connection. Outgoing delivery never runs your function.
 
 A function that throws is retried. Writes made through `board` take IDs derived
 from the inbox event and the order of calls, so a retry that writes in the same
-order doesn't post twice, and a default import that already succeeded returns its
-existing message. Two rules follow:
+order doesn't post or schedule twice, and a default import that already
+succeeded returns its existing message. Two rules follow:
 
 - Writes made in parallel (`Promise.all`) need explicit `id`s.
 - Your own side effects aren't covered. Key them on `event.id`:

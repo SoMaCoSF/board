@@ -201,7 +201,7 @@ of two views of one message, the one with the higher `version` is newer.
 | `attachments` | attachment IDs from `POST /attachments`, at most 10 |
 | `sync` | external targets a new thread starts in or joins, at most 10: `slack:#incidents`, or `{ target, kind }` as the board that syncs it resolved it |
 | `noSync` | `true` keeps the message on the board |
-| `id` | an idempotency key, up to 200 characters. Not a UUIDv8: those are the board's own |
+| `id` | an idempotency key, up to 200 characters. Not a UUIDv8: those are the board's own. A `key:<principal>:` ID only from that principal |
 
 A post needs `channel` and a reply needs `re`, never both. `sync` is for posts
 only, and contradicts `noSync`.
@@ -263,7 +263,7 @@ See [Messages](../01-board/04-messages.md).
 ```
 
 `POST /schedules` takes `channel` (a new thread each send) or `re` (a reply),
-`text`, `labels`, `noSync`, `attachments`, and the timing:
+`text`, `labels`, `noSync`, `attachments`, an `id` as a post's, and the timing:
 
 | Field | Effect |
 | --- | --- |
@@ -387,7 +387,7 @@ Every failure is JSON with a matching status:
 | 403 | `private_channel`, `shared_channel`, `not_in_channel` | a source read the board won't do |
 | 404 | `not_found` | no such route, or an inbox, source read, or webhook on a board without sync |
 | 404 | `message_not_found`, `schedule_not_found`, `attachment_not_found`, `channel_not_found` | no such thing, or one the caller can't read |
-| 409 | `duplicate_id` | an `id` already used for a different write, or by someone else |
+| 409 | `duplicate_id` | an `id` already used for a different post or schedule, or by someone else |
 | 409 | `already_synced` | a sync target that's a platform thread another board thread is synced with |
 | 413 | `too_large` | an upload over 4 MB |
 | 429 | `ratelimited` | the platform rate-limited a source read |

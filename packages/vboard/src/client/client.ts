@@ -85,7 +85,7 @@ export type PostOptions = {
   noSync?: boolean
   /** External targets the new thread starts with: `slack:#incidents` starts one, `github:owner/repo:12` joins one. */
   sync?: string[]
-  /** Makes retries idempotent: the same id never posts twice. */
+  /** Makes retries idempotent: the same id never posts, or schedules, twice. */
   id?: string
   /** Files from `upload`, or their IDs. */
   attachments?: (Attachment | string)[]
@@ -108,7 +108,7 @@ export type ScheduleTiming = {
   times?: number
 }
 
-export type ScheduleOptions = Omit<PostOptions, 'sync' | 'id'> & ScheduleTiming
+export type ScheduleOptions = Omit<PostOptions, 'sync'> & ScheduleTiming
 
 const scheduleBody = (input: ScheduleOptions) => {
   const { at, until, ...rest } = messageBody(input) as ScheduleOptions

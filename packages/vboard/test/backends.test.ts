@@ -5,6 +5,7 @@ import { board, HttpError, type Backend, type Caller } from '../src/server/index
 import { vercelProject } from '../src/access/index.ts'
 import { a2 } from '../src/backend-a2/index.ts'
 import { http } from '../src/backend-http/index.ts'
+import { fakeQueue } from './queue.ts'
 import { BOARD_URL, caller, deploymentToken, personToken, PROJECT_ID, signedInHome, TEAM_ID, testAuth, testBoard } from './harness.ts'
 
 /** Where v0's board is mounted: a board on the team's board, over http(). */
@@ -12,8 +13,8 @@ const V0_URL = 'https://v0.test/api/board'
 const V0 = 'vercel:project:prj_v0:production'
 
 /** The team's board, and v0's board using it over http(), calling each other in-process. */
-function team(options: Parameters<typeof http>[1] = {}) {
-  const remote = testBoard({ access: [vercelProject({ project: 'prj_v0', can: 'all' }), vercelProject({ project: 'prj_marketing', can: 'all' })] })
+function team(options: Parameters<typeof http>[1] = {}, remoteOptions: Parameters<typeof testBoard>[0] = {}) {
+  const remote = testBoard({ access: [vercelProject({ project: 'prj_v0', can: 'all' }), vercelProject({ project: 'prj_marketing', can: 'all' })], ...remoteOptions })
   const seen: Request[] = []
   const route = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = new Request(input, init)
@@ -179,6 +180,16 @@ describe('a board on http()', () => {
       ['a1b2c3 is live', `${V0}+deploys`],
       ['d4e5f6 is live', `${V0}+deploys`],
     ])
+  })
+
+  it('schedules from your own code once per key', async () => {
+    const { remote, project } = team({}, { scheduler: fakeQueue().scheduler })
+    const nudge = () => project.client('deploys', { key: 'd1' }).schedule('deploys', { text: 'is a1b2c3 still live?', in: '1d' })
+    const first = await nudge()
+    expect((await nudge()).id).toBe(first.id)
+
+    const { body } = await (await julianOn(remote.fetch))('GET', '/schedules')
+    expect(body.schedules).toMatchObject([{ id: first.id, by: { actor: `${V0}+deploys` } }])
   })
 
   it("keeps a client's keyed post IDs its own, so no one can take one first", async () => {

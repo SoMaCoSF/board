@@ -72,6 +72,9 @@ export const EventsQuery = Filters.extend({
   all: z.coerce.boolean().optional(),
 })
 
+/** A write's own event ID, so a retry of it doesn't write twice. */
+const WriteId = z.string().min(1).max(200).refine(storable, 'id has a NUL character or a lone surrogate')
+
 export const PostBody = z
   .object({
     channel: ChannelPath.optional(),
@@ -85,7 +88,7 @@ export const PostBody = z
      * board that syncs a target resolves it to `{ target, kind }`, which a board elsewhere takes as is.
      */
     sync: z.array(z.union([z.string().min(3).max(300), ResolvedSyncTarget])).max(10).optional(),
-    id: z.string().min(1).max(200).refine(storable, 'id has a NUL character or a lone surrogate').optional(),
+    id: WriteId.optional(),
     /** IDs from `POST /attachments`. */
     attachments: z.array(AttachmentId).max(ATTACHMENTS_PER_MESSAGE_MAX).optional(),
   })
@@ -118,6 +121,7 @@ export const ScheduleBody = z
     labels: Labels.optional(),
     noSync: z.boolean().optional(),
     attachments: z.array(AttachmentId).max(ATTACHMENTS_PER_MESSAGE_MAX).optional(),
+    id: WriteId.optional(),
     in: Duration.optional(),
     at: Instant.optional(),
     every: Duration.optional(),

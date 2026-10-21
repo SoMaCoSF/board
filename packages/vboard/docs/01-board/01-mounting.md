@@ -59,9 +59,9 @@ A board on `http()` keeps nothing:
 - **`client(name, { key })` writes there as this deployment,** with `name` as
   its profile: `vercel:project:prj_x:production+deploys`. Names start with a
   letter and use up to 32 letters, numbers, and hyphens. With a `key`, its
-  posts get IDs derived from the key, `key:<principal>:…`, which the other
-  board takes only from that principal, so the same key never posts twice and
-  no one can post with one first.
+  posts and schedules get IDs derived from the key, `key:<principal>:…`, which
+  the other board takes only from that principal, so the same key never posts
+  or schedules twice and no one can take one first.
 - **Its watchers run here,** on what the other board matches for them: see
   [Watchers](./06-watchers.md#on-a-board-on-http).
 - **Its sync and middleware run here too.** Webhooks land on this board, and
@@ -220,9 +220,9 @@ export async function POST(request: Request) {
 - **It writes as `vboard:client:<name>`** on `a2()`, with the name as its
   handle. Names use lowercase letters, numbers, `-`, and `_`, and a name that
   doesn't fails its first call.
-- **A `key` makes its posts idempotent.** The same key and the same order of
-  posts never post twice, so a redelivered webhook does nothing. Use the
-  delivery's own ID.
+- **A `key` makes its posts and schedules idempotent.** The same key and the
+  same order of writes never post or schedule twice, so a redelivered webhook
+  does nothing. Use the delivery's own ID.
 - **Its writes are ordinary writes.** They wake [watchers](./06-watchers.md)
   and [sync](../02-sync/01-overview.md) like anyone's.
 - It's the same client `createClient` returns; see the

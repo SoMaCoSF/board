@@ -275,7 +275,7 @@ export async function landedFor(ctx: WriteContext, identity: Identity, landed: M
   return { ...view(posted, actors, await readerFor(ctx, access, posted)), mentions: [] }
 }
 
-const sameAuthor = (a: Author, b: Author) =>
+export const sameAuthor = (a: Author, b: Author) =>
   a.actor === b.actor && a.principal === b.principal && a.profile === b.profile && a.session === b.session
 
 async function commitPost(

@@ -202,11 +202,11 @@ The backends vboard ships:
 - **`http(url, { fetch?, token? })`** uses the board at `url`, which
   keeps the log: its methods call it with the SDK. A `{ self }` caller writes
   there as this deployment with `self` as its profile, and a post whose ID
-  `board()` derived from a trigger gets `key:<principal>:<sha256 of that ID>`.
-  Any board takes a `key:<principal>:` ID only from that principal, so the
-  same key never posts twice and no one can post with one first (and `posted`,
-  a retry's lookup, asks for the same). It answers only wake-ups, webhooks,
-  and discovery, which names the other board as `remote`: a request's
+  `board()` derived from a trigger gets `key:<principal>:<sha256 of that ID>`,
+  and so does a schedule's. Any board takes a `key:<principal>:` ID only from
+  that principal, so the same key never posts or schedules twice and no one can
+  take one first (and `posted`, a retry's lookup, asks for the same). It
+  answers only wake-ups, webhooks, and discovery, which names the other board as `remote`: a request's
   `{ identity }` answers 404 `remote` (`<url> keeps no log: use <remote>`). It
   has no `access`: what a caller may do is the other board's to say. Its own
   routes are `POST /wake` and `POST /watchers`
@@ -897,7 +897,8 @@ export const schedulesContract = contract({
   [Watchers](#watchers)), and scheduled messages in `vboard-schedules` (see
   [Scheduled messages](#scheduled-messages)).
 - **Idempotency:**
-  - A client may supply an event `id` on any write, and A2 deduplicates it.
+  - A client may supply an event `id` on a post or a schedule, and A2
+    deduplicates it.
     The same `id` from another author, or on a different write, answers 409
     `duplicate_id`. The API refuses UUIDv8s: `idempotentId` derives the board's
     own IDs in that shape, and they're guessable, so a caller can't take one
@@ -1252,8 +1253,8 @@ const reply = await board.wait({ re: msg.id, after: msg.id, timeout: '30m' }) //
 - **On the server, `board()` returns it in-process as `client(name, { key })`,**
   for your own routes: a webhook receiver, a cron job. It needs no URL or token
   and writes as `vboard:client:<name>`, so its writes wake watchers and sync
-  like anyone's. With a `key`, such as a webhook delivery's ID, its posts are
-  idempotent: the same key and order never post twice.
+  like anyone's. With a `key`, such as a webhook delivery's ID, its posts and
+  schedules are idempotent: the same key and order never write twice.
 
   ```ts
   export const { GET, POST, client } = board({ … })
@@ -2521,8 +2522,9 @@ export const { scheduler } = backend
   done; `vb read --label wake` lists every pending one. The board never calls a
   URL it was given at runtime: only code you deployed runs.
 - **`board` is the in-process client** that inbound functions get. Its writes
-  are authored by the watcher, `vboard:watch:<id>`, with IDs derived from the
-  match, so a retried `run` doesn't post twice if it writes in the same order.
+  are authored by the watcher, `vboard:watch:<id>`, and its posts and schedules
+  get IDs derived from the match, so a retried `run` doesn't post or schedule
+  twice if it writes in the same order.
   They sync like any other write.
 - **`when: 'enters'` runs only when a message comes into view:** an existing
   message changes from not matching to matching (a label is set, a text is
@@ -2639,6 +2641,12 @@ vb schedule cancel s12              # ada answered: nothing automatic, whoever r
   The next send is the next slot after now, so after downtime it sends once
   rather than replaying every missed slot. Vercel Queues delays at most 6 days,
   so a send further out goes in hops of up to 5.
+- **Scheduling twice:** an `id` on `POST /schedules` is its
+  `schedule.created` event's ID, under a post's rules. The same `id` from its
+  creator in the same place returns the schedule it made; another author's, or
+  one elsewhere, answers 409 `duplicate_id`. Watchers, sync callbacks, and
+  keyed in-process clients derive it from their trigger and call order, as they
+  do a post's.
 - **It runs on the scheduler.** `a2()` has one in this process in development,
   requires one in production, and has none in tests, where `POST /schedules`
   answers 501.

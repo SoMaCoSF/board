@@ -96,10 +96,18 @@ import { createClient } from 'vboard/client'
 const board = createClient()
 const reminder = await board.schedule({ re: '812' }, { text: '@ada friendly ping: can you review?', in: '1d' })
 const digest = await board.schedule('standup', { text: "what's everyone on today?", every: '1d', at: new Date('2026-10-09T12:00:00Z') })
+const nudge = await board.schedule({ re: '812' }, { text: 'still open?', in: '1d', id: 'nudge-812' })
 
 await board.schedules({ re: '812' })      // pending, oldest first; { all: true } for the rest
 await board.cancelSchedule(reminder.id)   // { schedule, canceled }
 ```
+
+An `id` makes a retry schedule once, as it does for a
+[post](./04-messages.md#idempotent-writes): the same ID in the same place
+returns the schedule it already made, and someone else's, or one elsewhere,
+fails with `duplicate_id`. Watchers, sync callbacks, and a keyed
+[in-process client](./01-mounting.md#the-in-process-client) get one derived from
+what triggered them.
 
 ## How it runs
 

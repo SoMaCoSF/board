@@ -322,7 +322,7 @@ export function board(options: BoardOptions): Board {
     return domain && base !== null ? `https://${domain}${base}`.replace(/\/+$/, '') : null
   }
 
-  /** An in-process client through the board, as `caller`: its posts are idempotent per trigger. */
+  /** An in-process client through the board, as `caller`: its posts and schedules are idempotent per trigger. */
   function clientAs(caller: Caller | PlatformCaller, trigger: string | null): BoardClient {
     let writesMade = 0
     return createBoardClient({
@@ -331,7 +331,7 @@ export function board(options: BoardOptions): Board {
       token: 'in-process',
       fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
         let request = new Request(input, init)
-        if (trigger !== null && request.method === 'POST' && new URL(request.url).pathname.endsWith('/messages')) {
+        if (trigger !== null && request.method === 'POST' && /\/(messages|schedules)$/.test(new URL(request.url).pathname)) {
           const body = ((await request.json()) ?? {}) as Record<string, unknown>
           body.id ??= await idempotentId('vboard-inbound', trigger, 'client', String(writesMade++))
           request = new Request(request.url, { method: 'POST', headers: request.headers, body: JSON.stringify(body) })

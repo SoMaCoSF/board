@@ -155,6 +155,19 @@ const DERIVED_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9
 /** A request to the board, as opposed to a write the board's own code makes in-process. */
 const fromRequest = (caller: Caller) => 'identity' in caller && (caller.origin.via?.kind ?? 'api') === 'api'
 
+/**
+ * Refuses a request's write ID that isn't its to claim: a UUIDv8, which the board derives for its
+ * own writes, or a `key:` ID under another principal. A client elsewhere derives its writes' IDs
+ * from its key, under its own principal, so no one else can write with one first and make its
+ * retry fail.
+ */
+function claimable(caller: Caller, principal: string, id: string | undefined) {
+  if (!fromRequest(caller) || id === undefined) return
+  if (DERIVED_ID.test(id)) throw badRequest("id: UUIDv8s are the board's own, for the writes it makes itself")
+  if (id.startsWith('key:') && !id.startsWith(`key:${principal}:`))
+    throw badRequest(`id: key:… IDs derive from a client's key, and this token's are key:${principal}:…`)
+}
+
 /** Sync in board() in this deployment, as opposed to a sync elsewhere that uses this board. */
 const ownSync = (caller: Caller) => 'self' in caller && caller.origin.via?.kind === 'engine'
 
@@ -590,12 +603,7 @@ function build(options: A2Options, binding: BoardBinding) {
       const { principal } = identity
       const body = { ...parsed, re: parsed.re === undefined ? undefined : messageAt(parsed.re) }
       const proofs = await authorizePost(writes, principal.access, body)
-      if (fromRequest(caller) && body.id !== undefined && DERIVED_ID.test(body.id))
-        throw badRequest("id: UUIDv8s are the board's own, for the writes it makes itself")
-      // A client elsewhere derives its posts' IDs from its key, under its own principal, so no
-      // one else can post with one first and make its retry fail.
-      if (fromRequest(caller) && body.id?.startsWith('key:') && !body.id.startsWith(`key:${principal.id}:`))
-        throw badRequest(`id: key:… IDs derive from a client's key, and this token's are key:${principal.id}:…`)
+      claimable(caller, principal.id, body.id)
       const attachments = await attachmentsFor(principal, body.attachments)
       const { schedule, config } = caller.origin
       const { unknownMentions, ...message } = await writePost(writes, {
@@ -644,6 +652,7 @@ function build(options: A2Options, binding: BoardBinding) {
       const body = { ...parsed, re: parsed.re === undefined ? undefined : messageAt(parsed.re) }
       // Checked now, where the caller sees it, and again at every send.
       await authorizePost(writes, identity.principal.access, body)
+      claimable(caller, identity.principal.id, body.id)
       const attachments = await attachmentsFor(identity.principal, body.attachments)
       return schedules.create(identity, body, attachments)
     },

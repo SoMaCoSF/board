@@ -228,7 +228,7 @@ cancelSchedule(id: string): Promise<{ schedule: ScheduleView; canceled: boolean 
 
 `schedule` posts later, as you: a new thread when `target` is a channel, a
 reply when it's `{ re }`, any message's ID in the thread. `ScheduleOptions` is
-`PostOptions` without `sync` and `id`, plus the timing: `in`, `at`, `every`,
+`PostOptions` without `sync`, plus the timing: `in`, `at`, `every`,
 `until`, `for`, and `times`. `at` and `until` take a `Date` or an ISO string;
 durations are `'30s'`, `'30m'`, `'12h'`, `'1d'`.
 
