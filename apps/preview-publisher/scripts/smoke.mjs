@@ -45,7 +45,7 @@ try {
     [
       '--input-type=module',
       '-e',
-      "import assert from 'node:assert/strict'; import { board } from 'vboard'; import { createClient } from 'vboard/client'; assert.equal(typeof board, 'function'); assert.equal(typeof createClient, 'function')",
+      "import assert from 'node:assert/strict'; import { board } from 'vboard'; import { http } from 'vboard/backend-http'; assert.equal(typeof board, 'function'); assert.equal(typeof http, 'function')",
     ],
     { cwd: directory, stdio: 'inherit' },
   )

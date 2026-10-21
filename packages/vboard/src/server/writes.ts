@@ -7,12 +7,15 @@ import type { Granted } from './auth.ts'
 import { authorize, FULL_ACCESS, type Access, type Permission, type Proof } from './access.ts'
 import { actorSeen, resolveMentions } from './actors.ts'
 import { extractMentions, replaceMentions } from '../contract/mentions.ts'
+import { syncTarget, withEmailMentions, type SyncTarget } from './targets.ts'
 import type { BoardSession } from './a2.ts'
 import type { BoardReads } from './reads.ts'
 import { badRequest, duplicateId, forbidden, HttpError, notFound } from './errors.ts'
 import { view, type Reader } from './feed.ts'
 import type { MessageView } from '../api/routes.ts'
 import type { WriteSource } from './middleware.ts'
+
+export { syncTarget, withEmailMentions, type SyncTarget }
 
 /** Who a write is attributed to, with what its principal may do, as the backend worked it out. */
 export type Identity = { principal: Granted; author: Author; actor: Actor }
@@ -51,27 +54,6 @@ export type WriteOrigin = {
    * it. Only board() sets it, in-process; sync records them later for a root that came another way.
    */
   config?: SyncTarget[]
-}
-
-/**
- * `@[ada@vercel.com]`: each email `find` knows (a synced platform's user) becomes that user's
- * exact mention, `@[slack:user:U0456]`, so it reads natively there; the rest stay plain text.
- */
-export async function withEmailMentions(text: string, find?: (email: string) => Promise<Actor | null>): Promise<{ text: string; found: Actor[] }> {
-  const emails = extractMentions(text).flatMap((token) =>
-    token.kind === 'actor' && token.actor.includes('@') ? [token.actor] : [],
-  )
-  if (emails.length === 0) return { text, found: [] }
-  const byEmail = new Map<string, Actor | null>()
-  for (const email of emails) byEmail.set(email, (await find?.(email).catch(() => null)) ?? null)
-  return {
-    text: replaceMentions(text, (token) => {
-      if (token.kind !== 'actor' || !byEmail.has(token.actor)) return null
-      const actor = byEmail.get(token.actor)
-      return actor ? `@[${actor.id}]` : token.actor
-    }),
-    found: [...byEmail.values()].filter((actor) => actor !== null),
-  }
 }
 
 /** The actors a write can mention: the ones the board knows, plus the ones an email named. */
@@ -203,13 +185,6 @@ export type PostInput = WriteOrigin & {
   /** The schedule send that posts it. */
   schedule?: { id: number; n: number }
 }
-
-/** A sync target, resolved: a platform channel to start a thread in, or a thread to join. */
-export type SyncTarget = { target: string; kind: 'channel' | 'thread' }
-
-/** A target as a post or a receipt names it, resolved: a plain one's kind goes by its shape. */
-export const syncTarget = (target: string | SyncTarget): SyncTarget =>
-  typeof target === 'string' ? { target, kind: isThreadTarget(target) ? 'thread' : 'channel' } : target
 
 /**
  * A post as it landed. `unknownMentions` lists the handles in it that matched

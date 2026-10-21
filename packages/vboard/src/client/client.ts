@@ -4,22 +4,19 @@ import type {
   ChannelView,
   Discovery,
   EventsPage,
-  EventsQueryInput,
   FiltersInput,
-  IdentityChallenge,
-  IdentityCheck,
   IdentityView,
   InboxEntry,
   InboxItem,
   LinkedAccount,
   SyncAccountInput,
+  SyncCodeView,
   SyncCopiesView,
   SyncFindInput,
   SyncFindView,
   SyncImportInput,
   SyncReceiptInput,
   SyncThreadView,
-  StuckEvent,
   SourceRead,
   Me,
   MatchView,
@@ -52,7 +49,7 @@ export class BoardError extends Error {
   }
 }
 
-type Resolvable<T> = T | (() => T | Promise<T>)
+export type Resolvable<T> = T | (() => T | Promise<T>)
 const resolve = async <T>(value: Resolvable<T>): Promise<T> =>
   typeof value === 'function' ? await (value as () => T | Promise<T>)() : value
 
@@ -62,8 +59,8 @@ export type ProfileOption = string | { name: string; avatar?: string } | null
 export type ClientOptions = {
   /** The board's URL, e.g. `https://www.example.com/api/board`. */
   url: string
-  /** An OIDC token whose audience is the board's URL, or a function returning one. */
-  token: Resolvable<string>
+  /** An OIDC token whose audience is the board's URL, or a function returning one. Without one, `fetch` brings the credentials. */
+  token?: Resolvable<string>
   profile?: Resolvable<ProfileOption>
   /** Runtime session, recorded on writes and used to scope read cursors. */
   session?: Resolvable<string | null>
@@ -71,8 +68,6 @@ export type ClientOptions = {
   handle?: Resolvable<string | null>
   /** Your display name and avatar, shown when you write as yourself (not as a profile). */
   person?: Resolvable<{ name?: string | null; avatar?: string | null } | null>
-  /** Where the token comes from, in words (`vercel login`, `GitHub Actions OIDC`), for `vb whoami`. */
-  source?: Resolvable<string | null>
   /** Extra headers on every request. */
   headers?: Resolvable<Record<string, string>>
   fetch?: typeof fetch
@@ -189,7 +184,7 @@ export function createBoardClient(options: ClientOptions) {
   async function headers(auth: boolean, as?: ProfileOption): Promise<Record<string, string>> {
     const out: Record<string, string> = { ...(options.headers ? await resolve(options.headers) : {}) }
     if (!auth) return out
-    out.authorization = `Bearer ${await resolve(options.token)}`
+    if (options.token !== undefined) out.authorization = `Bearer ${await resolve(options.token)}`
     const profile = as !== undefined ? as : options.profile === undefined ? null : await resolve(options.profile)
     if (profile !== null) {
       const { name, avatar } = typeof profile === 'string' ? { name: profile, avatar: undefined } : profile
@@ -269,21 +264,11 @@ export function createBoardClient(options: ClientOptions) {
       }),
     discovery: () => call<Discovery>('GET', '/', { auth: false }),
     me: () => call<Me>('GET', '/me'),
-    /** Which credential this client sends, in words, or null when it was handed a token. A client with no token yet gets one first, which can make requests and fail as a call would. */
-    source: async () => (options.source === undefined ? null : await resolve(options.source)),
     channels: async () => (await call<{ channels: ChannelView[] }>('GET', '/channels')).channels,
     actors: async () => (await call<{ actors: (Actor & { person?: ActorView['person'] })[] }>('GET', '/actors')).actors,
 
     /** Your linked platform accounts, and the sync entries you haven't linked (`unlinked`). */
     identity: () => call<IdentityView>('GET', '/identity'),
-    /**
-     * Starts linking your account on sync entry `sync`: a sign-in URL to open
-     * (only you), or a one-time code to post from that account where the board syncs.
-     */
-    linkAccount: (sync: string, opts: { method?: 'code' | 'consent' } = {}) =>
-      call<IdentityChallenge>('POST', '/identity/link', { body: { sync, ...opts } }),
-    /** After a sign-in: the account it linked, or null until you've approved. */
-    checkAccount: async (sync: string) => (await call<IdentityCheck>('POST', '/identity/check', { body: { sync } })).linked,
     /** Unlinks one of your accounts, by actor ID or handle. History keeps its messages as they were. */
     unlinkAccount: (account: string) => call<{ ok: true; actor: string }>('POST', '/identity/unlink', { body: { actor: account } }),
 
@@ -316,7 +301,7 @@ export function createBoardClient(options: ClientOptions) {
       return written(schedule, unknownMentions)
     },
     /** Pending schedules (`all` for done and canceled too), oldest first. `re` is any message in a thread. */
-    schedules: async (query: SchedulesQueryInput = {}) =>
+    schedules: async (query: Omit<SchedulesQueryInput, 'all'> & { all?: boolean } = {}) =>
       (await call<{ schedules: ScheduleView[] }>('GET', `/schedules${queryString(query)}`)).schedules,
     /** Stops a schedule: yours, or any with manage in its channel. `canceled` is false when it was already done or canceled. */
     cancelSchedule: (id: string) =>
@@ -359,8 +344,6 @@ export function createBoardClient(options: ClientOptions) {
     /** Raw platform events for a sync entry, newest first. */
     inbox: async (key: string, opts: { channel?: string; limit?: number } = {}) =>
       (await call<{ events: InboxEntry[] }>('GET', `/inbox/${key}${queryString(opts)}`)).events,
-    /** Events that failed 10 times and stopped their thread, oldest first. Full access only. */
-    stuck: async () => (await call<{ stuck: StuckEvent[] }>('GET', '/stuck')).stuck,
     /** Registers the caller's watchers, replacing its last registration: what a board on `http()` does. */
     register: (input: { url?: string | null; watch: Record<string, { tail: string; when?: 'matches' | 'enters' }>; sync?: { key: string; platform: string; signIn?: boolean }[] }) =>
       call<RegistrationView>('POST', '/watchers', { body: input }),
@@ -374,15 +357,6 @@ export function createBoardClient(options: ClientOptions) {
     /** How a pulled match went: done, an error to try again, or `skip` to drop it. */
     ack: (id: string, body: { lease: string; error?: string; skip?: boolean }) =>
       call<{ ok: true }>('POST', `/watchers/matches/${encodeURIComponent(id)}/ack`, { body }),
-    /**
-     * Retries a stuck event with a fresh 10 tries, or skips it so its thread goes on, for `consumer`,
-     * or for every consumer it's stuck for. `redriven` is false when it wasn't stuck (anymore). Full
-     * access only.
-     */
-    redrive: (session: string, index: number, action: 'retry' | 'skip', consumer?: string) =>
-      call<{ redriven: boolean }>('POST', '/stuck/redrive', {
-        body: { session, index, action, ...(consumer !== undefined ? { consumer } : {}) },
-      }),
     /**
      * Reads a platform channel (`#name`, an ID), thread (`C0123:1727000000.123456`),
      * or message permalink on demand, without syncing or storing it. Full access only.
@@ -419,8 +393,12 @@ export function createBoardClient(options: ClientOptions) {
     /** How an inbox event went: done, or an error to try it again. */
     inboxAck: (key: string, id: string, body: { lease: string; error?: string }) =>
       call<{ ok: true }>('POST', `/inbox/${path(key)}/${path(id)}/ack`, { body }),
-    /** A one-time code for linking your account on sync entry `sync`. Only people get one, each for themselves. */
-    syncCode: (sync: string) => call<{ code: string; expiresAt: string }>('POST', '/sync/codes', { body: { sync } }),
+    /**
+     * A one-time code for linking your account on sync entry `sync`, to post from that account where
+     * the board syncs, and `signIn` when the entry signs people in: open it (only you) and approve.
+     * Only people get one, each for themselves. `identity()` shows the link once it's made.
+     */
+    syncCode: (sync: string) => call<SyncCodeView>('POST', '/sync/codes', { body: { sync } }),
     /** Links a platform account to whoever a code was issued to: one posted from it, or carried through its sign-in. */
     syncAccount: (body: SyncAccountInput) => call<{ person: string; link: LinkedAccount }>('POST', '/sync/accounts', { body }),
     /** Unlinks a platform account: your own, or anyone's with `sync`. */
@@ -428,7 +406,7 @@ export function createBoardClient(options: ClientOptions) {
 
     /** Live events. Reconnects from the last seen index whenever the stream closes. */
     async *events(
-      query: Filters & Pick<EventsQueryInput, 'after' | 'all'> = {},
+      query: Filters & { after?: string; all?: boolean } = {},
       opts: { signal?: AbortSignal } = {},
     ): AsyncGenerator<BoardEventView> {
       let after = query.after
@@ -477,7 +455,7 @@ export function createBoardClient(options: ClientOptions) {
   }
 }
 
-export type { ActorView, BoardEventView, ChannelView, Discovery, EventsPage, IdentityChallenge, IdentityView, Me, MessagesPage, MessageView, ScheduleView, ThreadsPage, ThreadSummaryView, ThreadView }
+export type { ActorView, BoardEventView, ChannelView, Discovery, EventsPage, IdentityView, Me, MessagesPage, MessageView, ScheduleView, ThreadsPage, ThreadSummaryView, ThreadView }
 
 async function toError(response: Response): Promise<BoardError> {
   try {

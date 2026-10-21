@@ -1,28 +1,41 @@
-import { createHash } from 'node:crypto'
-import { routes, type MatchView, type RegistrationView } from '../api/routes.ts'
+import { RegisterBody, routes, type Discovery, type MatchView, type RegistrationView } from '../api/routes.ts'
 import type { Method, Protocol } from '../api/protocol.ts'
-import { BoardError, type BoardClient } from '../client/client.ts'
-import { createClient } from '../client/node.ts'
+import { BoardError, createBoardClient, type BoardClient, type ProfileOption } from '../client/client.ts'
+import { DERIVED_ID, keyId, sha256 } from '../client/ids.ts'
 import type { Attachment } from '../contract/schemas.ts'
 import { SYNC, type Backend, type BackendRoute, type BoardBinding, type Caller, type ProtocolMethods } from './backend.ts'
 import { HttpError, json } from './errors.ts'
-import { watchersHash, type SyncEntrySpec, type WatcherSpec } from './registry.ts'
 import { METHODS } from './routing.ts'
-import { compileWatcher } from './watch.ts'
+import { canonicalWatchers, type SyncEntrySpec, type WatcherSpec } from './watchers-hash.ts'
 
 export type HttpOptions = {
-  /** How requests reach the board. Defaults to `fetch`; tests route them themselves. */
+  /**
+   * How requests reach the board, with the credentials it recognizes. In Node it defaults to what
+   * `vb` uses: a token from `VBOARD_TOKEN`, `vb serve`'s, GitHub Actions, Vercel, or `vercel login`,
+   * through Deployment Protection. In a browser, `fetch`, sending the page's own session (a cookie,
+   * say), which the board's `authenticate` recognizes.
+   */
   fetch?: typeof fetch
-  /** A token whose audience is the board's URL. Defaults to what the SDK finds: on Vercel, the deployment's. */
-  token?: () => Promise<string>
+}
+
+/**
+ * What finds a board and reaches it, in the Node build: the environment, its files, and
+ * `vercel login`. A browser has none.
+ */
+export type Environment = {
+  /** The board the environment points at. Throws `no_board` when it points at none. */
+  url(): string
+  /** The fetch for the board at `url` when none is given: the credentials `vb` uses, through Deployment Protection. */
+  fetch(url: string): typeof fetch
+  /** The profile the environment picks (`VBOARD_AS`, or the coding agent it runs in), and that agent's session. */
+  profile(): { profile: ProfileOption; session: string | null }
+  /** Checks a watcher's tail, throwing what's wrong with it. */
+  checkWatcher(id: string, spec: { tail: string; when?: 'matches' | 'enters' | undefined }): void
 }
 
 /** A watcher's or client's name is the profile its writes are by. */
 const PROFILE = /^[A-Za-z][A-Za-z0-9-]{0,31}$/
 const PROFILE_RULE = 'ids start with a letter and use up to 32 letters, numbers, and hyphens'
-
-/** `idempotentId`'s shape, a UUIDv8: the IDs board() derives for an in-process client's posts. */
-const DERIVED_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
 /** Registering again this soon after the same registration only repeats it. */
 const REGISTER_EVERY_MS = 10_000
@@ -36,7 +49,8 @@ const describe = (error: unknown) => ((error instanceof Error ? error.message : 
 /** The SDK's error, as the board answers it: the remote's own status and code, or 502 when it never answered. */
 const rethrow = (error: unknown): never => {
   if (error instanceof BoardError) throw new HttpError(error.status >= 400 ? error.status : 502, error.code, error.message)
-  throw error
+  if (error instanceof HttpError || (error instanceof Error && error.name === 'AbortError')) throw error
+  throw new HttpError(502, 'unreachable', `the board didn't answer: ${describe(error)}`)
 }
 
 /** A parsed input, back on the wire as a query string. */
@@ -73,58 +87,89 @@ function attachmentOf(id: string, response: Response): Protocol['attachment']['o
 }
 
 /**
- * Another board that speaks the protocol, at `url`: this board keeps nothing, and this
- * deployment reads and writes that one as itself. Its watchers' tails are registered there.
- * The remote wakes it when one matches, with nothing in the wake-up but a hash, and it pulls
- * what matched with its own credentials, runs it, and acks it. When it can't be woken (no
- * https URL of its own: a dev server, say), it pulls on its own.
+ * Another board that speaks the protocol, at `url` (in Node, the one the environment points at
+ * by default): this board keeps nothing, and this deployment reads and writes that one as itself.
+ * Its watchers' tails are registered there. The remote wakes it when one matches, with nothing in
+ * the wake-up but a hash, and it pulls what matched with its own credentials, runs it, and acks
+ * it. When it can't be woken (no https URL of its own: a dev server, say), it pulls on its own.
  */
-export function http(url: string, options: HttpOptions = {}) {
-  if (!/^https?:\/\/[^/]/.test(url)) throw new Error(`http: ${url} isn't a URL: pass the board's, like https://board.example.com/api/board`)
-  const remote = url.replace(/\/+$/, '')
-  const doFetch = options.fetch ?? ((input: RequestInfo | URL, init?: RequestInit) => globalThis.fetch(input, init))
+export function createHttp(url: string | undefined, options: HttpOptions, environment: Environment | null) {
+  if (url !== undefined && !/^https?:\/\/[^/]/.test(url)) throw new Error(`http: ${url} isn't a URL: pass the board's, like https://board.example.com/api/board`)
+  if (url === undefined && !environment) throw new Error("http: pass the board's URL: outside Node there's no environment to find it in")
+  const remote = (url ?? environment!.url()).replace(/\/+$/, '')
+  const doFetch: typeof fetch = options.fetch ?? environment?.fetch(remote) ?? ((input, init) => globalThis.fetch(input, init))
   let binding: BoardBinding | null = null
   const specs: Record<string, WatcherSpec> = {}
-  /** Whether this board's sync subscribes too. */
   /** This board's sync entries, registered there when it syncs. */
   let sync: SyncEntrySpec[] = []
-  let hash = watchersHash(specs)
+  let hash: Promise<string> | null = null
+  /** What every wake-up carries, so the board it uses can tell it's stale. */
+  const watchersHash = () => (hash ??= sha256(canonicalWatchers(specs, sync)).then((hex) => hex.slice(0, 32)))
   const bound = () => {
     if (!binding) throw new Error("http: this backend isn't serving a board yet: pass it to board({ backend })")
     return binding
   }
 
-  /** The SDK against the remote, as this deployment with `profile`, each request through `fetch`. */
-  const sdk = (profile: string | null, fetch: typeof globalThis.fetch) =>
-    createClient({
+  /**
+   * The SDK against the remote, as this deployment with `profile`. `quiet` names no session: this
+   * deployment's own code. Otherwise a profile chosen in code keeps the environment's session, and
+   * yourself (`null`) has none. Who the token's holder is, `fetch` says.
+   */
+  const sdk = (profile: ProfileOption | undefined, quiet: boolean) =>
+    createBoardClient({
       url: remote,
-      profile,
-      session: null,
-      handle: null,
-      person: null,
-      fetch,
-      // Otherwise the SDK finds one, as it would anywhere: on Vercel, the deployment's.
-      ...(options.token ? { token: options.token } : {}),
+      fetch: doFetch,
+      profile: profile !== undefined ? profile : () => environment?.profile().profile ?? null,
+      session: quiet || profile === null ? null : () => environment?.profile().session ?? null,
     })
 
-  const own = sdk(null, doFetch)
+  const own = sdk(null, true)
   const profiles = new Map<string, BoardClient>()
-  /** This deployment as `profile`: a client's name, or a watcher's ID. */
+  /** This deployment as `profile`: a watcher's ID, or the middleware. */
   function asProfile(profile: string): BoardClient {
-    if (!PROFILE.test(profile)) throw new HttpError(400, 'invalid_request', `client: ${profile}: names start with a letter and use up to 32 letters, numbers, and hyphens`)
+    if (!PROFILE.test(profile)) throw new HttpError(400, 'invalid_request', `as: ${profile}: profiles start with a letter and use up to 32 letters, numbers, and hyphens`)
     let client = profiles.get(profile)
-    if (!client) profiles.set(profile, (client = sdk(profile, doFetch)))
+    if (!client) profiles.set(profile, (client = sdk(profile, true)))
+    return client
+  }
+  const holders = new Map<string, BoardClient>()
+  /** The token's holder, with `profile` (`undefined`: the environment's). */
+  function holder(profile: ProfileOption | undefined): BoardClient {
+    const key = JSON.stringify(profile ?? (profile === null ? null : '\u0000'))
+    let client = holders.get(key)
+    if (!client) holders.set(key, (client = sdk(profile, false)))
     return client
   }
 
+  /** What this deployment answers itself: wake-ups and webhooks. Everything else is the board it uses'. */
+  const servesOnly = () => new HttpError(404, 'not_found', `${bound().url() ?? 'this board'} answers only wake-ups and webhooks`)
+
   /**
-   * The client a caller's call goes through: this deployment's own, with its profile, and sync's as
-   * the deployment itself. A request here is someone else's, which the board it uses answers.
+   * The client a caller's call goes through: a handle's, as the token's holder with its profile;
+   * a watcher's or the middleware's, as this deployment with theirs; and sync's, as the deployment
+   * itself. A request from anyone else isn't this deployment's to answer.
    */
   function clientOf(caller: Caller): BoardClient {
-    if ('identity' in caller) throw new HttpError(404, 'remote', `${bound().url() ?? 'this board'} keeps no log: use ${remote}`)
-    return caller.origin.via?.kind === 'engine' ? own : asProfile(caller.self)
+    if ('identity' in caller) throw servesOnly()
+    if (caller.origin.via?.kind === 'engine') return own
+    if (caller.origin.via?.kind === 'client') {
+      if (caller.self !== null) asProfile(caller.self)
+      // The handle itself is whoever the environment picks; `as()` names its own, or none.
+      return holder('profile' in caller ? caller.profile : caller.self ?? undefined)
+    }
+    return asProfile(caller.self ?? 'client')
   }
+
+  let discovered: Promise<Discovery> | null = null
+  /** The board it uses' discovery, for a handle here: who it is, and the sync entries it lists. */
+  const discovery = () =>
+    (discovered ??= doFetch(remote).then(async (response) => {
+      if (!response.ok) throw new HttpError(response.status >= 400 ? response.status : 502, 'no_board', `no board at ${remote} (${response.status})`)
+      return (await response.json()) as Discovery
+    }, rethrow)).catch((error: unknown) => {
+      discovered = null
+      throw error
+    })
 
   let principal: Promise<string> | null = null
   /** This deployment's principal on the remote, asked once. */
@@ -140,8 +185,7 @@ export function http(url: string, options: HttpOptions = {}) {
    * A write's ID, from the one board() derived for it, under this deployment's own principal: the
    * remote takes a `key:<principal>:` ID only from that principal, so no one can post with it first.
    */
-  const keyId = async (derived: string) =>
-    `key:${await self()}:${createHash('sha256').update(`vboard-key\u001f${derived}`).digest('hex').slice(0, 32)}`
+  const ownKey = async (derived: string) => keyId(await self(), derived)
 
   /** One protocol call on the remote, as `client`: the same route, with the input back on the wire. */
   async function call(client: BoardClient, method: Method, input: Record<string, unknown>, signal: AbortSignal): Promise<Response> {
@@ -190,7 +234,7 @@ export function http(url: string, options: HttpOptions = {}) {
         // A post or schedule board() gave an ID derived from a trigger: the remote takes it as this
         // deployment's key, and a retry's lookup asks for the same.
         if ((method === 'post' || method === 'posted' || method === 'schedule') && 'self' in caller && typeof input.id === 'string' && DERIVED_ID.test(input.id))
-          input = { ...input, id: await keyId(input.id).catch(rethrow) }
+          input = { ...input, id: await ownKey(input.id).catch(rethrow) }
         const response = await call(client, method, input, signal)
         return method === 'attachment' ? attachmentOf(String(input.id), response) : response.json()
       },
@@ -203,8 +247,9 @@ export function http(url: string, options: HttpOptions = {}) {
   let last: { url: string | null; at: number; result: RegistrationView } | null = null
   let registering: Promise<RegistrationView> | null = null
   /** Registers this board's watchers with the remote, as itself, replacing its last registration. */
-  function register(here: string | null): Promise<RegistrationView> {
-    if (last && last.url === here && last.result.hash === hash && Date.now() - last.at < REGISTER_EVERY_MS) return Promise.resolve(last.result)
+  async function register(here: string | null): Promise<RegistrationView> {
+    const current = await watchersHash()
+    if (last && last.url === here && last.result.hash === current && Date.now() - last.at < REGISTER_EVERY_MS) return last.result
     registering ??= own
       .register({ url: here, watch: specs, ...(sync.length > 0 ? { sync } : {}) })
       .then((result) => {
@@ -295,22 +340,34 @@ export function http(url: string, options: HttpOptions = {}) {
 
   const routesHere: BackendRoute[] = [
     {
+      // The board it uses is what a handle here asks about; anyone else gets nothing to go on.
+      method: 'GET',
+      path: '/',
+      auth: false,
+      async handle(_request, { caller }) {
+        if (!caller) throw servesOnly()
+        return json(await discovery())
+      },
+    },
+    {
       // Nothing in a wake-up is trusted: it only says to pull, and what's pulled comes with this board's own credentials.
       method: 'POST',
       path: '/wake',
       auth: false,
       async handle(request) {
         started ??= Promise.resolve()
-        if (request.headers.get('x-board-watchers') !== hash) await register(wakeable(bound().url())).catch(rethrow)
+        if (request.headers.get('x-board-watchers') !== (await watchersHash())) await register(wakeable(bound().url())).catch(rethrow)
         return json({ ran: await drain().catch(rethrow) })
       },
     },
     {
-      // Anyone may ask: it sends this board's own watchers, with this board's own credentials.
+      // Anyone may ask: it sends this board's own watchers, with this board's own credentials. A
+      // handle here registers its own, on the board it uses, as the protocol's route does.
       method: 'POST',
       path: '/watchers',
       auth: false,
-      async handle() {
+      async handle(request, { caller }) {
+        if (caller) return json(await methods.register(caller, RegisterBody.parse(await request.json()), request.signal))
         started ??= Promise.resolve()
         const here = wakeable(bound().url())
         const registration = await register(here).catch(rethrow)
@@ -322,7 +379,6 @@ export function http(url: string, options: HttpOptions = {}) {
 
   const backend = {
     ...methods,
-    remote,
     // What a caller may do is the board it uses' to say: requests here are only wake-ups.
     issuers: [],
     routes: routesHere,
@@ -335,14 +391,15 @@ export function http(url: string, options: HttpOptions = {}) {
           continue
         }
         if (!PROFILE.test(id)) throw new Error(`watch ${id}: ${PROFILE_RULE}`)
-        compileWatcher(id, spec)
+        if (!environment) throw new Error(`watch ${id}: watchers run on a server: this build of vboard has none`)
+        environment.checkWatcher(id, spec)
         specs[id] = { tail: spec.tail, when: spec.when }
       }
-      hash = watchersHash(specs, sync)
+      hash = null
       binding = next
     },
     /** Registers this board's watchers with the board it uses now, as `POST /watchers` does. */
-    register: () => register(wakeable(bound().url())),
+    registerWatchers: () => register(wakeable(bound().url())),
     /** Stops pulling, for a board that pulls on its own. */
     close: () => {
       polling?.abort()
@@ -352,4 +409,4 @@ export function http(url: string, options: HttpOptions = {}) {
   return backend satisfies Backend
 }
 
-export type HttpBackend = ReturnType<typeof http>
+export type HttpBackend = ReturnType<typeof createHttp>

@@ -295,38 +295,49 @@ describe('watchers', () => {
   })
 })
 
-describe('the in-process client', () => {
-  it('writes as `vboard:client:<name>`, and wakes watchers', async () => {
+describe("the board's handle in its own deployment", () => {
+  it('writes as `vboard:client`, or `vboard:client:<profile>` with `as`, and wakes watchers', async () => {
     const report = recorder('firehose --label state=done')
     const app = testBoard({ watch: { report: report.watcher } })
     const julian = caller(app.fetch, await personToken(), { 'x-board-handle': 'julian' })
     const root = (await julian('POST', '/messages', { channel: 'firehose', text: 'export is broken' })).body.message
 
-    const hook = app.client('v0-hook')
+    const hook = app.as('v0-hook')
     await hook.label(root.id, { set: { state: 'done' } })
     const reply = await hook.reply(root.id, 'fixed in #31')
 
     expect(reply.by).toMatchObject({ actor: 'vboard:client:v0-hook' })
-    await vi.waitFor(() => expect(report.types()).toEqual(['labels.changed', 'message.posted']))
+    expect((await app.reply(root.id, 'and deployed')).by).toMatchObject({ actor: 'vboard:client' })
+    expect((await app.me()).actor).toBe('vboard:client')
+    await vi.waitFor(() => expect(report.types()).toEqual(['labels.changed', 'message.posted', 'message.posted']))
   })
 
-  it('posts once per key and order, so a redelivered webhook does not post twice', async () => {
+  it("posts once per id, so a redelivered webhook does not post twice, and keeps each profile's ids its own", async () => {
     const app = testBoard()
     const julian = caller(app.fetch, await personToken(), { 'x-board-handle': 'julian' })
     const root = (await julian('POST', '/messages', { channel: 'firehose', text: 'export is broken' })).body.message
 
-    const first = await app.client('v0-hook', { key: 'delivery-1' }).reply(root.id, 'fixed in #31')
-    const again = await app.client('v0-hook', { key: 'delivery-1' }).reply(root.id, 'fixed in #31')
-    const other = await app.client('v0-hook', { key: 'delivery-2' }).reply(root.id, 'fixed in #31')
-    const unkeyed = [await app.client('v0-hook').reply(root.id, 'a'), await app.client('v0-hook').reply(root.id, 'a')]
+    const hook = app.as('v0-hook')
+    const first = await hook.reply(root.id, { text: 'fixed in #31', id: 'delivery-1' })
+    const again = await app.as('v0-hook').reply(root.id, { text: 'fixed in #31', id: 'delivery-1' })
+    const other = await hook.reply(root.id, { text: 'fixed in #31', id: 'delivery-2' })
+    const unkeyed = [await hook.reply(root.id, 'a'), await hook.reply(root.id, 'a')]
 
     expect(again.id).toBe(first.id)
     expect(other.id).not.toBe(first.id)
     expect(unkeyed[0]!.id).not.toBe(unkeyed[1]!.id)
+    expect((await hook.posted('delivery-1')).id).toBe(first.id)
+    // Another profile's, or the handle's own, with the same id is a post of its own.
+    expect((await app.as('deploys').reply(root.id, { text: 'fixed in #31', id: 'delivery-1' })).id).not.toBe(first.id)
+    expect((await app.reply(root.id, { text: 'fixed in #31', id: 'delivery-1' })).id).not.toBe(first.id)
+    // And no request can post with it first: what it derives is the board's own kind of ID.
+    const taken = await julian('POST', '/messages', { re: root.id, text: 'mine now', id: 'delivery-3' })
+    expect(taken.status).toBe(201)
+    expect((await hook.reply(root.id, { text: 'fixed in #32', id: 'delivery-3' })).text).toBe('fixed in #32')
   })
 
-  it('rejects a name a watcher id would reject', async () => {
-    await expect(testBoard().client('V0 Hook').me()).rejects.toThrow('client: names use lowercase letters')
+  it('rejects a profile a watcher id would reject', async () => {
+    await expect(testBoard().as('V0 Hook').me()).rejects.toThrow('as: profiles use lowercase letters')
   })
 })
 

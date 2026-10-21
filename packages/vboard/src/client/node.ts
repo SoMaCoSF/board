@@ -8,13 +8,7 @@ import { promisify } from 'node:util'
 import { decodeJwt } from 'jose'
 import { exchangeVercelOidcToken, getVercelOidcToken, getVercelToken } from '@vercel/oidc'
 import type { Discovery } from '../api/routes.ts'
-import {
-  BoardError,
-  createBoardClient,
-  type BoardClient,
-  type ClientOptions,
-  type ProfileOption,
-} from './client.ts'
+import { BoardError, type ProfileOption, type Resolvable } from './client.ts'
 
 export const configDir = () =>
   join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'vboard')
@@ -240,170 +234,121 @@ async function githubActionsToken(audience: string): Promise<string> {
   return ((await response.json()) as { value: string }).value
 }
 
-export type NodeClientOptions = Partial<ClientOptions>
-
-/**
- * A client with Node defaults: the URL from `VBOARD_URL`, the project link,
- * or the saved board, and a token from `VBOARD_TOKEN`, a local board's token file
- * (`vb serve`), GitHub Actions, the Vercel runtime, or your Vercel CLI login, in that order.
- */
-export function createClient(options: NodeClientOptions = {}): BoardClient {
-  const url = (options.url ?? process.env.VBOARD_URL ?? projectUrl() ?? savedUrl())?.replace(/\/+$/, '')
+/** The board the environment points at: `VBOARD_URL`, the project's link (`vb link`, `vb serve`), or `vb use`'s. */
+export function boardUrl(): string {
+  const url = (process.env.VBOARD_URL ?? projectUrl() ?? savedUrl())?.replace(/\/+$/, '')
   if (!url)
     throw new BoardError('no_board', 'no board URL: run `vboard link <url>`, set VBOARD_URL, run `vboard use <url>`, or `vboard serve` for a local one', 0)
-
-  /** A board this client talks to: its discovery, and a token minted for it. */
-  type Reached = { url: string; fetch: typeof fetch; discover(): Promise<Discovery>; token(): Promise<string>; cached(): Cached | null; source(): string | null }
-  const reached = new Map<string, Reached>()
-  /** The board at `at`. One a board's discovery sent this client to may not send it on again. */
-  function reach(at: string, sent: boolean): Reached {
-    const known = reached.get(at)
-    if (known) return known
-    const doFetch = guarded(at, options.fetch ?? globalThis.fetch, options.token)
-    // Every token is for `at`, the board it's sent to. A board whose discovery claims
-    // another audience gets none, so its answer can't get us to mint one it could replay.
-    let discovery: Promise<Discovery> | undefined
-    const discover = () =>
-      (discovery ??= doFetch(at).then(async (response) => {
-        if (!response.ok) throw new BoardError('no_board', `no board at ${at} (${response.status})`, response.status)
-        const found = (await response.json()) as Discovery
-        if (found.audience !== at)
-          throw new BoardError('wrong_audience', `the board at ${at} says its URL is ${found.audience}: use that URL`, 0)
-        if (found.remote && sent) throw new BoardError('remote', `${at} keeps no log either: its discovery names ${found.remote}`, 0)
-        return found
-      }))
-
-    let cached: Cached | null = null
-    let source: string | null = null
-    let person: Promise<Cached> | null = null
-    // `source` says which of these it picked, for `vb whoami`.
-    const mint = async (): Promise<Cached> => {
-      if (process.env.VBOARD_TOKEN) {
-        const token = process.env.VBOARD_TOKEN
-        source = 'VBOARD_TOKEN'
-        return { token, expiresAt: expiry(token) }
-      }
-      const local = localToken(at)
-      if (local) {
-        source = 'vb serve'
-        return { token: local.token, expiresAt: expiry(local.token), handle: local.handle, name: null, avatar: null }
-      }
-      const discovered = await discover()
-      const audience = at
-      if (process.env.ACTIONS_ID_TOKEN_REQUEST_URL && process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN) {
-        const token = await githubActionsToken(audience)
-        source = 'GitHub Actions OIDC'
-        return { token, expiresAt: expiry(token) }
-      }
-      if (process.env.VERCEL === '1') {
-        const token = await hostedToken(audience)
-        source = 'Vercel OIDC'
-        return { token, expiresAt: expiry(token) }
-      }
-      person ??= personToken(audience, discovered).finally(() => {
-        person = null
-      })
-      const minted = await person
-      source = 'vercel login'
-      return minted
-    }
-    const board: Reached = {
-      url: at,
-      fetch: doFetch,
-      discover,
-      async token() {
-        if (!cached || cached.expiresAt - 60_000 < Date.now()) cached = await mint()
-        return cached.token
-      },
-      cached: () => cached,
-      source: () => source,
-    }
-    reached.set(at, board)
-    return board
-  }
-
-  const home = reach(url, false)
-  /**
-   * A token this client mints for each board it talks to follows a board's `remote` there: a board on
-   * `http()` keeps nothing. One it was handed (`token`, `VBOARD_TOKEN`, `vb serve`'s) is for this
-   * board alone, so it stays here.
-   */
-  const follows = () => options.token === undefined && !process.env.VBOARD_TOKEN && !localToken(url)
-  /** Where a request goes: the board its discovery sends this client to, which keeps the log. Its discovery stays here. */
-  async function where(path: string): Promise<Reached> {
-    if (!follows() || path === '/') return home
-    const found = await home.discover()
-    return found.remote ? reach(found.remote, true) : home
-  }
-  /** The board requests go to, whose token says who this client is. */
-  const primary = () => where('/me')
-
-  /** Each request, to the board it goes to, with a token for that board. */
-  const routed = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
-    const href = input instanceof Request ? input.url : String(input)
-    const path = (href.startsWith(url) ? href.slice(url.length) : new URL(href).pathname) || '/'
-    if (!follows()) return home.fetch(input, init)
-    const target = await where(path.split('?')[0]!)
-    // The token the request carries is the main board's: one to another goes with that board's own.
-    const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined))
-    if (headers.has('authorization')) headers.set('authorization', `Bearer ${await target.token()}`)
-    return target.fetch(target === home ? input : `${target.url}${path}`, { ...init, headers })
-  }) as typeof fetch
-
-  let agent: DetectedAgent | null | undefined
-  const detected = () => (agent === undefined ? (agent = detectAgent()) : agent)
-
-  const profile =
-    options.profile !== undefined
-      ? options.profile
-      : (): ProfileOption => {
-          const name = process.env.VBOARD_AS || detected()?.profile
-          if (!name) return null
-          const avatar = process.env.VBOARD_AVATAR
-          return avatar ? { name, avatar } : name
-        }
-
-  /** Who this client is, from the token it minted for the board it talks to. */
-  const minted = async () => {
-    const board = await primary()
-    await board.token()
-    return board
-  }
-
-  return createBoardClient({
-    url,
-    token: options.token ?? (async () => (await primary()).token()),
-    profile,
-    session: options.session !== undefined ? options.session : () => detected()?.session ?? null,
-    handle:
-      options.handle !== undefined
-        ? options.handle
-        : async () => {
-            if (process.env.VBOARD_HANDLE) return process.env.VBOARD_HANDLE
-            if (options.token !== undefined) return null
-            return (await minted()).cached()?.handle ?? null
-          },
-    person:
-      options.person !== undefined
-        ? options.person
-        : async () => {
-            if (options.token !== undefined) return null
-            const cached = (await minted()).cached()
-            return cached ? { name: cached.name ?? null, avatar: cached.avatar ?? null } : null
-          },
-    source:
-      options.source !== undefined
-        ? options.source
-        : async () => {
-            if (options.token !== undefined) return null
-            return (await minted()).source()
-          },
-    ...(options.headers !== undefined ? { headers: options.headers } : {}),
-    fetch: routed,
-  })
+  return url
 }
 
-export { BoardError, type BoardClient, type ClientOptions, type ProfileOption } from './client.ts'
+/** How `vb` reaches a board from Node: a fetch that carries your credentials, and who it found you are. */
+export type NodeTransport = {
+  /**
+   * Every request to the board, through Deployment Protection, with a token for it (all but
+   * discovery) and, when it found one, your handle, and your name and avatar when no profile is set.
+   */
+  fetch: typeof fetch
+  /** Where the token came from, in words, once one was minted: `vercel login`, `VBOARD_TOKEN`, … */
+  source(): string | null
+}
+
+/**
+ * How a client reaches the board at `url` from Node: through Deployment Protection, with a token
+ * from `token`, `VBOARD_TOKEN`, a local board's token file (`vb serve`), GitHub Actions, the Vercel
+ * runtime, or your Vercel CLI login, in that order. `handle` is yours, in place of `VBOARD_HANDLE`
+ * or your Vercel username.
+ */
+export function connect(
+  url: string,
+  options: { token?: Resolvable<string> | undefined; handle?: string | undefined; fetch?: typeof fetch | undefined } = {},
+): NodeTransport {
+  url = url.replace(/\/+$/, '')
+  const doFetch = guarded(url, options.fetch ?? ((input, init) => globalThis.fetch(input, init)), options.token)
+  // Every token is for `url`, the board it's sent to. A board whose discovery claims another
+  // audience gets none, so its answer can't get us to mint one it could replay.
+  let discovery: Promise<Discovery> | undefined
+  const discover = () =>
+    (discovery ??= doFetch(url).then(async (response) => {
+      if (!response.ok) throw new BoardError('no_board', `no board at ${url} (${response.status})`, response.status)
+      const found = (await response.json()) as Discovery
+      if (found.audience !== url)
+        throw new BoardError('wrong_audience', `the board at ${url} says its URL is ${found.audience}: use that URL`, 0)
+      return found
+    }))
+
+  let cached: Cached | null = null
+  let source: string | null = null
+  let person: Promise<Cached> | null = null
+  // `source` says which of these it picked, for `vb whoami`.
+  const mint = async (): Promise<Cached> => {
+    if (options.token !== undefined) {
+      const token = typeof options.token === 'function' ? await options.token() : options.token
+      return { token, expiresAt: expiry(token) }
+    }
+    if (process.env.VBOARD_TOKEN) {
+      const token = process.env.VBOARD_TOKEN
+      source = 'VBOARD_TOKEN'
+      return { token, expiresAt: expiry(token) }
+    }
+    const local = localToken(url)
+    if (local) {
+      source = 'vb serve'
+      return { token: local.token, expiresAt: expiry(local.token), handle: local.handle, name: null, avatar: null }
+    }
+    const discovered = await discover()
+    if (process.env.ACTIONS_ID_TOKEN_REQUEST_URL && process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN) {
+      const token = await githubActionsToken(url)
+      source = 'GitHub Actions OIDC'
+      return { token, expiresAt: expiry(token) }
+    }
+    if (process.env.VERCEL === '1') {
+      const token = await hostedToken(url)
+      source = 'Vercel OIDC'
+      return { token, expiresAt: expiry(token) }
+    }
+    person ??= personToken(url, discovered).finally(() => {
+      person = null
+    })
+    const minted = await person
+    source = 'vercel login'
+    return minted
+  }
+  const token = async () => {
+    // One handed over is asked again each time: a function returns a fresh one.
+    if (options.token !== undefined || !cached || cached.expiresAt - 60_000 < Date.now()) cached = await mint()
+    return cached.token
+  }
+
+  const send = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    const href = input instanceof Request ? input.url : String(input)
+    const method = (init.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase()
+    const path = (href.startsWith(url) ? href.slice(url.length) : new URL(href).pathname).split('?')[0] || '/'
+    const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined))
+    // Discovery is public: it's what a token is minted from.
+    if (!(method === 'GET' && path === '/')) {
+      if (!headers.has('authorization')) headers.set('authorization', `Bearer ${await token()}`)
+      const handle = options.handle ?? (process.env.VBOARD_HANDLE || (options.token === undefined ? cached?.handle : null))
+      if (handle && !headers.has('x-board-handle')) headers.set('x-board-handle', handle)
+      // Your name and avatar show when you write as yourself, not as a profile.
+      if (!headers.has('x-board-profile') && options.token === undefined) {
+        if (cached?.name && !headers.has('x-board-name')) headers.set('x-board-name', encodeURIComponent(cached.name))
+        if (cached?.avatar && !headers.has('x-board-avatar')) headers.set('x-board-avatar', cached.avatar)
+      }
+    }
+    return doFetch(input, { ...init, headers })
+  }) as typeof fetch
+
+  return { fetch: send, source: () => source }
+}
+
+/** The profile the environment picks: `VBOARD_AS`, or the coding agent it runs in, with its session. */
+export function environmentProfile(): { profile: ProfileOption; session: string | null } {
+  const detected = detectAgent()
+  const name = process.env.VBOARD_AS || detected?.profile
+  const avatar = process.env.VBOARD_AVATAR
+  return { profile: name ? (avatar ? { name, avatar } : name) : null, session: detected?.session ?? null }
+}
 
 const WHERE = 'Project → Settings → Deployment Protection → Protection Bypass for Automation'
 
@@ -424,7 +369,7 @@ async function hostedToken(url: string): Promise<string> {
 }
 
 /** Explicit bypass wins; otherwise hosted calls use OIDC and local people use their saved bypass. */
-function guarded(url: string, doFetch: typeof fetch, suppliedToken?: ClientOptions['token']): typeof fetch {
+function guarded(url: string, doFetch: typeof fetch, suppliedToken?: Resolvable<string>): typeof fetch {
   const host = new URL(url).host
   let secret: Promise<string | null> | undefined
   let looked: Promise<{ secret: string; created: boolean }> | undefined

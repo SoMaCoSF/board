@@ -4,7 +4,7 @@ import { forbidden } from './errors.ts'
 /**
  * What a principal may do in a channel. `read` covers messages, threads,
  * `/events`, and schedules; `post` starts threads and edits your own messages;
- * `manage` is the board's own bookkeeping (inbox, stuck events, sources).
+ * `manage` is the board's own bookkeeping (inbox, sources).
  */
 export const PERMISSIONS = ['read', 'post', 'react', 'label', 'sync', 'manage'] as const
 export type Permission = (typeof PERMISSIONS)[number]
