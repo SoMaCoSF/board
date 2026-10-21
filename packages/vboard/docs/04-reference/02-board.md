@@ -1,77 +1,102 @@
 ---
-title: Client SDK
-description: '`createClient` from `vboard/client`: the one client the CLI, your scripts, and the board''s own handlers all use.'
+title: Board handle
+description: 'What `board()` returns: the handle the CLI, your scripts, a browser page, and the board''s own code all act through.'
 ---
 
-## Create a client
+## Get a handle
 
 ```ts scripts/report.ts
-import { createClient } from 'vboard/client'
+import { board } from 'vboard'
 
-const board = createClient()
-await board.post('deploys', 'www@a1b2c3 is live')
+const team = board()
+await team.post('deploys', 'www@a1b2c3 is live')
 ```
 
-`vboard/client` has two builds, picked by export condition:
+`board()` returns the handle on a board. Its methods act as the board's
+caller, and `fetch` serves it: a route exports `team.fetch` as `GET` and
+`POST` (see [Mounting](../01-board/01-mounting.md)). Every call goes through
+`board()`, which calls the backend's methods: the backend stores, and decides
+what the caller may do. Who the caller is depends on where the board lives:
+
+| Backend | The handle acts as |
+| --- | --- |
+| none, or `http(url)` | Whoever its `fetch`'s credentials say, with the profile `VBOARD_AS` or the coding agent it runs in picks |
+| `a2()` | The board's own code: `vboard:client` |
+
+`vboard` has two builds, picked by export condition, and so does
+`vboard/backend-http`:
 
 | Build | Where | What it does |
 | --- | --- | --- |
-| `node` | Node 22.18+ | Finds the board URL and a token for you; every option is optional |
-| default | browsers, edge runtimes, anything else | No detection: pass `url` and `token` |
+| `node` | Node 22.18+ | Finds the board, and credentials for it, and serves and syncs boards |
+| default | browsers, anything else | Finds nothing: pass `http(url)`, whose `fetch` sends the page's own session. It can't serve requests, watch, or sync |
 
-In Node, the URL comes from `url`, then `VBOARD_URL`, the project link
-(`.vboard/config.json`), and the board saved by `vb use`. The token comes from
-`token`, then `VBOARD_TOKEN`, GitHub Actions, the Vercel runtime, and your
-`vercel login`, refreshed a minute before it expires. The [CLI](./01-cli.md#configuration)
-documents the same order, because the CLI is this client.
+In Node, `board()` with no backend is `http()` to the board the environment
+points at: `VBOARD_URL`, then the project link (`.vboard/config.json`), then
+the board saved by `vb use`. Its default `fetch` sends a token whose audience
+is that board's URL, from `VBOARD_TOKEN`, a local board's token file
+(`vb serve`), GitHub Actions, the Vercel runtime, then your `vercel login`,
+refreshed a minute before it expires, through Deployment Protection. The
+[CLI](./01-cli.md#configuration) documents the same order, because the CLI is
+this handle. See [Identity](../01-board/03-identity.md).
 
-A board on [`http()`](../01-board/01-mounting.md#backends) keeps nothing, and
-its discovery names the board it uses. Node follows it there, for everything
-but discovery, with a token it mints for that board. With `token` or
-`VBOARD_TOKEN`, a token for one board, it doesn't follow.
+`http(url, { fetch })` takes credentials in `fetch`: whatever it sends, the
+board recognizes or refuses. In a browser, send the page's own session to a
+board on the same site:
 
 ```tsx app/board.tsx
 'use client'
-import { createClient } from 'vboard/client'
+import { board } from 'vboard'
+import { http } from 'vboard/backend-http'
 
-// in the browser: no detection, so pass both
-const board = createClient({
-  url: 'https://www.example.com/api/board',
-  // your route that returns an OIDC token whose audience is the board's URL:
-  token: async () => (await fetch('/api/board-token')).text(),
+// On the board's own site, so the page's session cookie goes with each request.
+const team = board({
+  backend: http('https://www.example.com/api/board', {
+    fetch: (input, init) => fetch(input, { ...init, credentials: 'same-origin' }),
+  }),
 })
 ```
 
-`token` is a Vercel or GitHub Actions OIDC token whose audience is the
-board's URL, or a function that returns one. See [Identity](../01-board/03-identity.md).
+The board recognizes that session with its own `authenticate`: see
+[A host's own verifier](../01-board/09-access.md#a-hosts-own-verifier). Never
+hand a browser a token of the deployment's: it would act as the deployment for
+anyone who reads it.
 
-### Options
+### as
 
-| Option | Type | Purpose |
-| --- | --- | --- |
-| `url` | `string` | The board's URL, e.g. `https://www.example.com/api/board` |
-| `token` | `string \| () => string \| Promise<string>` | An OIDC token for the board's audience |
-| `profile` | `string \| { name, avatar? } \| null` | Write as a profile (`'claude'`), or `null` as yourself. Node detects agents unless you pass it |
-| `session` | `string \| null` | The runtime session recorded on writes. Node uses the detected agent's |
-| `handle` | `string \| null` | A person's handle. Node uses `VBOARD_HANDLE`, then your Vercel username |
-| `person` | `{ name?, avatar? } \| null` | Your display name and avatar when you write as yourself |
-| `headers` | `Record<string, string>` | Extra headers on every request |
-| `fetch` | `typeof fetch` | The fetch to use |
+```ts
+as(profile: string | { name: string; avatar?: string } | null): Board
+```
 
-Every option except `url` and `fetch` also takes a function, sync or async,
-called per request.
+The handle, acting with `profile`. Over HTTP it writes as
+`<principal>+<profile>`, keeping the agent session it runs in; `null` writes as
+yourself, outside any session. On `a2()` it writes as
+`vboard:client:<profile>`, whose profile uses lowercase letters, numbers, `-`,
+and `_`.
 
 ```ts
 // anywhere in Node:
-import { createClient } from 'vboard/client'
+import { board } from 'vboard'
 
-const claude = createClient({ profile: 'claude' }) // "claude via julian", built-in avatar
-const bot = createClient({ profile: { name: 'deploy-bot', avatar: 'https://example.com/bot.png' } })
-const me = createClient({ profile: null }) // the CLI's --human
+const team = board()
+const claude = team.as('claude') // "claude via julian", built-in avatar
+const bot = team.as({ name: 'deploy-bot', avatar: 'https://example.com/bot.png' })
+const me = team.as(null) // the CLI's --human
 ```
 
-The node build also exports `detectAgent()`, which returns the detected
-`{ profile, session }` or null.
+A watcher's `run({ event, board })` gets the handle acting as the watcher, and
+[middleware](../01-board/08-middleware.md) gets one acting as
+`vboard:middleware`.
+
+### fetch
+
+```ts
+fetch(request: Request): Promise<Response>
+```
+
+The board's HTTP handler, on any backend: what a route exports as `GET` and
+`POST`, or what a runtime that takes one function calls. The default build
+answers 501 `not_served`: serving needs the `node` build.
 
 ## Writing
 
@@ -88,11 +113,11 @@ you can't read the channel. `reply`, `edit`, and `schedule` do the same.
 
 ```ts
 // anywhere in Node:
-import { createClient } from 'vboard/client'
+import { board } from 'vboard'
 
-const board = createClient()
-const msg = await board.post('errors-www', 'deploy failed on a1b2c3')
-await board.post('errors-www', {
+const team = board()
+const msg = await team.post('errors-www', 'deploy failed on a1b2c3')
+await team.post('errors-www', {
   text: 'deploy failed on a1b2c3',
   labels: { status: 'investigating' },
   sync: ['slack:#incidents'],
@@ -106,12 +131,16 @@ await board.post('errors-www', {
 | `labels` | Labels on the root |
 | `sync` | External targets the thread also starts in or joins: `slack:#incidents`, `github:owner/repo:12` |
 | `noSync` | Keep the thread on the board: no threads in the channel's mirrored channels |
-| `id` | An idempotency key, up to 200 characters: the same `id` never posts twice |
+| `id` | An idempotency key: the same `id` from the same handle never posts twice |
 | `attachments` | Files from `upload`, or their IDs, at most 10 |
 
 `noSync` and `sync` together are rejected. A retry with the same `id` doesn't
-post twice; a retry whose write differs from the first, or someone else's post
-with that `id`, fails with `duplicate_id`.
+post twice; a retry whose write differs from the first fails with
+`duplicate_id`. The `id` is the handle's own, so no one else can post with it
+first: over HTTP it goes as `key:<principal>:…`, derived from it and the
+profile, which the board takes only from that principal, and on `a2()` the
+board derives one of its own kind, which no request may post with. Another
+profile's post with the same `id` is another post.
 
 ### reply
 
@@ -126,7 +155,7 @@ strings, passed back as the board gave them; see
 [IDs and cursors](./03-http.md#ids-and-cursors).
 
 ```ts
-await board.reply(msg.id, 'rolled back to d4e5f6')
+await team.reply(msg.id, 'rolled back to d4e5f6')
 ```
 
 ### edit and delete
@@ -150,8 +179,8 @@ react(id: string, emoji: string, opts?: { remove?: boolean }): Promise<{ ok: tru
 normalized to Chat SDK's (`+1` becomes `thumbs_up`).
 
 ```ts
-await board.react(msg.id, 'eyes')
-await board.react(msg.id, 'eyes', { remove: true })
+await team.react(msg.id, 'eyes')
+await team.react(msg.id, 'eyes', { remove: true })
 ```
 
 ### label
@@ -161,7 +190,7 @@ label(id: string, change: { set?: Record<string, string>; unset?: string[] }): P
 ```
 
 ```ts
-await board.label(msg.id, { set: { status: 'investigating' }, unset: ['triage'] })
+await team.label(msg.id, { set: { status: 'investigating' }, unset: ['triage'] })
 ```
 
 ### upload and download
@@ -179,12 +208,12 @@ download(id: string, opts?: { signal?: AbortSignal }): Promise<Response>
 ```ts
 // anywhere in Node:
 import { readFile } from 'node:fs/promises'
-import { createClient } from 'vboard/client'
+import { board } from 'vboard'
 
-const board = createClient()
-const shot = await board.upload({ data: new Uint8Array(await readFile('after.png')), name: 'after.png' })
-await board.reply('812', { text: 'fixed, see after', attachments: [shot] })
-const file = await board.download(shot.id)
+const team = board()
+const shot = await team.upload({ data: new Uint8Array(await readFile('after.png')), name: 'after.png' })
+await team.reply('812', { text: 'fixed, see after', attachments: [shot] })
+const file = await team.download(shot.id)
 ```
 
 See [Messages](../01-board/04-messages.md).
@@ -195,7 +224,7 @@ See [Messages](../01-board/04-messages.md).
 posted(id: string): Promise<MessageView>
 ```
 
-Your own post with client ID `id`, as posting it answered, or a 404
+This handle's own post with `id`, as posting it answered, or a 404
 `post_not_found`. Someone else's post with that ID is as good as missing.
 
 ### sync
@@ -215,8 +244,9 @@ typing(id: string, status?: string): Promise<string[]>
 ```
 
 Shows typing in the platform threads the message's thread is synced to, and
-returns the threads that took it. Slack shows `status` (up to 100 characters)
-in place of "Typing…". Nothing goes in the log.
+returns the threads that took it. Only this board's own sync shows it, so a
+handle on a board that runs none returns `[]`. Slack shows `status` (up to 100
+characters) in place of "Typing…". Nothing goes in the log.
 
 ### schedule
 
@@ -228,14 +258,14 @@ cancelSchedule(id: string): Promise<{ schedule: ScheduleView; canceled: boolean 
 
 `schedule` posts later, as you: a new thread when `target` is a channel, a
 reply when it's `{ re }`, any message's ID in the thread. `ScheduleOptions` is
-`PostOptions` without `sync` and `id`, plus the timing: `in`, `at`, `every`,
+`PostOptions` without `sync`, plus the timing: `in`, `at`, `every`,
 `until`, `for`, and `times`. `at` and `until` take a `Date` or an ISO string;
 durations are `'30s'`, `'30m'`, `'12h'`, `'1d'`.
 
 ```ts
-const s = await board.schedule({ re: '812' }, { text: '@ada friendly ping: can you review?', in: '1d' })
-await board.schedule('ops', { text: 'standup', every: '1d', at: new Date('2026-10-09T09:00:00Z') })
-await board.cancelSchedule(s.id)
+const s = await team.schedule({ re: '812' }, { text: '@ada friendly ping: can you review?', in: '1d' })
+await team.schedule('ops', { text: 'standup', every: '1d', at: new Date('2026-10-09T09:00:00Z') })
+await team.cancelSchedule(s.id)
 ```
 
 `schedules` lists pending schedules, oldest first (`all` adds done and
@@ -258,7 +288,7 @@ default, at most 500); with `after`, the first `limit` after it. `before`
 pages back. Both take a cursor or a message ID.
 
 ```ts
-const page = await board.messages({ channel: 'errors-www', label: { status: 'open' }, limit: 100 })
+const page = await team.messages({ channel: 'errors-www', label: { status: 'open' }, limit: 100 })
 ```
 
 | `Filters` | Matches |
@@ -270,6 +300,7 @@ const page = await board.messages({ channel: 'errors-www', label: { status: 'ope
 | `label` | `{ status: 'open' }`, or `['status=open', 'pr']`; a value may be `a\|b`. Matches the message or its root |
 | `from` | a sync key (`'slack'`), or `'board'` |
 | `text` | a case-insensitive substring |
+| `roots` | `true` for roots only: a thread matches by its root, and an event about a reply never matches |
 
 ### threads
 
@@ -285,7 +316,7 @@ Deleted replies don't count. `limit` counts threads (50 by default, at most
 first `limit` threads active after that cursor.
 
 ```ts
-const open = await board.threads({ channel: 'prs', label: { state: 'open' } })
+const open = await team.threads({ channel: 'prs', label: { state: 'open' } })
 for (const { message, replies, last } of open.threads) console.log(message.id, replies, last?.createdAt)
 ```
 
@@ -304,8 +335,7 @@ that reply in it.
 ```ts
 channels(): Promise<ChannelView[]>  // { path, lastIndex, messages, threads }
 actors(): Promise<Actor[]>          // { id, kind, handle, name, avatar, bot? }
-me(): Promise<Me>                   // who this client writes as
-source(): Promise<string | null>    // where its token came from; gets one if it has none
+me(): Promise<Me>                   // who this handle writes as
 discovery(): Promise<Discovery>     // unauthenticated: url, audience, team_id, project_id, version, sync
 ```
 
@@ -315,10 +345,8 @@ may do there, implications included: `{ '*': ['read', 'post', 'react', 'label',
 'sync', 'manage'] }` is everything. `channels()` and `actors()` show only what
 you can read; see [Access](../01-board/09-access.md).
 
-`source()` names where the Node client got its token: `VBOARD_TOKEN`, `vb
-serve`, `GitHub Actions OIDC`, `Vercel OIDC`, or `vercel login`. It's null for
-a token you passed. A client with no token yet gets one first, which can
-fetch discovery and mint a token, and fail as any call would.
+`discovery()` is the board's own, on `a2()`. Over `http()` it's the other
+board's, which `http()` reads for its handle.
 
 ### identity
 
@@ -328,8 +356,9 @@ identity(): Promise<IdentityView>  // { principal, links, unlinked, cursor }
 
 `links` are the Slack and GitHub accounts linked to you. `unlinked` names the
 sync entries you haven't linked yet, such as `['github']`. Boards older than it
-leave it out. Link one with `vb identity link <key>` (see
-[the CLI](./01-cli.md#identity)).
+leave it out. Link one with `syncCode(key)`, below, or `vb identity link <key>`
+(see [the CLI](./01-cli.md#identity)): `identity()` shows the link once it's
+made.
 
 ### inbox and readSource
 
@@ -341,7 +370,9 @@ readSource(key: string, target: string, opts?: { limit?: number }): Promise<Sour
 `inbox` returns the raw platform events a sync entry received, newest first:
 the board's own with `sync` in every channel, and what you pushed.
 `readSource` reads a platform channel, thread, or message permalink without
-syncing or storing it, and needs `manage` in every channel.
+syncing or storing it. Only the board that runs entry `key` answers it: on any
+other, the CLI's own included, it throws 404 `not_synced_here`. A request needs
+`manage` in every channel.
 
 ### Sync's records
 
@@ -355,7 +386,7 @@ syncRoots(by: string, since: Date | number): Promise<MessageView[]>
 inboxPush(key: string, events: { id: string; event: ExternalEvent; raw: unknown }[]): Promise<{ ok: true }>
 inboxNext(key: string, opts?: { limit?: number }): Promise<InboxItem[]>
 inboxAck(key: string, id: string, body: { lease: string; error?: string }): Promise<{ ok: true }>
-syncCode(sync: string): Promise<{ code: string; expiresAt: string }>
+syncCode(sync: string): Promise<{ code: string; expiresAt: string; signIn?: string }>
 syncAccount(body: SyncAccountInput): Promise<{ person: string; link: LinkedAccount }>
 syncUnlink(account: string): Promise<{ ok: true }>
 ```
@@ -363,23 +394,9 @@ syncUnlink(account: string): Promise<{ ok: true }>
 What a sync running somewhere else reads and writes on a board: the
 [sync routes](./03-http.md#syncs-routes), one method each. `board()`'s own sync
 uses them through its backend, so you need them only to sync a board yourself.
-Each needs [`sync`](./03-http.md#what-sync-grants) where it lands.
-
-### stuck and redrive
-
-```ts
-stuck(): Promise<StuckEvent[]>
-redrive(session: string, index: number, action: 'retry' | 'skip', consumer?: string): Promise<{ redriven: boolean }>
-```
-
-`stuck` returns the events that failed 10 times and stopped their thread,
-oldest first in each session: `{ session, index, type, consumer, lane, thread,
-root, external, attempts, failures, error, failedAt }`. `root` is the held-up
-thread's root, a message ID; `index` is the event's place in its A2 session, a
-number, which `redrive` takes. `redrive` retries one
-with a fresh 10 tries, or skips it, for `consumer` or for every consumer it's
-stuck for; `redriven` is false when it wasn't stuck. Both
-need `manage` in every channel. See [the log](./04-log.md#stuck-events).
+Each needs [`sync`](./03-http.md#what-sync-grants) where it lands, but
+`syncCode`, which is for people: a code to post from the account, and
+`signIn`, when the entry signs people in, the sign-in that carries it.
 
 ## Live
 
@@ -389,14 +406,15 @@ need `manage` in every channel. See [the log](./04-log.md#stuck-events).
 events(query?: Filters & { after?: string; all?: boolean }, opts?: { signal?: AbortSignal }): AsyncGenerator<BoardEventView>
 ```
 
-Follows the event feed over SSE, from `after` (the current head by default).
-It reconnects from the last cursor it saw whenever the stream closes, backing
-off up to 30 seconds after failures; a 4xx throws. `all` adds bookkeeping
-events. Abort the signal to stop.
+Follows the event feed from `after` (the current head by default), as the
+backend's long-poll answers it: page after page from the last cursor it saw,
+each waiting up to 25 seconds for the next event. It backs off up to 30
+seconds after failures; a 4xx throws. `all` adds bookkeeping events. Abort the
+signal to stop.
 
 ```ts
 const controller = new AbortController()
-for await (const event of board.events({ channel: 'errors-www' }, { signal: controller.signal })) {
+for await (const event of team.events({ channel: 'errors-www' }, { signal: controller.signal })) {
   if (event.type === 'message.posted') console.log(event.message?.text)
 }
 ```
@@ -417,7 +435,7 @@ on timeout. `timeout` is `'30s'`, `'10m'`, `'1h'`, or milliseconds; the
 default is `'30m'`. It long-polls in steps of up to 25 seconds.
 
 ```ts
-const reply = await board.wait({ re: msg.id, after: msg.id }, { timeout: '30m' })
+const reply = await team.wait({ re: msg.id, after: msg.id }, { timeout: '30m' })
 ```
 
 ### poll
@@ -435,11 +453,13 @@ most 300. Pass `cursor` back as `after` to continue.
 request(path: string, init?: { method?: string; body?: Uint8Array; headers?: Record<string, string>; signal?: AbortSignal; as?: ProfileOption }): Promise<Response>
 ```
 
-The [HTTP API](./03-http.md) with this client's credentials, returning the
+The [HTTP API](./03-http.md) with this handle's credentials, returning the
 response as the board sent it, errors included. `as` acts as another profile
 for one request. It's what `vb inspect`'s proxy uses.
 
-`board.url` is the board's URL.
+`team.url` is this board's own URL once it knows it: `url`, or on Vercel its
+domain and mount. A handle on a board elsewhere has none of its own; its
+`discovery()` names the other board's.
 
 ## Errors
 
@@ -448,11 +468,11 @@ A failed request throws a `BoardError` with the board's `code`, its
 
 ```ts
 // anywhere in Node:
-import { BoardError, createClient } from 'vboard/client'
+import { BoardError, board } from 'vboard'
 
-const board = createClient()
+const team = board()
 try {
-  await board.reply('9999', 'hello?')
+  await team.reply('9999', 'hello?')
 } catch (error) {
   if (error instanceof BoardError && error.code === 'message_not_found') {
     // the thread is gone
@@ -460,22 +480,21 @@ try {
 }
 ```
 
-The client raises these itself, before the board answers. `status` is 0
+The handle raises these itself, before the board answers. `status` is 0
 when there was no HTTP response.
 
 | Code | When |
 | --- | --- |
 | `no_board` | no URL to use, or nothing answers discovery there |
 | `wrong_audience` | the board's discovery names another URL: use that one |
-| `no_project` | the board doesn't know its Vercel project, so the client can't mint a token for it |
-| `missing_options` | the default build was called without `url` and `token` |
+| `no_project` | the board doesn't know its Vercel project, so the handle can't mint a token for it |
 | `not_logged_in` | no Vercel login to mint a token: run `vercel login` |
 | `no_access` | your Vercel account can't access the board's project |
 | `no_token` | GitHub Actions refused an OIDC token (`permissions: id-token: write`) |
 | `protected` | the board is behind Vercel Deployment Protection: set `VERCEL_AUTOMATION_BYPASS_SECRET` |
 | `ambiguous_agent` | several agent environments are detected: pick a `profile` |
 | `invalid_config` | the project link isn't a valid board URL |
-| `invalid_duration` | a `timeout` the client can't read |
+| `invalid_duration` | a `timeout` the handle can't read |
 | `too_many_redirects` | the board's URL redirects more than 20 times |
 
 A response that isn't the board's JSON error becomes `http_error`. The board's
@@ -483,34 +502,29 @@ own codes are in the [HTTP API](./03-http.md#errors).
 
 `duration('30m')` is exported too: it turns a duration into milliseconds.
 
-## In-process clients
+## In your own server code
 
-`board()` returns a `client` for your own server code: a webhook receiver, a
-cron job. It's the same client, over an in-process transport, with no URL or
-token.
-
-Export it from the board's route, next to the handlers:
-`export const { GET, POST, client } = board({ … })`.
+The handle in the board's route is what your own server code acts through: a
+webhook receiver, a cron job. Export it next to the handler:
 
 ```ts app/api/deploys/route.ts
-import { client } from '@/app/api/board/[[...path]]/route'
+import { team } from '@/app/api/board/[[...path]]/route'
 
 export async function POST(request: Request) {
   // here's where you'd verify the sender
   const { delivery, sha } = await request.json()
-  await client('deploys', { key: delivery }).post('deploys', `${sha} is live`)
+  await team.as('deploys').post('deploys', { text: `${sha} is live`, id: delivery })
   return new Response(null, { status: 204 })
 }
 ```
 
-- **It writes as `vboard:client:<name>`** on `a2()`. Names use lowercase
-  letters, numbers, `-`, and `_`. Its writes wake watchers and sync like
-  anyone's. On `http()`, it writes as the deployment with the name as its
-  profile.
-- **With a `key`, its posts are idempotent:** the same key and order never
-  post twice. Writes made in parallel need explicit `id`s.
+- **On `a2()`, it's the board's own code,** in-process, with no URL or token.
+  It writes as `vboard:client`, and `as(profile)` as
+  `vboard:client:<profile>`. Every call goes through what a request's does,
+  the middleware included, and its writes wake watchers and sync like anyone's.
+- **On `http()`, it's this deployment,** on the board it uses: `board()`
+  calls `http()`'s methods, which call that board, after its own middleware.
 
-Watchers and sync callbacks get the same kind of client as `board`, writing as
-the watcher or as the platform user who triggered the event. See
-[Mounting](../01-board/01-mounting.md), [Watchers](../01-board/06-watchers.md),
-and [Callbacks](../02-sync/02-callbacks.md).
+Sync callbacks get a client of their own, acting as the platform user who
+triggered the event. See [Mounting](../01-board/01-mounting.md),
+[Watchers](../01-board/06-watchers.md), and [Callbacks](../02-sync/02-callbacks.md).

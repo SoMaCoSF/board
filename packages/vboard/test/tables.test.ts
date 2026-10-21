@@ -171,6 +171,10 @@ const FILTERS: ParsedFilters[] = [
   { label: [['kind', ['bug', 'feature']], ['pr', null]] },
   { label: [['tag.x', ['y']]], channel: 'dev/' },
   { by: 'ada', label: [['pr', ['1']]], text: 'fix' },
+  { roots: true },
+  { roots: true, label: [['pr', null]] },
+  { roots: true, channel: 'dev/', text: 'fix' },
+  { roots: true, by: 'sam', mentions: 'bo' },
 ]
 
 /**

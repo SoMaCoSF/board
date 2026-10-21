@@ -1,4 +1,4 @@
-import type { BoardClient } from '../client/client.ts'
+import type { Board } from './board.ts'
 import type { Actor } from '../contract/reducers.ts'
 import { z } from 'zod'
 import { Labels, MESSAGE_TEXT_MAX, type Attachment } from '../contract/schemas.ts'
@@ -10,8 +10,8 @@ export type WriteSource =
   | { kind: 'api' }
   /** A synced platform's event, or a sync callback's own writes. `thread` is the platform thread. */
   | { kind: 'sync'; key: string; platform: string; channel: string; thread: string }
-  /** An in-process client from `board(...).client(name)`. */
-  | { kind: 'client'; name: string }
+  /** The board's handle in this deployment: `team.post(…)`, or `team.as(name).post(…)`. `name` is null for the handle itself. */
+  | { kind: 'client'; name: string | null }
   /** A watcher's in-process client. */
   | { kind: 'watcher'; id: string }
   /** A scheduled message's send. */
@@ -35,8 +35,8 @@ export type MiddlewareContext = {
    * thread for sync, the error message the API answers with otherwise.
    */
   respond(text: string): Promise<void>
-  /** Writes as `vboard:middleware`. Its writes skip the middleware. */
-  board: BoardClient
+  /** The board, acting as `vboard:middleware`. Its writes skip the middleware. */
+  board: Board
   /**
    * Hands the write to the next middleware, and after the last one, to the board.
    * Not calling it drops the write, and so does emptying a write that has no files.
@@ -63,7 +63,7 @@ export const MIDDLEWARE_ACTOR = 'vboard:middleware'
  */
 export async function runMiddleware<W extends Write, T>(
   middleware: readonly Middleware[],
-  input: { write: W; author: Actor; source: WriteSource; board: () => BoardClient; respond?: (text: string) => Promise<void> },
+  input: { write: W; author: Actor; source: WriteSource; board: () => Board; respond?: (text: string) => Promise<void> },
   commit: (write: W) => Promise<T>,
 ): Promise<T> {
   const responses: string[] = []

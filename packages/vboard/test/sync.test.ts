@@ -106,6 +106,7 @@ describe('sync', () => {
       ((await julian('GET', `/events?channel=firehose&after=0${query}`)).body.events as { type: string }[]).map((e) => e.type)
     await vi.waitFor(async () => expect(await types('&all=true')).toContain('message.synced'))
     expect(await types('')).toEqual(['message.posted', 'message.posted'])
+    expect(await types('&all=false')).toEqual(['message.posted', 'message.posted'])
     await vi.waitFor(() => expect(seen).toEqual(['message.posted', 'message.posted']))
   })
 
@@ -916,6 +917,42 @@ describe('sync', () => {
     expect(get).not.toHaveBeenCalled()
   })
 
+  it('imports GitHub events only into threads the board has, when the callback asks', async () => {
+    const results: import('../src/sync/events.ts').SyncResult[] = []
+    let knownThreadsOnly = true
+    const get = vi.fn()
+    const { board, webhook } = setup({
+      githubClient: { rest: { pulls: { get } } },
+      repos: { 'basehub-ai/vboard': async ({ event, board }) => void results.push(await board.sync('prs', event, { knownThreadsOnly })) },
+    })
+    const julian = caller(board.fetch, await personToken())
+    const comment = (id: string) => webhook('github', { type: 'message', threadId: 'github:basehub-ai/vboard:53', id, text: `comment ${id}`, user: '42' })
+    const opened = (delivery: string) => webhook('github', {
+      action: 'opened', repository: { full_name: 'basehub-ai/vboard' }, sender: { id: 42, login: 'julianbenegas' },
+      pull_request: { number: 53, title: 'Known', html_url: 'https://github.com/basehub-ai/vboard/pull/53', draft: false, merged: false },
+    }, { 'x-github-event': 'pull_request', 'x-github-delivery': delivery })
+
+    await comment('c1')
+    await vi.waitFor(() => expect(results).toHaveLength(1))
+    await opened('o1')
+    await vi.waitFor(() => expect(results).toHaveLength(2))
+    expect(results).toEqual([{ root: null, message: null }, { root: null, message: null }])
+    expect(await read(julian, 'prs')).toHaveLength(0)
+    expect(get).not.toHaveBeenCalled()
+
+    knownThreadsOnly = false
+    await opened('o2')
+    await vi.waitFor(() => expect(results).toHaveLength(3))
+    knownThreadsOnly = true
+    await comment('c2')
+    await vi.waitFor(() => expect(results).toHaveLength(4))
+    const [root, reply] = await read(julian, 'prs')
+    expect(root!.text).toContain('PR #53: Known')
+    expect(reply).toMatchObject({ text: 'comment c2', re: root!.id })
+    expect(results.slice(2)).toEqual([{ root: String(root!.id), message: String(root!.id) }, { root: String(root!.id), message: String(reply!.id) }])
+    expect(get).not.toHaveBeenCalled()
+  })
+
   it("sends a repo's PRs and issues to different channels", async () => {
     const { board, webhook } = setup({ repos: { 'basehub-ai/vboard': { pulls: 'prs', issues: 'issues' } } })
     const julian = caller(board.fetch, await personToken())
@@ -1469,6 +1506,27 @@ describe('provider callbacks', () => {
     await vi.waitFor(() => expect(seen).toEqual(['message', 'message', 'message.edited', 'reaction.added', 'message.deleted']))
     const reply = (await read(call, 'support'))[1]!
     await vi.waitFor(async () => expect((await call('GET', `/messages/${reply.id}`)).body.replies.find((message: { id: number }) => message.id === reply.id).deleted).toBe(true))
+  })
+
+  it('imports a Slack reply only into a thread the board has, when the callback asks', async () => {
+    const results: import('../src/sync/events.ts').SyncResult[] = []
+    let knownThreadsOnly = false
+    const { board, webhook } = setup({ channels: { C4: async ({ event, board }) => void results.push(await board.sync('support', event, { knownThreadsOnly })) } })
+    const call = caller(board.fetch, await personToken())
+    const send = (thread: string, id: string, text: string) => webhook('slack', { type: 'message', threadId: `slack:C4:${thread}`, id, text, user: 'U1' })
+    await send('100', '100', 'root')
+    await vi.waitFor(() => expect(results).toHaveLength(1))
+
+    knownThreadsOnly = true
+    await send('200', '201', 'unknown thread')
+    await vi.waitFor(() => expect(results).toHaveLength(2))
+    await send('100', '101', 'known thread')
+    await vi.waitFor(() => expect(results).toHaveLength(3))
+    const messages = await read(call, 'support')
+    expect(messages).toHaveLength(2)
+    const [root, reply] = messages
+    expect(reply).toMatchObject({ text: 'known thread', re: root!.id })
+    expect(results.slice(1)).toEqual([{ root: null, message: null }, { root: String(root!.id), message: String(reply!.id) }])
   })
 
   it('gives a Slack callback the message permalink lazily, without importing the thread', async () => {

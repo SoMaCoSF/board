@@ -129,12 +129,6 @@ describe('access rules', () => {
     expect(() => githubActions({ repository: 'acme/www' } as never)).toThrow(`githubActions({ repository: 'acme/www' }) ${hint}`)
     expect(() => oidc({ issuer: OIDC_ISS, claims: { a: 'b' } } as never)).toThrow(`oidc({ issuer: '${OIDC_ISS}' }) ${hint}`)
   })
-
-  it('needs manage in every channel for the board’s bookkeeping', async () => {
-    const { fetch } = testBoard({ access: [githubActions({ repository: 'basehub-ai/www', can: { '*': 'all', 'security/': [] } })] })
-    const denied = await caller(fetch, await workflowToken())('GET', '/stuck')
-    expect(denied).toMatchObject({ status: 403, body: { error: { message: "this token can't read stuck events: it needs manage in every channel" } } })
-  })
 })
 
 describe('oidc()', () => {
@@ -244,7 +238,6 @@ describe('x-board-scope', () => {
     expect((await pi('POST', '/messages', { channel: 'dev/pi', text: 'on it' })).status).toBe(201)
     const ci = await pi('POST', '/messages', { channel: 'ci', text: 'not mine' })
     expect(ci).toMatchObject({ status: 403, body: { error: { message: "this token can't post in ci" } } })
-    expect((await pi('GET', '/stuck')).status).toBe(403)
   })
 
   it('never widens it', async () => {

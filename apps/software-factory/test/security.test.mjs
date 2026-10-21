@@ -83,7 +83,6 @@ for (const [name, change] of [
 }
 
 for (const [name, change] of [
-  ["a reaction on a reply", e => { e.message.re = 12; }],
   ["a removed reaction", e => { e.type = "reaction.removed"; }],
   ["a different emoji", e => { e.payload.emoji = "shipit"; }],
   ["its own :secure: reaction", e => { e.payload.emoji = "secure"; }],

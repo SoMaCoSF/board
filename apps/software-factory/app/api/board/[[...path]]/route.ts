@@ -14,7 +14,7 @@ import { owner } from "./owner";
 import { crosspost } from "./crosspost";
 import { guard } from "./guard";
 import { renderForSlack } from "./render";
-import { boardOnly, unseenPr } from "./quiet";
+import { syncPull } from "./quiet";
 import { isDraft, reviewStarts, wakesReview } from "./review";
 import { CONNECTOR, REPO } from "./github";
 import { vercelTrustedSources } from "./trusted-sources";
@@ -53,16 +53,7 @@ const factory = board({
       adapter: CONNECTOR,
       repos: {
         [REPO]: {
-          // Inline review threads and "closed by …" replies stay on GitHub and the board,
-          // out of Slack: top-level comments, review verdicts and merges still go through.
-          // Comments on a PR the board has no thread for stay on GitHub.
-          pulls: {
-            channel: "dev",
-            run: async ({ event, board }) => {
-              if (await unseenPr(event, board, "dev")) return;
-              await board.sync("dev", event, { noSync: boardOnly(event) });
-            },
-          },
+          pulls: { channel: "dev", run: syncPull },
           issues: "dev",
         },
       },
@@ -195,6 +186,6 @@ const factory = board({
   },
 });
 
-export const { GET, POST } = factory;
+export const GET = factory.fetch, POST = factory.fetch;
 // The board's queue also delivers the refreshes of Pi's tokens.
 export const scheduler = queues.handler(...backend.servers, piTokens.server);

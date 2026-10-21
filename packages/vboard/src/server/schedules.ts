@@ -14,8 +14,8 @@ import type { Granted, Known, Principal } from './auth.ts'
 import { actorsReducer, type ActorsState } from '../contract/reducers.ts'
 import { replaceMentions } from '../contract/mentions.ts'
 import { resolveMentions } from './actors.ts'
-import { badRequest, HttpError, notFound } from './errors.ts'
-import { authorizePost, deploymentIdentity, type Identity, type WriteContext, type WriteOrigin } from './writes.ts'
+import { badRequest, duplicateId, HttpError, notFound } from './errors.ts'
+import { authorizePost, deploymentIdentity, sameAuthor, type Identity, type WriteContext, type WriteOrigin } from './writes.ts'
 import { BoardError, type BoardClient } from '../client/client.ts'
 import { indexOf, ref } from './feed.ts'
 import { waitUntil } from './wait-until.ts'
@@ -31,6 +31,8 @@ const EARLY_MS = 1000
 
 export type Schedule = {
   id: number
+  /** Its created event's ID: a retry with the same one gets this schedule back. */
+  eventId: string
   channel: string
   re: number | null
   text: string
@@ -72,6 +74,7 @@ export function foldSchedules(state: SchedulesState, event: ScheduleEvent): Sche
       const { payload } = event
       state.byId[event.index] = {
         id: event.index,
+        eventId: event.id,
         channel: payload.channel,
         re: payload.re,
         text: payload.text,
@@ -329,6 +332,24 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
     ): Promise<{ schedule: ScheduleView; unknownMentions?: string[] }> {
       if (!writes) throw new Error('schedules used before the board bound them')
       if (!options.scheduler) throw new HttpError(501, 'no_scheduler', 'this board has no scheduler, so it can\'t schedule messages')
+      let channel = body.channel
+      let re: number | null = null
+      if (body.re !== undefined) {
+        const target = await writes.reads.message(body.re)
+        if (!target || target.deleted) throw notFound(`message not found: #${body.re}`, 'message_not_found')
+        re = target.re ?? target.id
+        channel = target.channel
+      }
+      if (body.id !== undefined) {
+        const { state } = await session.state(schedulesReducer)
+        const landed = Object.values(state.byId).find((schedule) => schedule.eventId === body.id)
+        // A retry of one that landed stands as it is. Only its creator's, in the same place, is one.
+        if (landed) {
+          if (landed.channel !== channel || landed.re !== re || !sameAuthor(landed.as.author, identity.author) || !createdBy(landed, identity.principal))
+            throw duplicateId()
+          return { schedule: scheduleView(landed, (await writes.session.state(actorsReducer)).state) }
+        }
+      }
       const now = Date.now()
       const every = body.every === undefined ? null : duration(body.every)
       if (every !== null && every < MIN_EVERY_MS) throw badRequest('`every` is at least 1m')
@@ -346,16 +367,9 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
       const withoutEmails = replaceMentions(body.text, (t) => (t.kind === 'actor' && t.actor.includes('@') ? t.actor : null))
       const { unknown } = resolveMentions(withoutEmails, known, identity.actor, false, identity.principal.access.readsAll)
 
-      let channel = body.channel
-      let re: number | null = null
-      if (body.re !== undefined) {
-        const target = await writes.reads.message(body.re)
-        if (!target || target.deleted) throw notFound(`message not found: #${body.re}`, 'message_not_found')
-        re = target.re ?? target.id
-        channel = target.channel
-      }
       const [row] = await session.append({
         type: 'schedule.created',
+        ...(body.id !== undefined ? { id: body.id } : {}),
         payload: {
           channel: channel!,
           re,

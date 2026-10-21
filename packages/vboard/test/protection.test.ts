@@ -15,7 +15,12 @@ vi.mock('@vercel/oidc', async (original) => ({
   }),
 }))
 
-const { createClient } = await import('../src/client/node.ts')
+const { board } = await import('../src/server/index.ts')
+const { http } = await import('../src/backend-http/index.ts')
+const { connect } = await import('../src/client/node.ts')
+/** A handle on the board at `url`, over http(), reaching it the way `vb` does, over the network `fetch` is. */
+const handle = ({ url, ...options }: { url: string } & NonNullable<Parameters<typeof connect>[1]>) =>
+  board({ backend: http(url, { fetch: connect(url, options).fetch }) })
 const { BOARD_URL, personToken, testBoard } = await import('./harness.ts')
 
 const HOST = new URL(BOARD_URL).host
@@ -101,7 +106,7 @@ describe('a board behind Vercel Deployment Protection, without VERCEL_AUTOMATION
       request.headers.delete('x-vercel-trusted-oidc-idp-token')
       return board.fetch(request)
     }) as typeof globalThis.fetch
-    const client = createClient({ url: BOARD_URL, token, fetch })
+    const client = handle({ url: BOARD_URL, token, fetch })
     expect((await client.discovery()).url).toBe(BOARD_URL)
     await client.post('dev', 'native trust')
     expect(sent[1]!.get('authorization')).toBe(`Bearer ${token}`)
@@ -123,7 +128,7 @@ describe('a board behind Vercel Deployment Protection, without VERCEL_AUTOMATION
       return board.fetch(request)
     }) as typeof globalThis.fetch
     const supplied = source === 'option' ? token : source === 'callback' ? async () => token : undefined
-    const client = createClient({ url: BOARD_URL, token: supplied, fetch })
+    const client = handle({ url: BOARD_URL, token: supplied, fetch })
     expect((await client.discovery()).url).toBe(BOARD_URL)
     await client.post('dev', 'explicit credentials')
     expect(sent[1]!.get('authorization')).toBe(`Bearer ${token}`)
@@ -138,7 +143,7 @@ describe('a board behind Vercel Deployment Protection, without VERCEL_AUTOMATION
       expect(request.headers.get('x-vercel-trusted-oidc-idp-token')).toBe('runtime-token')
       return board.fetch(request)
     }) as typeof globalThis.fetch
-    expect((await createClient({ url: BOARD_URL, fetch }).discovery()).url).toBe(BOARD_URL)
+    expect((await handle({ url: BOARD_URL, fetch }).discovery()).url).toBe(BOARD_URL)
     expect(runtimeToken).toHaveBeenCalledWith({ audience: BOARD_URL })
   })
 
@@ -146,7 +151,7 @@ describe('a board behind Vercel Deployment Protection, without VERCEL_AUTOMATION
     vi.stubEnv('VERCEL', '1')
     runtimeToken.mockRejectedValue(new Error('private runtime details'))
     const fetch = vi.fn()
-    await expect(createClient({ url: BOARD_URL, fetch }).discovery()).rejects.toMatchObject({
+    await expect(handle({ url: BOARD_URL, fetch }).discovery()).rejects.toMatchObject({
       code: 'no_token',
       message: expect.stringContaining('enable OIDC'),
     })
@@ -156,7 +161,7 @@ describe('a board behind Vercel Deployment Protection, without VERCEL_AUTOMATION
   it('fails hosted trust with setup guidance instead of reading or creating a bypass', async () => {
     vi.stubEnv('VERCEL', '1')
     const { fetch, api } = protectedBoard()
-    await expect(createClient({ url: BOARD_URL, token: await personToken(), fetch }).discovery())
+    await expect(handle({ url: BOARD_URL, token: await personToken(), fetch }).discovery())
       .rejects.toMatchObject({ code: 'protected', message: expect.stringContaining('Trusted Sources') })
     expect(api).toEqual([])
   })
@@ -166,7 +171,7 @@ describe('a board behind Vercel Deployment Protection, without VERCEL_AUTOMATION
     vi.stubEnv('VERCEL_AUTOMATION_BYPASS_SECRET', SECRET)
     runtimeToken.mockRejectedValue(new Error('runtime OIDC is unavailable'))
     const { fetch, api, sent } = protectedBoard()
-    const client = createClient({ url: BOARD_URL, token: await personToken(), handle: 'jb', fetch })
+    const client = handle({ url: BOARD_URL, token: await personToken(), handle: 'jb', fetch })
     expect((await client.discovery()).url).toBe(BOARD_URL)
     await client.post('dev', 'hosted with a bypass')
     expect(sent.every((header) => header === SECRET)).toBe(true)
@@ -182,7 +187,7 @@ describe('a board behind Vercel Deployment Protection, without VERCEL_AUTOMATION
       expect(request.headers.has('x-vercel-trusted-oidc-idp-token')).toBe(false)
       return board.fetch(request)
     }) as typeof globalThis.fetch
-    const client = createClient({ url: BOARD_URL, token, fetch })
+    const client = handle({ url: BOARD_URL, token, fetch })
     await client.discovery()
     await client.post('dev', 'local person')
     expect(runtimeToken).not.toHaveBeenCalled()
@@ -203,13 +208,13 @@ describe('a board behind Vercel Deployment Protection, without VERCEL_AUTOMATION
       expect(request.headers.has('x-vercel-protection-bypass')).toBe(false)
       return Response.json({ url: BOARD_URL })
     }) as typeof globalThis.fetch
-    await createClient({ url: BOARD_URL, token: 'runtime-token', fetch }).me()
+    await handle({ url: BOARD_URL, token: 'runtime-token', fetch }).me()
     expect(calls).toBe(2)
   })
 
   it("gets through with the project's automation bypass, read with your Vercel login, and caches it", async () => {
     const { fetch, api, sent } = protectedBoard({ bypass: { [SECRET]: { scope: 'automation-bypass' } } })
-    const client = createClient({ url: BOARD_URL, token: await personToken(), handle: 'jb', fetch })
+    const client = handle({ url: BOARD_URL, token: await personToken(), handle: 'jb', fetch })
     expect((await client.discovery()).url).toBe(BOARD_URL)
     const root = await client.post('dev', 'through the wall')
     expect((await client.thread(root.id)).message.text).toBe('through the wall')
@@ -227,7 +232,7 @@ describe('a board behind Vercel Deployment Protection, without VERCEL_AUTOMATION
     api.length = 0
     sent.length = 0
     login.token = null
-    const again = createClient({ url: BOARD_URL, token: await personToken(), handle: 'jb', fetch })
+    const again = handle({ url: BOARD_URL, token: await personToken(), handle: 'jb', fetch })
     expect((await again.discovery()).url).toBe(BOARD_URL)
     expect(api).toEqual([])
     expect(sent).toEqual([SECRET])
@@ -236,7 +241,7 @@ describe('a board behind Vercel Deployment Protection, without VERCEL_AUTOMATION
   it('creates the automation bypass when the project has none, and says so', async () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
     const { fetch, api } = protectedBoard()
-    const client = createClient({ url: BOARD_URL, token: await personToken(), fetch })
+    const client = handle({ url: BOARD_URL, token: await personToken(), fetch })
     expect((await client.discovery()).url).toBe(BOARD_URL)
     expect(api).toContain('PATCH /v1/projects/prj_board/protection-bypass?teamId=team_board')
     expect(stderr).toHaveBeenCalledWith('created a Protection Bypass for Automation on the Vercel project board\n')
@@ -244,12 +249,12 @@ describe('a board behind Vercel Deployment Protection, without VERCEL_AUTOMATION
 
   it('looks the secret up again when the cached one is stale', async () => {
     const { fetch } = protectedBoard({ bypass: { [SECRET]: { scope: 'automation-bypass' } } })
-    await createClient({ url: BOARD_URL, token: await personToken(), fetch }).discovery()
+    await handle({ url: BOARD_URL, token: await personToken(), fetch }).discovery()
     const [file] = await readdir(join(config, 'vboard', 'bypass'))
     const { writeFile } = await import('node:fs/promises')
     await writeFile(join(config, 'vboard', 'bypass', file!), JSON.stringify({ host: HOST, secret: 'revoked' }))
     const { fetch: again, api } = protectedBoard({ bypass: { [SECRET]: { scope: 'automation-bypass' } } })
-    expect((await createClient({ url: BOARD_URL, token: await personToken(), fetch: again }).discovery()).url).toBe(BOARD_URL)
+    expect((await handle({ url: BOARD_URL, token: await personToken(), fetch: again }).discovery()).url).toBe(BOARD_URL)
     expect(api).toContain('GET /v9/projects/prj_board?teamId=team_board')
   })
 
@@ -257,7 +262,7 @@ describe('a board behind Vercel Deployment Protection, without VERCEL_AUTOMATION
     login.token = 'someone-else'
     vi.stubEnv('PATH', '')
     const { fetch } = protectedBoard()
-    const client = createClient({ url: BOARD_URL, token: await personToken(), fetch })
+    const client = handle({ url: BOARD_URL, token: await personToken(), fetch })
     await expect(client.discovery()).rejects.toMatchObject({
       code: 'protected',
       message: `${BOARD_URL} is behind Vercel Deployment Protection, and your Vercel login can't see its project: run \`vercel login\` or ask for access, or set VERCEL_AUTOMATION_BYPASS_SECRET (Project → Settings → Deployment Protection → Protection Bypass for Automation)`,
@@ -266,7 +271,7 @@ describe('a board behind Vercel Deployment Protection, without VERCEL_AUTOMATION
 
   it("says so when your Vercel login can't create the bypass", async () => {
     const { fetch } = protectedBoard({ canCreate: false })
-    const client = createClient({ url: BOARD_URL, token: await personToken(), fetch })
+    const client = handle({ url: BOARD_URL, token: await personToken(), fetch })
     await expect(client.discovery()).rejects.toMatchObject({
       code: 'protected',
       message: expect.stringContaining("can't read or create its project's automation bypass"),
@@ -276,7 +281,7 @@ describe('a board behind Vercel Deployment Protection, without VERCEL_AUTOMATION
   it("doesn't create a bypass on an unprotected project that answers with a web page", async () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
     const { fetch, api } = protectedBoard({ page: true })
-    const client = createClient({ url: BOARD_URL, token: await personToken(), fetch })
+    const client = handle({ url: BOARD_URL, token: await personToken(), fetch })
     await expect(client.discovery()).rejects.toMatchObject({
       code: 'no_board',
       message: `no board at ${BOARD_URL}: it answered with a web page, and its Vercel project isn't protected`,
@@ -287,7 +292,7 @@ describe('a board behind Vercel Deployment Protection, without VERCEL_AUTOMATION
 
   it("doesn't create a second bypass when it can't read the project's settings", async () => {
     const { fetch, api } = protectedBoard({ bypass: { [SECRET]: { scope: 'automation-bypass' } }, canRead: false })
-    const client = createClient({ url: BOARD_URL, token: await personToken(), fetch })
+    const client = handle({ url: BOARD_URL, token: await personToken(), fetch })
     await expect(client.discovery()).rejects.toMatchObject({
       code: 'protected',
       message: expect.stringContaining("can't read its project's settings"),
@@ -298,7 +303,7 @@ describe('a board behind Vercel Deployment Protection, without VERCEL_AUTOMATION
   it('uses VERCEL_AUTOMATION_BYPASS_SECRET when set, without asking Vercel', async () => {
     vi.stubEnv('VERCEL_AUTOMATION_BYPASS_SECRET', 'wrong')
     const { fetch, api } = protectedBoard({ bypass: { [SECRET]: { scope: 'automation-bypass' } } })
-    const client = createClient({ url: BOARD_URL, token: await personToken(), fetch })
+    const client = handle({ url: BOARD_URL, token: await personToken(), fetch })
     await expect(client.discovery()).rejects.toMatchObject({
       code: 'protected',
       message: expect.stringContaining('rejected VERCEL_AUTOMATION_BYPASS_SECRET'),

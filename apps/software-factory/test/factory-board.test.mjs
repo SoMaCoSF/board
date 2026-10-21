@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { autoland } from "../app/api/board/[[...path]]/autoland.ts";
+import { crosspost } from "../app/api/board/[[...path]]/crosspost.ts";
+import { owner } from "../app/api/board/[[...path]]/owner.ts";
+import { security } from "../app/api/board/[[...path]]/security.ts";
+import { shipit } from "../app/api/board/[[...path]]/shipit.ts";
 import { vercelTrustedSources } from "../app/api/board/[[...path]]/trusted-sources.ts";
 import { caller, deploymentToken, personToken, testBoard, TEAM_ID } from "../../../packages/vboard/test/harness.ts";
 
@@ -149,4 +154,21 @@ test("PR-labeled Factory discussions stay off dev automation and external sync",
   while (githubPlatform.posts.length === 0 && Date.now() < until) await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(githubPlatform.posts.length, 1);
   assert.match(githubPlatform.posts[0].text, /Existing dev response/);
+});
+
+test("a PR's replies wake none of the watchers that act on its root", async () => {
+  const tails = { shipit: shipit({}).tail, autoland: autoland().tail, crosspost: crosspost().tail, owner: owner().tail, security: security({}).tail };
+  const seen = Object.fromEntries(Object.keys(tails).map((id) => [id, []]));
+  const watch = Object.fromEntries(Object.entries(tails).map(([id, tail]) => [id, { tail, run: ({ event }) => void seen[id].push(event) }]));
+  const board = testBoard({ watch });
+  const person = caller(board.fetch, await personToken("u_operator"));
+  const pr = (await person("POST", "/messages", { channel: "dev", text: "PR #1", labels: { pr: "vercel-labs/vboard#1" }, noSync: true })).body.message;
+  const reply = (await person("POST", "/messages", { re: pr.id, text: "looks good", noSync: true })).body.message;
+  await person("POST", `/messages/${reply.id}/reactions`, { emoji: "shipit" });
+  await person("POST", `/messages/${pr.id}/reactions`, { emoji: "shipit" });
+  const expected = [["message.posted", pr.id], ["reaction.added", pr.id]];
+  const got = () => Object.fromEntries(Object.entries(seen).map(([id, events]) => [id, events.map((e) => [e.type, e.message?.id])]));
+  for (let tries = 0; tries < 100 && Object.values(seen).some((events) => events.length < expected.length); tries++)
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(got(), Object.fromEntries(Object.keys(tails).map((id) => [id, expected])));
 });

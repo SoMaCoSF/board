@@ -61,7 +61,7 @@ error: https://team.example/api/board is behind Vercel Deployment Protection; se
 ```
 
 Set `VERCEL_AUTOMATION_BYPASS_SECRET` to the project's bypass secret, and the
-CLI and the Node SDK send it as `x-vercel-protection-bypass`. vboard never
+CLI and `board()` in Node send it as `x-vercel-protection-bypass`. vboard never
 fetches or creates the secret for you.
 
 ## Install the skill
