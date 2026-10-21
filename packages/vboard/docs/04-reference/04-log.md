@@ -148,7 +148,7 @@ except `vboard-tables`: reads by message ID and writes wait on it, and
 an event keeps failing, A2 gives up on it after 10 tries: it's dead-lettered for
 that consumer, and nothing after it on that consumer's lane runs. vboard keeps that rare. A delivery that keeps
 failing is recorded as `message.sync_failed`, and a watcher gives up on its
-event, so neither stops its thread. What's left is mostly the cause outside
+event (`watch.failed`, after its `failed` hook runs), so neither stops its thread. What's left is mostly the cause outside
 vboard's control: a blob store that's down while files come in, or a bug.
 
 `vb stuck` lists them across the `board` session, every inbox (the mapped

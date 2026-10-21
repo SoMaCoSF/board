@@ -139,11 +139,43 @@ HTTP and no token.
   doesn't post twice, as long as it writes in the same order. Writes made in
   parallel (with `Promise.all`) need an explicit `id`.
 - **A watcher's own writes never wake it.** Writes by other watchers do, so two
-  watchers that answer each other loop.
+  watchers that answer each other loop. That includes what its `failed` hook
+  writes.
 - **Scheduled messages post as the person who scheduled them.** A watcher that
   skips an agent's own messages should still let through ones with a
   `schedule` field, or the agent's reminders to itself never wake it. See
   [Scheduled messages](./07-schedules.md).
+
+## When it gives up
+
+A `run` that throws is tried again. After 5 tries the watcher gives up on that
+event, and the thread's next event runs. A `run` that keeps getting cut short
+(a timeout, out of memory) never throws, so it gets 10 tries, and the 10th
+gives up without running it. Either way, nobody in the thread hears about it
+unless the watcher has a `failed` hook:
+
+```ts
+// in board({ watch: { … } }): say so in the thread when the agent never starts
+agent: {
+  tail: 'feedback --label kind=bug',
+  run: async ({ event }) => {
+    // your code: await startAgent(event.message) // throws when it can't
+  },
+  failed: async ({ event, board, error, attempts }) => {
+    const message = event.message
+    if (message) await board.reply(message.re ?? message.id, `The agent couldn't start after ${attempts} tries: ${error}`)
+  },
+},
+```
+
+- **It runs once per event given up on,** for throws and for runs cut short.
+  `error` is the last throw's message, or why the runs never finished.
+  `attempts` is how many tries `run` got.
+- **Its posts get IDs of their own,** derived from the match apart from
+  `run`'s, so they never land on a post `run` made, and a hook that runs again
+  posts nothing twice.
+- **A hook that throws doesn't hold up the thread.** What it threw is recorded
+  with the failure (`watch.failed`'s `hook`), and the thread goes on.
 
 ## How it runs
 
@@ -153,9 +185,9 @@ own session (`watch:<id>`, outside the board log), and `run` happens there, on
 the thread's lane.
 
 - **A watcher sees a thread's events in order,** and threads run in parallel.
-- **Each watcher fails on its own.** One that keeps throwing dead-letters after
-  10 tries, which blocks only that watcher on that thread. Writes, other
-  threads, and other watchers keep flowing.
+- **Each watcher fails on its own.** One that gives up on an event records
+  `watch.failed` in its session and goes on, so it never stops on a thread.
+  Writes, other threads, and other watchers keep flowing.
 - **Production needs the scheduler,** as sync does. See
   [Mounting](./01-mounting.md#the-scheduler-route).
 - **A watcher removed from config** skips the matches it left behind.
@@ -207,7 +239,8 @@ export const { GET, POST } = board({
 - **A thread's matches come one at a time, in order,** and threads run in
   parallel. A pulled match is leased for 5 minutes. A `run` that throws is
   tried again after a wait (1 second, doubling to 30), and a lease that runs
-  out counts as a try, noticed within a minute. After 5 tries it's recorded as
+  out counts as a try, noticed within a minute. After 5 tries it's handed out
+  once more for the `failed` hook, which runs here, then recorded as
   `watch.failed`, and the thread goes on.
 - **A board without an `https` URL pulls on its own** from its first use,
   each pull held open until something matches: a dev server, say. So does one the other board

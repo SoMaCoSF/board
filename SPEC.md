@@ -268,7 +268,7 @@ The board that keeps the log matches the tails; the board on `http()` runs
 | `POST /watchers` | `{ url?, watch }`: registers the caller's watchers, replacing its last registration. Needs `read` somewhere; at most 32 watchers; `url` must be `https`, and without one the caller pulls on its own |
 | `GET /watchers` | Every registration to `manage` in every channel, the caller's own to anyone else |
 | `GET /watchers/matches?limit&wait` | What the caller can run now, each leased to it for 5 minutes. `wait` holds the request up to 25 seconds for one |
-| `POST /watchers/matches/:id/ack` | `{ lease, error?, skip? }`: done, an error to try again, or a skip |
+| `POST /watchers/matches/:id/ack` | `{ lease, error?, skip? }`: done, an error to try again, or a skip. For a match handed out with `failed`, `error` is what the hook threw |
 
 | Route, on the board on `http()` | What |
 | --- | --- |
@@ -294,7 +294,11 @@ The board that keeps the log matches the tails; the board on `http()` runs
   (`watch.acked`). What one pull changes is one append, and one read after it
   tells which leases are its own. An error waits 1 second, doubling to 30, by
   its own A2 timer (`watch.due`). A lease that runs out (`watch.expired`)
-  counts as a try. After 5 tries it's `watch.failed`, and the thread goes on.
+  counts as a try. After 5 tries a watcher's match is handed out once more,
+  with `failed` (the last try's error), and the board on `http()` runs the
+  watcher's `failed` hook instead of `run`. Its ack, or its lease running out,
+  records `watch.failed`, with what the hook threw as `hook`, and the thread
+  goes on. Sync's and an inbox's are `watch.failed` at 5 tries, with no hook.
   A pull drops what the registrant can't read anymore (`watch.skipped`).
 - **Sweeps** stand in for a timer per lease: a registrant has at most one A2
   timer a minute (`watch.armed`, then `watch.due` with `sweep`), set on the
@@ -2524,6 +2528,13 @@ export const { scheduler } = backend
   are authored by the watcher, `vboard:watch:<id>`, with IDs derived from the
   match, so a retried `run` doesn't post twice if it writes in the same order.
   They sync like any other write.
+- **`failed` runs once when the watcher gives up on an event,** with the
+  event, `board`, `error` (the last throw's message, or why the runs never
+  finished), and `attempts` (how many tries `run` got). It's optional. Its
+  `board` derives post IDs from `failed:<match>`, so they never collide with
+  `run`'s, and a hook that runs again posts nothing twice. A hook that
+  throws is logged and recorded as `watch.failed`'s `hook`, and the thread
+  goes on.
 - **`when: 'enters'` runs only when a message comes into view:** an existing
   message changes from not matching to matching (a label is set, a text is
   edited), or a new message matches and its thread wasn't already in view. So
@@ -2548,12 +2559,15 @@ are appended to the watcher's session in the `vboard-watch` contract
 thread's lane. So a watcher sees
 a thread's events in order, threads run in parallel, and each watcher fails on
 its own. A `run` that keeps throwing on one event gets 5 tries; then the watcher
-gives up on that event, records `watch.failed` (the match, the thread, and the
-error) in its session, logs it, and goes on to the thread's next event. A `run`
+gives up on that event: it logs it, runs its `failed` hook, records
+`watch.failed` (the match, the thread, the error, and what the hook threw, if
+it did) in its session, and goes on to the thread's next event. A `run`
 that keeps getting killed (a timeout, out of memory) never throws, so it's
 counted by attempts instead: A2 counts each kill as a failure when the next
 attempt takes over and dead-letters at 10, so on the 10th attempt the watcher
-gives up the same way without running it again. It never dead-letters: in A2 a
+gives up the same way without running it again. The hook runs before the
+record, so one killed after a throw runs again with the next attempt and posts
+once; one killed on the 10th attempt dead-letters the event, as a run would. It never dead-letters: in A2 a
 dead letter stops its consumer's lane until a person redrives it, and a
 watcher's lane is the thread's, so one bad event would silence the watcher on
 that thread until then. Watchers need the scheduler in production, as sync does. A watcher
