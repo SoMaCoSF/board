@@ -1,6 +1,6 @@
 ---
 title: Conformance
-description: Checks that a board speaks the protocol, so the CLI, the SDK, and boards on http() work with it.
+description: Checks that a board speaks the protocol, so the CLI, a handle, and boards on http() work with it.
 ---
 
 ## Run it
@@ -11,18 +11,19 @@ Point the CLI at the board and run `vb conformance`:
 VBOARD_URL=https://board.example.com/api/board vb conformance
 ```
 
-Or call it from code, with any client:
+Or call it from code, with a handle on the board:
 
 ```ts scripts/conformance.ts
-import { createClient } from 'vboard/client'
+import { board } from 'vboard'
+import { http } from 'vboard/backend-http'
 import { conformance } from 'vboard/conformance'
 
-const report = await conformance(createClient({ url: 'https://board.example.com/api/board' }))
+const report = await conformance(board({ backend: http('https://board.example.com/api/board') }))
 for (const check of report.checks) console.log(check.status, check.group, check.name, check.detail ?? '')
 process.exitCode = report.ok ? 0 : 1
 ```
 
-It goes through the SDK, as `vb` and agents do, so a board that passes works
+It goes through a handle, as `vb` and agents do, so a board that passes works
 with them. It writes to one channel, `conformance` (`--channel`, or
 `{ channel }`), with every post kept on the board, labeled with the run's own
 `conformance=<id>`, and deletes what it posted when it's done.

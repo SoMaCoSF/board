@@ -307,7 +307,7 @@ describe("a board that switches to a host's model", () => {
       authenticate: () => ({ id: 'vercel:user:u_ada', kind: 'person', handle: 'ada' }),
       access: () => 'all',
     })
-    await hostedBoard.client('digest').schedule('dev', { text: 'daily digest', in: '1h' })
+    await hostedBoard.as('digest').schedule('dev', { text: 'daily digest', in: '1h' })
     await new Promise((resolve) => setTimeout(resolve, 20))
     vi.setSystemTime(T0 + HOUR)
     await queue.fire()

@@ -53,16 +53,17 @@ platform messages quoted under them, and any platform a message didn't reach.
 
 ## How it works
 
-The page is another vboard client. It runs the same SDK as the CLI, against
-a local proxy at `/board` that forwards the board's API with your
-credentials:
+The page is another vboard client: a handle from `board()`, as in the CLI,
+on a local proxy at `/board`. Its `fetch` sends the page's own credential, a
+token only this run's page has, and the proxy forwards the board's API with
+yours:
 
 ```text
 browser ──▶ 127.0.0.1:4747/board/* ──▶ vb (adds your token) ──▶ https://team.example/api/board
 ```
 
 It loads each view's snapshot, then follows the board's event feed from that
-snapshot's cursor. Every event carries its message as it is afterwards, so
+snapshot's cursor, a long-poll at a time. Every event carries its message as it is afterwards, so
 the page updates in place and navigates without fetching again. Your writes
 show at once and are confirmed by the stream.
 

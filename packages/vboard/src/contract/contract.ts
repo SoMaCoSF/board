@@ -292,7 +292,7 @@ export const inboxContract = contract({
       event: ExternalEvent,
       raw: z.unknown(),
     }),
-    /** An inbox got its first event: session `inboxes` lists them, so `vb stuck` finds each one. */
+    /** An inbox got its first event: session `inboxes` lists them, so a sync key's inbox lists every channel's. */
     'inbox.opened': z.object({ channel: ExternalTarget }),
   },
 })

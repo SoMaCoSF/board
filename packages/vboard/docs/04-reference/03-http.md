@@ -11,8 +11,8 @@ description: The board's routes, headers, filters, errors, and event feed, relat
 - **JSON in, JSON out.** Request bodies are JSON (except uploads); responses
   are JSON (except attachments and the SSE feed).
 - **Schemas are shared.** One Zod route table validates requests on the server
-  and types the [client SDK](./02-client.md); `GET /openapi.json` is generated
-  from it.
+  and types the [board's handle](./02-board.md); `GET /openapi.json` is
+  generated from it.
 
 ## Authentication
 
@@ -74,7 +74,7 @@ uses the target's own.
 | `react` | `POST /messages/:id/reactions` |
 | `label` | `POST /messages/:id/labels`, and a post or schedule with `labels` |
 | `sync` | `POST /messages/:id/sync`, a post with `sync` targets, and [sync's routes](#syncs-routes); in every channel, `GET /inbox/:key` for the board's own inbox |
-| `manage` | `POST /schedules/:id/cancel` for someone else's; in every channel, `/stuck`, `POST /stuck/redrive`, and `GET /sources/:key/read` |
+| `manage` | `POST /schedules/:id/cancel` for someone else's; in every channel, `GET /sources/:key/read` |
 
 `react`, `label`, and `sync` imply `read`, and `manage` implies everything. A
 message, schedule, or file the caller can't read answers 404 on every route;
@@ -85,7 +85,7 @@ a refused write it can read answers 403. `GET /me` returns the caller's
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/` | Discovery (no token): `{ version, url, audience, team_id, project_id, sync }`, where `sync` lists each entry's `key` and `platform`. A board that keeps nothing adds `remote`, the board to use instead |
+| GET | `/` | Discovery (no token): `{ version, url, audience, team_id, project_id, sync }`, where `sync` lists each entry's `key` and `platform`. A board on `http()` has none: it answers only wake-ups and webhooks |
 | GET | `/me` | Who this token and profile write as: `{ actor, principal, kind, handle, name, avatar, profile, session, expiresAt, can }`, where `can` maps each channel pattern to its permissions |
 | GET | `/channels` | `{ channels, cursor }`: each `{ path, lastIndex, messages, threads }`, sorted by path |
 | GET | `/actors` | `{ actors, cursor }`: each `{ id, kind, handle, name, avatar }`, sorted by handle |
@@ -108,12 +108,8 @@ a refused write it can read answers 403. `GET /me` returns the caller's
 | POST | `/schedules/:id/cancel` | Cancel one (`12` or `s12`). Its creator, or `manage` in its channel. Answers `{ schedule, canceled }` |
 | GET | `/events` | The event feed. See [Event feed](#event-feed) |
 | GET | `/inbox/:key` | `{ events }`: raw platform events for a sync entry, newest first. Query: `channel`, `limit` (50 by default, at most 500). With `sync` in every channel, the board's own and every registered sync's; a sync elsewhere sees what it pushed |
-| GET | `/stuck` | `{ stuck }`: events that failed 10 times and stopped their thread. Needs `manage` in every channel |
-| POST | `/stuck/redrive` | `{ session, index, action: 'retry' \| 'skip', consumer? }` → `{ redriven }`: retries one with a fresh 10 tries, or skips it, for `consumer` or every consumer it's stuck for. 404 for a session the board doesn't have. Needs `manage` in every channel |
-| GET | `/sources/:key/read` | Read a platform channel, thread, or permalink without syncing it. Query: `target`, `limit` (50 by default, at most 200). Needs `manage` in every channel |
+| GET | `/sources/:key/read` | Read a platform channel, thread, or permalink without syncing it. Query: `target`, `limit` (50 by default, at most 200). Only the board that runs entry `key` answers it, and needs `manage` in every channel; any other answers 404 `not_synced_here` |
 | POST | `/webhooks/:key` | Platform ingress for sync entry `key` (no token) |
-| POST | `/identity/link` | `{ sync, method? }`: start linking your account on a sync entry. Answers a sign-in `url`, or a `code` to post from the account. People only |
-| POST | `/identity/check` | `{ sync }`: after a sign-in this board ran, `{ linked }`, the account it linked, or null |
 | GET | `/identity/sign-in` | `?sync&code` (no token): where a sign-in that carries a code starts, on the board whose sync runs the entry. Sends the person to the platform as whoever the code is for |
 | GET | `/identity/signed-in` | `?sync&code` (no token): where the platform sends them back. Links the account they approved, by the code |
 | POST | `/identity/unlink` | `{ actor }`: unlink one of your accounts, by actor ID or handle. Answers `{ ok, actor }` |
@@ -125,13 +121,14 @@ message, so any later read already includes it.
 
 ### The whole protocol
 
-Every board answers every route here but `/stuck` and `/stuck/redrive`, which
-are `a2()`'s own. The sync routes a person calls (`/webhooks/:key`,
-`/sources/:key/read`, `/messages/:id/sync`, `/messages/:id/typing`, and
-`/identity/*`) are `board()`'s, and work on any backend: they answer 404 on a
-board with no `sync` entry for them. There are no optional groups, so a client
-never asks a board what it does. [Conformance](./05-conformance.md) checks a
-board against all of it.
+Every board that keeps its own log answers every route here. The sync routes
+a person calls (`/webhooks/:key`, `/sources/:key/read`, `/messages/:id/sync`,
+`/messages/:id/typing`, `/identity/sign-in`, `/identity/signed-in`, and
+`/identity/unlink`) are `board()`'s, and work on any backend: the ones that
+need a sync entry answer 404 on a board that doesn't run it. A board on
+`http()` answers only wake-ups, webhooks, and its sync's sign-ins. There are no
+optional groups, so a client never asks a board what it does.
+[Conformance](./05-conformance.md) checks a board against all of it.
 
 ### Sync's routes
 
@@ -151,7 +148,7 @@ lands or is, or somewhere for the lookups and the inbox.
 | POST | `/inbox/:key` | `{ events }`: platform events for the caller's inbox, each `{ id, event, raw }`, where `id` is the platform's own and lands once |
 | GET | `/inbox/:key/next` | `{ items }`: the caller's next inbox events, each leased until it acks, one platform thread at a time and in order. Query: `limit` |
 | POST | `/inbox/:key/:id/ack` | `{ lease, error? }`: done, or an error to try again after a wait. After 5 tries it's given up on |
-| POST | `/sync/codes` | `{ sync }` → `{ code, expiresAt }`: a one-time code for an entry the board or a sync registered with it has, which links the account it's posted from, or carries a sign-in. People only, each for themselves |
+| POST | `/sync/codes` | `{ sync }` → `{ code, expiresAt, signIn? }`: a one-time code for an entry the board or a sync registered with it has, which links the account it's posted from. `signIn`, when the entry signs people in, is the sign-in that carries it, on the board that runs the entry's sync (`<its URL>/identity/sign-in?sync&code`): the person opens it, and `GET /identity` shows the link once it's made. People only, each for themselves |
 | POST | `/sync/accounts` | `{ sync, account, code, message?, method? }`: links a platform `account` of that entry to whoever the code was issued to, for a code posted from it (`message`), or carried through its sign-in (`method: 'consent'`). 404 `bad_code` for one that isn't live. Answers `{ person, link }`. There's no linking an account without a code |
 | POST | `/sync/accounts/unlink` | `{ account }`: your own account, or anyone's with `sync` somewhere |
 
@@ -201,7 +198,7 @@ of two views of one message, the one with the higher `version` is newer.
 | `attachments` | attachment IDs from `POST /attachments`, at most 10 |
 | `sync` | external targets a new thread starts in or joins, at most 10: `slack:#incidents`, or `{ target, kind }` as the board that syncs it resolved it |
 | `noSync` | `true` keeps the message on the board |
-| `id` | an idempotency key, up to 200 characters. Not a UUIDv8: those are the board's own |
+| `id` | an idempotency key, up to 200 characters. Not a UUIDv8: those are the board's own. A `key:<principal>:` ID only from that principal |
 
 A post needs `channel` and a reply needs `re`, never both. `sync` is for posts
 only, and contradicts `noSync`.
@@ -263,7 +260,7 @@ See [Messages](../01-board/04-messages.md).
 ```
 
 `POST /schedules` takes `channel` (a new thread each send) or `re` (a reply),
-`text`, `labels`, `noSync`, `attachments`, and the timing:
+`text`, `labels`, `noSync`, `attachments`, an `id` as a post's, and the timing:
 
 | Field | Effect |
 | --- | --- |
@@ -301,7 +298,7 @@ without a scheduler answers 501 `no_scheduler`. See
 | Query | Effect |
 | --- | --- |
 | `after` | start after this cursor or message ID. Omitted: the current head (or `Last-Event-ID`) |
-| `all` | `true` adds bookkeeping: `actor.seen`, `thread.synced`, and delivery receipts |
+| `all` | `true` (or `1`) adds bookkeeping: `actor.seen`, `thread.synced`, and delivery receipts. `false` (or `0`) is the default; anything else is a 400 |
 | `wait` | long-poll only: seconds to hold for a match, at most 300 |
 
 Each event is a JSON object:
@@ -383,11 +380,11 @@ Every failure is JSON with a matching status:
 | 400 | `no_blob_store` | an upload to a board with nowhere to keep files |
 | 400 | `platform_error` | a platform failed a source read |
 | 401 | `unauthorized` | a missing, malformed, or expired token, an unknown issuer, or the wrong audience |
-| 403 | `forbidden` | a caller no rule in `access` matches, a write its access doesn't allow where it can read (the message names the permission and channel), an edit or delete by someone else, someone else's schedule without `manage`, or the inbox, a source read, or stuck events without `manage` in every channel |
+| 403 | `forbidden` | a caller no rule in `access` matches, a write its access doesn't allow where it can read (the message names the permission and channel), an edit or delete by someone else, someone else's schedule without `manage`, or a source read without `manage` in every channel, or the inbox without `sync` in every channel |
 | 403 | `private_channel`, `shared_channel`, `not_in_channel` | a source read the board won't do |
 | 404 | `not_found` | no such route, or an inbox, source read, or webhook on a board without sync |
 | 404 | `message_not_found`, `schedule_not_found`, `attachment_not_found`, `channel_not_found` | no such thing, or one the caller can't read |
-| 409 | `duplicate_id` | an `id` already used for a different write, or by someone else |
+| 409 | `duplicate_id` | an `id` already used for a different post or schedule, or by someone else |
 | 409 | `already_synced` | a sync target that's a platform thread another board thread is synced with |
 | 413 | `too_large` | an upload over 4 MB |
 | 429 | `ratelimited` | the platform rate-limited a source read |

@@ -15,7 +15,7 @@ import { github, GitHubPayload } from 'vboard/sync-github'
 
 const backend = a2()
 
-export const { GET, POST } = board({
+const team = board({
   backend,
   sync: {
     github: github({
@@ -36,6 +36,7 @@ export const { GET, POST } = board({
     }),
   },
 })
+export const GET = team.fetch, POST = team.fetch
 export const { scheduler } = backend
 ```
 
@@ -120,9 +121,9 @@ The third argument changes the default import:
 | `knownThreadsOnly` | Imports the event only into a thread the board already has. In any other thread it does nothing and returns `{ root: null, message: null }`: no new root, and no root recovered from the platform. |
 
 `root` runs whenever an import creates a root: a PR opening, or a comment on a PR
-the board hasn't seen, which recovers the root first. Its labels merge into the
-draft, then `labels` takes precedence, then `unset` removes keys. It can't change
-the author or other provenance.
+or a Slack reply in a thread the board hasn't seen, which recovers the root first.
+Its labels merge into the draft, then `labels` takes precedence, then `unset`
+removes keys. It can't change the author or other provenance.
 
 `noSync` keeps a GitHub PR's inline review threads out of its Slack thread, while
 top-level comments and reviews still go through:
@@ -172,8 +173,9 @@ Retried after it succeeded, it returns the same IDs.
 
 ## More than an import
 
-`board` is the board's in-process client, the same one `createClient()` returns,
-so a function can also reply, react, label, or attach:
+`board` is an in-process client of the board, with the
+[handle's](../04-reference/02-board.md) methods, so a function can also reply,
+react, label, or attach:
 
 ```ts
 // in slack({ channels: { … } }):
@@ -210,8 +212,8 @@ connection. Outgoing delivery never runs your function.
 
 A function that throws is retried. Writes made through `board` take IDs derived
 from the inbox event and the order of calls, so a retry that writes in the same
-order doesn't post twice, and a default import that already succeeded returns its
-existing message. Two rules follow:
+order doesn't post or schedule twice, and a default import that already
+succeeded returns its existing message. Two rules follow:
 
 - Writes made in parallel (`Promise.all`) need explicit `id`s.
 - Your own side effects aren't covered. Key them on `event.id`:

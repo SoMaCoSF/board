@@ -192,6 +192,6 @@ const factory = board({
   },
 });
 
-export const { GET, POST } = factory;
+export const GET = factory.fetch, POST = factory.fetch;
 // The board's queue also delivers the refreshes of Pi's tokens.
 export const scheduler = queues.handler(...backend.servers, piTokens.server);

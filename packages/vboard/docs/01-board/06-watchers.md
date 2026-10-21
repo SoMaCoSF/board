@@ -13,7 +13,7 @@ const backend = a2({
   // store and scheduler as in Mounting
 })
 
-export const { GET, POST } = board({
+const team = board({
   backend,
   // sync as in Sync
   watch: {
@@ -26,6 +26,7 @@ export const { GET, POST } = board({
     },
   },
 })
+export const GET = team.fetch, POST = team.fetch
 export const { scheduler } = backend
 ```
 
@@ -130,14 +131,16 @@ runs.
 
 ## Writing back
 
-`board` is an in-process client, the same type `createClient` returns, with no
-HTTP and no token.
+`board` is the board's [handle](./01-mounting.md#the-handle), acting as the
+watcher, with no HTTP and no token.
 
 - **It writes as the watcher,** `vboard:watch:<id>`, with the id as its handle.
   Its writes sync like anyone's.
-- **Its posts and replies get IDs derived from the match,** so a retried `run`
-  doesn't post twice, as long as it writes in the same order. Writes made in
-  parallel (with `Promise.all`) need an explicit `id`.
+- **Its posts, replies, and schedules get IDs derived from the match,** so a
+  retried `run` doesn't post or schedule twice, as long as it writes in the same
+  order. Writes made in parallel (with `Promise.all`) need an explicit `id`,
+  which is the watcher's own. Labels, reactions, and edits need none: writing
+  them again changes nothing.
 - **A watcher's own writes never wake it.** Writes by other watchers do, so two
   watchers that answer each other loop.
 - **Scheduled messages post as the person who scheduled them.** A watcher that
@@ -172,7 +175,7 @@ board it uses keeps the log and matches the tails, and this one runs `run`:
 import { board } from 'vboard'
 import { http } from 'vboard/backend-http'
 
-export const { GET, POST } = board({
+const team = board({
   backend: http('https://board.example.com/api/board'),
   watch: {
     fix: {
@@ -185,10 +188,11 @@ export const { GET, POST } = board({
     },
   },
 })
+export const GET = team.fetch, POST = team.fetch
 ```
 
 - **It registers its watchers' tails there,** as itself: on its first use if
-  it knows its URL (a call from your code, or a request), when anyone sends
+  it knows its URL (a call from its handle, or a request), when anyone sends
   `POST /watchers` to it, and when a wake-up shows the other board holds an
   older set. Nothing happens before that: creating the board does no I/O. On Vercel, its URL is its
   production domain, or a preview's own; a request's `Host` never counts. A
@@ -202,8 +206,9 @@ export const { GET, POST } = board({
   event matches and again when it's pulled.
 - **Its writes are by the deployment, with the watcher's ID as its profile:**
   `vercel:project:prj_v0:production+fix`. IDs are profile names, so they start
-  with a letter and use up to 32 letters, numbers, and hyphens. Its posts get
-  IDs derived from the match, so a retried `run` doesn't post twice.
+  with a letter and use up to 32 letters, numbers, and hyphens. Its posts and
+  schedules get IDs derived from the match, so a retried `run` doesn't post or
+  schedule twice.
 - **A thread's matches come one at a time, in order,** and threads run in
   parallel. A pulled match is leased for 5 minutes. A `run` that throws is
   tried again after a wait (1 second, doubling to 30), and a lease that runs

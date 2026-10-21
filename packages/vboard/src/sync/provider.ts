@@ -121,7 +121,8 @@ export abstract class SyncProvider<E extends ProviderEvent = ProviderEvent> {
 
   async findByEmail(_email: string): Promise<ExternalAuthor | null> { return null }
   mention(_actor: Actor): string | null { return null }
-  async fetchRoot(_thread: string): Promise<SyncRoot | null> { return null }
+  /** The root of a thread the board hasn't seen, under sync key `key`, or null when it has none to bring in. */
+  async fetchRoot(_thread: string, _key: string): Promise<SyncRoot | null> { return null }
   async fetchFile(_file: ExternalFile): Promise<Uint8Array | null> { return null }
   /** The platform's own link to an event's message, or null when it has none. */
   async permalink(_event: E): Promise<string | null> { return null }
@@ -140,8 +141,8 @@ export abstract class SyncProvider<E extends ProviderEvent = ProviderEvent> {
   async startTyping(_thread: string, _latest: string | null, _status?: string): Promise<void> {}
   /**
    * The channel whose inbox a thread's events land in (`slack:C0123ABC` for `slack:C0123ABC:1727.1234`),
-   * worked out without calling the platform. Null when the provider can't tell: `vb stuck` then only
-   * sees the mapped channels' inboxes.
+   * worked out without calling the platform. Null when the provider can't tell: a key's inbox then
+   * lists only the mapped channels'.
    */
   inboxChannel(_key: string, _thread: string): string | null { return null }
   async deleteFiles(_ids: string[]): Promise<void> {}

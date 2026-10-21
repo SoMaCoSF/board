@@ -4,6 +4,7 @@ import { parseTail, parseWatchTail, words } from '../src/api/tail.ts'
 import type { Watcher } from '../src/server/index.ts'
 import { runMatch } from '../src/server/watch.ts'
 import { caller, personToken, testBoard } from './harness.ts'
+import { fakeQueue } from './queue.ts'
 
 /** A watcher that records every event it runs on. */
 function recorder(tail: string) {
@@ -229,6 +230,33 @@ describe('watchers', () => {
     error.mockRestore()
   })
 
+  it('schedule once when a run that scheduled throws and is retried', async () => {
+    const queue = fakeQueue()
+    let runs = 0
+    const board = testBoard({
+      scheduler: queue.scheduler,
+      watch: {
+        reminder: {
+          tail: 'firehose',
+          run: async ({ event, board }) => {
+            await board.schedule({ re: event.message!.id }, { text: 'still broken?', in: '1d' })
+            if (runs++ === 0) throw new Error('sandbox setup failed')
+          },
+        },
+      },
+    })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    await julian('POST', '/messages', { channel: 'firehose', text: 'export is broken' })
+
+    const watches = board.servers.find((server) => server.contract.name === 'vboard-watch')!
+    await vi.waitFor(async () => {
+      await board.skipHold(watches, 'watch:reminder')
+      await watches.drain('watch:reminder')
+      expect(runs).toBe(2)
+    })
+    expect((await julian('GET', '/schedules')).body.schedules).toMatchObject([{ text: 'still broken?' }])
+  })
+
   it('give up without running once runs keep getting killed, which never throw, until a retry', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     const run = vi.fn()
@@ -267,38 +295,49 @@ describe('watchers', () => {
   })
 })
 
-describe('the in-process client', () => {
-  it('writes as `vboard:client:<name>`, and wakes watchers', async () => {
+describe("the board's handle in its own deployment", () => {
+  it('writes as `vboard:client`, or `vboard:client:<profile>` with `as`, and wakes watchers', async () => {
     const report = recorder('firehose --label state=done')
     const app = testBoard({ watch: { report: report.watcher } })
     const julian = caller(app.fetch, await personToken(), { 'x-board-handle': 'julian' })
     const root = (await julian('POST', '/messages', { channel: 'firehose', text: 'export is broken' })).body.message
 
-    const hook = app.client('v0-hook')
+    const hook = app.as('v0-hook')
     await hook.label(root.id, { set: { state: 'done' } })
     const reply = await hook.reply(root.id, 'fixed in #31')
 
     expect(reply.by).toMatchObject({ actor: 'vboard:client:v0-hook' })
-    await vi.waitFor(() => expect(report.types()).toEqual(['labels.changed', 'message.posted']))
+    expect((await app.reply(root.id, 'and deployed')).by).toMatchObject({ actor: 'vboard:client' })
+    expect((await app.me()).actor).toBe('vboard:client')
+    await vi.waitFor(() => expect(report.types()).toEqual(['labels.changed', 'message.posted', 'message.posted']))
   })
 
-  it('posts once per key and order, so a redelivered webhook does not post twice', async () => {
+  it("posts once per id, so a redelivered webhook does not post twice, and keeps each profile's ids its own", async () => {
     const app = testBoard()
     const julian = caller(app.fetch, await personToken(), { 'x-board-handle': 'julian' })
     const root = (await julian('POST', '/messages', { channel: 'firehose', text: 'export is broken' })).body.message
 
-    const first = await app.client('v0-hook', { key: 'delivery-1' }).reply(root.id, 'fixed in #31')
-    const again = await app.client('v0-hook', { key: 'delivery-1' }).reply(root.id, 'fixed in #31')
-    const other = await app.client('v0-hook', { key: 'delivery-2' }).reply(root.id, 'fixed in #31')
-    const unkeyed = [await app.client('v0-hook').reply(root.id, 'a'), await app.client('v0-hook').reply(root.id, 'a')]
+    const hook = app.as('v0-hook')
+    const first = await hook.reply(root.id, { text: 'fixed in #31', id: 'delivery-1' })
+    const again = await app.as('v0-hook').reply(root.id, { text: 'fixed in #31', id: 'delivery-1' })
+    const other = await hook.reply(root.id, { text: 'fixed in #31', id: 'delivery-2' })
+    const unkeyed = [await hook.reply(root.id, 'a'), await hook.reply(root.id, 'a')]
 
     expect(again.id).toBe(first.id)
     expect(other.id).not.toBe(first.id)
     expect(unkeyed[0]!.id).not.toBe(unkeyed[1]!.id)
+    expect((await hook.posted('delivery-1')).id).toBe(first.id)
+    // Another profile's, or the handle's own, with the same id is a post of its own.
+    expect((await app.as('deploys').reply(root.id, { text: 'fixed in #31', id: 'delivery-1' })).id).not.toBe(first.id)
+    expect((await app.reply(root.id, { text: 'fixed in #31', id: 'delivery-1' })).id).not.toBe(first.id)
+    // And no request can post with it first: what it derives is the board's own kind of ID.
+    const taken = await julian('POST', '/messages', { re: root.id, text: 'mine now', id: 'delivery-3' })
+    expect(taken.status).toBe(201)
+    expect((await hook.reply(root.id, { text: 'fixed in #32', id: 'delivery-3' })).text).toBe('fixed in #32')
   })
 
-  it('rejects a name a watcher id would reject', async () => {
-    await expect(testBoard().client('V0 Hook').me()).rejects.toThrow('client: names use lowercase letters')
+  it('rejects a profile a watcher id would reject', async () => {
+    await expect(testBoard().as('V0 Hook').me()).rejects.toThrow('as: profiles use lowercase letters')
   })
 })
 
