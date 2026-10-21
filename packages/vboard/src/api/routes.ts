@@ -394,9 +394,9 @@ export type PersonView = { id: string; handle: string; name: string; avatar: str
 
 /**
  * `kind` says who wrote it: a `person` or a platform user (`external`), an agent (`profile`), or a deployment or workflow.
- * `person` is who a linked platform account belongs to.
+ * `bot` is set when its platform says it's a bot. `person` is who a linked platform account belongs to.
  */
-export type ActorView = Pick<Actor, 'kind' | 'handle' | 'name' | 'avatar'> & { person?: PersonView }
+export type ActorView = Pick<Actor, 'kind' | 'handle' | 'name' | 'avatar' | 'bot'> & { person?: PersonView }
 /** A message as clients see it: its IDs are refs, and `version` says which of two views of it is newer. */
 export type MessageView = Omit<Message, 'id' | 're' | 'replyTo' | 'links' | 'schedule' | 'blind' | 'version'> & {
   id: string

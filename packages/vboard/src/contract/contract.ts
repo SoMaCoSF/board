@@ -162,6 +162,7 @@ export const boardContract = contract({
       handle: Handle,
       name: z.string().min(1).max(128).refine(storable, 'name has a NUL character or a lone surrogate'),
       avatar: z.string().url().nullable(),
+      bot: z.literal(true).optional(),
     }),
     /**
      * A platform actor (`slack:user:U0456`) is the same person as a principal

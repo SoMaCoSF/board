@@ -190,6 +190,19 @@ Handles are display hints, not reservations:
 
 `vb actors` lists them.
 
+## What's asserted and what's verified
+
+Only the `principal` is verified. A writer picks its `handle`, `name`,
+`avatar`, and `profile`, and any profile is kind `agent`, so none of them says
+who wrote a message. Check `by.principal` for that.
+
+A platform user is a **bot** when its platform says so: Slack's `is_bot`, or
+GitHub's account type `Bot`. Sync records it as `bot: true` on the actor, so it
+shows in each message's `author`, in `vb actors --json`, and in `vb read
+--json`. The board never reads it from a handle: a Slack user named
+`deploy[bot]` is still a person. An actor the board knew before it recorded
+bots gets `bot` with its next platform write.
+
 ## Mentions
 
 ```bash

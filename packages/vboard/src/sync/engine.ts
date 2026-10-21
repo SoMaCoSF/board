@@ -7,6 +7,7 @@ import { fileSize, typeOf } from '../contract/files.ts'
 import { ATTACHMENT_BYTES_MAX, ATTACHMENTS_PER_MESSAGE_MAX, MESSAGE_TEXT_MAX, toStorable, type Attachment } from '../contract/schemas.ts'
 import type { BoardEventView, InboxItem, LinkedAccount, LinkView, MessageView, SyncThreadView } from '../api/routes.ts'
 import type { Method, Protocol } from '../api/protocol.ts'
+import { externalActor } from '../server/actors.ts'
 import { afterRetry } from '../server/attempts.ts'
 import type { Backend, Caller, InboxDelivery } from '../server/backend.ts'
 import { badRequest, HttpError, notFound } from '../server/errors.ts'
@@ -117,8 +118,6 @@ const storableJson = <T>(value: T): T => {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [toStorable(key), storableJson(item)])) as T
   return value
 }
-
-const actorOf = (author: ExternalAuthor): Actor => ({ id: author.id, kind: 'external', handle: author.handle, name: author.name, avatar: author.avatar })
 
 /** A platform error's code (`not_in_channel`) when it has one, else its message. */
 const describe = (error: unknown): string => {
@@ -242,7 +241,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
   async function findByEmail(email: string): Promise<Actor | null> {
     for (const platform of Object.values(entries)) {
       const author = await platform.findByEmail(email).catch(() => null)
-      if (author) return { id: author.id, kind: 'external', handle: author.handle, name: author.name, avatar: author.avatar }
+      if (author) return externalActor(author)
     }
     return null
   }
@@ -605,7 +604,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
     const writeId = (n: number) => idempotentId('vboard-inbound', meta.id, String(n))
     // The middleware sees each post and edit first, and `respond` answers in the platform thread.
     const screen = <W extends Write, T>(author: ExternalAuthor, write: W, commit: (write: W) => Promise<T>) =>
-      host().screen(write, { author: actorOf(author), source: source.via as WriteSource, respond: source.respond }, commit)
+      host().screen(write, { author: externalActor(author), source: source.via as WriteSource, respond: source.respond }, commit)
     type Post = {
       author: ExternalAuthor
       channel?: string

@@ -23,7 +23,7 @@ import { RemoteWatcherId, type Author } from '../contract/schemas.ts'
 import { RedriveBody, type InboxEntry, type LinkedAccount, type Me, type StuckEvent } from '../api/routes.ts'
 import { FULL_ACCESS, type Access, type Permission } from './access.ts'
 import { authenticates, createAuthority, issuersOf, type AccessFunction, type AccessRule, type Granted } from './auth.ts'
-import { actorSeen } from './actors.ts'
+import { actorSeen, externalActor } from './actors.ts'
 import { SYNC, type Backend, type BackendRoute, type BoardBinding, type Caller, type ProtocolMethods } from './backend.ts'
 import { attachmentBody, attachmentNotFound, defaultBlob, readUpload, writeUpload, type BlobStore } from './blob.ts'
 import { badRequest, forbidden, HttpError, json, notFound, toErrorResponse } from './errors.ts'
@@ -178,7 +178,7 @@ function externalIdentity(author: ExternalAuthor): Identity {
   return {
     principal,
     author: { actor: author.id, principal: author.id, profile: null, session: null },
-    actor: { id: author.id, kind: 'external', handle: author.handle, name: author.name, avatar: author.avatar },
+    actor: externalActor(author),
   }
 }
 
@@ -1080,7 +1080,7 @@ function build(options: A2Options, binding: BoardBinding) {
   /** Records that `account` is `to`, unless it already is. `id` makes a retry a no-op. */
   async function link(account: ExternalAuthor, to: string, method: 'code' | 'consent', by: Author, id?: string): Promise<LinkedAccount> {
     const { state: actors } = await session.state(actorsReducer)
-    const seen = actorSeen({ id: account.id, kind: 'external', handle: account.handle, name: account.name, avatar: account.avatar }, actors)
+    const seen = actorSeen(externalActor(account), actors)
     const existing = actors.links[account.id]
     // A code is news even for an account already linked (`id` keeps its retries single); a sign-in check isn't.
     if (existing?.to === to && !id) {

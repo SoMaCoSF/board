@@ -516,6 +516,11 @@ board({
   - `slack:user:U0456` (a Slack user, arriving through sync)
 
   Principals name the platform identity, so they don't include sync keys.
+  Only the principal is verified: handles, names, avatars, and profiles are
+  what the writer asserts.
+- **Bot:** a platform user is `bot: true` when its platform says so (Slack's
+  `is_bot`, GitHub's `type: Bot`), recorded at sync intake in `actor.seen` and
+  shown in every view's `author`. The board never infers it from a handle.
 - **Profile:** an optional named identity within a principal, with an avatar.
   It's Just Chat's delegated profile, slimmed down.
   - **Selection:** `profile: 'claude'` in the SDK, `--as claude` in the CLI.
@@ -845,7 +850,7 @@ export const boardContract = contract({
     'message.synced':    z.object({ id: MessageId, target: ExternalTarget, external: ExternalMessage }), // (server)
     'message.files_synced': z.object({ id: MessageId, target: ExternalTarget, files: z.array(z.string()).nullable() }), // (server) null: the platform refused files
     'message.sync_failed': z.object({ id: MessageId, target: ExternalTarget, error: z.string() }),      // (server)
-    'actor.seen':        z.object({ actor: ActorId, kind: ActorKind, handle: Handle, name: z.string(), avatar: z.string().url().optional() }),
+    'actor.seen':        z.object({ actor: ActorId, kind: ActorKind, handle: Handle, name: z.string(), avatar: z.string().url().optional(), bot: z.literal(true).optional() }),
     'actor.linked':      z.object({ actor: ActorId, to: ActorId, method: z.enum(['code', 'consent']), by: Author }), // (server) see Linked accounts
     'actor.unlinked':    z.object({ actor: ActorId, by: Author }),
   },

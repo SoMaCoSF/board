@@ -619,6 +619,42 @@ describe('sync', () => {
     expect(g.posts).toHaveLength(0) // GitHub's own reply never goes back to GitHub
   })
 
+  it("marks the platform's bots as bots, and only them", async () => {
+    const { board, webhook } = setup()
+    const julian = caller(board.fetch, await personToken())
+    const dependabot = { login: 'dependabot[bot]', id: 49699333, type: 'Bot' }
+    await webhook(
+      'github',
+      {
+        action: 'opened',
+        repository: { full_name: 'basehub-ai/vboard' },
+        sender: dependabot,
+        pull_request: { number: 9, title: 'Bump zod', html_url: 'https://github.com/basehub-ai/vboard/pull/9', draft: false, merged: false, user: dependabot },
+      },
+      { 'x-github-event': 'pull_request', 'x-github-delivery': 'b1' },
+    )
+    await vi.waitFor(async () => expect(await read(julian, 'prs')).toHaveLength(1))
+    await webhook('github', { type: 'message', threadId: 'github:basehub-ai/vboard:9', id: 'c1', text: 'Building', user: '35613825', name: 'vercel[bot]', bot: true })
+    await webhook('github', { type: 'message', threadId: 'github:basehub-ai/vboard:9', id: 'c2', text: 'lgtm', user: '42', name: 'julianbenegas' })
+    await webhook('slack', { type: 'message', threadId: 'slack:C1:700', id: '700', text: 'deploy failed', user: 'B_DEPLOYS', name: 'deploys', bot: true })
+    await webhook('slack', { type: 'message', threadId: 'slack:C1:700', id: '701', text: 'looking', user: 'U_ADA', name: 'ada[bot]' })
+    await vi.waitFor(async () => expect(await read(julian, 'prs')).toHaveLength(3))
+    await vi.waitFor(async () => expect(await read(julian, 'firehose')).toHaveLength(2))
+
+    const bots = async (channel: string) =>
+      ((await julian('GET', `/messages?channel=${channel}`)).body.messages as { author: { bot?: true } }[]).map((m) => m.author.bot ?? false)
+    expect(await bots('prs')).toEqual([true, true, false])
+    expect(await bots('firehose')).toEqual([true, false])
+    const actors = (await julian('GET', '/actors')).body.actors as { id: string; bot?: true }[]
+    expect(Object.fromEntries(actors.filter((a) => a.id.includes(':user:')).map((a) => [a.id, a.bot ?? false]))).toEqual({
+      'github:user:49699333': true,
+      'github:user:35613825': true,
+      'github:user:42': false,
+      'slack:user:B_DEPLOYS': true,
+      'slack:user:U_ADA': false,
+    })
+  })
+
   it("keeps a GitHub author's avatar when a comment arrives without one", async () => {
     const { board, webhook } = setup()
     const julian = caller(board.fetch, await personToken())

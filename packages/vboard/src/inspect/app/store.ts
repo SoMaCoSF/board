@@ -152,8 +152,8 @@ export function applyEvent(state: State, event: BoardEventView): State {
       }
   }
   if (event.type === 'actor.seen') {
-    const { actor, kind, handle, name, avatar } = event.payload
-    next = { ...next, actors: { ...next.actors, [actor]: { kind: actorKind(kind), handle, name, avatar } } }
+    const { actor, kind, handle, name, avatar, bot } = event.payload
+    next = { ...next, actors: { ...next.actors, [actor]: { kind: actorKind(kind), handle, name, avatar, ...(bot ? { bot } : {}) } } }
   }
   // The stream comes in order, so the last event's cursor is where to resume.
   return { ...next, cursor: event.cursor }

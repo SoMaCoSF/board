@@ -72,7 +72,7 @@ thread's events in order on its lane.
 | `message.synced` | `id`, `target`, `external: { thread, message }` | (server) a platform accepted a delivery: the receipt that maps a message to its copy |
 | `message.files_synced` | `id`, `target`, `files` | (server) a message's files reached a platform after its text: the platform's IDs, or null when it refused files |
 | `message.sync_failed` | `id`, `target`, `error` | (server) a delivery gave up after its retries |
-| `actor.seen` | `actor`, `kind`, `handle`, `name`, `avatar` | an actor writes for the first time or changes its display details, in the same batch as its write |
+| `actor.seen` | `actor`, `kind`, `handle`, `name`, `avatar`, `bot` (only `true`, when its platform says it's a bot) | an actor writes for the first time or changes its display details, in the same batch as its write |
 
 - **`by`** is `{ actor, principal, profile, session }`: the actor ID
   (`vercel:user:u_abc123+claude`), the verified principal, the profile, and
@@ -172,7 +172,7 @@ as the tables keep it, for anyone reading the log themselves.
 | Reducer | A2 name | State | Used by |
 | --- | --- | --- | --- |
 | `channelsReducer` | `vboard.channels.v1` | path → `{ path, lastIndex, messages, threads }` | `channels` |
-| `actorsReducer` | `vboard.actors.v2` | `byId`: actor ID → `{ id, kind, handle, name, avatar }`; `byHandle`: lowercased handle → actor IDs; `links`: platform actor → the person it's linked to | mention resolution, `actors`, rendering |
+| `actorsReducer` | `vboard.actors.v2` | `byId`: actor ID → `{ id, kind, handle, name, avatar, bot? }`; `byHandle`: lowercased handle → actor IDs; `links`: platform actor → the person it's linked to | mention resolution, `actors`, rendering |
 | `messagesReducer` | `vboard.messages.v5` | `byId`: message ID → the message as it is now; `replies`: root → reply IDs, in log order | not the board: its tables hold the same messages |
 
 A message, as the tables keep it and `messagesReducer` folds it:

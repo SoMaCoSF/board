@@ -88,7 +88,7 @@ a refused write it can read answers 403. `GET /me` returns the caller's
 | GET | `/` | Discovery (no token): `{ version, url, audience, team_id, project_id, sync }`, where `sync` lists each entry's `key` and `platform`. A board that keeps nothing adds `remote`, the board to use instead |
 | GET | `/me` | Who this token and profile write as: `{ actor, principal, kind, handle, name, avatar, profile, session, expiresAt, can }`, where `can` maps each channel pattern to its permissions |
 | GET | `/channels` | `{ channels, cursor }`: each `{ path, lastIndex, messages, threads }`, sorted by path |
-| GET | `/actors` | `{ actors, cursor }`: each `{ id, kind, handle, name, avatar }`, sorted by handle |
+| GET | `/actors` | `{ actors, cursor }`: each `{ id, kind, handle, name, avatar }`, and `bot: true` for a platform's bot, sorted by handle |
 | GET | `/identity` | Your linked accounts and the sync entries you haven't linked: `{ principal, links, unlinked, cursor }`. See [vb identity](./01-cli.md#identity) |
 | GET | `/messages` | `{ messages, cursor }`, filtered. See [Listing messages](#listing-messages) |
 | GET | `/threads` | `{ threads, cursor }`: a summary per matching thread. See [Listing threads](#listing-threads) |

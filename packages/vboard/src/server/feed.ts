@@ -36,7 +36,7 @@ export function actorView(actors: ActorsState, id: string): ActorView | null {
   const author = actors.byId[id]
   if (!author) return null
   const person = personView(actors, id)
-  return { kind: author.kind, handle: author.handle, name: author.name, avatar: author.avatar, ...(person ? { person } : {}) }
+  return { kind: author.kind, handle: author.handle, name: author.name, avatar: author.avatar, ...(author.bot ? { bot: author.bot } : {}), ...(person ? { person } : {}) }
 }
 
 /**

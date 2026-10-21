@@ -47,7 +47,7 @@ import type { SyncProvider } from '../sync/provider.ts'
 import { SYNC, type Backend, type BoardBinding, type Caller, type Subscription, type SyncEntry } from './backend.ts'
 import { createVerifier, hostPrincipal, type Authenticate, type AuthOptions, type Principal } from './auth.ts'
 import { compileAccess, parseScope, type Access } from './access.ts'
-import { KNOWN_AGENTS, resolveActor } from './actors.ts'
+import { externalActor, KNOWN_AGENTS, resolveActor } from './actors.ts'
 import { avatarSvg } from './avatars.ts'
 import { badRequest, forbidden, HttpError, json, notFound, toErrorResponse, unauthorized } from './errors.ts'
 import { discoveryIdentity, ownProjectId, ownTeamId } from './identity.ts'
@@ -235,9 +235,6 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
  */
 type PlatformCaller = { platform: { author: ExternalAuthor; key: string }; origin: WriteOrigin }
 
-/** A platform user as the middleware is told who's writing. */
-const actorOf = (author: ExternalAuthor): Actor => ({ id: author.id, kind: 'external', handle: author.handle, name: author.name, avatar: author.avatar })
-
 /** A write's caller, as the middleware is told: where it came from. Its own client and sync's lookups skip it. */
 const sourceOf = (caller: Caller): WriteSource | null => {
   const via = caller.origin.via
@@ -384,7 +381,7 @@ export function board(options: BoardOptions): Board {
     const find = engine
       ? async (email: string) => {
           const actor = await engine.findByEmail(email)
-          if (actor) await backend.syncImport(engine.caller, { op: 'seen', author: { ...actor, isBot: false } }, new AbortController().signal)
+          if (actor) await backend.syncImport(engine.caller, { op: 'seen', author: { ...actor, isBot: actor.bot === true } }, new AbortController().signal)
           return actor
         }
       : undefined
@@ -494,7 +491,7 @@ export function board(options: BoardOptions): Board {
     const sync = engine!
     const me = sync.caller
     const { author } = caller.platform
-    const as = { author: actorOf(author), source: (caller.origin.via ?? { kind: 'api' }) as WriteSource, respond: caller.origin.respond }
+    const as = { author: externalActor(author), source: (caller.origin.via ?? { kind: 'api' }) as WriteSource, respond: caller.origin.respond }
     const change = async (body: Protocol['syncImport']['input']) => {
       const { message } = await backend.syncImport(me, body, signal)
       if (message === null) throw notFound(`message not found: #${(body as { message?: string }).message}`, 'message_not_found')
@@ -562,7 +559,7 @@ export function board(options: BoardOptions): Board {
     const importer: Caller = config.length > 0 ? { ...me, origin: { ...me.origin, config } } : me
     return screen(
       { kind: 'post', channel: channel!, re, text: input.text, labels: input.labels ?? {}, attachments },
-      { author: actorOf(author), source: (caller.origin.via ?? { kind: 'api' }) as WriteSource, respond: caller.origin.respond },
+      { author: externalActor(author), source: (caller.origin.via ?? { kind: 'api' }) as WriteSource, respond: caller.origin.respond },
       async (write) => {
         const { message } = await backend.syncImport(importer, {
           op: 'post',

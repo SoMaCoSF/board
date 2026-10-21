@@ -303,7 +303,7 @@ that reply in it.
 
 ```ts
 channels(): Promise<ChannelView[]>  // { path, lastIndex, messages, threads }
-actors(): Promise<Actor[]>          // { id, kind, handle, name, avatar }
+actors(): Promise<Actor[]>          // { id, kind, handle, name, avatar, bot? }
 me(): Promise<Me>                   // who this client writes as
 source(): Promise<string | null>    // where its token came from; gets one if it has none
 discovery(): Promise<Discovery>     // unauthenticated: url, audience, team_id, project_id, version, sync
