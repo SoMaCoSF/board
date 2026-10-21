@@ -51,7 +51,7 @@ for the current configuration UI and availability.
 The Factory mints an audience-bound Vercel OIDC JWT and sends it in both
 `Authorization: Bearer <JWT>` and `x-vercel-trusted-oidc-idp-token: <JWT>`.
 The edge consumes the second header; the application verifies the first.
-No protection-bypass secret is required. The Node SDK also supplies the native
+No protection-bypass secret is required. `board()` in Node also supplies the native
 header for hosted discovery and authenticated requests, using an explicit
 `token` or `VBOARD_TOKEN` before runtime OIDC. Local person clients do not add
 that header. An explicit `VERCEL_AUTOMATION_BYPASS_SECRET` still takes

@@ -153,12 +153,12 @@ Each has a default that does nothing, or says the platform can't:
 | Method | For |
 | --- | --- |
 | `edit(thread, message, body)`, `delete(thread, message)`, `react(thread, message, emoji, added)` | Changes to messages already delivered |
-| `startTyping(thread, latest, status?)` | `vb typing` |
+| `startTyping(thread, latest, status?)` | `typing(id, status)` on the board that runs the entry |
 | `uploadFiles(thread, files)`, `deleteFiles(ids)`, `refusesFiles(error)` | Files out. `refusesFiles` tells a permanent refusal (notes instead) from a failure worth retrying |
 | `fetchFile(file)` | Files in |
 | `fetchRoot(thread)` | Recovering a root when a reply arrives in a thread the board hasn't seen |
 | `fetchLink(link)` | Reading a linked message the platform didn't describe |
-| `read(target, { limit })` | `vb sources <key> read` |
+| `read(target, { limit })` | A source read on the board that runs the entry: `readSource(key, target)`, `GET /sources/:key/read` |
 | `mention(actor)` | A board mention in the platform's native form |
 | `findByEmail(email)` | `@[ada@acme.com]` mentions |
 

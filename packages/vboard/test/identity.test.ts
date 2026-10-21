@@ -19,7 +19,8 @@ type Read = { id: number; text: string; by: { actor: string }; author: { handle:
 function fakeTokens() {
   const tokens = new Map<string, string>()
   const users: UserTokens = {
-    authorize: async (principal) => `https://connect.test/authorize?subject=${encodeURIComponent(principal)}`,
+    authorize: async (principal, options = {}) =>
+      `https://connect.test/authorize?${new URLSearchParams({ subject: principal, ...(options.callback ? { callback: options.callback } : {}) })}`,
     token: async (principal) => tokens.get(principal) ?? null,
   }
   return { users, signIn: (principal: string, token: string) => void tokens.set(principal, token), signOut: (principal: string) => void tokens.delete(principal) }
@@ -96,6 +97,17 @@ function setup(options: { users?: UserTokens; owners?: Record<string, string>; g
 
 const read = async (call: ReturnType<typeof caller>, query: string) => (await call('GET', `/messages?${query}`)).body.messages as Read[]
 
+/**
+ * A sign-in, as `vb identity link` starts it and the platform finishes it: the board's code for
+ * the person, carried to the platform and back, where the board links the account it authorized.
+ */
+async function signInWith(board: { fetch(request: Request): Promise<Response> }, call: ReturnType<typeof caller>, sync: string): Promise<Response> {
+  const { signIn } = (await call('POST', '/sync/codes', { sync })).body as { signIn: string }
+  const started = await board.fetch(new Request(signIn))
+  const back = new URL(started.headers.get('location')!).searchParams.get('callback')!
+  return board.fetch(new Request(back))
+}
+
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.unstubAllEnvs()
@@ -114,8 +126,9 @@ describe('linking accounts with a one-time code', () => {
     expect((await read(julian, 'by=julian')).map((m) => m.text)).toEqual(['from the board', 'from my agent'])
     expect((await julian('GET', '/identity')).body.unlinked).toEqual(['slack', 'github'])
 
-    const challenge = (await julian('POST', '/identity/link', { sync: 'slack' })).body
-    expect(challenge).toMatchObject({ method: 'code', sync: 'slack', platform: 'slack', code: expect.stringMatching(/^vb-[A-Z2-9]{4}-[A-Z2-9]{4}$/) })
+    // Slack here signs no one in: the code is all there is.
+    const challenge = (await julian('POST', '/sync/codes', { sync: 'slack' })).body
+    expect(challenge).toEqual({ code: expect.stringMatching(/^vb-[A-Z2-9]{4}-[A-Z2-9]{4}$/), expiresAt: expect.any(String) })
 
     await webhook('slack', { type: 'message', threadId: 'slack:C1:100', id: '101', text: ` ${challenge.code.toLowerCase()} `, user: 'U_JULIAN', name: 'jb' })
     await vi.waitFor(async () => expect((await julian('GET', '/identity')).body.links).toHaveLength(1))
@@ -145,7 +158,7 @@ describe('linking accounts with a one-time code', () => {
     const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
     const ada = caller(board.fetch, await personToken('u_ada'), { 'x-board-handle': 'ada' })
     await julian('POST', '/messages', { channel: 'firehose', text: 'hi', noSync: true })
-    const { code } = (await julian('POST', '/identity/link', { sync: 'slack' })).body
+    const { code } = (await julian('POST', '/sync/codes', { sync: 'slack' })).body
     await webhook('slack', { type: 'message', threadId: 'slack:C1:100', id: '100', text: 'a thread', user: 'U_ADA' })
     await webhook('slack', { type: 'message', threadId: 'slack:C1:100', id: '101', text: code, user: 'U_JULIAN', name: 'jb' })
     await vi.waitFor(async () => expect((await julian('GET', '/identity')).body.links).toHaveLength(1))
@@ -172,7 +185,7 @@ describe('linking accounts with a one-time code', () => {
     const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
     const ada = caller(board.fetch, await personToken('u_ada'), { 'x-board-handle': 'ada' })
     await julian('POST', '/messages', { channel: 'firehose', text: 'hi', noSync: true })
-    const forSlack = (await julian('POST', '/identity/link', { sync: 'slack' })).body.code
+    const forSlack = (await julian('POST', '/sync/codes', { sync: 'slack' })).body.code
     await webhook('slack', { type: 'message', threadId: 'slack:C1:100', id: '100', text: forSlack, user: 'U_JULIAN', name: 'jb' })
     // Julian, as GitHub knows them, opens a PR, and links that account from it.
     await webhook(
@@ -186,7 +199,7 @@ describe('linking accounts with a one-time code', () => {
       { 'x-github-event': 'pull_request', 'x-github-delivery': 'd1' },
     )
     await vi.waitFor(async () => expect(await read(ada, 'channel=prs')).toHaveLength(1))
-    const forGitHub = (await julian('POST', '/identity/link', { sync: 'github' })).body.code
+    const forGitHub = (await julian('POST', '/sync/codes', { sync: 'github' })).body.code
     await webhook('github', { type: 'message', threadId: 'github:basehub-ai/vboard:8', id: 'c0', text: forGitHub, user: '42', name: 'julianbenegas' })
     await vi.waitFor(async () => expect((await julian('GET', '/identity')).body.links).toHaveLength(2))
 
@@ -221,7 +234,7 @@ describe('linking accounts with a one-time code', () => {
     await webhook('slack', { type: 'message', threadId: 'slack:C1:100', id: '100', text: 'a thread', user: 'U_ADA' })
     await vi.waitFor(async () => expect(await read(julian, 'channel=firehose')).toHaveLength(1))
 
-    const { code } = (await julian('POST', '/identity/link', { sync: 'slack' })).body
+    const { code } = (await julian('POST', '/sync/codes', { sync: 'slack' })).body
     await webhook('slack', { type: 'message', threadId: 'slack:C1:100', id: '101', text: code, user: 'U_JULIAN' })
     await vi.waitFor(async () => expect((await julian('GET', '/identity')).body.links).toHaveLength(1))
     // Someone who saw it in the channel posts it too: it's just their message.
@@ -230,9 +243,9 @@ describe('linking accounts with a one-time code', () => {
     expect((await julian('GET', '/identity')).body.links.map((l: { actor: string }) => l.actor)).toEqual(['slack:user:U_JULIAN'])
 
     // A code for GitHub, posted in Slack, and an expired one: messages too.
-    const forGitHub = (await julian('POST', '/identity/link', { sync: 'github' })).body.code
+    const forGitHub = (await julian('POST', '/sync/codes', { sync: 'github' })).body.code
     vi.useFakeTimers({ toFake: ['Date'] })
-    const stale = (await julian('POST', '/identity/link', { sync: 'slack' })).body.code
+    const stale = (await julian('POST', '/sync/codes', { sync: 'slack' })).body.code
     vi.setSystemTime(Date.now() + 11 * 60_000)
     await webhook('slack', { type: 'message', threadId: 'slack:C1:100', id: '103', text: forGitHub, user: 'U_BOB' })
     await webhook('slack', { type: 'message', threadId: 'slack:C1:100', id: '104', text: stale, user: 'U_BOB' })
@@ -246,7 +259,7 @@ describe('linking accounts with a one-time code', () => {
     const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
     await webhook('slack', { type: 'message', threadId: 'slack:C1:100', id: '100', text: 'a thread', user: 'U_ADA' })
     await vi.waitFor(async () => expect(await read(julian, 'channel=firehose')).toHaveLength(1))
-    const { code } = (await julian('POST', '/identity/link', { sync: 'slack' })).body
+    const { code } = (await julian('POST', '/sync/codes', { sync: 'slack' })).body
     await webhook('slack', { type: 'message', threadId: 'slack:C1:100', id: '101', text: code, user: 'U_JULIAN' })
     await vi.waitFor(async () => expect((await julian('GET', '/identity')).body.links).toHaveLength(1))
     await julian('POST', '/identity/unlink', { actor: 'slack:user:U_JULIAN' })
@@ -270,12 +283,12 @@ describe('linking accounts with a one-time code', () => {
     vi.stubEnv('VERCEL_ENV', 'production')
     const deployment = caller(board.fetch, await deploymentToken('board', 'prj_board'))
     await webhook('slack', { type: 'message', threadId: 'slack:C1:100', id: '100', text: 'from Slack', user: 'U_JULIAN', name: 'jb' })
-    const { code } = (await julian('POST', '/identity/link', { sync: 'slack' })).body
+    const { code } = (await julian('POST', '/sync/codes', { sync: 'slack' })).body
     await webhook('slack', { type: 'message', threadId: 'slack:C1:100', id: '101', text: code, user: 'U_JULIAN', name: 'jb' })
     // Julian never wrote on the board: their principal ID still names them.
     await vi.waitFor(async () => expect((await read(julian, 'by=vercel:user:u_julian')).map((m) => m.text)).toEqual(['from Slack']))
 
-    expect((await deployment('POST', '/identity/link', { sync: 'slack' })).body.error.message).toBe('only people link platform accounts')
+    expect((await deployment('POST', '/sync/codes', { sync: 'slack' })).body.error.message).toBe('only people link platform accounts')
     expect((await ada('POST', '/identity/unlink', { actor: '@jb' })).body.error.code).toBe('not_linked')
     expect((await julian('POST', '/identity/unlink', { actor: '@jb' })).body).toEqual({ ok: true, actor: 'slack:user:U_JULIAN' })
     expect((await julian('GET', '/identity')).body.links).toEqual([])
@@ -290,17 +303,30 @@ describe('signing in, and posting as yourself', () => {
     const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
     const claude = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian', 'x-board-profile': 'claude' })
 
-    const challenge = (await julian('POST', '/identity/link', { sync: 'slack' })).body
-    expect(challenge).toEqual({ method: 'consent', sync: 'slack', platform: 'slack', url: 'https://connect.test/authorize?subject=vercel%3Auser%3Au_julian' })
-    // A code is still there for the asking.
-    expect((await julian('POST', '/identity/link', { sync: 'slack', method: 'code' })).body.method).toBe('code')
-    // GitHub can't sign anyone in here.
-    expect((await julian('POST', '/identity/link', { sync: 'github', method: 'consent' })).status).toBe(400)
+    // A code, and the sign-in on this board that carries it.
+    const challenge = (await julian('POST', '/sync/codes', { sync: 'slack' })).body
+    expect(challenge).toEqual({
+      code: expect.stringMatching(/^vb-/),
+      expiresAt: expect.any(String),
+      signIn: `${BOARD_URL}/identity/sign-in?${new URLSearchParams({ sync: 'slack', code: challenge.code })}`,
+    })
+    // GitHub can't sign anyone in here: its code is all there is.
+    expect((await julian('POST', '/sync/codes', { sync: 'github' })).body.signIn).toBeUndefined()
 
-    expect((await julian('POST', '/identity/check', { sync: 'slack' })).body).toEqual({ linked: null })
+    // The board sends them to Slack as whoever the code is for, and back to itself.
+    const start = await board.fetch(new Request(challenge.signIn))
+    expect(start.status).toBe(302)
+    const at = new URL(start.headers.get('location')!)
+    expect(at.searchParams.get('subject')).toBe('vercel:user:u_julian')
+    const back = at.searchParams.get('callback')!
+    expect(back).toMatch(new RegExp(`^${BOARD_URL}/identity/signed-in\\?`))
+    // Until Slack says they approved, nothing links.
+    expect((await board.fetch(new Request(back))).status).toBe(409)
     tokens.signIn('vercel:user:u_julian', 'xoxp-julian')
-    expect((await julian('POST', '/identity/check', { sync: 'slack' })).body.linked).toMatchObject({ actor: 'slack:user:U_JULIAN', handle: 'u_julian', name: 'Real U_JULIAN', method: 'consent' })
-    expect((await julian('GET', '/identity')).body.links).toHaveLength(1)
+    expect(await (await board.fetch(new Request(back))).text()).toContain('Linked')
+    expect((await julian('GET', '/identity')).body.links).toEqual([
+      expect.objectContaining({ actor: 'slack:user:U_JULIAN', handle: 'u_julian', name: 'Real U_JULIAN', method: 'consent' }),
+    ])
 
     await webhook('slack', { type: 'message', threadId: 'slack:C1:100', id: '100', text: 'export is broken', user: 'U_ADA' })
     await vi.waitFor(async () => expect(await read(julian, 'channel=firehose')).toHaveLength(1))
@@ -341,7 +367,7 @@ describe('signing in, and posting as yourself', () => {
     const { board, as, webhook } = setup({ users: tokens.users, owners: { 'xoxp-julian': 'U_JULIAN' }, onPost: (post) => deliver(post) })
     const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
     tokens.signIn('vercel:user:u_julian', 'xoxp-julian')
-    await julian('POST', '/identity/check', { sync: 'slack' })
+    await signInWith(board, julian, 'slack')
 
     await webhook('slack', { type: 'message', threadId: 'slack:C1:100', id: '100', text: 'export is broken', user: 'U_ADA' })
     await vi.waitFor(async () => expect(await read(julian, 'channel=firehose')).toHaveLength(1))
@@ -382,7 +408,7 @@ describe('signing in, and posting as yourself', () => {
     })
     const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
     tokens.signIn('vercel:user:u_julian', 'xoxp-julian')
-    await julian('POST', '/identity/check', { sync: 'slack' })
+    await signInWith(board, julian, 'slack')
 
     await julian('POST', '/messages', { channel: 'firehose', text: 'new thread' })
     await vi.waitFor(() => expect(echo).toBeDefined())
@@ -405,13 +431,13 @@ describe('signing in, and posting as yourself', () => {
     const [root] = await read(julian, 'channel=firehose')
     const posts = () => as.ran.filter((r) => r.op === 'post')
 
-    // Signed in (`--no-wait`) but never checked: nothing's linked, so the app posts.
+    // Signed in to Slack, but never back on the board: nothing's linked, so the app posts.
     tokens.signIn('vercel:user:u_julian', 'xoxp-julian')
     await julian('POST', '/messages', { re: root!.id, text: 'one' })
     await vi.waitFor(() => expect(posts()).toHaveLength(1))
     expect(posts()[0]).toMatchObject({ token: null })
 
-    await julian('POST', '/identity/check', { sync: 'slack' })
+ await signInWith(board, julian, 'slack')
     const two = (await julian('POST', '/messages', { re: root!.id, text: 'two' })).body.message
     await vi.waitFor(() => expect(posts()).toHaveLength(2))
     expect(posts()[1]).toMatchObject({ token: 'xoxp-julian' })
@@ -441,7 +467,8 @@ describe('signing in, and posting as yourself', () => {
     const { board, g, webhook } = setup({ githubUsers: tokens.users })
     const monto = caller(board.fetch, await personToken('u_monto'), { 'x-board-handle': 'nmonto' })
     tokens.signIn('vercel:user:u_monto', 'ghu_monto')
-    expect((await monto('POST', '/identity/check', { sync: 'github' })).body.linked).toMatchObject({ actor: 'github:user:40034115', handle: 'NicolasMontone' })
+    expect(await (await signInWith(board, monto, 'github')).text()).toContain('Linked @NicolasMontone')
+    expect((await monto('GET', '/identity')).body.links).toEqual([expect.objectContaining({ actor: 'github:user:40034115', handle: 'NicolasMontone' })])
 
     await webhook(
       'github',
@@ -475,7 +502,7 @@ describe('signing in, and posting as yourself', () => {
     const { board, s, as, webhook } = setup({ users: tokens.users, owners: { 'xoxp-julian': 'U_JULIAN' } })
     const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
     tokens.signIn('vercel:user:u_julian', 'xoxp-julian')
-    await julian('POST', '/identity/check', { sync: 'slack' })
+    await signInWith(board, julian, 'slack')
     const failing = s.adapter.postMessage
     s.adapter.postMessage = async (threadId, message) => {
       if (JSON.stringify(message) === '{"markdown":"hello"}')
@@ -540,18 +567,31 @@ describe('vb identity', () => {
 
   it('prints the sign-in URL, and waits for the sign-in', async () => {
     const tokens = fakeTokens()
-    const { board } = setup({ url: undefined, users: tokens.users, owners: { 'xoxp-julian': 'U_JULIAN' } })
-    const server = await serve(board.fetch)
+    // The board signs people in at its own URL, so it needs to know it.
+    let handler: (request: Request) => Promise<Response> = async () => new Response(null, { status: 503 })
+    const server = await serve((request) => handler(request))
+    const url = `${server.origin}/api/board`
+    const { board } = setup({ url, users: tokens.users, owners: { 'xoxp-julian': 'U_JULIAN' } })
+    handler = board.fetch
     try {
-      const url = `${server.origin}/api/board`
       const token = await personToken('u_julian', url)
+      let finished: Promise<unknown> | undefined
       const linking = await run(url, token, ['identity', 'link', 'slack', '--no-open'], (line) => {
-        if (line.includes('connect.test')) setTimeout(() => tokens.signIn('vercel:user:u_julian', 'xoxp-julian'), 500)
+        const at = /^\s+(http\S+\/identity\/sign-in\S+)$/.exec(line)?.[1]
+        // The person opens it, Slack approves, and Slack sends them back to the board.
+        if (at && !finished)
+          finished = (async () => {
+            const started = await fetch(at, { redirect: 'manual' })
+            tokens.signIn('vercel:user:u_julian', 'xoxp-julian')
+            await fetch(new URL(started.headers.get('location')!).searchParams.get('callback')!)
+          })()
       })
       expect(linking).toMatchObject({ code: 0, stderr: '' })
-      expect(linking.stdout).toBe(
-        'Sign in to slack as yourself to link it (and to post as you there):\n\n  https://connect.test/authorize?subject=vercel%3Auser%3Au_julian\n\n' +
-          'Only open it yourself: whoever completes it links their account to you.\nlinked @u_julian (slack:user:U_JULIAN)\n',
+      expect(linking.stdout).toMatch(
+        new RegExp(
+          `^Sign in to slack as yourself to link it \\(and to post as you there\\):\n\n  ${url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/identity/sign-in\\?sync=slack&code=vb-\\S+\n\n` +
+            'Only open it yourself: whoever completes it links their account to you\\.\nlinked @u_julian \\(slack:user:U_JULIAN\\)\n$',
+        ),
       )
     } finally {
       server.close()

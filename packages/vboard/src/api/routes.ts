@@ -198,15 +198,6 @@ export const AckBody = z.object({
   skip: z.boolean().optional(),
 })
 
-/** A stuck event to retry (with a fresh 10 tries) or skip (so its thread goes on), as `vb stuck` lists it. */
-export const RedriveBody = z.object({
-  session: z.string().min(1).max(300),
-  index: z.number().int().min(1),
-  /** The consumer it's stuck for; without one, every consumer stuck on it. */
-  consumer: z.string().min(1).max(200).optional(),
-  action: z.enum(['retry', 'skip']),
-})
-
 /**
  * What to read from a platform without syncing it: a channel (`#name` or an ID),
  * a thread (`C0123:1727000000.123456`), or a message permalink (its thread).
@@ -216,13 +207,6 @@ export const SourceReadQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional(),
 })
 
-export const IdentityLinkBody = z.object({
-  /** The sync entry whose account to link, e.g. `slack`. */
-  sync: z.string().min(1).max(64),
-  /** `code` even when the entry can sign people in. */
-  method: z.enum(['code', 'consent']).optional(),
-})
-export const IdentityCheckBody = z.object({ sync: z.string().min(1).max(64) })
 export const IdentityUnlinkBody = z.object({ actor: z.string().min(1).max(256) })
 
 /** A sync entry's key: `slack`, `github`. */
@@ -453,8 +437,6 @@ export type Discovery = {
   project_id: string | null
   /** The board's sync entries: `key` names its webhook and inbox, `platform` is e.g. `slack`. */
   sync: { key: string; platform: string }[]
-  /** A board on another backend keeps nothing here: clients read and write this board instead. */
-  remote?: string
 }
 
 /** Watchers a board on `http()` registered here: one registration per principal. */
@@ -508,14 +490,10 @@ export type IdentityView = {
   cursor: string
 }
 /**
- * How to prove an account is yours: post `code` from it anywhere the board syncs
- * before `expiresAt`, or open `url` (the platform's sign-in) and approve.
+ * How to prove an account is yours: post `code` from it anywhere the board syncs before
+ * `expiresAt`, or, when the entry signs people in, open `signIn` and approve: it carries the code.
  */
-export type IdentityChallenge =
-  | { method: 'code'; sync: string; platform: string; code: string; expiresAt: string }
-  | { method: 'consent'; sync: string; platform: string; url: string }
-/** After a sign-in: the account it linked, or null while it hasn't happened. */
-export type IdentityCheck = { linked: LinkedAccount | null }
+export type SyncCodeView = { code: string; expiresAt: string; signIn?: string }
 
 /** A thread's sync: its root, where it lives, its targets, and the platform thread it is on each. */
 export type SyncThreadView = { thread: string; root: string; channel: string; targets: string[]; external: Record<string, string> }
@@ -602,33 +580,6 @@ export type InboxEntry = {
   raw: unknown
 }
 
-/**
- * An event that failed 10 times and stopped: A2 dead-lettered it, and nothing after it on its lane
- * (its thread's) runs until it's retried or skipped. As `GET /stuck` returns it.
- */
-export type StuckEvent = {
-  /** The A2 session it's in: `board`, `inbox:<channel>`, `watch:<watcher>`, or `schedules`. */
-  session: string
-  index: number
-  /**
-   * What gave up on it: `vboard-sync` (delivery to platforms), `vboard-watchers`
-   * (matching watchers), `vboard-watch` (running one), `vboard-inbox` (platform
-   * events), `vboard-schedules`, or `vboard-schedule-sends`.
-   */
-  consumer: string
-  type: string
-  lane: string | null
-  /** The board thread it holds up, when there is one, and its root. */
-  thread: string | null
-  root: string | null
-  /** The platform thread, for an inbox event that never reached the board. */
-  external: string | null
-  attempts: number
-  failures: number
-  error: string | null
-  failedAt: string
-}
-
 /** The route table: method, path, and the schemas that validate input. */
 export const routes = {
   discovery: { method: 'GET', path: '/' },
@@ -681,10 +632,6 @@ export const routes = {
   syncAccount: { method: 'POST', path: '/sync/accounts', body: SyncAccountBody },
   /** Unlinks a platform account. */
   syncUnlink: { method: 'POST', path: '/sync/accounts/unlink', body: SyncUnlinkBody },
-  /** Events that stopped their thread: full access only. */
-  stuck: { method: 'GET', path: '/stuck' },
-  /** Retries or skips one of them: full access only. */
-  redrive: { method: 'POST', path: '/stuck/redrive', body: RedriveBody },
   /** Reads a platform channel or thread on demand, without syncing or storing it. Full access only. */
   sourceRead: { method: 'GET', path: '/sources/:key/read', query: SourceReadQuery },
   webhook: { method: 'POST', path: '/webhooks/:key' },
@@ -696,11 +643,7 @@ export const routes = {
   openapi: { method: 'GET', path: '/openapi.json' },
   /** Your linked platform accounts. */
   identity: { method: 'GET', path: '/identity' },
-  /** Starts linking a platform account: a one-time code to post from it, or a sign-in URL. */
-  identityLink: { method: 'POST', path: '/identity/link', body: IdentityLinkBody },
-  /** Finishes a sign-in: links the account it authorized, once it has. */
-  identityCheck: { method: 'POST', path: '/identity/check', body: IdentityCheckBody },
-  /** Starts a sign-in that carries a code (no token): where the board that keeps the log sends a person. */
+  /** Starts a sign-in that carries a code (no token), on the board that runs the entry's sync. */
   signIn: { method: 'GET', path: '/identity/sign-in', query: SignInQuery },
   /** Where a sign-in comes back (no token): links the account it authorized to the code's person. */
   signedIn: { method: 'GET', path: '/identity/signed-in', query: SignInQuery },

@@ -15,7 +15,7 @@ import { github, GitHubPayload } from 'vboard/sync-github'
 
 const backend = a2()
 
-export const { GET, POST } = board({
+const team = board({
   backend,
   sync: {
     github: github({
@@ -36,6 +36,7 @@ export const { GET, POST } = board({
     }),
   },
 })
+export const GET = team.fetch, POST = team.fetch
 export const { scheduler } = backend
 ```
 
@@ -154,8 +155,9 @@ Retried after it succeeded, it returns the same IDs.
 
 ## More than an import
 
-`board` is the board's in-process client, the same one `createClient()` returns,
-so a function can also reply, react, label, or attach:
+`board` is an in-process client of the board, with the
+[handle's](../04-reference/02-board.md) methods, so a function can also reply,
+react, label, or attach:
 
 ```ts
 // in slack({ channels: { … } }):

@@ -1,18 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { createClient } from '../src/client/index.ts'
+import { board } from '../src/server/index.ts'
+import { http } from '../src/backend-http/index.ts'
 import { conformance } from '../src/conformance/index.ts'
-import { BOARD_URL, personToken, testBoard } from './harness.ts'
+import { bearer, BOARD_URL, personToken, testBoard } from './harness.ts'
 import { fakeQueue } from './queue.ts'
 
 type Fetch = (request: Request) => Promise<Response>
 
+/** A handle on the board behind `fetch`, as `vb conformance` checks it. */
 const clientOf = async (fetch: Fetch) =>
-  createClient({
-    url: BOARD_URL,
-    token: await personToken(),
-    handle: 'julian',
-    fetch: ((input: RequestInfo | URL, init?: RequestInit) => fetch(new Request(input, init))) as typeof globalThis.fetch,
-  })
+  board({ backend: http(BOARD_URL, { fetch: bearer((input, init) => fetch(new Request(input, init)), await personToken()) }) }).as(null)
 
 /** A board in front of `fetch` that rewrites what it answers, or what it's asked. */
 function broken(fetch: Fetch, change: { request?: (url: URL) => void; body?: (text: string) => string }): Fetch {
@@ -35,6 +32,13 @@ describe('the conformance kit', () => {
     expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'schedules', 'attachments', 'watchers', 'sync'])
     const { messages } = await client.messages({ channel: 'conformance', limit: 500 })
     expect(messages.filter((message) => !message.deleted)).toEqual([])
+  })
+
+  it("passes through a board's own handle, in-process", async () => {
+    const team = testBoard({ scheduler: fakeQueue().scheduler })
+    const report = await conformance(team)
+    expect(report.checks.filter((check) => check.status !== 'passed')).toEqual([])
+    expect((await team.me()).actor).toBe('vboard:client')
   })
 
   it('fails a board that answers only part of the protocol', async () => {
@@ -66,13 +70,13 @@ describe('the conformance kit', () => {
     ])
   })
 
-  it('reports a board whose discovery sends clients to another board', async () => {
+  it("reports a board whose discovery doesn't say where it is", async () => {
     const board = testBoard()
-    const remote = broken(board.fetch, { body: (text) => (text.includes('"audience"') ? text.replace(/}$/, ',"remote":"https://elsewhere.test/api/board"}') : text) })
-    const report = await conformance(await clientOf(remote))
+    const nameless = broken(board.fetch, { body: (text) => (text.includes('"audience"') ? text.replace(/"audience":"[^"]*",?/, '') : text) })
+    const report = await conformance(await clientOf(nameless))
     expect(report).toMatchObject({
       ok: false,
-      checks: [{ name: 'says in its discovery where it is', status: 'failed', detail: 'it keeps no log: its discovery names https://elsewhere.test/api/board, so check that board' }],
+      checks: [{ name: 'says in its discovery where it is', status: 'failed', detail: expect.stringContaining('discovery should have url, audience, and sync') }],
     })
   })
 })

@@ -20,21 +20,12 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.mts",
+      "node": "./dist/index.node.mjs",
       "default": "./dist/index.mjs"
     },
     "./access": {
       "types": "./dist/access.d.mts",
       "default": "./dist/access.mjs"
-    },
-    "./client": {
-      "node": {
-        "types": "./dist/client.node.d.mts",
-        "default": "./dist/client.node.mjs"
-      },
-      "default": {
-        "types": "./dist/client.d.mts",
-        "default": "./dist/client.mjs"
-      }
     },
     "./conformance": {
       "types": "./dist/conformance.d.mts",
@@ -82,6 +73,7 @@
     },
     "./backend-http": {
       "types": "./dist/backend-http.d.mts",
+      "node": "./dist/backend-http.node.mjs",
       "default": "./dist/backend-http.mjs"
     },
     "./sync": {

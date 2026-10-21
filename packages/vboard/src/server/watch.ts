@@ -1,12 +1,12 @@
 import { A2Error, idempotentId } from 'experimental-a2'
 import { consumer, createServer, type A2Scheduler, type A2Store, type ConsumerContext } from 'experimental-a2/server'
 import type { BoardEventView } from '../api/routes.ts'
-import { parseWatchTail } from '../api/tail.ts'
-import type { BoardClient } from '../client/client.ts'
+import type { Board } from './board.ts'
 import { boardContract, watchContract, watchSession, type BoardEvent, type BoardEvents } from '../contract/contract.ts'
 import { actorsReducer, type Message, type MessagesState } from '../contract/reducers.ts'
 import { FULL_ACCESS, type Access } from './access.ts'
-import { compileFilter, eventView, foldEvent, hasCriteria, loadBefore, OWN_CODE, view as messageView, type ParsedFilters } from './feed.ts'
+import { compileFilter, eventView, foldEvent, loadBefore, OWN_CODE, view as messageView } from './feed.ts'
+import { compileWatcher, type Compiled } from './watch-spec.ts'
 import type { BoardReads } from './reads.ts'
 import { arm, due, hasWork, queueReducer, SWEEP_MS, type QueueSession } from './registered.ts'
 import type { Registration, RegistryState, StoredPrincipal } from './registry.ts'
@@ -16,8 +16,8 @@ import { A2_TRIES, afterRetry } from './attempts.ts'
 export type WatcherContext = {
   /** Exactly what `vb tail --json` prints. */
   event: BoardEventView
-  /** Writes as this watcher. */
-  board: BoardClient
+  /** The board, acting as this watcher. */
+  board: Board
 }
 
 /** A `vb tail` the board runs for you: every event the tail would print, handed to `run`. */
@@ -117,22 +117,7 @@ export async function runMatch(input: {
 /** A watcher writes as `vboard:watch:<id>`, and its own writes never wake it. */
 const actorOf = (id: string) => `vboard:watch:${id}`
 
-type Compiled = { filters: ParsedFilters; criteria: boolean; enters: boolean; all: boolean }
-
-/** A watcher's tail, checked the way a boot checks it: errors name the watcher. */
-export function compileWatcher(id: string, spec: { tail: string; when?: 'matches' | 'enters' | undefined }): Compiled {
-  let filters: ParsedFilters
-  let all: boolean
-  try {
-    ;({ filters, all } = parseWatchTail(spec.tail))
-  } catch (error) {
-    throw new Error(`watch ${id}: ${(error as Error).message}`)
-  }
-  if (filters.mentions === 'me') throw new Error(`watch ${id}: a watcher has no "me": use --mentions @handle`)
-  const criteria = hasCriteria(filters)
-  if (spec.when === 'enters' && !criteria) throw new Error(`watch ${id}: \`when: enters\` needs a filter to enter`)
-  return { filters, criteria, enters: spec.when === 'enters', all }
-}
+export { compileWatcher }
 
 /** A watcher to match an event against: one in config, or one a board on `http()` registered. */
 type Candidate = Compiled & {
@@ -384,11 +369,6 @@ export function createWatchers(options: {
   return {
     server,
     boardConsumer,
-    /** Every watcher's session: one per watcher in config, one per registrant. */
-    sessions: async () => [
-      ...watchers.map((watcher) => watchSession(watcher.id)),
-      ...(await registrations()).map((registration) => registrantSession(registration.owner)),
-    ],
     bind: (binding: { reads: BoardReads }) => {
       reads = binding.reads
     },

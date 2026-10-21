@@ -1,10 +1,11 @@
 import type { MessageView } from '../api/routes.ts'
-import { BoardError, type BoardClient } from '../client/client.ts'
+import { BoardError } from '../client/client.ts'
+import type { Board } from '../server/board.ts'
 
 /**
- * Checks that a board speaks the protocol, through the SDK, as `vb` and agents use it: every
- * board answers all of it. It writes to one channel (`conformance` by default), keeps every
- * post on the board, and deletes what it posted.
+ * Checks that a board speaks the protocol, through a handle on it (`conformance(board())`), as
+ * `vb` and agents use it: every board answers all of it. It writes to one channel (`conformance`
+ * by default), keeps every post on the board, and deletes what it posted.
  */
 
 /** What a check is about, for the report's headings. */
@@ -58,7 +59,7 @@ function isRef(value: unknown, what: string) {
 }
 
 type Context = {
-  board: BoardClient
+  board: Board
   channel: string
   /** Every post carries it, so reads see this run's messages only. */
   labels: { conformance: string }
@@ -283,7 +284,7 @@ const CHECKS: Check[] = [
       try {
         const message = await post(ctx, 'conformance: for a watcher')
         const deadline = Date.now() + 10_000
-        let match: Awaited<ReturnType<BoardClient['matches']>>[number] | undefined
+        let match: Awaited<ReturnType<Board['matches']>>[number] | undefined
         while (!match && Date.now() < deadline) match = (await ctx.board.matches({ wait: 5 })).find((m) => m.event.message?.id === message.id)
         check(match, 'a pull should hand out the match for the post')
         same(match.watcher, 'conformance', "the match's watcher")
@@ -351,21 +352,21 @@ const CHECKS: Check[] = [
 ]
 
 /** Runs the checks against `board`, in order, and reports each. It never throws for what the board answers. */
-export async function conformance(board: BoardClient, options: ConformanceOptions = {}): Promise<ConformanceReport> {
+export async function conformance(board: Board, options: ConformanceOptions = {}): Promise<ConformanceReport> {
   const checks: CheckResult[] = []
   const discovery = await board.discovery().catch((error: unknown) => error as Error)
   const wrong =
     discovery instanceof Error
       ? discovery.message
-      : typeof discovery.audience !== 'string' || !Array.isArray(discovery.sync)
-        ? `discovery should have audience and sync, got ${show(discovery)}`
-        : discovery.remote
-          ? `it keeps no log: its discovery names ${discovery.remote}, so check that board`
-          : null
+      : typeof discovery.audience !== 'string' || typeof discovery.url !== 'string' || !Array.isArray(discovery.sync)
+        ? `discovery should have url, audience, and sync, got ${show(discovery)}`
+        : null
   if (wrong !== null) {
     checks.push({ group: 'core', name: 'says in its discovery where it is', status: 'failed', detail: wrong })
     return { url: board.url, checks, ok: false }
   }
+  // The board it checks, as it names itself: a handle on one elsewhere has no URL of its own.
+  const url = (discovery as { url: string }).url
   checks.push({ group: 'core', name: 'says in its discovery where it is', status: 'passed' })
   const me = await board.me()
   const channel = options.channel ?? 'conformance'
@@ -390,5 +391,5 @@ export async function conformance(board: BoardClient, options: ConformanceOption
     // What it posted goes, replies first. A failure here leaves a tombstone short, not a wrong report.
     for (const id of [...ctx.posted].reverse()) await board.delete(id).catch(() => {})
   }
-  return { url: board.url, checks, ok: checks.every((c) => c.status !== 'failed') }
+  return { url, checks, ok: checks.every((c) => c.status !== 'failed') }
 }

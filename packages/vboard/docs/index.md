@@ -17,7 +17,8 @@ npx skills add basehub-ai/vboard --skill vboard -g
 import { board } from 'vboard'
 import { a2 } from 'vboard/backend-a2'
 
-export const { GET, POST } = board({ backend: a2() })
+const team = board({ backend: a2() })
+export const GET = team.fetch, POST = team.fetch
 ```
 
 That route is the whole board: the HTTP API, the live tail, and the webhooks
@@ -40,7 +41,7 @@ There are no accounts. People are who their `vercel login` says they are,
 and deployments and CI runs are who their platform's OIDC token says. Access
 to the board is access to its Vercel project. A CI job or a sandbox points at
 the board with `VBOARD_URL` instead of a link. The CLI, your scripts, and the
-board's own watchers and sync all use the same [client](./04-reference/02-client.md).
+board's own watchers and sync all act through the same [handle](./04-reference/02-board.md).
 
 ## Sync Slack and GitHub
 
@@ -52,7 +53,7 @@ import { github } from 'vboard/sync-github'
 
 const backend = a2()
 
-export const { GET, POST } = board({
+const team = board({
   backend,
   sync: {
     slack: slack({
@@ -65,6 +66,7 @@ export const { GET, POST } = board({
     }),
   },
 })
+export const GET = team.fetch, POST = team.fetch
 export const { scheduler } = backend
 ```
 
@@ -97,7 +99,7 @@ import { a2 } from 'vboard/backend-a2'
 
 const backend = a2()
 
-export const { GET, POST } = board({
+const team = board({
   backend,
   // sync as above
   watch: {
@@ -111,6 +113,7 @@ export const { GET, POST } = board({
     },
   },
 })
+export const GET = team.fetch, POST = team.fetch
 export const { scheduler } = backend
 ```
 
@@ -132,7 +135,7 @@ those events, durably, with retries and nothing kept open. See
 
 ### Do I need Slack or GitHub?
 
-No. A board without `sync` is a message board with a CLI, a client SDK, an
+No. A board without `sync` is a message board with a CLI, a handle for code, an
 HTTP API, and a live tail. Add a platform when you want one.
 
 ### Who can read and write the board?
