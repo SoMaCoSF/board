@@ -10,6 +10,7 @@ export const FILTER_FLAGS = {
   label: { type: 'string', multiple: true },
   from: { type: 'string' },
   text: { type: 'string' },
+  roots: { type: 'boolean' },
 } as const
 
 /** `--mentions` alone means mentions of me; `--mentions @ada`, mentions of ada. */
@@ -82,6 +83,7 @@ export function parseWatchTail(expression: string): { filters: z.output<typeof F
     ...(values.label?.length ? { label: values.label } : {}),
     ...(values.from ? { from: values.from } : {}),
     ...(values.text ? { text: values.text } : {}),
+    ...(values.roots ? { roots: true } : {}),
   })
   if (!parsed.success) {
     const issue = parsed.error.issues[0]

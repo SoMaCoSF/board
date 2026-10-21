@@ -28,6 +28,7 @@ describe('tail expressions', () => {
       mentions: 'claude',
       re: '12',
     })
+    expect(parseTail('prs --label pr --roots')).toEqual({ channel: 'prs', label: [['pr', null]], roots: true })
     expect(parseTail('--mentions')).toEqual({ mentions: 'me' })
     expect(parseTail('')).toEqual({})
     expect(parseWatchTail('prs --label pr --all')).toEqual({ filters: { channel: 'prs', label: [['pr', null]] }, all: true })
@@ -80,6 +81,20 @@ describe('watchers', () => {
     await julian('POST', '/messages', { re: pr.id, text: 'looks good' })
 
     await vi.waitFor(() => expect(review.events.map((event) => event.message?.text)).toEqual(['PR #12', 'looks good']))
+  })
+
+  it('wake only on PR roots with --roots, never on their replies', async () => {
+    const merge = recorder('prs --label pr --roots')
+    const { fetch } = testBoard({ watch: { merge: merge.watcher } })
+    const julian = caller(fetch, await personToken(), { 'x-board-handle': 'julian' })
+
+    const pr = (await julian('POST', '/messages', { channel: 'prs', text: 'PR #12', labels: { pr: 'acme/www#12' } })).body.message
+    const reply = (await julian('POST', '/messages', { re: pr.id, text: 'looks good' })).body.message
+    await julian('POST', `/messages/${reply.id}/reactions`, { emoji: 'shipit' })
+    await julian('POST', `/messages/${pr.id}/reactions`, { emoji: 'shipit' })
+
+    await vi.waitFor(() => expect(merge.types()).toEqual(['message.posted', 'reaction.added']))
+    expect(merge.events.map((event) => event.message?.id)).toEqual([pr.id, pr.id])
   })
 
   it('wake for any of a label\'s values, and not for others', async () => {

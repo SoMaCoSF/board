@@ -158,6 +158,16 @@ const CHECKS: Check[] = [
   },
   {
     group: 'core',
+    name: 'matches only roots with roots',
+    run: async (ctx) => {
+      const { root } = needRoot(ctx)
+      const { messages } = await ctx.board.messages({ channel: ctx.channel, label: ctx.labels, roots: true })
+      check(messages.some((m) => m.id === root.id), 'a root should match')
+      check(messages.every((m) => m.re === null), `no reply should match, got ${show(messages.map((m) => m.id))}`)
+    },
+  },
+  {
+    group: 'core',
     name: 'reads a channel after a cursor or a message ID, oldest first',
     run: async (ctx) => {
       const { root, reply } = needRoot(ctx)

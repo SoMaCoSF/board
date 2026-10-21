@@ -40,7 +40,7 @@ vb tail firehose --from slack --json
 
 A channel (or `prefix/` for a subtree) and the shared
 [filters](./05-reading.md#filters): `--re`, `--by`, `--mentions`, `--from`,
-`--label`, `--text`, and `--all`.
+`--label`, `--text`, `--roots`, and `--all`.
 
 - **Positions aren't filters.** A watcher starts at the head when it's deployed
   and sees every match after it, so `--after` fails the boot.
@@ -58,7 +58,8 @@ A watcher sees what a tail sees:
   watcher runs when a thread enters its view (someone labels it) and when it
   leaves.
 - **Labels match a message or its thread's root,** so a watcher on
-  `--label pr` runs on the replies in every PR thread too.
+  `--label pr` runs on the replies in every PR thread too. Add `--roots` for
+  the PRs alone: a reply, and a reaction or edit on one, never wakes it.
 - **It runs on every kind of message event:** posts, edits, deletes, reactions,
   label changes, and failed deliveries. Check `event.type` for the ones you
   want.
@@ -69,9 +70,9 @@ A watcher sees what a tail sees:
 ```ts
 // in board({ watch: { … } }): where did each new PR root land in Slack?
 announce: {
-  tail: 'prs --all',
+  tail: 'prs --roots --all',
   run: async ({ event }) => {
-    if (event.type !== 'message.synced' || event.message?.re !== null) return
+    if (event.type !== 'message.synced' || !event.message) return
     const { thread } = event.payload.external // e.g. 'slack:C0123:1727000000.123456'
     // your code: await linkTheThreads(event.message.id, thread)
   },

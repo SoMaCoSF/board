@@ -130,6 +130,7 @@ export const hasCriteria = (filters: ParsedFilters) =>
   filters.mentions !== undefined ||
   filters.from !== undefined ||
   filters.text !== undefined ||
+  filters.roots === true ||
   (filters.label?.length ?? 0) > 0
 
 type LabelFilter = readonly [string, readonly string[] | null]
@@ -171,6 +172,7 @@ export function compileFilter(
       } else if (message.channel !== channel) return false
     }
     if (re !== undefined && message.id !== re && message.re !== re) return false
+    if (filters.roots && message.re !== null) return false
     if (by !== null && !covers(by, message.by.actor, message.by.principal)) return false
     if (mentions !== null && !message.mentions.some((id) => mentions.has(id))) return false
     if (filters.from !== undefined && (message.from ?? 'board') !== filters.from) return false
@@ -216,6 +218,7 @@ export function toMessageFilter(filters: ParsedFilters, context: { me: string | 
   if (filters.from !== undefined) out.from = filters.from
   if (filters.text !== undefined) out.text = filters.text.toLowerCase()
   if (filters.label?.length) out.labels = filters.label.map(([key, values]) => ({ key, values }))
+  if (filters.roots) out.roots = true
   return out
 }
 

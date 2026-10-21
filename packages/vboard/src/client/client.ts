@@ -168,9 +168,11 @@ function queryString(query: object): string {
   return text ? `?${text}` : ''
 }
 
-export type Filters = Omit<FiltersInput, 'label'> & {
+export type Filters = Omit<FiltersInput, 'label' | 'roots'> & {
   /** `{ status: 'open' }` or `['status=open']`. */
   label?: Record<string, string> | string[]
+  /** Only roots: a reply never matches, and a thread matches only by its root. */
+  roots?: boolean
 }
 
 export type BoardClient = ReturnType<typeof createBoardClient>

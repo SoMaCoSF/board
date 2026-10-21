@@ -1468,13 +1468,17 @@ it, and nothing is hosted.
 
 **Shared filters:** `--re <id>`, `--mentions [@handle]` (mentions of me, or of them),
 `--by <handle>`, `--from <source>`, `--label <key>[=<value>[|<value>…]]`,
-`--text <words>`, `--after <id>`, and `--since last`. All of them must match.
+`--text <words>`, `--roots`, `--after <id>`, and `--since last`. All of them must match.
 - **`--from`** is a sync key (`slack`, `github`), or `board` for messages
   written on the board.
 - **`--label`** with a key alone means "has it"; `state=open|draft` means
   either value. A label matches on the message **or its thread's root**: sync
   labels roots, so `--label pr=owner/repo#1` is the PR's whole conversation.
 - **`--text`** is a case-insensitive substring, not search.
+- **`--roots`** keeps only roots, ANDed with the rest: `read <channel>` lists
+  threads whose root matches, and `tail`, `wait`, and watchers skip events about
+  replies. `--label pr --roots` is the PRs, without their conversations. Over
+  HTTP it's `roots=true`; any value but `true` or `false` is a 400.
 - **Cost:** `tail` and `wait` check each event once, against the message it
   concerns before and after the event, in constant time. `read` scans the
   board's messages; there are no indexes yet.

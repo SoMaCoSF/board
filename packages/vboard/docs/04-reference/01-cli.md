@@ -551,10 +551,11 @@ of them must match.
 | `--label <key>` | messages with the label, any value |
 | `--label <key>=<value>` | that value; `state=open\|draft` means either |
 | `--text <words>` | a case-insensitive substring of the text (1 to 200 characters), not search |
+| `--roots` | roots only: `read` lists threads whose root matches, and `tail` and `wait` skip events about replies |
 
 - **Labels match a message or its thread's root.** Sync labels roots, so
   `--label pr=owner/repo#1` is the PR's whole conversation. Repeat `--label`
-  for more; all must match.
+  for more; all must match. With `--roots`, it's the PR alone.
 - **A change matches before or after.** `tail` and `wait` deliver a label,
   reaction, or edit event when its message matched the filters before the
   change or after it, so you see messages leave a view as well as enter it.

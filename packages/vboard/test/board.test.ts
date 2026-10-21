@@ -304,6 +304,26 @@ describe('messages', () => {
     expect(await texts('from=slack')).toEqual([])
     expect((await julian('GET', '/messages?label=Bad=1')).status).toBe(400)
   })
+
+  it('filters to roots, so a thread matches only by its root', async () => {
+    const { fetch } = testBoard()
+    const julian = caller(fetch, await personToken('u_julian'), { 'x-board-handle': 'julian' })
+    const { body: pr } = await julian('POST', '/messages', { channel: 'prs', text: 'PR #1: fix the build', labels: { pr: 'x/y#1' } })
+    await julian('POST', '/messages', { re: pr.message.id, text: 'the fix works' })
+    const { body: chat } = await julian('POST', '/messages', { channel: 'prs', text: 'standup' })
+    await julian('POST', '/messages', { re: chat.message.id, text: 'a fix landed' })
+
+    const texts = async (path: string) => {
+      const { body } = await julian('GET', path)
+      return (body.messages ?? body.threads.map((t: { message: unknown }) => t.message)).map((m: { text: string }) => m.text)
+    }
+    expect(await texts('/messages?label=pr&roots=true')).toEqual(['PR #1: fix the build'])
+    expect(await texts('/messages?label=pr&roots=false')).toEqual(['PR #1: fix the build', 'the fix works'])
+    expect(await texts('/threads?text=fix')).toEqual(['PR #1: fix the build', 'standup'])
+    expect(await texts('/threads?text=fix&roots=true')).toEqual(['PR #1: fix the build'])
+    for (const value of ['1', 'yes', ''])
+      expect((await julian('GET', `/messages?roots=${value}`)).status, `roots=${value}`).toBe(400)
+  })
 })
 
 describe('events', () => {
@@ -353,6 +373,18 @@ describe('events', () => {
       ['reaction.added', 'PR #1'],
     ])
     expect(body.events[1].actor).toMatchObject({ id: 'vercel:user:u_julian', name: 'julian' })
+  })
+
+  it("tails only a PR root's events with roots", async () => {
+    const { fetch } = testBoard()
+    const julian = caller(fetch, await personToken(), { 'x-board-handle': 'julian' })
+    const { body: pr } = await julian('POST', '/messages', { channel: 'prs', text: 'PR #1', labels: { pr: 'x/y#1' } })
+    const start = (await julian('GET', '/events?label=pr&roots=true&wait=0')).body.cursor
+    const { body: reply } = await julian('POST', '/messages', { re: pr.message.id, text: 'a comment on the PR' })
+    await julian('POST', `/messages/${reply.message.id}/reactions`, { emoji: 'eyes' })
+    await julian('POST', `/messages/${pr.message.id}/reactions`, { emoji: 'shipit' })
+    const { body } = await julian('GET', `/events?after=${start}&label=pr&roots=true`)
+    expect(body.events.map((e: { type: string; message: { text: string } }) => [e.type, e.message.text])).toEqual([['reaction.added', 'PR #1']])
   })
 
   it('streams server-sent events from a cursor', async () => {

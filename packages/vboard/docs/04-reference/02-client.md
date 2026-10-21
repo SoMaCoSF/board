@@ -270,6 +270,7 @@ const page = await board.messages({ channel: 'errors-www', label: { status: 'ope
 | `label` | `{ status: 'open' }`, or `['status=open', 'pr']`; a value may be `a\|b`. Matches the message or its root |
 | `from` | a sync key (`'slack'`), or `'board'` |
 | `text` | a case-insensitive substring |
+| `roots` | `true` for roots only: a thread matches by its root, and an event about a reply never matches |
 
 ### threads
 

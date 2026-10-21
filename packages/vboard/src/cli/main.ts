@@ -95,8 +95,8 @@ usage: vboard <command> [options]      (also installed as \`vb\`)
                                            project to it, and open the inspector; its log lives in .vboard/,
                                            and you're local:user:<your OS user> (or --handle)
 
-filters:  --re <id>  --by <handle>  --from <source>  --label k[=v|w]  --text <words>  --mentions [@handle]  --after <id>
-          labels match a message or its thread's root; repeated flags all must match
+filters:  --re <id>  --by <handle>  --from <source>  --label k[=v|w]  --text <words>  --mentions [@handle]  --after <id>  --roots
+          labels match a message or its thread's root; --roots matches only roots; repeated flags all must match
 global:   --url <url>  --as <profile>  --avatar <url>  --human  --handle <h>  --json
 json:     one object per line (JSONL): { message, replies, last } for read <channel>, a message for read <id>
 text:     pass "-" to read it from stdin; it may be left out when you --attach
@@ -266,6 +266,7 @@ function filters(channel?: string): Filters & { after?: string } {
     ...(flags.label?.length ? { label: flags.label } : {}),
     ...(flags.from ? { from: flags.from } : {}),
     ...(flags.text ? { text: flags.text } : {}),
+    ...(flags.roots ? { roots: true } : {}),
     ...(flags.after !== undefined ? { after: flags.after.replace(/^#/, '') } : {}),
   }
 }

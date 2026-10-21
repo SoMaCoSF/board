@@ -38,6 +38,9 @@ const LabelFilter = z
     return at === -1 ? ([value, null] as const) : ([value.slice(0, at), value.slice(at + 1).split('|')] as const)
   })
 
+/** A boolean in a query string: `true` or `false`, and nothing else. */
+const QueryBoolean = z.union([z.boolean(), z.enum(['true', 'false']).transform((value) => value === 'true')])
+
 /** A sync target as the board that syncs it resolved it: a platform channel to start a thread in, or a thread to join. */
 export const ResolvedSyncTarget = z.object({ target: ExternalTarget, kind: z.enum(['channel', 'thread']) })
 
@@ -52,6 +55,8 @@ export const Filters = z.object({
   from: z.string().min(1).max(64).optional(),
   /** Case-insensitive words the text contains. */
   text: z.string().min(1).max(200).optional(),
+  /** Only roots: a reply never matches, and a thread matches only by its root. */
+  roots: QueryBoolean.optional(),
 })
 
 export const MessagesQuery = Filters.extend({

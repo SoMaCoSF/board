@@ -292,6 +292,7 @@ without a scheduler answers 501 `no_scheduler`. See
 | `label` | `key` (has it), `key=value`, or `key=a\|b` (either). Repeat for AND. Matches the message or its thread's root |
 | `from` | a sync key (`slack`), or `board` for messages written on the board |
 | `text` | a case-insensitive substring, 1 to 200 characters |
+| `roots` | `true` for roots only, `false` for any message. On `/threads`, the root must match; on `/events`, an event about a reply never does |
 
 ## Event feed
 

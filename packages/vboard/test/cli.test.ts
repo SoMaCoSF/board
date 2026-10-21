@@ -299,6 +299,7 @@ describe('cli', () => {
     expect(open.stdout.trim().split('\n').map((line) => JSON.parse(line).message.id)).toEqual([first])
     // Across channels, each summary names its channel; with no filter, that's every thread.
     expect((await vb(['read', '--label', 'state=open'])).stdout).toContain(`#${first}  open-work  julian`)
+    expect(await vb(['read', 'open-work', '--text', 'note', '--roots', '--json'])).toMatchObject({ code: 0, stdout: '' })
     expect((await vb(['read'])).stdout).toMatch(/^all channels · \d+ threads · cursor \d+\n/)
 
     // Filters on a thread keep its root and the replies that match.
