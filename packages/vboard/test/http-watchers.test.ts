@@ -1,3 +1,4 @@
+import { idempotentId } from 'experimental-a2'
 import { describe, expect, it, vi } from 'vitest'
 import { board, type Watcher, type WatcherContext } from '../src/server/index.ts'
 import { vercelProject } from '../src/access/index.ts'
@@ -367,6 +368,112 @@ describe('pulling matches', () => {
     let match: Awaited<ReturnType<typeof pull>>[number] | undefined
     await vi.waitFor(async () => expect((match = (await pull())[0])).toBeDefined())
     expect((await marketing('POST', `/watchers/matches/${match!.id}/ack`, { lease: match!.lease })).status).toBe(404)
+  })
+})
+
+describe('once on http()', () => {
+  const repliesOf = async (julian: Awaited<ReturnType<typeof julianOn>>, id: string) =>
+    ((await julian('GET', `/messages/${id}`)).body.replies as { text: string; by: { actor: string } }[]).map((reply) => [reply.text, reply.by.actor])
+  const recordOf = async (t: ReturnType<typeof team>, actor: string, key: string) =>
+    (await t.remote.servers.at(-1)!.session(`once:${await idempotentId('vboard-once', actor, key)}`).history()).map((event: { type: string; payload: unknown }) => [event.type, event.payload])
+
+  it('keeps the records on the board it uses, and posts what comes after a fn a retry skips', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    let calls = 0
+    let runs = 0
+    let finished = false
+    const t = team({
+      fix: {
+        tail: 'feedback',
+        run: async ({ event, board, once }) => {
+          if (event.message?.re !== null) return
+          const root = event.message.id
+          await once('k', async () => {
+            calls++
+            await board.reply(root, 'A')
+          })
+          if (++runs === 1) throw new Error('cut short after once')
+          await board.reply(root, 'B')
+          finished = true
+        },
+      },
+    })
+    await t.project.register()
+    const julian = await julianOn(t.remote.fetch)
+    const root = (await julian('POST', '/messages', { channel: 'feedback', text: 'export is broken' })).body.message
+    await vi.waitFor(async () => {
+      await t.fireTimers()
+      expect(finished).toBe(true)
+    })
+    expect(await repliesOf(julian, root.id)).toEqual([
+      ['A', `${V0}+fix`],
+      ['B', `${V0}+fix`],
+    ])
+    expect(calls, 'fn ran once').toBe(1)
+    expect(await recordOf(t, `${V0}+fix`, 'k')).toEqual([['watch.once', { actor: `${V0}+fix`, key: 'k' }]])
+    error.mockRestore()
+  })
+
+  it('runs fn again on the next pull after a run whose lease ran out, and its reply lands once', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    let calls = 0
+    let done = 0
+    let release!: () => void
+    const killed = new Promise<void>((resolve) => (release = resolve))
+    const t = team({
+      fix: {
+        tail: 'feedback',
+        run: async ({ event, board, once }) => {
+          if (event.message?.re !== null) return
+          const root = event.message.id
+          await once('k', async () => {
+            await board.reply(root, 'on it')
+            if (++calls === 1) await killed
+          })
+          done++
+        },
+      },
+    })
+    await t.project.register()
+    const julian = await julianOn(t.remote.fetch)
+    const root = (await julian('POST', '/messages', { channel: 'feedback', text: 'export is broken' })).body.message
+    await vi.waitFor(() => expect(calls).toBe(1))
+    const pull = async () => (await caller(t.remote.fetch, await v0Token())('GET', '/watchers/matches')).body.matches as unknown[]
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(Date.now() + LEASE_MS + 1000)
+      await t.project.fetch(new Request(`${V0_URL}/wake`, { method: 'POST' }))
+      await vi.waitFor(() => expect(done).toBe(1))
+      expect(calls, 'fn ran again').toBe(2)
+      expect(await repliesOf(julian, root.id)).toEqual([['on it', `${V0}+fix`]])
+      expect(await recordOf(t, `${V0}+fix`, 'k')).toEqual([['watch.once', { actor: `${V0}+fix`, key: 'k' }]])
+      vi.setSystemTime(Date.now() + LEASE_MS + 1000)
+      expect(await pull(), 'the run that finished acked its match').toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+    release()
+    await vi.waitFor(() => expect(done).toBe(2))
+    expect(await recordOf(t, `${V0}+fix`, 'k'), 'the cut-short run recorded the same, once').toHaveLength(1)
+    expect(await repliesOf(julian, root.id)).toHaveLength(1)
+    error.mockRestore()
+  })
+
+  it("keeps a registrant's records by profile, and only for a token that registered", async () => {
+    const t = team()
+    expect((await caller(t.remote.fetch, await v0Token())('POST', '/watchers', { watch: { fix: { tail: 'feedback' } } })).status).toBe(200)
+    const as = async (profile?: string) => caller(t.remote.fetch, await v0Token(), profile === undefined ? {} : { 'x-board-profile': profile })
+    const fix = await as('fix')
+    const stands = { status: 200, body: { once: { key: 'review:7', result: { pr: 12 } } } }
+    expect(await fix('POST', '/watchers/once', { key: 'review:7', result: { pr: 12 } })).toEqual(stands)
+    expect(await fix('POST', '/watchers/once', { key: 'review:7', result: { pr: 13 } }), 'the first record stands').toEqual(stands)
+    expect(await fix('GET', '/watchers/once?key=review%3A7')).toEqual(stands)
+    expect(await (await as('other'))('GET', '/watchers/once?key=review%3A7')).toEqual({ status: 200, body: { once: null } })
+    expect((await (await as())('GET', '/watchers/once?key=review%3A7')).body).toMatchObject({ error: { code: 'no_profile' } })
+    const marketing = caller(t.remote.fetch, await deploymentToken(), { 'x-board-profile': 'fix' })
+    expect(await marketing('GET', '/watchers/once?key=review%3A7')).toMatchObject({ status: 404, body: { error: { code: 'no_registration' } } })
+    const client = { self: 'deploys', origin: { via: { kind: 'client' as const, name: 'deploys' } } }
+    await expect(t.remote.backend.once(client, { key: 'review:7' }, new AbortController().signal)).rejects.toMatchObject({ status: 403 })
   })
 })
 
