@@ -1,4 +1,5 @@
-import { piName } from "./agent.ts";
+import { byPi, byWatcher, piName } from "./agent.ts";
+import { scheduled } from "./kinds.ts";
 
 // When `review-pi` starts Pi reviewing a PR. A draft isn't ready for review, so its thread
 // waits: Pi reviews a PR when it opens ready, or when it leaves draft. The GitHub sync keeps a
@@ -32,3 +33,23 @@ export function reviewStarts(event: {
  */
 export const asksPi = (thread: string, text: string) =>
   /(^|[^\w/-])@?pi(?![\w/-])/i.test(text) || text.toLowerCase().includes(piName(thread));
+
+type Reply = {
+  re: string | null;
+  text: string;
+  by: { actor: string; principal: string; profile: string | null; session: string | null };
+  author: { bot?: true } | null;
+  schedule?: unknown;
+};
+
+/**
+ * Whether a reply in a PR thread wakes Pi: anyone's but a platform bot's (Vercel's deploy comments, CI), a
+ * watcher's, or Pi's own, though a reminder Pi scheduled for itself counts. In a draft, only that reminder or a
+ * reply asking Pi does. `draft` reads the thread, so it's asked last.
+ */
+export async function wakesReview(reply: Reply, draft: (thread: string) => Promise<boolean>) {
+  if (reply.re === null || reply.author?.bot || byWatcher(reply.by)) return false;
+  const own = byPi(reply.re, reply.by);
+  if (own && !scheduled(reply)) return false;
+  return own || asksPi(reply.re, reply.text) || !(await draft(reply.re));
+}

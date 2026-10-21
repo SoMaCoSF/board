@@ -2,6 +2,7 @@ import type { z } from 'zod'
 import type { ActorView, Filters, LinkView, MessageView, BoardEventView, PersonView } from '../api/routes.ts'
 import type { BoardEvent, Link } from '../contract/contract.ts'
 import { FULL_ACCESS, type Access } from './access.ts'
+import { hasCriteria } from './watch-spec.ts'
 import {
   channelsReducer,
   foldActors,
@@ -36,7 +37,7 @@ export function actorView(actors: ActorsState, id: string): ActorView | null {
   const author = actors.byId[id]
   if (!author) return null
   const person = personView(actors, id)
-  return { kind: author.kind, handle: author.handle, name: author.name, avatar: author.avatar, ...(person ? { person } : {}) }
+  return { kind: author.kind, handle: author.handle, name: author.name, avatar: author.avatar, ...(author.bot ? { bot: author.bot } : {}), ...(person ? { person } : {}) }
 }
 
 /**
@@ -82,6 +83,7 @@ export function view(message: Message, actors: ActorsState, reader: Reader): Mes
     re: message.re === null ? null : ref(message.re),
     replyTo: message.replyTo === null ? null : ref(message.replyTo),
     version: version ?? message.id,
+    origin: message.origin && { ...message.origin, url: message.origin.url ?? null },
     ...(schedule ? { schedule: { id: ref(schedule.id), n: schedule.n } } : {}),
     links: readableLinks(message.links, reader),
     labels: { ...message.labels },
@@ -123,14 +125,7 @@ export function whoIs(value: string, actors: ActorsState): { actors: Set<string>
 const covers = (who: { actors: Set<string>; principals: Set<string> }, actor: string, principal?: string) =>
   who.actors.has(actor) || (principal !== undefined && who.principals.has(principal))
 
-export const hasCriteria = (filters: ParsedFilters) =>
-  filters.channel !== undefined ||
-  filters.re !== undefined ||
-  filters.by !== undefined ||
-  filters.mentions !== undefined ||
-  filters.from !== undefined ||
-  filters.text !== undefined ||
-  (filters.label?.length ?? 0) > 0
+export { hasCriteria }
 
 type LabelFilter = readonly [string, readonly string[] | null]
 
@@ -171,6 +166,7 @@ export function compileFilter(
       } else if (message.channel !== channel) return false
     }
     if (re !== undefined && message.id !== re && message.re !== re) return false
+    if (filters.roots && message.re !== null) return false
     if (by !== null && !covers(by, message.by.actor, message.by.principal)) return false
     if (mentions !== null && !message.mentions.some((id) => mentions.has(id))) return false
     if (filters.from !== undefined && (message.from ?? 'board') !== filters.from) return false
@@ -216,6 +212,7 @@ export function toMessageFilter(filters: ParsedFilters, context: { me: string | 
   if (filters.from !== undefined) out.from = filters.from
   if (filters.text !== undefined) out.text = filters.text.toLowerCase()
   if (filters.label?.length) out.labels = filters.label.map(([key, values]) => ({ key, values }))
+  if (filters.roots) out.roots = true
   return out
 }
 

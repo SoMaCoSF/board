@@ -13,7 +13,7 @@ const DEEPSEC_TIMEOUT = "30m";
 export function security(options: { tellPi: typeof tellPi }): Watcher {
   return {
     // Not `--label pr`: a reaction on a non-PR thread gets an answer too.
-    tail: "dev",
+    tail: "dev --roots",
     run: async ({ event, board }) => {
       const root = event.message;
       if (
@@ -21,7 +21,7 @@ export function security(options: { tellPi: typeof tellPi }): Watcher {
         event.payload.emoji !== "security" ||
         event.payload.from !== "slack" ||
         !event.payload.by.principal.startsWith("slack:user:") ||
-        root?.re !== null
+        !root
       ) return;
       const pr = root.labels.pr;
       const number = prNumber(root.labels);

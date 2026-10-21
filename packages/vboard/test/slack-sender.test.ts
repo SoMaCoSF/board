@@ -37,7 +37,7 @@ function slackWith(scopes: string[] | null, existing: { ts: string; username?: s
         return { ts: '1700000000.000200' }
       },
     },
-    auth: { test: vi.fn(async () => (scopes ? { response_metadata: { scopes } } : {})) },
+    auth: { test: vi.fn(async () => ({ url: 'https://acme.slack.com/', ...(scopes ? { response_metadata: { scopes } } : {}) })) },
   }
   const provider = slack({ adapter, client: async () => client, channels: {} })
   return { provider, posted, viaAdapter, edits, client }
@@ -57,22 +57,23 @@ describe("an agent's messages in Slack", () => {
       }),
     ])
     expect(viaAdapter).toEqual([])
-    expect(sent).toEqual({ thread, message: '1700000000.000200' })
+    expect(sent).toEqual({ thread, message: '1700000000.000200', url: 'https://acme.slack.com/archives/C1/p1700000000000200?thread_ts=1700000000.000100&cid=C1' })
   })
 
   it('start a thread in a channel under its name', async () => {
     const { provider, posted } = slackWith(['chat:write.customize'])
     const sent = await provider.post('C1', 'channel', { markdown, as })
     expect(posted[0]).not.toHaveProperty('thread_ts')
-    expect(sent).toEqual({ thread: 'C1:1700000000.000200', message: '1700000000.000200' })
+    expect(sent).toEqual({ thread: 'C1:1700000000.000200', message: '1700000000.000200', url: 'https://acme.slack.com/archives/C1/p1700000000000200' })
   })
 
   it('go out as the app, label and all, when the app lacks chat:write.customize; asking Slack only once', async () => {
     const { provider, posted, viaAdapter, client } = slackWith(['chat:write'])
-    await provider.post(thread, 'thread', { markdown, as })
+    const sent = await provider.post(thread, 'thread', { markdown, as })
     await provider.post(thread, 'thread', { markdown, as })
     expect(posted).toEqual([])
     expect(viaAdapter.map((p) => p.message)).toEqual([{ markdown }, { markdown }])
+    expect(sent.url).toBe('https://acme.slack.com/archives/C1/p1700000000000300?thread_ts=1700000000.000100&cid=C1')
     expect(client.auth!.test).toHaveBeenCalledTimes(1)
   })
 

@@ -16,7 +16,7 @@ import { github } from 'vboard/sync-github'
 
 const backend = a2()
 
-export const { GET, POST } = board({
+const team = board({
   backend,
   sync: {
     github: github({
@@ -29,6 +29,7 @@ export const { GET, POST } = board({
     }),
   },
 })
+export const GET = team.fetch, POST = team.fetch
 export const { scheduler } = backend
 ```
 
@@ -65,6 +66,10 @@ vb reply 820 "good catch, fixed in a1b2c3"
 Drafts are mirrored right away; filter by `state=open` to see only ready PRs.
 Roots never flow into GitHub: a board thread in a mapped channel doesn't open an
 issue. Resolving review conversations isn't synced.
+
+Each message keeps its GitHub link as `origin.url`: the PR's or issue's for a
+root, a comment's `html_url` for a reply. A board reply's receipt has the
+`html_url` GitHub answered with as `external.url`.
 
 ## Events
 
@@ -128,8 +133,11 @@ is the PR's whole conversation. Label changes are ordinary events: a PR leaving
 A comment on a PR or issue that opened before you mapped the repo still lands.
 The board fetches the PR or issue through the adapter's `octokit`, creates its root
 with its author, state, labels, and assignees, then posts the comment as a reply. A
-failed fetch retries the event. A [function](./02-callbacks.md) that doesn't call
-`board.sync` skips the fetch too.
+failed fetch retries the event, and after five tries the comment lands as a root of
+its own, so the PR's later events keep syncing. A [function](./02-callbacks.md) that
+doesn't call `board.sync`, or passes it
+[`knownThreadsOnly`](./02-callbacks.md#overrides), skips the fetch too, and the
+comment stays on GitHub.
 
 ## Vercel's deployment comment
 

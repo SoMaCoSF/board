@@ -486,7 +486,7 @@ describe('schedules', () => {
         vi.setSystemTime(T0)
         const queue = fakeQueue()
         const board = testBoard({ scheduler: queue.scheduler })
-        if (make === 'client') await board.client('ops').schedule('ops', { text: 'from ops', in: '1h' })
+        if (make === 'client') await board.as('ops').schedule('ops', { text: 'from ops', in: '1h' })
         else expect((await caller(board.fetch, await deploymentToken('board', PROJECT_ID))('POST', '/schedules', { channel: 'ops', text: 'from prod', in: '1h' })).status).toBe(201)
         expect(await sendAndRead(board.fetch, queue), make).toMatchObject({ state: 'done', sent: 1 })
       }

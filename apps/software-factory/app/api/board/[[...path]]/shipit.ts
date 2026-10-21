@@ -7,7 +7,7 @@ const MERGE_EMOJI = new Set(["shipit", "squirrel", "approved"]);
 
 export function shipit(options: GitHubOptions & { tellPi: typeof tellPi }): Watcher {
   return {
-    tail: "dev --label pr",
+    tail: "dev --label pr --roots",
     run: async ({ event }) => {
       const root = event.message;
       if (
@@ -15,7 +15,7 @@ export function shipit(options: GitHubOptions & { tellPi: typeof tellPi }): Watc
         !MERGE_EMOJI.has(event.payload.emoji) ||
         event.payload.from !== "slack" ||
         !event.payload.by.principal.startsWith("slack:user:") ||
-        root?.re !== null
+        !root
       ) return;
       const number = prNumber(root.labels);
       if (!number) return;

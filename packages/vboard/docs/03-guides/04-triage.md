@@ -112,7 +112,7 @@ const backend = a2({
   scheduler: vercelQueues({ topic: 'vboard' }),
 })
 
-export const { GET, POST } = board({
+const team = board({
   backend,
   // sync: { slack: slack({ … }) }, mirroring Slack's #firehose into `firehose`
   watch: {
@@ -131,6 +131,7 @@ export const { GET, POST } = board({
     },
   },
 })
+export const GET = team.fetch, POST = team.fetch
 export const { scheduler } = backend
 ```
 

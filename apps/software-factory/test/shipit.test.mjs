@@ -104,7 +104,6 @@ test("shipit, its Slack squirrel alias, and :approved: merge a PR root for any r
 });
 
 for (const [name, change] of [
-  ["a reaction on a reply", e => { e.message.re = 12; }],
   ["a removed reaction", e => { e.type = "reaction.removed"; }],
   ["a different emoji", e => { e.payload.emoji = "merged"; }],
   ["a board reaction", e => { e.payload.from = null; }],

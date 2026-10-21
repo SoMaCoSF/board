@@ -1,4 +1,4 @@
-/** A2 dead-letters an event after this many failed runs, and `vb stuck retry` gives it as many again. */
+/** A2 dead-letters an event after this many failed runs. */
 export const A2_TRIES = 10
 
 /**

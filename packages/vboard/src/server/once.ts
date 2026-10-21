@@ -1,17 +1,9 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { idempotentId } from 'experimental-a2'
+import { derivedId } from '../client/ids.ts'
 import type { OnceView } from '../api/routes.ts'
 import { ONCE_RESULT_BYTES_MAX, OnceKey, utf8Bytes, type Json } from '../contract/schemas.ts'
 import type { WatcherContext } from './watch.ts'
-
-/**
- * Where an in-process client's derived write IDs come from: its trigger, and a scope inside it.
- * Each source counts its own writes, so a `fn` that a retry skips shifts nothing after it.
- */
-export type Writes = { readonly trigger: string; readonly scope: readonly string[]; made: number }
-
-/** A client's writes outside any `once`: `(trigger, 'client', n)`, counted from 0. */
-export const writesOf = (trigger: string): Writes => ({ trigger, scope: [], made: 0 })
+import type { Writes } from './serve.ts'
 
 /**
  * The `once` whose `fn` is running, tagged with the run that owns it. Anything else that inherits
@@ -23,7 +15,7 @@ const inside = new AsyncLocalStorage<{ run: Writes; writes: Writes }>()
 export function nextWriteId(run: Writes): Promise<string> {
   const current = inside.getStore()
   const writes = current?.run === run ? current.writes : run
-  return idempotentId('vboard-inbound', writes.trigger, 'client', ...writes.scope, String(writes.made++))
+  return derivedId('vboard-inbound', writes.trigger, 'client', ...writes.scope, String(writes.made++))
 }
 
 /** Where a watcher's once records live: its backend's `once` and `recordOnce`, called as the watcher. */

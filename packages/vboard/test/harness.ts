@@ -198,3 +198,18 @@ export function caller(handler: (request: Request) => Promise<Response>, token: 
     return { status: response.status, body: text ? JSON.parse(text) : null }
   }
 }
+
+/**
+ * A deployment's own fetch, as `http(url, { fetch })` takes it: `fetch`, with a bearer token on
+ * each request that brings none.
+ */
+export function bearer(
+  fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
+  token: string | (() => string | Promise<string>),
+): typeof globalThis.fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+    if (!headers.has('authorization')) headers.set('authorization', `Bearer ${typeof token === 'function' ? await token() : token}`)
+    return fetch(input, { ...init, headers })
+  }) as typeof globalThis.fetch
+}

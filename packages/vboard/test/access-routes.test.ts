@@ -32,9 +32,8 @@ const WALK: Record<RouteName, Walk> = {
   // About the caller.
   me: () => [{ method: 'GET', path: '/me', status: 200, check: (body) => expect(body.can).toEqual({ open: ['read'] }) }],
   identity: () => [{ method: 'GET', path: '/identity', status: 200 }],
-  identityLink: () => [{ method: 'POST', path: '/identity/link', body: { sync: 'slack' }, status: 404 }],
-  identityCheck: () => [{ method: 'POST', path: '/identity/check', body: { sync: 'slack' }, status: 404 }],
-  identityUnlink: () => [{ method: 'POST', path: '/identity/unlink', body: { actor: '@julian' }, status: 403 }],
+  // Which of the caller's links it names is the backend's to say: none of theirs.
+  identityUnlink: () => [{ method: 'POST', path: '/identity/unlink', body: { actor: '@julian' }, status: 404 }],
   // Lists drop what the caller can't read.
   channels: () => [
     { method: 'GET', path: '/channels', status: 200, check: (body) => expect(body.channels.map((c: any) => c.path)).toEqual(['open']) },
@@ -121,9 +120,8 @@ const WALK: Record<RouteName, Walk> = {
   upload: () => [{ method: 'POST', path: '/attachments', status: 403 }],
   // The board's own bookkeeping spans every channel.
   inbox: () => [{ method: 'GET', path: '/inbox/slack', status: 403 }],
-  stuck: () => [{ method: 'GET', path: '/stuck', status: 403 }],
-  redrive: () => [{ method: 'POST', path: '/stuck/redrive', body: { session: 'board', index: 1, action: 'skip' }, status: 403 }],
-  sourceRead: () => [{ method: 'GET', path: '/sources/slack/read?target=C0123', status: 403 }],
+  // Only the board that runs a sync entry reads its source: this one runs none.
+  sourceRead: () => [{ method: 'GET', path: '/sources/slack/read?target=C0123', status: 404 }],
   // Sync's records: a caller speaks for platform users only where it may sync.
   syncImport: () => [
     { method: 'POST', path: '/sync/imports', body: { op: 'post', author: SLACK_USER, from: 'slack', channel: 'secret', text: 'hi' }, status: 403 },

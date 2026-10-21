@@ -59,7 +59,7 @@ For a deployed preview, set `DEPLOYMENT_URL` to its full HTTPS URL, and
 optionally `EXPECTED_COMMIT` to the PR's head SHA to check provenance. The smoke
 check makes unauthenticated requests, rejects redirects, checks the tarball's
 integrity, and installs its URL in a temporary npm project with its required
-peer, `experimental-a2`. It imports `vboard` and `vboard/client`, runs
+peer, `experimental-a2`. It imports `vboard` and `vboard/backend-http`, runs
 `vb --version`, and checks that the docs and the inspector's bundle shipped.
 
 The build packs `packages/vboard` with `pnpm pack`, whose `prepack` builds it.

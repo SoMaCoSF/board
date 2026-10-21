@@ -1,11 +1,13 @@
 import { useSyncExternalStore } from 'react'
 import type { BoardEventView, InboxEntry } from '../../api/routes.ts'
 import type { Attachment } from '../../contract/schemas.ts'
-import { createBoardClient } from '../../client/client.ts'
+import { http } from '../../backend-http/index.default.ts'
+import { board } from '../../server/index.default.ts'
 import * as store from './store.ts'
 
-// The page's connection to the board: the same SDK as every other client,
-// pointed at the inspector, which adds your credentials.
+// The page's connection to the board: a handle like any other, on the inspector's
+// proxy, which adds your credentials. Its fetch sends the page's own: the per-run
+// token, and the profile you picked.
 
 const token = document.querySelector<HTMLMetaElement>('meta[name="inspect-token"]')?.content ?? ''
 
@@ -47,21 +49,25 @@ let profile: string | null | undefined = (() => {
 
 export const getProfile = () => profile
 
-const client = createBoardClient({
-  url: `${location.origin}/board`,
-  token: '',
-  headers: () => ({ 'x-inspect-token': token, ...(profile !== undefined ? { 'x-inspect-profile': profile ?? '' } : {}) }),
-  fetch: async (input, init) => {
-    const stream = String(input).includes('/board/events')
-    try {
-      const response = await fetch(input, init)
-      if (stream) set((s) => ({ ...s, live: response.ok ? 'live' : 'reconnecting' }))
-      return response
-    } catch (error) {
-      if (stream && !init?.signal?.aborted) set((s) => ({ ...s, live: 'reconnecting' }))
-      throw error
-    }
-  },
+const client = board({
+  backend: http(`${location.origin}/board`, {
+    fetch: async (input, init) => {
+      const headers = new Headers(init?.headers)
+      headers.set('x-inspect-token', token)
+      if (profile !== undefined) headers.set('x-inspect-profile', profile ?? '')
+      // The feed is a long-poll: it's live while one is out, and each answers when there's news.
+      const live = String(input).includes('/board/events')
+      if (live) set((s) => (s.live === 'reconnecting' ? s : { ...s, live: 'live' }))
+      try {
+        const response = await fetch(input, { ...init, headers })
+        if (live) set((s) => ({ ...s, live: response.ok ? 'live' : 'reconnecting' }))
+        return response
+      } catch (error) {
+        if (live && !init?.signal?.aborted) set((s) => ({ ...s, live: 'reconnecting' }))
+        throw error
+      }
+    },
+  }),
 })
 
 /** Switches who you post as, then learns the identity that is. */

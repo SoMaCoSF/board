@@ -13,7 +13,7 @@ const backend = a2({
   // store and scheduler as in Mounting
 })
 
-export const { GET, POST } = board({
+const team = board({
   backend,
   // sync as in Sync
   watch: {
@@ -26,6 +26,7 @@ export const { GET, POST } = board({
     },
   },
 })
+export const GET = team.fetch, POST = team.fetch
 export const { scheduler } = backend
 ```
 
@@ -40,7 +41,7 @@ vb tail firehose --from slack --json
 
 A channel (or `prefix/` for a subtree) and the shared
 [filters](./05-reading.md#filters): `--re`, `--by`, `--mentions`, `--from`,
-`--label`, `--text`, and `--all`.
+`--label`, `--text`, `--roots`, and `--all`.
 
 - **Positions aren't filters.** A watcher starts at the head when it's deployed
   and sees every match after it, so `--after` fails the boot.
@@ -58,22 +59,27 @@ A watcher sees what a tail sees:
   watcher runs when a thread enters its view (someone labels it) and when it
   leaves.
 - **Labels match a message or its thread's root,** so a watcher on
-  `--label pr` runs on the replies in every PR thread too.
+  `--label pr` runs on the replies in every PR thread too. Add `--roots` for
+  the PRs alone: a reply, and a reaction or edit on one, never wakes it.
 - **It runs on every kind of message event:** posts, edits, deletes, reactions,
   label changes, and failed deliveries. Check `event.type` for the ones you
   want.
 - **`--all` adds delivery receipts.** A tail hides `message.synced` and
   `message.files_synced` without it. A watcher that needs to know where a
-  message landed adds `--all` and reads `payload.external`.
+  message landed adds `--all` and reads `payload.external`: the platform
+  thread and message, and `url`, the copy's link there (null where the
+  platform has none).
 
 ```ts
 // in board({ watch: { … } }): where did each new PR root land in Slack?
 announce: {
-  tail: 'prs --all',
+  tail: 'prs --roots --all',
   run: async ({ event }) => {
-    if (event.type !== 'message.synced' || event.message?.re !== null) return
-    const { thread } = event.payload.external // e.g. 'slack:C0123:1727000000.123456'
-    // your code: await linkTheThreads(event.message.id, thread)
+    if (event.type !== 'message.synced' || !event.message) return
+    const { thread, url } = event.payload.external
+    // thread: 'slack:C0123:1727000000.123456'
+    // url: 'https://acme.slack.com/archives/C0123/p1727000000123456'
+    // your code: await linkTheThreads(event.message.id, thread, url)
   },
 },
 ```
@@ -130,15 +136,17 @@ runs.
 
 ## Writing back
 
-`board` is an in-process client, the same type `createClient` returns, with no
-HTTP and no token.
+`board` is the board's [handle](./01-mounting.md#the-handle), acting as the
+watcher, with no HTTP and no token.
 
 - **It writes as the watcher,** `vboard:watch:<id>`, with the id as its handle.
   Its writes sync like anyone's.
-- **Its posts and replies get IDs derived from the match,** so a retried `run`
-  doesn't post twice, as long as it writes in the same order. Writes made in
-  parallel (with `Promise.all`) need an explicit `id`. What it posts inside
-  [`once`](#doing-it-once) counts apart, so skipping it shifts nothing after.
+- **Its posts, replies, and schedules get IDs derived from the match,** so a
+  retried `run` doesn't post or schedule twice, as long as it writes in the same
+  order. Writes made in parallel (with `Promise.all`) need an explicit `id`,
+  which is the watcher's own. What it writes inside [`once`](#doing-it-once)
+  counts apart, so skipping it shifts nothing after. Labels, reactions, and
+  edits need none: writing them again changes nothing.
 - **A watcher's own writes never wake it.** Writes by other watchers do, so two
   watchers that answer each other loop. That includes what its `failed` hook
   writes.
@@ -175,7 +183,8 @@ agent: {
 - **It's at least once.** The record lands after the function returns, so a
   run cut short in between, or a function that throws, runs it again on the
   next try. Make what it does safe to repeat, or keyed where it lands. Its
-  posts and replies already are: they get IDs from the match and the key.
+  posts, replies, and schedules already are: they get IDs from the match and
+  the key.
 - **Nothing locks a key.** Two runs that reach one key at the same moment both
   run the function, and both get the first one's result. A thread's events run
   one at a time, so a key that names its thread runs it once.
@@ -245,7 +254,7 @@ board it uses keeps the log and matches the tails, and this one runs `run`:
 import { board } from 'vboard'
 import { http } from 'vboard/backend-http'
 
-export const { GET, POST } = board({
+const team = board({
   backend: http('https://board.example.com/api/board'),
   watch: {
     fix: {
@@ -258,10 +267,11 @@ export const { GET, POST } = board({
     },
   },
 })
+export const GET = team.fetch, POST = team.fetch
 ```
 
 - **It registers its watchers' tails there,** as itself: on its first use if
-  it knows its URL (a call from your code, or a request), when anyone sends
+  it knows its URL (a call from its handle, or a request), when anyone sends
   `POST /watchers` to it, and when a wake-up shows the other board holds an
   older set. Nothing happens before that: creating the board does no I/O. On Vercel, its URL is its
   production domain, or a preview's own; a request's `Host` never counts. A
@@ -275,8 +285,9 @@ export const { GET, POST } = board({
   event matches and again when it's pulled.
 - **Its writes are by the deployment, with the watcher's ID as its profile:**
   `vercel:project:prj_v0:production+fix`. IDs are profile names, so they start
-  with a letter and use up to 32 letters, numbers, and hyphens. Its posts get
-  IDs derived from the match, so a retried `run` doesn't post twice.
+  with a letter and use up to 32 letters, numbers, and hyphens. Its posts and
+  schedules get IDs derived from the match, so a retried `run` doesn't post or
+  schedule twice.
 - **`once` keeps its records on the other board,** under that same actor,
   through `GET /watchers/once` and `POST /watchers/once`, so that board needs
   a vboard that serves them. Records outlive a deploy, and a run whose lease

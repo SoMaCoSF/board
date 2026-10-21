@@ -12,6 +12,8 @@ export type WebhookPayload =
       text: string
       user: string
       name?: string
+      /** The platform marks the author a bot. */
+      bot?: boolean
       raw?: unknown
       /** Files on the message; their bytes are what `served` holds at each `url`. */
       files?: { name: string; mimeType: string; url: string; size?: number }[]
@@ -34,7 +36,7 @@ export function fakePlatform(name: string, extend: (adapter: Adapter) => void = 
   /** What the platform hands over for a file URL: the bytes, or an error to throw. */
   const served = new Map<string, Uint8Array | Error>()
   const fetches: string[] = []
-  const author = (user: string, name = user) => ({ userId: user, userName: name, fullName: name, isBot: false, isMe: false })
+  const author = (user: string, name = user, bot = false) => ({ userId: user, userName: name, fullName: name, isBot: bot, isMe: false })
   const adapter: Adapter = createMockAdapter(name, {
     name,
     userName: 'vboard',
@@ -60,7 +62,7 @@ export function fakePlatform(name: string, extend: (adapter: Adapter) => void = 
           body.threadId,
           createTestMessage(body.id, body.text, {
             threadId: body.threadId,
-            author: author(body.user, body.name),
+            author: author(body.user, body.name, body.bot),
             ...(body.raw ? { raw: body.raw } : {}),
             ...(body.files
               ? {

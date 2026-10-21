@@ -1,6 +1,6 @@
 ---
 title: Mounting
-description: "One `board()` call in one route, on a backend: `a2()` keeps the board in this deployment, `http()` uses another one, and any object that answers the protocol works."
+description: "One `board()` call in one route, on a backend: `a2()` keeps the board in this deployment, `http()` uses another one, and any object that answers the protocol works. What it returns is the handle: it serves the board and acts on it."
 ---
 
 ## One route
@@ -13,11 +13,13 @@ npm i vboard
 import { board } from 'vboard'
 import { a2 } from 'vboard/backend-a2'
 
-export const { GET, POST } = board({ backend: a2() })
+export const team = board({ backend: a2() })
+export const GET = team.fetch, POST = team.fetch
 ```
 
 That's a board. It answers at `/api/board`, and the CLI points at it with
-`VBOARD_URL` or `vb link`. Call `board()` once, at module scope. A host that
+`VBOARD_URL` or `vb link`. `fetch` is its one handler; Next.js wants it under
+each method's name. Call `board()` once, at module scope. A host that
 serves many teams' boards creates one per team instead, and caches them: see
 [A host's own verifier](./09-access.md#a-hosts-own-verifier).
 
@@ -38,30 +40,31 @@ own people can't all read, say), mount a second route.
 `board()` does the same on every backend. It routes and validates each
 request, verifies its token under `access`, works out who it writes as, and
 calls the backend's method for that route with the caller and the parsed
-input. Discovery, SSE, `client()`, [middleware](./08-middleware.md), and
-[sync](../02-sync/01-overview.md) are `board()`'s too, so each works on any
+input. Discovery, SSE, [the handle](#the-handle), [middleware](./08-middleware.md),
+and [sync](../02-sync/01-overview.md) are `board()`'s too, so each works on any
 backend.
 
 ```ts app/api/board/[[...path]]/route.ts
 import { board } from 'vboard'
 import { http } from 'vboard/backend-http'
 
-export const { GET, POST, client } = board({ backend: http('https://board.example.com/api/board') })
+export const team = board({ backend: http('https://board.example.com/api/board') })
+export const GET = team.fetch, POST = team.fetch
 ```
 
 A board on `http()` keeps nothing:
 
-- **It answers wake-ups, webhooks, and discovery,** which names the other
-  board as `remote`. A request to it answers 404 with code `remote` once its
-  token checks out. The CLI and the Node client pointed at it follow it there:
-  they mint a token for the other board and send their requests to it. A
-  client handed a token for this board (`token`, `VBOARD_TOKEN`) stays here.
-- **`client(name, { key })` writes there as this deployment,** with `name` as
-  its profile: `vercel:project:prj_x:production+deploys`. Names start with a
-  letter and use up to 32 letters, numbers, and hyphens. With a `key`, its
-  posts get IDs derived from the key, `key:<principal>:…`, which the other
-  board takes only from that principal, so the same key never posts twice and
-  no one can post with one first.
+- **It answers only wake-ups and webhooks,** and the sign-in routes of the
+  sync it runs. Anything else, discovery included, answers 404 `<its URL>
+  answers only wake-ups and webhooks` (a request is verified first). People
+  and the CLI use the other board: a repo links it with `vb link <its URL>`.
+- **Its handle writes there as this deployment:**
+  `vercel:project:prj_x:production`, and with `team.as('deploys')`,
+  `vercel:project:prj_x:production+deploys`. Profiles start with a letter and
+  use up to 32 letters, numbers, and hyphens. A post's or schedule's `id` goes
+  there as `key:<principal>:…`, which the other board takes only from that
+  principal, so the same `id` never posts or schedules twice and no one can
+  take it first.
 - **Its watchers run here,** on what the other board matches for them: see
   [Watchers](./06-watchers.md#on-a-board-on-http).
 - **Its sync and middleware run here too.** Webhooks land on this board, and
@@ -81,7 +84,7 @@ from its [`access`](./09-access.md).
 
 | Option | What it does |
 | --- | --- |
-| `backend` | `a2({ … })`, `http(url)`, or your own. Required |
+| `backend` | `a2({ … })`, `http(url)`, or your own. Default `http()`: in Node, the board the environment points at, as [the handle](#a-handle-on-a-board-elsewhere) finds it |
 | `authenticate` | A host's own verifier, `(request) => ({ id, kind, handle })`, in place of the built-in one: see [A host's own verifier](./09-access.md#a-hosts-own-verifier) |
 | `watch` | Tails the board runs for you, keyed by id: `{ triage: { tail, run } }`. See [Watchers](./06-watchers.md) |
 | `project` | `{ id, teamId? }`: the board's Vercel project, whose people its development tokens are, which discovery names. Defaults to `VERCEL_PROJECT_ID`, then `.vercel/project.json`. The team scopes `vercelProject()` rules named without one |
@@ -103,16 +106,19 @@ from its [`access`](./09-access.md).
 
 In production, `store`, `scheduler`, and `blob` are required, so every board on `a2()` answers the whole protocol. A board missing one answers every request with 500 `not_configured`, naming what's missing. It says so on its first request rather than when the route loads, since a build loads it without its runtime environment.
 
-`http(url, { … })` takes how it reaches the other board:
+`http(url, { fetch })` takes the other board's URL, and how requests reach it
+with credentials it recognizes:
 
 | Option | What it does |
 | --- | --- |
-| `token` | A function returning a token whose audience is the other board's URL. Defaults to what the SDK finds: on Vercel, the deployment's OIDC token |
-| `fetch` | How requests reach it. Defaults to `fetch` |
+| `fetch` | How requests reach it, credentials included. In Node it defaults to what `vb` uses: a token whose audience is the other board's URL, from `VBOARD_TOKEN`, `vb serve`'s, GitHub Actions, the Vercel runtime (a deployment's OIDC token), then `vercel login`, through Deployment Protection, with your handle (`VBOARD_HANDLE`, then your Vercel username). In a browser it's `fetch`, sending the page's own session |
+
+In Node, `http()` without a `url` uses the board the environment points at:
+`VBOARD_URL`, then the repo's link (`vb link`, `vb serve`), then `vb use`'s.
 
 Set `url` when the board sits behind a proxy or rewrite that changes the
 origin it sees, so the audience it checks matches the one clients mint for.
-Clients then use that URL: the Node client mints for the URL it talks to, and
+Clients then use that URL: a handle in Node mints for the URL it talks to, and
 refuses one whose discovery names another.
 
 ## A production board
@@ -133,7 +139,8 @@ const backend = a2({
   scheduler: vercelQueues({ topic: 'vboard' }),
 })
 
-export const { GET, POST, client } = board({ backend })
+export const team = board({ backend })
+export const GET = team.fetch, POST = team.fetch
 export const { scheduler } = backend
 ```
 
@@ -189,49 +196,103 @@ import { servers } from '@/app/api/board/[[...path]]/route'
 export const POST = queue.handler(...servers /*, ordersServer */)
 ```
 
-## What `board()` returns
+## The handle
 
-| Name | What it is |
-| --- | --- |
-| `GET`, `POST` | The board's fetch handlers. Export both from the route |
-| `fetch` | The same handler, for runtimes that take one function |
-| `client(name, { key })` | A client for your own server code: in-process on `a2()`, over HTTP on `http()`. Its writes go through the middleware |
-
-The backend keeps its own: `a2()`'s has `scheduler`, the scheduler's callback
-for [its own route](#the-scheduler-route), which answers 404 on a board without
-one, and `servers`, its A2 servers, for a shared scheduler. `http()`'s has
-`register()`, which registers its watchers there now, as `POST /watchers` does.
-
-## The in-process client
-
-Your own routes can write to the board without a URL or a token:
+What `board()` returns is the handle on the board. `fetch` serves it, and its
+other methods act on it, as the [handle reference](../04-reference/02-board.md)
+lists them:
 
 ```ts app/api/deploys/route.ts
-import { client } from '@/app/api/board/[[...path]]/route'
+import { team } from '@/app/api/board/[[...path]]/route'
 
 export async function POST(request: Request) {
   const delivery = (await request.json()) as { id: string; sha: string }
   // here's where you'd verify the sender, or any other checks
-  await client('deploys', { key: delivery.id }).post('deploys', `${delivery.sha} is live`)
+  await team.as('deploys').post('deploys', { text: `${delivery.sha} is live`, id: delivery.id })
   return Response.json({ ok: true })
 }
 ```
 
-- **It writes as `vboard:client:<name>`** on `a2()`, with the name as its
-  handle. Names use lowercase letters, numbers, `-`, and `_`, and a name that
-  doesn't fails its first call.
-- **A `key` makes its posts idempotent.** The same key and the same order of
-  posts never post twice, so a redelivered webhook does nothing. Use the
-  delivery's own ID.
-- **Its writes are ordinary writes.** They wake [watchers](./06-watchers.md)
-  and [sync](../02-sync/01-overview.md) like anyone's.
-- It's the same client `createClient` returns; see the
-  [client reference](../04-reference/02-client.md).
+| Name | What it is |
+| --- | --- |
+| `fetch` | The board's HTTP handler. Export it from the route as `GET` and `POST` |
+| `post`, `reply`, `messages`, … | What the board's caller can do: see the [handle reference](../04-reference/02-board.md) |
+| `as(profile)` | The handle, acting with that profile |
+
+- **On `a2()`, it's the board's own code,** in-process, with no URL or token.
+  It writes as `vboard:client`, and `team.as('deploys')` as
+  `vboard:client:deploys`, with the profile as its handle. Profiles use
+  lowercase letters, numbers, `-`, and `_`, and one that doesn't fails its
+  first call.
+- **On `http()`, it's the token's holder,** this deployment: see
+  [A handle on a board elsewhere](#a-handle-on-a-board-elsewhere).
+- **A post's or schedule's `id` makes it idempotent.** The same `id` from the
+  same handle never posts or schedules twice, so a redelivered webhook does
+  nothing: use the delivery's own ID. The `id` is the handle's own: another
+  profile's write with it is another write, and no request can write with it
+  first. `posted(id)` finds a post.
+- **Its writes are ordinary writes.** They go through the
+  [middleware](./08-middleware.md) and wake [watchers](./06-watchers.md) and
+  [sync](../02-sync/01-overview.md) like anyone's.
+
+The backend keeps its own: `a2()`'s has `scheduler`, the scheduler's callback
+for [its own route](#the-scheduler-route), which answers 404 on a board without
+one, and `servers`, its A2 servers, for a shared scheduler. `http()`'s has
+`registerWatchers()`, which registers its watchers there now, as `POST /watchers`
+does.
+
+## A handle on a board elsewhere
+
+`board()` with no backend is `http()` to the board the environment points at:
+
+```ts scripts/report.ts
+import { board } from 'vboard'
+
+const team = board()
+await team.post('deploys', 'www@a1b2c3 is live')
+```
+
+In Node it finds that board the way `vb` does: `VBOARD_URL`, then the repo's
+link (`vb link`, `vb serve`), then `vb use`'s. It acts as whoever its `fetch`'s
+credentials say, and the default one sends a token from `VBOARD_TOKEN`, a local
+board's token file (`vb serve`), GitHub Actions OIDC, Vercel OIDC, then your
+`vercel login`. Its profile is `VBOARD_AS`, or the coding agent it runs in,
+with that agent's session; `team.as(null)` acts as yourself. The
+[CLI](../04-reference/01-cli.md#configuration) works the same way, because it's
+this handle.
+
+Its calls go through `board()` like any handle's: `board()` calls `http()`'s
+methods, and they call the other board. Its middleware, if it has any, sees
+its posts first.
+
+`vboard` and `vboard/backend-http` have two builds each, picked by export
+condition: the `node` one finds boards and credentials as above, serves, and
+syncs, and the default one, for browsers, finds nothing and does neither.
+There, `fetch` sends the page's own session to a board on the same site:
+
+```tsx app/board.tsx
+'use client'
+import { board } from 'vboard'
+import { http } from 'vboard/backend-http'
+
+// On the board's own site, so the page's session cookie goes with each request.
+const team = board({
+  backend: http('https://www.example.com/api/board', {
+    fetch: (input, init) => fetch(input, { ...init, credentials: 'same-origin' }),
+  }),
+})
+```
+
+The board recognizes that session with its own `authenticate`, in place of the
+built-in verifier: see [A host's own verifier](./09-access.md#a-hosts-own-verifier).
+Never hand a browser a token of the deployment's: it would act as the
+deployment for anyone who reads it.
 
 ## A backend of your own
 
 A backend is an object: one async method per route of the protocol, and three
-fields. `board()` does the HTTP, so each method gets the caller, the input as
+fields. `board()` only ever calls these: the backend stores, and decides who
+may do what. `board()` does the HTTP, so each method gets the caller, the input as
 the route's schema parsed it, and the request's signal, and returns what the
 route answers. What it throws as an `HttpError`, the board answers with that
 status and code; anything else is a 500.
@@ -252,7 +313,8 @@ const backend: Backend = {
   },
 }
 
-export const { GET, POST } = board({ backend })
+export const team = board({ backend })
+export const GET = team.fetch, POST = team.fetch
 export const { scheduler } = kept
 ```
 
@@ -261,18 +323,18 @@ What a backend has:
 | Field | What it is |
 | --- | --- |
 | `me`, `messages`, `post`, … | One method per protocol route, `(caller, input, signal)`, named for it: the [HTTP reference](../04-reference/03-http.md#routes) lists them, and the `Protocol` type from `vboard` says what each takes and answers |
-| `remote` | A board's URL when this one keeps nothing, for discovery to send clients there. Otherwise `null` |
 | `issuers` | OIDC issuers past Vercel's and GitHub's whose tokens `board()` verifies for it: `a2()` names its `oidc()` rules'. Otherwise `[]` |
-| `routes` | Routes of its own beside the protocol: `{ method, path, auth, handle(request, { caller, param }) }`. One at a protocol route's path takes its place |
+| `routes` | Routes of its own beside the protocol: `{ method, path, auth, handle(request, { caller, param }) }`. One at a protocol route's path, or at `/` (discovery's), takes its place. `caller` is the handle's own when its call reaches one |
 | `bind(binding)` | Called once, when `board()` is created, before any request. It does no I/O |
 
 - **A caller is who's calling.** `{ identity, origin }` is a request `board()`
   verified: the principal (its `scope` from `x-board-scope` included, which
   only narrows) and the actor it writes as. What it may do is yours to decide
   from `identity.principal`, and every method honors it. `{ self, origin }` is
-  this deployment's own code: `client(name)`, a watcher, the middleware's
-  client, or sync (its `origin.via.kind` says which). Who that is on your board
-  is yours to decide too.
+  this deployment's own code: the handle (`self` is the profile from `as()`,
+  or null, and `profile` what `as()` asked for, absent on the handle itself),
+  a watcher, the middleware's handle, or sync (its `origin.via.kind` says
+  which). Who that is on your board is yours to decide too.
 - **`events` long-polls.** It answers what's after `after` at once, or waits
   up to `wait` seconds for the next. `board()` serves SSE from it.
 - **Sync's methods keep its records** (`syncImport`, `syncReceipt`, the
@@ -344,7 +406,7 @@ it, scheduling answers 501.
   deployment, the CLI says so:
   `error: <url> is behind Vercel Deployment Protection; set VERCEL_AUTOMATION_BYPASS_SECRET (…)`.
   Set `VERCEL_AUTOMATION_BYPASS_SECRET` to the project's Protection Bypass for
-  Automation secret; the CLI and Node SDK send it as `x-vercel-protection-bypass`.
+  Automation secret; the CLI and a handle in Node send it as `x-vercel-protection-bypass`.
   Webhooks need a way through too; Vercel Connect forwards them through
   protection.
 - **Access.** Access to the board is access to its Vercel project: everyone

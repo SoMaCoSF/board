@@ -5,9 +5,9 @@ import type { RegistrationView } from '../api/routes.ts'
 import { REGISTRY_SESSION, registryContract, type RegistryEvents } from '../contract/contract.ts'
 import type { Principal } from './auth.ts'
 
-export type WatcherSpec = { tail: string; when: 'matches' | 'enters' }
-/** A registrant's sync entry: what it imports through, and whether it signs people in. */
-export type SyncEntrySpec = { key: string; platform: string; signIn: boolean }
+import { canonicalWatchers, type SyncEntrySpec, type WatcherSpec } from './watchers-hash.ts'
+
+export type { SyncEntrySpec, WatcherSpec }
 
 /** A principal as a registration keeps it. */
 export type StoredPrincipal = RegistryPayload['principal']
@@ -36,12 +36,7 @@ export const viewOf = ({ principal: _principal, ...view }: Registration): Regist
  * and the board it uses hashes what it holds.
  */
 export function watchersHash(watch: Record<string, WatcherSpec>, sync: readonly SyncEntrySpec[] = []): string {
-  const canonical: unknown[] = Object.keys(watch)
-    .sort()
-    .map((id) => [id, watch[id]!.tail, watch[id]!.when])
-  // Older registrations hashed only their watchers: one with no sync hashes as it did.
-  if (sync.length > 0) canonical.push(['sync', [...sync].sort((a, b) => a.key.localeCompare(b.key)).map((entry) => [entry.key, entry.platform, entry.signIn])])
-  return createHash('sha256').update(JSON.stringify(canonical)).digest('hex').slice(0, 32)
+  return createHash('sha256').update(canonicalWatchers(watch, sync)).digest('hex').slice(0, 32)
 }
 
 function foldRegistry(state: RegistryState, event: ContractEvent<RegistryEvents>): RegistryState {

@@ -20,21 +20,12 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.mts",
+      "node": "./dist/index.node.mjs",
       "default": "./dist/index.mjs"
     },
     "./access": {
       "types": "./dist/access.d.mts",
       "default": "./dist/access.mjs"
-    },
-    "./client": {
-      "node": {
-        "types": "./dist/client.node.d.mts",
-        "default": "./dist/client.node.mjs"
-      },
-      "default": {
-        "types": "./dist/client.d.mts",
-        "default": "./dist/client.mjs"
-      }
     },
     "./conformance": {
       "types": "./dist/conformance.d.mts",
@@ -82,7 +73,12 @@
     },
     "./backend-http": {
       "types": "./dist/backend-http.d.mts",
+      "node": "./dist/backend-http.node.mjs",
       "default": "./dist/backend-http.mjs"
+    },
+    "./sandbox": {
+      "types": "./dist/sandbox.d.mts",
+      "default": "./dist/sandbox.mjs"
     },
     "./sync": {
       "types": "./dist/sync.d.mts",
@@ -127,6 +123,7 @@
     "@upstash/qstash": "^2.11.0",
     "@vercel/blob": "^2.8.0",
     "@vercel/queue": "*",
+    "@vercel/sandbox": ">=3.5.1",
     "ioredis": "^5.4.0",
     "pg": "^8.11.0"
   },
@@ -140,6 +137,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vercel/blob": "^2.8.0",
+    "@vercel/sandbox": "^3.5.1",
     "ai": "^7.0.130",
     "ioredis": "5.11.1",
     "lucide-react": "^1.49.0",
@@ -161,6 +159,9 @@
       "optional": true
     },
     "@vercel/queue": {
+      "optional": true
+    },
+    "@vercel/sandbox": {
       "optional": true
     },
     "ioredis": {

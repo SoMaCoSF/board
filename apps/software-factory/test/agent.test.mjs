@@ -1,39 +1,32 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { GITHUB_TOKEN, byAgent, byPi, byWatcher, piAvatar, piCouldntStart, piName, sourceLink, taskMessage } from "../app/api/board/[[...path]]/agent.ts";
+import { GITHUB_TOKEN, byAgent, byPi, byWatcher, piAvatar, piCouldntStart, piName, taskMessage } from "../app/api/board/[[...path]]/agent.ts";
 
 // Pi posts as the factory's production deployment.
 process.env.VERCEL_PROJECT_ID = "prj_factory";
 
-test("sourceLink: a Slack thread's permalink, a GitHub issue or PR, or nothing", () => {
-  assert.deepEqual(sourceLink({ thread: "slack:C0C6MNT9LLC:1791394851.272189" }), {
-    platform: "Slack",
-    url: "https://vercel.slack.com/archives/C0C6MNT9LLC/p1791394851272189",
-  });
-  assert.deepEqual(sourceLink({ thread: "github:vercel-labs/vboard:issue:42" }), {
-    platform: "GitHub",
-    url: "https://github.com/vercel-labs/vboard/issues/42",
-  });
-  assert.deepEqual(sourceLink({ thread: "github:vercel-labs/vboard:78" }), {
-    platform: "GitHub",
-    url: "https://github.com/vercel-labs/vboard/pull/78",
-  });
-  assert.equal(sourceLink(null), null);
-  assert.equal(sourceLink({ thread: "whatsapp:123" }), null);
-});
-
-test("taskMessage: Pi's task names where the thread came from and who posted it", () => {
+test("taskMessage: Pi's task names where the thread came from, by its link there, and who posted it", () => {
   assert.equal(
     taskMessage("a feature request", {
       id: "1010",
-      origin: { thread: "slack:C0C6MNT9LLC:1791394851.272189" },
+      from: "slack",
+      origin: { url: "https://vercel.enterprise.slack.com/archives/C0C6MNT9LLC/p1791394851272189" },
       author: { name: "Martin Sione" },
     }),
-    "There's a feature request in board thread #1010, posted by Martin Sione on Slack: https://vercel.slack.com/archives/C0C6MNT9LLC/p1791394851272189.",
+    "There's a feature request in board thread #1010, posted by Martin Sione on Slack: https://vercel.enterprise.slack.com/archives/C0C6MNT9LLC/p1791394851272189.",
   );
   assert.equal(
-    taskMessage("a bug report", { id: "7", origin: null, author: null }),
+    taskMessage("a bug report", { id: "42", from: "github", origin: { url: "https://github.com/vercel-labs/vboard/issues/42" }, author: null }),
+    "There's a bug report in board thread #42, posted on GitHub: https://github.com/vercel-labs/vboard/issues/42.",
+  );
+  assert.equal(
+    taskMessage("a bug report", { id: "7", from: null, origin: null, author: null }),
     "There's a bug report in board thread #7.",
+  );
+  assert.equal(
+    taskMessage("a question", { id: "8", from: "slack", origin: { url: null }, author: { name: "Ada" } }),
+    "There's a question in board thread #8.",
+    "a thread synced before links has none to give",
   );
 });
 

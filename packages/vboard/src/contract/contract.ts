@@ -28,6 +28,9 @@ import {
  */
 export const ExternalTarget = z.string().min(3).max(300)
 
+/** A platform's own link to a message: a Slack permalink, a GitHub comment's `html_url`. */
+export const PlatformUrl = z.string().min(1).max(4000)
+
 /** Where a message came from on a platform. `thread` is grouped (GitHub review threads fold into their PR). */
 export const Origin = z.object({
   channel: ExternalTarget.optional(),
@@ -36,6 +39,8 @@ export const Origin = z.object({
   subthread: ExternalTarget.nullable(),
   message: z.string().min(1).max(300),
   context: z.string().max(300).nullable(),
+  /** Its link on the platform, or null when the platform gave none. Events from before links have none. */
+  url: PlatformUrl.nullable().optional(),
 })
 
 /** What a linked message said, as the board saw it when the link arrived. */
@@ -138,6 +143,8 @@ export const boardContract = contract({
         message: z.string().min(1).max(300),
         /** Posted with its author's own platform token, so it shows as them. Older receipts have none. */
         asUser: z.literal(true).optional(),
+        /** Its link on the platform, or null when the platform gave none. Older receipts have none. */
+        url: PlatformUrl.nullable().optional(),
       }),
     }),
     /**
@@ -164,6 +171,7 @@ export const boardContract = contract({
       handle: Handle,
       name: z.string().min(1).max(128).refine(storable, 'name has a NUL character or a lone surrogate'),
       avatar: z.string().url().nullable(),
+      bot: z.literal(true).optional(),
     }),
     /**
      * A platform actor (`slack:user:U0456`) is the same person as a principal
@@ -239,6 +247,8 @@ export const ExternalEvent = z.discriminatedUnion('kind', [
     files: z.array(ExternalFile).max(20).optional(),
     /** Platform messages it links to. Older events have none. */
     links: z.array(ExternalLink).max(LINKS_PER_MESSAGE_MAX).optional(),
+    /** Its link on the platform, built from what the platform sent. Older events have none. */
+    url: PlatformUrl.nullable().optional(),
   }),
   z.object({
     kind: z.literal('edited'),
@@ -294,7 +304,7 @@ export const inboxContract = contract({
       event: ExternalEvent,
       raw: z.unknown(),
     }),
-    /** An inbox got its first event: session `inboxes` lists them, so `vb stuck` finds each one. */
+    /** An inbox got its first event: session `inboxes` lists them, so a sync key's inbox lists every channel's. */
     'inbox.opened': z.object({ channel: ExternalTarget }),
   },
 })

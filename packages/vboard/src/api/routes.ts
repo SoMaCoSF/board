@@ -14,7 +14,7 @@ import {
   storable,
   type Json,
 } from '../contract/schemas.ts'
-import { ExternalAuthor, ExternalEvent, ExternalTarget, Link as LinkSchema, LINKS_PER_MESSAGE_MAX, Origin } from '../contract/contract.ts'
+import { ExternalAuthor, ExternalEvent, ExternalTarget, Link as LinkSchema, LINKS_PER_MESSAGE_MAX, Origin, PlatformUrl } from '../contract/contract.ts'
 import type { BoardEvent, Link } from '../contract/contract.ts'
 import type { Actor, Channel, ExternalCopy, Message } from '../contract/reducers.ts'
 import type { AccessSummary } from '../server/access.ts'
@@ -25,6 +25,8 @@ import type { AccessSummary } from '../server/access.ts'
  */
 export const Ref = z.string().min(1).max(128)
 const id = Ref
+/** A boolean query parameter: `true` or `1`, `false` or `0`. */
+const flag = z.enum(['true', 'false', '1', '0']).transform((value) => value === 'true' || value === '1')
 const repeated = z
   .union([z.string(), z.array(z.string())])
   .transform((value) => (Array.isArray(value) ? value : [value]))
@@ -55,6 +57,8 @@ export const Filters = z.object({
   from: z.string().min(1).max(64).optional(),
   /** Case-insensitive words the text contains. */
   text: z.string().min(1).max(200).optional(),
+  /** Only roots: a reply never matches, and a thread matches only by its root. */
+  roots: flag.optional(),
 })
 
 export const MessagesQuery = Filters.extend({
@@ -72,8 +76,11 @@ export const ThreadsQuery = Filters.extend({
 export const EventsQuery = Filters.extend({
   after: Ref.optional(),
   wait: z.coerce.number().min(0).max(300).optional(),
-  all: z.coerce.boolean().optional(),
+  all: flag.optional(),
 })
+
+/** A write's own event ID, so a retry of it doesn't write twice. */
+const WriteId = z.string().min(1).max(200).refine(storable, 'id has a NUL character or a lone surrogate')
 
 export const PostBody = z
   .object({
@@ -88,7 +95,7 @@ export const PostBody = z
      * board that syncs a target resolves it to `{ target, kind }`, which a board elsewhere takes as is.
      */
     sync: z.array(z.union([z.string().min(3).max(300), ResolvedSyncTarget])).max(10).optional(),
-    id: z.string().min(1).max(200).refine(storable, 'id has a NUL character or a lone surrogate').optional(),
+    id: WriteId.optional(),
     /** IDs from `POST /attachments`. */
     attachments: z.array(AttachmentId).max(ATTACHMENTS_PER_MESSAGE_MAX).optional(),
   })
@@ -121,6 +128,7 @@ export const ScheduleBody = z
     labels: Labels.optional(),
     noSync: z.boolean().optional(),
     attachments: z.array(AttachmentId).max(ATTACHMENTS_PER_MESSAGE_MAX).optional(),
+    id: WriteId.optional(),
     in: Duration.optional(),
     at: Instant.optional(),
     every: Duration.optional(),
@@ -153,7 +161,7 @@ export const SchedulesQuery = z.object({
   /** An actor ID or handle: the schedules it created. */
   by: z.string().optional(),
   /** Include done and canceled schedules. */
-  all: z.coerce.boolean().optional(),
+  all: flag.optional(),
 })
 
 export const SyncBody = z.object({ target: z.string().min(3).max(300) })
@@ -208,15 +216,6 @@ export const OnceBody = z.object({ key: OnceKey, result: OnceResult.optional() }
 /** A watcher's once record, as it stands. */
 export type OnceView = { key: string; result?: Json }
 
-/** A stuck event to retry (with a fresh 10 tries) or skip (so its thread goes on), as `vb stuck` lists it. */
-export const RedriveBody = z.object({
-  session: z.string().min(1).max(300),
-  index: z.number().int().min(1),
-  /** The consumer it's stuck for; without one, every consumer stuck on it. */
-  consumer: z.string().min(1).max(200).optional(),
-  action: z.enum(['retry', 'skip']),
-})
-
 /**
  * What to read from a platform without syncing it: a channel (`#name` or an ID),
  * a thread (`C0123:1727000000.123456`), or a message permalink (its thread).
@@ -226,13 +225,6 @@ export const SourceReadQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional(),
 })
 
-export const IdentityLinkBody = z.object({
-  /** The sync entry whose account to link, e.g. `slack`. */
-  sync: z.string().min(1).max(64),
-  /** `code` even when the entry can sign people in. */
-  method: z.enum(['code', 'consent']).optional(),
-})
-export const IdentityCheckBody = z.object({ sync: z.string().min(1).max(64) })
 export const IdentityUnlinkBody = z.object({ actor: z.string().min(1).max(256) })
 
 /** A sync entry's key: `slack`, `github`. */
@@ -290,7 +282,7 @@ export const SyncReceiptBody = z.discriminatedUnion('kind', [
     kind: z.literal('message'),
     message: Ref,
     target: ExternalTarget,
-    external: z.object({ thread: ExternalTarget, message: z.string().min(1).max(300), asUser: z.literal(true).optional() }),
+    external: z.object({ thread: ExternalTarget, message: z.string().min(1).max(300), asUser: z.literal(true).optional(), url: PlatformUrl.nullable().optional() }),
     /** Its files, when they went with it: the platform's IDs, or null when it refused them. */
     files: PlatformFiles.optional(),
   }),
@@ -406,12 +398,14 @@ export type PersonView = { id: string; handle: string; name: string; avatar: str
 
 /**
  * `kind` says who wrote it: a `person` or a platform user (`external`), an agent (`profile`), or a deployment or workflow.
- * `person` is who a linked platform account belongs to.
+ * `bot` is set when its platform says it's a bot. `person` is who a linked platform account belongs to.
  */
-export type ActorView = Pick<Actor, 'kind' | 'handle' | 'name' | 'avatar'> & { person?: PersonView }
+export type ActorView = Pick<Actor, 'kind' | 'handle' | 'name' | 'avatar' | 'bot'> & { person?: PersonView }
 /** A message as clients see it: its IDs are refs, and `version` says which of two views of it is newer. */
-export type MessageView = Omit<Message, 'id' | 're' | 'replyTo' | 'links' | 'schedule' | 'blind' | 'version'> & {
+export type MessageView = Omit<Message, 'id' | 're' | 'replyTo' | 'links' | 'schedule' | 'blind' | 'version' | 'origin'> & {
   id: string
+  /** Where it came from on a platform. `url` is its link there: null on a platform without links, and on messages from before them. */
+  origin: (Origin & { url: string | null }) | null
   /** The thread's root, or null for a root. */
   re: string | null
   /** The exact message replied to, when it isn't the root. */
@@ -463,8 +457,6 @@ export type Discovery = {
   project_id: string | null
   /** The board's sync entries: `key` names its webhook and inbox, `platform` is e.g. `slack`. */
   sync: { key: string; platform: string }[]
-  /** A board on another backend keeps nothing here: clients read and write this board instead. */
-  remote?: string
 }
 
 /** Watchers a board on `http()` registered here: one registration per principal. */
@@ -523,14 +515,10 @@ export type IdentityView = {
   cursor: string
 }
 /**
- * How to prove an account is yours: post `code` from it anywhere the board syncs
- * before `expiresAt`, or open `url` (the platform's sign-in) and approve.
+ * How to prove an account is yours: post `code` from it anywhere the board syncs before
+ * `expiresAt`, or, when the entry signs people in, open `signIn` and approve: it carries the code.
  */
-export type IdentityChallenge =
-  | { method: 'code'; sync: string; platform: string; code: string; expiresAt: string }
-  | { method: 'consent'; sync: string; platform: string; url: string }
-/** After a sign-in: the account it linked, or null while it hasn't happened. */
-export type IdentityCheck = { linked: LinkedAccount | null }
+export type SyncCodeView = { code: string; expiresAt: string; signIn?: string }
 
 /** A thread's sync: its root, where it lives, its targets, and the platform thread it is on each. */
 export type SyncThreadView = { thread: string; root: string; channel: string; targets: string[]; external: Record<string, string> }
@@ -617,33 +605,6 @@ export type InboxEntry = {
   raw: unknown
 }
 
-/**
- * An event that failed 10 times and stopped: A2 dead-lettered it, and nothing after it on its lane
- * (its thread's) runs until it's retried or skipped. As `GET /stuck` returns it.
- */
-export type StuckEvent = {
-  /** The A2 session it's in: `board`, `inbox:<channel>`, `watch:<watcher>`, or `schedules`. */
-  session: string
-  index: number
-  /**
-   * What gave up on it: `vboard-sync` (delivery to platforms), `vboard-watchers`
-   * (matching watchers), `vboard-watch` (running one), `vboard-inbox` (platform
-   * events), `vboard-schedules`, or `vboard-schedule-sends`.
-   */
-  consumer: string
-  type: string
-  lane: string | null
-  /** The board thread it holds up, when there is one, and its root. */
-  thread: string | null
-  root: string | null
-  /** The platform thread, for an inbox event that never reached the board. */
-  external: string | null
-  attempts: number
-  failures: number
-  error: string | null
-  failedAt: string
-}
-
 /** The route table: method, path, and the schemas that validate input. */
 export const routes = {
   discovery: { method: 'GET', path: '/' },
@@ -696,10 +657,6 @@ export const routes = {
   syncAccount: { method: 'POST', path: '/sync/accounts', body: SyncAccountBody },
   /** Unlinks a platform account. */
   syncUnlink: { method: 'POST', path: '/sync/accounts/unlink', body: SyncUnlinkBody },
-  /** Events that stopped their thread: full access only. */
-  stuck: { method: 'GET', path: '/stuck' },
-  /** Retries or skips one of them: full access only. */
-  redrive: { method: 'POST', path: '/stuck/redrive', body: RedriveBody },
   /** Reads a platform channel or thread on demand, without syncing or storing it. Full access only. */
   sourceRead: { method: 'GET', path: '/sources/:key/read', query: SourceReadQuery },
   webhook: { method: 'POST', path: '/webhooks/:key' },
@@ -711,11 +668,7 @@ export const routes = {
   openapi: { method: 'GET', path: '/openapi.json' },
   /** Your linked platform accounts. */
   identity: { method: 'GET', path: '/identity' },
-  /** Starts linking a platform account: a one-time code to post from it, or a sign-in URL. */
-  identityLink: { method: 'POST', path: '/identity/link', body: IdentityLinkBody },
-  /** Finishes a sign-in: links the account it authorized, once it has. */
-  identityCheck: { method: 'POST', path: '/identity/check', body: IdentityCheckBody },
-  /** Starts a sign-in that carries a code (no token): where the board that keeps the log sends a person. */
+  /** Starts a sign-in that carries a code (no token), on the board that runs the entry's sync. */
   signIn: { method: 'GET', path: '/identity/sign-in', query: SignInQuery },
   /** Where a sign-in comes back (no token): links the account it authorized to the code's person. */
   signedIn: { method: 'GET', path: '/identity/signed-in', query: SignInQuery },

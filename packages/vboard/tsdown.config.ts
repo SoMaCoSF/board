@@ -3,10 +3,11 @@ import { defineConfig } from 'tsdown'
 export default defineConfig([
   {
     entry: {
-      index: 'src/server/index.ts',
+      // `vboard` and `vboard/backend-http` have a `node` build, which finds boards in the environment
+      // and serves them, and a default one with nothing that needs Node, for browsers.
+      index: 'src/server/index.default.ts',
+      'index.node': 'src/server/index.ts',
       access: 'src/access/index.ts',
-      client: 'src/client/index.ts',
-      'client.node': 'src/client/index.node.ts',
       conformance: 'src/conformance/index.ts',
       'backend-a2': 'src/backend-a2/index.ts',
       'backend-a2/contract': 'src/contract/index.ts',
@@ -18,7 +19,9 @@ export default defineConfig([
       'backend-a2/store-memory': 'src/store/memory.ts',
       'backend-a2/scheduler-vercel': 'src/scheduler/vercel.ts',
       'backend-a2/scheduler-qstash': 'src/scheduler/qstash.ts',
-      'backend-http': 'src/backend-http/index.ts',
+      'backend-http': 'src/backend-http/index.default.ts',
+      'backend-http.node': 'src/backend-http/index.ts',
+      sandbox: 'src/sandbox/index.ts',
       sync: 'src/sync/index.ts',
       'sync.chat': 'src/sync/chat-provider.ts',
       'sync-slack': 'src/sync/slack.ts',
@@ -29,6 +32,9 @@ export default defineConfig([
     format: 'esm',
     platform: 'node',
     target: 'node22',
+    // A module one entry shares with a lazily loaded chunk stays in a chunk of its own: merged
+    // into the entry, it would load that entry (the CLI, say) wherever the chunk loads.
+    inputOptions: { experimental: { chunkOptimization: false } },
     dts: true,
     clean: ['dist/*', '!dist/inspect'],
   },
