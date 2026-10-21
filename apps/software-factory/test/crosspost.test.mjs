@@ -35,14 +35,19 @@ function harness({ ref = "pi/2326", source = slackSource } = {}) {
     label: async (id, change) => { labels.push({ id, change }); },
     reply: async (id, text) => { replies.push({ id, text }); },
   };
-  return { requests, labels, replies, watcher, run: (event) => watcher.run({ event, board }) };
+  const records = new Map();
+  const once = async (key, fn) => {
+    if (!records.has(key)) records.set(key, await fn());
+    return records.get(key);
+  };
+  return { requests, labels, replies, watcher, run: (event) => watcher.run({ event, board, once }) };
 }
 
 test("a factory PR's Slack thread and its source's Slack thread link to each other", async () => {
   const h = harness();
   await h.run(synced());
   assert.deepEqual(h.requests, ["https://api.github.com/repos/vercel-labs/vboard/pulls/105"]);
-  assert.deepEqual(h.labels, [{ id: "2400", change: { set: { crosspost: "yes" } } }]);
+  assert.deepEqual(h.labels, [], "it keeps no label on the board");
   assert.deepEqual(h.replies, [
     {
       id: "2400",
@@ -55,7 +60,15 @@ test("a factory PR's Slack thread and its source's Slack thread link to each oth
   ]);
 });
 
-test("skips posts, replies, GitHub receipts, crossposted roots, other branches, and sources not from Slack", async () => {
+test("links a PR root once, however many receipts it gets", async () => {
+  const h = harness();
+  await h.run(synced());
+  await h.run(synced());
+  assert.equal(h.requests.length, 1, "the second receipt asks GitHub nothing");
+  assert.equal(h.replies.length, 2, "the second receipt replies nothing");
+});
+
+test("skips posts, replies, GitHub receipts, roots linked before once, other branches, and sources not from Slack", async () => {
   const h = harness();
   await h.run({ ...synced(), type: "message.posted" });
   await h.run(synced({ ...root(), re: "2399" }));
