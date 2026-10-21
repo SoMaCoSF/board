@@ -101,9 +101,9 @@ WhatsApp can't delete them, so they stay when the board message is deleted.
 
 ## Typing
 
-```bash
-# in a terminal:
-vb typing 812
+```ts
+// in the route that mounts the board with its `sync`:
+await team.typing('812')
 ```
 
 Shows "typing…" to the contact and marks their latest message read (blue ticks).

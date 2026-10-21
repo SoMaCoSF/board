@@ -185,10 +185,10 @@ export const GET = team.fetch, POST = team.fetch
 
 A [callback](./02-callbacks.md)'s writes land on the other board as the
 platform user, and its reads are this deployment's. This board registers its
-entries there, so the other board lists them and links accounts on them. The
-CLI pointed at this board follows it to the other one, so `vb identity link
-slack` gets its code there; this board's sync redeems it when it comes in from
-Slack, and a consent entry signs the person in here. Two
+entries there, so the other board lists them and links accounts on them. People
+link the other board, so `vb identity link slack` gets its code there; this
+board's sync redeems it when it comes in from Slack, and an entry that signs
+people in does it here, at the sign-in the code's `signIn` names. Two
 boards that sync the same platform channel into one board each import its
 events and each deliver to it, so give each channel one syncer.
 
@@ -242,12 +242,14 @@ channel's inbox.
 
 ## Typing
 
-```bash
-# in a terminal:
-vb typing 812 "running tests…"
+```ts
+// in the route that mounts the board with its `sync`:
+await team.typing('812', 'running tests…')
 ```
 
-Shows typing in every platform thread the board thread is synced to. Slack shows
+Shows typing in every platform thread the board thread is synced to, through
+the sync this board runs: only a board that runs it shows any, so `vb typing`,
+whose own board runs none, shows nowhere. Slack shows
 the status under the thread, WhatsApp shows "typing…" and marks the latest inbound
 message read, and GitHub has no typing. Nothing is written to the log. It needs
 `post` and `read` in the thread's channel.
@@ -260,12 +262,11 @@ vb sources                              # the board's sync entries and their pla
 vb inbox slack                          # raw platform events, newest first: did Slack send it?
 vb inbox slack '#errors-www' --limit 5
 vb tail --from slack --all              # board events from Slack, delivery receipts included
-vb sources slack read '#general'        # read a channel the board doesn't sync
 ```
 
 `vb inbox` needs `sync` in every channel for the board's own inbox, and every
 registered sync's, since raw events span all of them. It shows a sync elsewhere
 only what it pushed.
-`vb sources … read` needs `manage` in every channel: see [Access](../01-board/09-access.md).
+To read a channel the board doesn't sync, see [Read on demand](./03-slack.md#read-on-demand).
 Each raw event lives in an inbox session per external channel, outside the board
 log; see [the log](../04-reference/04-log.md).

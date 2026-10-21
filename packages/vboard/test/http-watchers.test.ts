@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { board, type Watcher, type WatcherContext } from '../src/server/index.ts'
 import { vercelProject } from '../src/access/index.ts'
 import { http } from '../src/backend-http/index.ts'
-import { BOARD_URL, caller, deploymentToken, personToken, testBoard } from './harness.ts'
+import { bearer, BOARD_URL, caller, deploymentToken, personToken, testBoard } from './harness.ts'
 import { fakeQueue } from './queue.ts'
 import { LEASE_MS } from '../src/server/registered.ts'
 
@@ -38,9 +38,9 @@ function team(watch: Record<string, Watcher> = {}, can: Parameters<typeof vercel
     },
   })
   const v0Board = (next: Record<string, Watcher>) => {
-    const backend = http(BOARD_URL, { fetch: route as typeof fetch, token: v0Token })
-    // The backend's own `register`, as `POST /watchers` does.
-    return Object.assign(board({ backend, url: V0_URL, watch: next }), { register: backend.register })
+    const backend = http(BOARD_URL, { fetch: bearer(route, v0Token) })
+    // The backend's own registration, as `POST /watchers` does.
+    return Object.assign(board({ backend, url: V0_URL, watch: next }), { registerWatchers: backend.registerWatchers })
   }
   project = v0Board(watch)
   return {
@@ -80,7 +80,7 @@ describe('watchers on http()', () => {
       if (event.type === 'message.posted' && event.message?.re === null) await board.reply(event.message.id, 'on it')
     })
     const t = team({ fix: fix.watcher })
-    await t.project.register()
+    await t.project.registerWatchers()
     const julian = await julianOn(t.remote.fetch)
     const root = (await julian('POST', '/messages', { channel: 'feedback', text: 'export is broken' })).body.message
     await vi.waitFor(async () => {
@@ -96,7 +96,7 @@ describe('watchers on http()', () => {
     const held = new Promise<void>((resolve) => (release = resolve))
     const fix = recorder('feedback', () => held)
     const t = team({ fix: fix.watcher })
-    await t.project.register()
+    await t.project.registerWatchers()
     const julian = await julianOn(t.remote.fetch)
     for (const n of [1, 2, 3, 4, 5]) await julian('POST', '/messages', { channel: 'feedback', text: `report ${n}` })
     // The first wake-up is still running when the rest match.
@@ -111,7 +111,7 @@ describe('watchers on http()', () => {
   it("try a wake-up that didn't get there again, from a sweep a minute or so on", async () => {
     const fix = recorder('feedback')
     const t = team({ fix: fix.watcher })
-    await t.project.register()
+    await t.project.registerWatchers()
     t.down = true
     const julian = await julianOn(t.remote.fetch)
     await julian('POST', '/messages', { channel: 'feedback', text: 'while it deploys' })
@@ -126,7 +126,7 @@ describe('watchers on http()', () => {
   it("never runs on what its registrant can't read", async () => {
     const fix = recorder('--all')
     const t = team({ fix: fix.watcher }, { feedback: ['read', 'post'] })
-    await t.project.register()
+    await t.project.registerWatchers()
     const julian = await julianOn(t.remote.fetch)
     await julian('POST', '/messages', { channel: 'security', text: 'hunter2' })
     await julian('POST', '/messages', { channel: 'feedback', text: 'export is broken' })
@@ -138,7 +138,7 @@ describe('watchers on http()', () => {
       if (event.type === 'message.posted') await board.post('feedback', 'echo')
     })
     const t = team({ echo: echo.watcher })
-    await t.project.register()
+    await t.project.registerWatchers()
     await (await julianOn(t.remote.fetch))('POST', '/messages', { channel: 'feedback', text: 'hello' })
     await vi.waitFor(() => expect(echo.seen).toHaveLength(1))
     await new Promise((resolve) => setTimeout(resolve, 50))
@@ -147,7 +147,7 @@ describe('watchers on http()', () => {
 
   it('registers again when a wake-up shows the remote holds an older registration', async () => {
     const t = team({ fix: recorder('feedback').watcher })
-    await t.project.register()
+    await t.project.registerWatchers()
     const next = recorder('feedback --label kind=bug')
     t.deploy({ fix: next.watcher })
     // The old registration still matches, and the wake-up's hash shows it's stale.
@@ -160,7 +160,7 @@ describe('watchers on http()', () => {
 
   it('ignores what a forged wake-up says: it only pulls its own', async () => {
     const t = team({ fix: recorder('feedback').watcher })
-    await t.project.register()
+    await t.project.registerWatchers()
     const forged = await t.project.fetch(new Request(`${V0_URL}/wake`, { method: 'POST', body: '{"run":"everything"}' }))
     expect(await forged.json()).toEqual({ ran: 0 })
   })
@@ -168,7 +168,7 @@ describe('watchers on http()', () => {
   it("pulls on its own when it can't be woken", async () => {
     const fix = recorder('feedback')
     const t = team()
-    const backend = http(BOARD_URL, { fetch: ((input: RequestInfo | URL, init?: RequestInit) => t.remote.fetch(new Request(input, init))) as typeof fetch, token: v0Token })
+    const backend = http(BOARD_URL, { fetch: bearer((input, init) => t.remote.fetch(new Request(input, init)), v0Token) })
     const local = board({ backend, url: 'http://localhost:3000/api/board', watch: { fix: fix.watcher } })
     try {
       // Nothing happens until it's first used: here, a call from the project's own code.

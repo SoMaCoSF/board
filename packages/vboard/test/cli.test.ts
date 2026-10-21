@@ -128,7 +128,7 @@ describe('cli', () => {
     try {
       const root = await tmp('vboard-link-')
       expect(await vb(['link', `${missing.origin}/api/board`], {}, undefined, root)).toEqual({
-        code: 1, stdout: '', stderr: 'error: 404 Not Found\n',
+        code: 1, stdout: '', stderr: `error: no board at ${missing.origin}/api/board (404)\n`,
       })
     } finally {
       await missing.close()
@@ -474,18 +474,15 @@ describe('cli', () => {
     const misuse = await vb(['sources', 'slack', '#general'])
     expect(misuse.code).toBe(2)
     expect(misuse.stderr).toContain('usage: vboard sources <key> read')
+    // Only the board that runs a sync entry reads its source.
     const unsynced = await vb(['sources', 'slack', 'read', '#general'])
-    expect(unsynced.code).toBe(1)
-    expect(unsynced.stderr).toContain('no sync configured')
+    expect(unsynced).toMatchObject({ code: 1, stderr: "error: this board doesn't run sync entry slack: read it where its sync runs\n" })
   })
 
-  it("says so when the board is older than `sources read`, instead of crashing on its discovery document", async () => {
+  it('says so when the board is older than thread summaries, instead of crashing on its discovery document', async () => {
     // An old board answers any unknown GET with its discovery document, 200.
     const old = await serve(async () => Response.json({ version: '0.4.0', sync: [] }))
     try {
-      const read = await vb(['sources', 'slack', 'read', '#general'], { VBOARD_URL: `${old.origin}/api/board` })
-      expect(read.code).toBe(1)
-      expect(read.stderr).toContain("this board can't read sources yet")
       const threads = await vb(['read', 'errors-www'], { VBOARD_URL: `${old.origin}/api/board` })
       expect(threads).toMatchObject({ code: 1, stderr: OLD_THREADS })
     } finally {
@@ -537,9 +534,6 @@ describe('cli', () => {
     expect((await vb(['typing'])).code).toBe(2)
     expect((await vb(['frobnicate'])).code).toBe(2)
     expect((await vb(['inspect', '--port', 'nope'])).code).toBe(2)
-    expect((await vb(['stuck', 'retry'])).code).toBe(2)
-    expect((await vb(['stuck', 'redo', 'board#1'])).code).toBe(2)
-    expect((await vb(['stuck', 'skip', 'board'])).code).toBe(2)
   })
 
   it('says a removed command is gone whatever flags it carries, and names an unknown option', async () => {
@@ -553,10 +547,11 @@ describe('cli', () => {
     expect((await vb(['--mentions', 'read', 'update'])).stderr).not.toContain('is gone')
   })
 
-  it("says when nothing is stuck, and when what it's asked to redrive isn't", async () => {
-    expect(await vb(['stuck'])).toMatchObject({ code: 0, stdout: 'nothing is stuck\n' })
-    expect(await vb(['stuck', 'skip', 'board#1'])).toMatchObject({ code: 0, stdout: "board#1 isn't stuck\n" })
-    expect(await vb(['stuck', 'retry', 'nowhere#1'])).toMatchObject({ code: 1, stderr: 'error: no session nowhere on this board\n' })
+  it('says `vb stuck` is gone, and where its dead letters are', async () => {
+    expect(await vb(['stuck', 'retry', 'board#1'])).toMatchObject({
+      code: 2,
+      stderr: "error: `vb stuck` is gone: a board on a2() keeps its dead letters in A2, on the backend's `servers`\n",
+    })
   })
 
   it('serves the inspector until Ctrl-C', async () => {

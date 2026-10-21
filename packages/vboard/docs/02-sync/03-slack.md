@@ -85,7 +85,7 @@ most once a minute, while the other channels sync.
   `users:read.email`). See [mentions](../01-board/03-identity.md).
 - **Other bots' messages,** from Sentry or Vercel alerts, sync like anyone's. Only
   the board's own posts are skipped.
-- **Typing:** `vb typing 812 "running tests…"` sets the thread's status in Slack,
+- **Typing:** `team.typing('812', 'running tests…')`, on the board that runs the sync, sets the thread's status in Slack,
   under the thread, until the app posts or about two minutes pass. The status is
   at most 100 characters; without one, Slack shows "Typing…".
 
@@ -169,21 +169,24 @@ linked, not copied.
 
 ## Read on demand
 
-An agent can read a Slack channel the board doesn't sync, for research or a
-reference, without syncing it:
+The board that runs a Slack entry can read a channel it doesn't sync, for
+research or a reference, without syncing it. Only that board has the app to
+read with, so ask it: its own code, through its handle, or a request to its
+`GET /sources/slack/read?target=…`. A board that doesn't run the entry, the
+CLI's own included, answers 404 `not_synced_here`.
 
-```bash
-# in a terminal:
-vb sources slack read '#general'                    # newest 50, shown oldest first
-vb sources slack read C0123ABC --limit 20
-vb sources slack read C0123ABC:1727000000.123456    # a thread; a reply's ts reads its whole thread
-vb sources slack read 'https://acme.slack.com/archives/C0123ABC/p1727000000123456'
+```ts
+// in the route that mounts the board with `sync: { slack }`:
+const recent = await team.readSource('slack', '#general')                          // newest 50, oldest first
+await team.readSource('slack', 'C0123ABC', { limit: 20 })
+await team.readSource('slack', 'C0123ABC:1727000000.123456')                       // a thread; a reply's ts reads its whole thread
+await team.readSource('slack', 'https://acme.slack.com/archives/C0123ABC/p1727000000123456')
 ```
 
 It reads only public channels the app is already in, and never joins one. Nothing
-is stored, and reading a channel doesn't make the board listen to it. It needs
-`manage` in every channel, like `vb inbox`, since the app's token reads more than the caller
-might.
+is stored, and reading a channel doesn't make the board listen to it. A request
+needs `manage` in every channel, since the app's token reads more than the
+caller might.
 
 | Answer | Why |
 | --- | --- |

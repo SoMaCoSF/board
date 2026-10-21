@@ -8,7 +8,7 @@ import { createBoard, type Board, type BoardOptions } from './board.ts'
  * points at: `VBOARD_URL`, then the repo's link (`vb link`, `vb serve`), then `vb use`'s.
  */
 export function board(options: BoardOptions = {}): Board {
-  return createBoard(options, { http: () => http(), server: () => import('./serve.ts') })
+  return createBoard(options, { http: () => http(), serving: () => import('./serving.ts'), sync: () => import('../sync/engine.ts') })
 }
 
 export * from './exports.ts'

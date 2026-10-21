@@ -1,10 +1,7 @@
-import { idempotentId } from 'experimental-a2'
 import {
   AckBody,
   EditBody,
   EventsQuery,
-  IdentityCheckBody,
-  IdentityLinkBody,
   IdentityUnlinkBody,
   InboxAckBody,
   InboxNextQuery,
@@ -41,19 +38,23 @@ import type { Actor } from '../contract/reducers.ts'
 import type { ExternalAuthor } from '../contract/contract.ts'
 import { ATTACHMENT_BYTES_MAX, type Attachment } from '../contract/schemas.ts'
 import { VERSION } from '../version.ts'
-import type { SyncEngine, SyncEvent } from '../sync/engine.ts'
+import type { SyncEvent } from '../sync/engine.ts'
 import { SYNC, type Caller, type InboxDelivery, type SyncEntry } from './backend.ts'
-import type { BoardContext } from './board.ts'
-import { createVerifier, hostPrincipal, type Authenticate, type Principal } from './auth.ts'
+import type { BoardContext, Serving } from './board.ts'
+import { derivedId } from '../client/ids.ts'
+import type { Authenticate, Principal } from './auth.ts'
 import { compileAccess, parseScope, type Access } from './access.ts'
 import { KNOWN_AGENTS, resolveActor } from './actors.ts'
 import { avatarSvg } from './avatars.ts'
 import { badRequest, forbidden, HttpError, json, notFound, toErrorResponse, unauthorized } from './errors.ts'
-import { discoveryIdentity, ownProjectId, ownTeamId } from './identity.ts'
 import { runMiddleware, type Write, type WriteSource } from './middleware.ts'
 import { createRouter, openapi, queryObject, readCapped, readJson, type BoardRoute } from './routing.ts'
-import { syncTarget, withEmailMentions, type SyncTarget, type WriteOrigin } from './writes.ts'
+import { syncTarget, withEmailMentions, type SyncTarget } from './targets.ts'
+import type { WriteOrigin } from './writes.ts'
 import type { WatcherContext } from './watch.ts'
+
+/** What a build that can't serve says to a request that needs verifying. */
+export const NOT_SERVED = "this build of vboard can't serve requests: import it where the `node` condition applies"
 
 /** A host's `access` function rejected the request with this response. */
 class Rejected {
@@ -195,7 +196,7 @@ const sourceOf = (caller: Caller): WriteSource | null => {
 export type Serve = {
   /** Serves a request, or one of this deployment's own calls as `injected`. */
   dispatch(request: Request, injected: Caller | PlatformCaller | null): Promise<Response>
-  /** An in-process client's call, as `caller`: its posts get IDs derived from `trigger`, counting `writes`. */
+  /** An in-process client's call, as `caller`: its posts and schedules get IDs derived from `trigger`, counting `writes`. */
   inject(request: Request, caller: Caller | PlatformCaller, trigger: string | null, writes: { made: number }): Promise<Response>
   run(id: string, event: WatcherContext['event'], meta: { trigger: string; attempt: number }): Promise<void>
   receive(key: string, item: InboxDelivery, meta: { id: string; attempt: number; signal: AbortSignal }): Promise<void>
@@ -209,20 +210,33 @@ export type Serve = {
  * with that caller. Its middleware and sync run here too, for requests and for its own code.
  */
 export async function createServe(context: BoardContext): Promise<Serve> {
-  const { options, backend } = context
+  const { options, backend, runtime } = context
   const host = options.authenticate ?? null
   const watch = options.watch ?? {}
   const middleware = options.middleware ?? []
   const entries = options.sync ?? {}
   // The sync engine, and the adapters it drives, only for a board that syncs.
-  const engine = Object.keys(entries).length > 0 ? (await import('../sync/engine.ts')).createSyncEngine(entries) : null
-  const { verify } = createVerifier({
-    projectId: () => ownProjectId(options.project),
-    teamId: () => ownTeamId(options.project),
-    // One of your own may leave it out: it trusts no other issuer then.
-    issuers: backend.issuers ?? [],
-    ...(options.auth ? { auth: options.auth } : {}),
-  })
+  const engine = Object.keys(entries).length > 0 && runtime.sync ? (await runtime.sync()).createSyncEngine(entries) : null
+  /** Token verification, and the board's own project, loaded the first time a request needs them. */
+  let serving: Promise<{ verify: ReturnType<Serving['createVerifier']>['verify']; serving: Serving }> | null = null
+  const needServing = () =>
+    (serving ??= (runtime.serving ? runtime.serving() : Promise.reject(new HttpError(501, 'not_served', NOT_SERVED))).then((loaded) => ({
+      serving: loaded,
+      verify: loaded.createVerifier({
+        projectId: () => loaded.ownProjectId(options.project),
+        teamId: () => loaded.ownTeamId(options.project),
+        // One of your own may leave it out: it trusts no other issuer then.
+        issuers: backend.issuers ?? [],
+        ...(options.auth ? { auth: options.auth } : {}),
+      }).verify,
+    })))
+  /** The board's own Vercel project and team: from the environment where it can serve, from `project` otherwise. */
+  const ownProject = async (request?: Request): Promise<{ projectId: string | null; teamId: string | null }> => {
+    if (!runtime.serving) return { projectId: options.project?.id ?? null, teamId: options.project?.teamId ?? null }
+    const { serving: loaded } = await needServing()
+    if (request) return loaded.discoveryIdentity(request, options.project)
+    return { projectId: await loaded.ownProjectId(options.project), teamId: await loaded.ownTeamId(options.project) }
+  }
   const streamMaxMs = options.streamMaxMs ?? 280_000
   const route = createRouter(backend.routes, options.basePath)
   const { state, ownUrl, clientAs, handleOf } = context
@@ -238,12 +252,12 @@ export async function createServe(context: BoardContext): Promise<Serve> {
         throw error
       }
       if (result instanceof Response) throw new Rejected(result)
-      return hostPrincipal(result)
+      return (await needServing()).serving.hostPrincipal(result)
     }
     const header = request.headers.get('authorization') ?? ''
     const token = header.match(/^Bearer\s+(.+)$/i)?.[1]
     if (!token) throw unauthorized('missing bearer token')
-    return verify(token, boardUrl, request.headers.get('x-vercel-oidc-token') ?? undefined)
+    return (await needServing()).verify(token, boardUrl, request.headers.get('x-vercel-oidc-token') ?? undefined)
   }
 
   async function authenticate(request: Request, boardUrl: string): Promise<Principal> {
@@ -516,14 +530,6 @@ export async function createServe(context: BoardContext): Promise<Serve> {
         return post(caller, input as Protocol['post']['input'], signal)
       case 'edit':
         return edit(caller, input as Protocol['edit']['input'], signal)
-      case 'identity': {
-        // Which sync entries have no account linked is this board's to say: it has the entries.
-        const view = await backend.identity(caller, {}, signal)
-        const unlinked = Object.entries(entries)
-          .filter(([, entry]) => !view.links.some((link) => link.actor.startsWith(`${entry.platform}:user:`)))
-          .map(([key]) => key)
-        return { ...view, unlinked }
-      }
       case 'inbox': {
         const query = input as Protocol['inbox']['input']
         // A channel by name, for an entry this board has: its platform ID.
@@ -536,11 +542,6 @@ export async function createServe(context: BoardContext): Promise<Serve> {
         return (method as (caller: Caller, input: unknown, signal: AbortSignal) => Promise<unknown>).call(backend, caller, input, signal)
       }
     }
-  }
-
-  const needSync = (): SyncEngine => {
-    if (!engine) throw notFound('this board has no sync configured')
-    return engine
   }
 
   /** What `caller` may do, as the backend says: board() decides nothing itself. */
@@ -569,10 +570,6 @@ export async function createServe(context: BoardContext): Promise<Serve> {
     for (const registration of await registrants(fresh))
       for (const entry of registration.sync) if (!found.has(entry.key)) found.set(entry.key, { ...entry, url: registration.url, own: false })
     return [...found.values()]
-  }
-  const needPerson = (caller: Caller): string => {
-    if (!('identity' in caller) || caller.identity.principal.kind !== 'person') throw forbidden('only people link platform accounts')
-    return caller.identity.principal.id
   }
 
   /**
@@ -624,49 +621,16 @@ export async function createServe(context: BoardContext): Promise<Serve> {
         return json({ targets: engine ? await engine.typing([root, ...replies], body.status) : [] })
       }
       case 'sourceRead': {
+        // Only the board that runs a sync entry has its platform's app to read with.
+        const key = params.key ?? ''
+        if (!engine || !entries[key]) throw notFound(`this board doesn't run sync entry ${key}: read it where its sync runs`, 'not_synced_here')
         // The app's token reads what the app can, not what the caller can.
         if (!(await accessOf(caller, signal)).everywhere('manage')) throw forbidden("this token can't read a source: it needs manage in every channel")
         const query = SourceReadQuery.parse(queryObject(url))
-        return json(await needSync().readSource(params.key ?? '', query.target, query.limit ?? 50))
-      }
-      case 'identityLink': {
-        const body = IdentityLinkBody.parse(await readJson(request))
-        const known = await syncEntries(true)
-        if (known.length === 0) throw notFound('this board has no sync configured')
-        const entry = known.find((candidate) => candidate.key === body.sync)
-        if (!entry) throw notFound(`no sync entry named ${body.sync}`)
-        const person = needPerson(caller)
-        // A sign-in where the entry's sync runs and can be reached; a code to post from the account otherwise.
-        const signs = entry.signIn && (entry.own || entry.url !== null)
-        if (body.method === 'consent' && !signs) throw badRequest(`${body.sync} can't sign people in: link it with a code`)
-        if (body.method !== 'code' && signs) {
-          // The board that keeps the log issues the code; the sign-in carries it, and the sync redeems it.
-          if (entry.own) return json({ method: 'consent', sync: entry.key, platform: entry.platform, url: await engine!.signIn(entry.key, person) })
-          const { code } = await backend.syncCode(caller, { sync: entry.key }, signal)
-          const at = `${entry.url}/identity/sign-in?${new URLSearchParams({ sync: entry.key, code })}`
-          return json({ method: 'consent', sync: entry.key, platform: entry.platform, url: at })
-        }
-        const { code, expiresAt } = await backend.syncCode(caller, { sync: entry.key }, signal)
-        return json({ method: 'code', sync: entry.key, platform: entry.platform, code, expiresAt })
-      }
-      case 'identityCheck': {
-        const body = IdentityCheckBody.parse(await readJson(request))
-        const known = await syncEntries(true)
-        if (known.length === 0) throw notFound('this board has no sync configured')
-        const entry = known.find((candidate) => candidate.key === body.sync)
-        if (!entry) throw notFound(`no sync entry named ${body.sync}`)
-        const person = needPerson(caller)
-        // A sign-in elsewhere links where it comes back: the person sees it in their links.
-        if (!entry.own) return json({ linked: null })
-        if (!entry.signIn) throw badRequest(`${body.sync} can't sign people in: link it with a code`)
-        // Their sign-in, here: once it's done, a code of their own links the account it authorized.
-        const account = await engine!.signedIn(entry.key, person)
-        if (!account) return json({ linked: null })
-        const { code } = await backend.syncCode(caller, { sync: entry.key }, signal)
-        return json({ linked: (await backend.syncAccount(engine!.caller, { sync: entry.key, account, code, method: 'consent' }, signal)).link })
+        return json(await engine.readSource(key, query.target, query.limit ?? 50))
       }
       case 'identityUnlink': {
-        needPerson(caller)
+        // Who may unlink what is the backend's: it answers for the caller's own links.
         const body = IdentityUnlinkBody.parse(await readJson(request))
         const { links } = await backend.identity(caller, {}, signal)
         const wanted = body.actor.replace(/^@/, '').toLowerCase()
@@ -744,7 +708,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       const match = route(request.method, url.pathname)
       if (!match) throw notFound(`no route: ${request.method} ${url.pathname}`)
       const { target } = match
-      if (!injected && !(target.kind === 'board' && target.name === 'discovery')) state.learned = match.base
+      if (!injected && !match.root) state.learned = match.base
       const boardUrl = (options.url ?? `${url.origin}${match.base}`).replace(/\/+$/, '')
 
       if (target.kind === 'board' && target.name === 'webhook') {
@@ -769,7 +733,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
           })
         }
         if (target.name === 'openapi') return json(openapi())
-        const identity = await discoveryIdentity(request, options.project)
+        const identity = await ownProject(request)
         const body: Discovery = {
           version: VERSION,
           url: boardUrl,
@@ -778,7 +742,6 @@ export async function createServe(context: BoardContext): Promise<Serve> {
           project_id: identity.projectId,
           // Its own sync's entries, and those of the syncs registered here, which link accounts here too.
           sync: (await syncEntries()).map(({ key, platform }) => ({ key, platform })),
-          ...(backend.remote !== null ? { remote: backend.remote } : {}),
         }
         return json(body)
       }
@@ -805,9 +768,9 @@ export async function createServe(context: BoardContext): Promise<Serve> {
   return {
     dispatch,
     async inject(request, caller, trigger, writes) {
-      if (trigger !== null && request.method === 'POST' && new URL(request.url).pathname.endsWith('/messages')) {
+      if (trigger !== null && request.method === 'POST' && /\/(messages|schedules)$/.test(new URL(request.url).pathname)) {
         const body = ((await request.json()) ?? {}) as Record<string, unknown>
-        body.id ??= await idempotentId('vboard-inbound', trigger, 'client', String(writes.made++))
+        body.id ??= await derivedId('vboard-inbound', trigger, 'client', String(writes.made++))
         request = new Request(request.url, { method: 'POST', headers: request.headers, body: JSON.stringify(body) })
       }
       return dispatch(request, caller)
@@ -823,6 +786,9 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       await engine.receive(key, item, { id, attempt })
     },
     pull: () => (engine ? engine.pull() : Promise.resolve(0)),
-    project: async () => ({ id: await ownProjectId(options.project), teamId: await ownTeamId(options.project) }),
+    project: async () => {
+      const { projectId, teamId } = await ownProject()
+      return { id: projectId, teamId }
+    },
   }
 }

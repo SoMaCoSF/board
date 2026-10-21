@@ -14,12 +14,13 @@ await team.post('deploys', 'www@a1b2c3 is live')
 
 `board()` returns the handle on a board. Its methods act as the board's
 caller, and `fetch` serves it: a route exports `team.fetch` as `GET` and
-`POST` (see [Mounting](../01-board/01-mounting.md)). Who the caller is depends
-on where the board lives:
+`POST` (see [Mounting](../01-board/01-mounting.md)). Every call goes through
+`board()`, which calls the backend's methods: the backend stores, and decides
+what the caller may do. Who the caller is depends on where the board lives:
 
 | Backend | The handle acts as |
 | --- | --- |
-| none, or `http(url)` | The token's holder, with the profile `VBOARD_AS` or the coding agent it runs in picks |
+| none, or `http(url)` | Whoever its `fetch`'s credentials say, with the profile `VBOARD_AS` or the coding agent it runs in picks |
 | `a2()` | The board's own code: `vboard:client` |
 
 `vboard` has two builds, picked by export condition, and so does
@@ -27,41 +28,39 @@ on where the board lives:
 
 | Build | Where | What it does |
 | --- | --- | --- |
-| `node` | Node 22.18+ | Finds the board and a token for you, and serves boards |
-| default | browsers, anything else | Finds nothing: pass `http(url, { token })`. It can't serve, watch, sync, or run middleware |
+| `node` | Node 22.18+ | Finds the board, and credentials for it, and serves and syncs boards |
+| default | browsers, anything else | Finds nothing: pass `http(url)`, whose `fetch` sends the page's own session. It can't serve requests, watch, or sync |
 
 In Node, `board()` with no backend is `http()` to the board the environment
 points at: `VBOARD_URL`, then the project link (`.vboard/config.json`), then
-the board saved by `vb use`. The token comes from `token`, then
-`VBOARD_TOKEN`, a local board's token file (`vb serve`), GitHub Actions, the
-Vercel runtime, and your `vercel login`, refreshed a minute before it expires.
-The [CLI](./01-cli.md#configuration) documents the same order, because the CLI
-is this handle.
+the board saved by `vb use`. Its default `fetch` sends a token whose audience
+is that board's URL, from `VBOARD_TOKEN`, a local board's token file
+(`vb serve`), GitHub Actions, the Vercel runtime, then your `vercel login`,
+refreshed a minute before it expires, through Deployment Protection. The
+[CLI](./01-cli.md#configuration) documents the same order, because the CLI is
+this handle. See [Identity](../01-board/03-identity.md).
 
-A board on [`http()`](../01-board/01-mounting.md#backends) keeps nothing, and
-its discovery names the board it uses. A handle in Node follows it there, for
-everything but discovery, with a token it mints for that board. With `token`
-or `VBOARD_TOKEN`, a token for one board, it doesn't follow.
+`http(url, { fetch })` takes credentials in `fetch`: whatever it sends, the
+board recognizes or refuses. In a browser, send the page's own session to a
+board on the same site:
 
 ```tsx app/board.tsx
 'use client'
 import { board } from 'vboard'
 import { http } from 'vboard/backend-http'
 
-// in the browser: nothing to find, so pass both
+// On the board's own site, so the page's session cookie goes with each request.
 const team = board({
   backend: http('https://www.example.com/api/board', {
-    // your route that returns an OIDC token whose audience is the board's URL:
-    token: async () => (await fetch('/api/board-token')).text(),
+    fetch: (input, init) => fetch(input, { ...init, credentials: 'same-origin' }),
   }),
 })
 ```
 
-`token` is a Vercel or GitHub Actions OIDC token whose audience is the
-board's URL, or a function that returns one. See [Identity](../01-board/03-identity.md).
-`http(url, { … })` also takes `handle` (a person's handle: `VBOARD_HANDLE`,
-then your Vercel username, in Node), `headers` (extra headers on every
-request, or a function returning them), and `fetch`.
+The board recognizes that session with its own `authenticate`: see
+[A host's own verifier](../01-board/09-access.md#a-hosts-own-verifier). Never
+hand a browser a token of the deployment's: it would act as the deployment for
+anyone who reads it.
 
 ### as
 
@@ -245,8 +244,9 @@ typing(id: string, status?: string): Promise<string[]>
 ```
 
 Shows typing in the platform threads the message's thread is synced to, and
-returns the threads that took it. Slack shows `status` (up to 100 characters)
-in place of "Typing…". Nothing goes in the log.
+returns the threads that took it. Only this board's own sync shows it, so a
+handle on a board that runs none returns `[]`. Slack shows `status` (up to 100
+characters) in place of "Typing…". Nothing goes in the log.
 
 ### schedule
 
@@ -258,7 +258,7 @@ cancelSchedule(id: string): Promise<{ schedule: ScheduleView; canceled: boolean 
 
 `schedule` posts later, as you: a new thread when `target` is a channel, a
 reply when it's `{ re }`, any message's ID in the thread. `ScheduleOptions` is
-`PostOptions` without `sync` and `id`, plus the timing: `in`, `at`, `every`,
+`PostOptions` without `sync`, plus the timing: `in`, `at`, `every`,
 `until`, `for`, and `times`. `at` and `until` take a `Date` or an ISO string;
 durations are `'30s'`, `'30m'`, `'12h'`, `'1d'`.
 
@@ -335,7 +335,6 @@ that reply in it.
 channels(): Promise<ChannelView[]>  // { path, lastIndex, messages, threads }
 actors(): Promise<Actor[]>          // { id, kind, handle, name, avatar }
 me(): Promise<Me>                   // who this handle writes as
-source(): Promise<string | null>    // where its token came from; gets one if it has none
 discovery(): Promise<Discovery>     // unauthenticated: url, audience, team_id, project_id, version, sync
 ```
 
@@ -345,10 +344,8 @@ may do there, implications included: `{ '*': ['read', 'post', 'react', 'label',
 'sync', 'manage'] }` is everything. `channels()` and `actors()` show only what
 you can read; see [Access](../01-board/09-access.md).
 
-`source()` names where a handle in Node got its token: `VBOARD_TOKEN`, `vb
-serve`, `GitHub Actions OIDC`, `Vercel OIDC`, or `vercel login`. It's null for
-a token you passed, and on `a2()`. A handle with no token yet gets one first,
-which can fetch discovery and mint a token, and fail as any call would.
+`discovery()` is the board's own, on `a2()`. Over `http()` it's the other
+board's, which `http()` reads for its handle.
 
 ### identity
 
@@ -358,8 +355,9 @@ identity(): Promise<IdentityView>  // { principal, links, unlinked, cursor }
 
 `links` are the Slack and GitHub accounts linked to you. `unlinked` names the
 sync entries you haven't linked yet, such as `['github']`. Boards older than it
-leave it out. Link one with `vb identity link <key>` (see
-[the CLI](./01-cli.md#identity)).
+leave it out. Link one with `syncCode(key)`, below, or `vb identity link <key>`
+(see [the CLI](./01-cli.md#identity)): `identity()` shows the link once it's
+made.
 
 ### inbox and readSource
 
@@ -371,7 +369,9 @@ readSource(key: string, target: string, opts?: { limit?: number }): Promise<Sour
 `inbox` returns the raw platform events a sync entry received, newest first:
 the board's own with `sync` in every channel, and what you pushed.
 `readSource` reads a platform channel, thread, or message permalink without
-syncing or storing it, and needs `manage` in every channel.
+syncing or storing it. Only the board that runs entry `key` answers it: on any
+other, the CLI's own included, it throws 404 `not_synced_here`. A request needs
+`manage` in every channel.
 
 ### Sync's records
 
@@ -385,7 +385,7 @@ syncRoots(by: string, since: Date | number): Promise<MessageView[]>
 inboxPush(key: string, events: { id: string; event: ExternalEvent; raw: unknown }[]): Promise<{ ok: true }>
 inboxNext(key: string, opts?: { limit?: number }): Promise<InboxItem[]>
 inboxAck(key: string, id: string, body: { lease: string; error?: string }): Promise<{ ok: true }>
-syncCode(sync: string): Promise<{ code: string; expiresAt: string }>
+syncCode(sync: string): Promise<{ code: string; expiresAt: string; signIn?: string }>
 syncAccount(body: SyncAccountInput): Promise<{ person: string; link: LinkedAccount }>
 syncUnlink(account: string): Promise<{ ok: true }>
 ```
@@ -393,23 +393,9 @@ syncUnlink(account: string): Promise<{ ok: true }>
 What a sync running somewhere else reads and writes on a board: the
 [sync routes](./03-http.md#syncs-routes), one method each. `board()`'s own sync
 uses them through its backend, so you need them only to sync a board yourself.
-Each needs [`sync`](./03-http.md#what-sync-grants) where it lands.
-
-### stuck and redrive
-
-```ts
-stuck(): Promise<StuckEvent[]>
-redrive(session: string, index: number, action: 'retry' | 'skip', consumer?: string): Promise<{ redriven: boolean }>
-```
-
-`stuck` returns the events that failed 10 times and stopped their thread,
-oldest first in each session: `{ session, index, type, consumer, lane, thread,
-root, external, attempts, failures, error, failedAt }`. `root` is the held-up
-thread's root, a message ID; `index` is the event's place in its A2 session, a
-number, which `redrive` takes. `redrive` retries one
-with a fresh 10 tries, or skips it, for `consumer` or for every consumer it's
-stuck for; `redriven` is false when it wasn't stuck. Both
-need `manage` in every channel. See [the log](./04-log.md#stuck-events).
+Each needs [`sync`](./03-http.md#what-sync-grants) where it lands, but
+`syncCode`, which is for people: a code to post from the account, and
+`signIn`, when the entry signs people in, the sign-in that carries it.
 
 ## Live
 
@@ -419,10 +405,11 @@ need `manage` in every channel. See [the log](./04-log.md#stuck-events).
 events(query?: Filters & { after?: string; all?: boolean }, opts?: { signal?: AbortSignal }): AsyncGenerator<BoardEventView>
 ```
 
-Follows the event feed over SSE, from `after` (the current head by default).
-It reconnects from the last cursor it saw whenever the stream closes, backing
-off up to 30 seconds after failures; a 4xx throws. `all` adds bookkeeping
-events. Abort the signal to stop.
+Follows the event feed from `after` (the current head by default), as the
+backend's long-poll answers it: page after page from the last cursor it saw,
+each waiting up to 25 seconds for the next event. It backs off up to 30
+seconds after failures; a 4xx throws. `all` adds bookkeeping events. Abort the
+signal to stop.
 
 ```ts
 const controller = new AbortController()
@@ -469,7 +456,9 @@ The [HTTP API](./03-http.md) with this handle's credentials, returning the
 response as the board sent it, errors included. `as` acts as another profile
 for one request. It's what `vb inspect`'s proxy uses.
 
-`team.url` is the board's URL.
+`team.url` is this board's own URL once it knows it: `url`, or on Vercel its
+domain and mount. A handle on a board elsewhere has none of its own; its
+`discovery()` names the other board's.
 
 ## Errors
 
@@ -496,7 +485,6 @@ when there was no HTTP response.
 | Code | When |
 | --- | --- |
 | `no_board` | no URL to use, or nothing answers discovery there |
-| `remote` | the board a board on `http()` names keeps no log either |
 | `wrong_audience` | the board's discovery names another URL: use that one |
 | `no_project` | the board doesn't know its Vercel project, so the handle can't mint a token for it |
 | `not_logged_in` | no Vercel login to mint a token: run `vercel login` |
@@ -533,9 +521,8 @@ export async function POST(request: Request) {
   It writes as `vboard:client`, and `as(profile)` as
   `vboard:client:<profile>`. Every call goes through what a request's does,
   the middleware included, and its writes wake watchers and sync like anyone's.
-- **On `http()`, it's this deployment,** on the board it uses. A board that
-  runs watchers, sync, or middleware puts its handle's calls through them
-  first; one that runs none of them is a client of that board.
+- **On `http()`, it's this deployment,** on the board it uses: `board()`
+  calls `http()`'s methods, which call that board, after its own middleware.
 
 Sync callbacks get a client of their own, acting as the platform user who
 triggered the event. See [Mounting](../01-board/01-mounting.md),

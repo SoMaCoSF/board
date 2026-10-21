@@ -141,8 +141,8 @@ export abstract class SyncProvider<E extends ProviderEvent = ProviderEvent> {
   async startTyping(_thread: string, _latest: string | null, _status?: string): Promise<void> {}
   /**
    * The channel whose inbox a thread's events land in (`slack:C0123ABC` for `slack:C0123ABC:1727.1234`),
-   * worked out without calling the platform. Null when the provider can't tell: `vb stuck` then only
-   * sees the mapped channels' inboxes.
+   * worked out without calling the platform. Null when the provider can't tell: a key's inbox then
+   * lists only the mapped channels'.
    */
   inboxChannel(_key: string, _thread: string): string | null { return null }
   async deleteFiles(_ids: string[]): Promise<void> {}

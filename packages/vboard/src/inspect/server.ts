@@ -66,6 +66,8 @@ const CSP = [
 export async function startInspector(options: { client: BoardClient; port?: number }): Promise<Inspector> {
   const { client } = options
   const me = await client.me()
+  // The board it acts on, as that board names itself: a handle on one elsewhere has no URL of its own.
+  const board = (await client.discovery().catch(() => null))?.url ?? client.url
   const app = await bundle()
   const token = randomBytes(24).toString('base64url')
   let origins = new Set<string>()
@@ -138,7 +140,7 @@ export async function startInspector(options: { client: BoardClient; port?: numb
   origins = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`])
   return {
     url: `http://127.0.0.1:${port}`,
-    board: client.url,
+    board,
     me,
     close: () =>
       new Promise<void>((resolve) => {

@@ -358,15 +358,15 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
   const wrong =
     discovery instanceof Error
       ? discovery.message
-      : typeof discovery.audience !== 'string' || !Array.isArray(discovery.sync)
-        ? `discovery should have audience and sync, got ${show(discovery)}`
-        : discovery.remote
-          ? `it keeps no log: its discovery names ${discovery.remote}, so check that board`
-          : null
+      : typeof discovery.audience !== 'string' || typeof discovery.url !== 'string' || !Array.isArray(discovery.sync)
+        ? `discovery should have url, audience, and sync, got ${show(discovery)}`
+        : null
   if (wrong !== null) {
     checks.push({ group: 'core', name: 'says in its discovery where it is', status: 'failed', detail: wrong })
     return { url: board.url, checks, ok: false }
   }
+  // The board it checks, as it names itself: a handle on one elsewhere has no URL of its own.
+  const url = (discovery as { url: string }).url
   checks.push({ group: 'core', name: 'says in its discovery where it is', status: 'passed' })
   const me = await board.me()
   const channel = options.channel ?? 'conformance'
@@ -391,5 +391,5 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
     // What it posted goes, replies first. A failure here leaves a tombstone short, not a wrong report.
     for (const id of [...ctx.posted].reverse()) await board.delete(id).catch(() => {})
   }
-  return { url: board.url, checks, ok: checks.every((c) => c.status !== 'failed') }
+  return { url, checks, ok: checks.every((c) => c.status !== 'failed') }
 }

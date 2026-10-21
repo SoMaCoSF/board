@@ -5,7 +5,7 @@ import { http } from '../src/backend-http/index.ts'
 import { slack } from '../src/sync/slack.ts'
 import { withUserTokens, type UserTokens } from '../src/sync/users.ts'
 import { fakePlatform } from './sync-fixtures.ts'
-import { BOARD_URL, caller, deploymentToken, personToken, PROJECT_ID, TEAM_ID, testAuth, testBoard } from './harness.ts'
+import { bearer, BOARD_URL, caller, deploymentToken, personToken, PROJECT_ID, TEAM_ID, testAuth, testBoard } from './harness.ts'
 import { fakeQueue } from './queue.ts'
 
 /** Where the support project's board is mounted: a board on the team's, over http(), that syncs Slack itself. */
@@ -39,7 +39,7 @@ function setup(options: { can?: Parameters<typeof vercelProject>[0]['can']; chan
     access: [vercelProject({ project: 'prj_support', can: options.can ?? 'all' })],
     transport: { post: (url, init) => route(url, { method: 'POST', headers: init.headers, body: init.body }) },
   })
-  const backend = http(BOARD_URL, { fetch: route as typeof fetch, token: supportToken })
+  const backend = http(BOARD_URL, { fetch: bearer(route, supportToken) })
   project = board({
     backend,
     url: SUPPORT_URL,
@@ -88,7 +88,7 @@ describe('sync on a board on http()', () => {
 
   it("delivers a post on the board it uses to Slack, and records the delivery's receipt there", async () => {
     const { team, backend, s } = setup()
-    await backend.register()
+    await backend.registerWatchers()
     const julian = await julianOn(team.fetch)
     const root = (await julian('POST', '/messages', { channel: 'firehose', text: 'deploy failed' })).body.message
     await vi.waitFor(() => expect(s.channelPosts.map((post) => [post.channelId, post.text])).toEqual([['slack:C1', JSON.stringify({ markdown: '**julian**: deploy failed' })]]))
@@ -106,7 +106,7 @@ describe('sync on a board on http()', () => {
 
   it('follows edits and reactions both ways', async () => {
     const { team, backend, s, webhook } = setup()
-    await backend.register()
+    await backend.registerWatchers()
     const julian = await julianOn(team.fetch)
     // From Slack: a message, then its edit and a reaction.
     await webhook({ type: 'message', threadId: 'slack:C1:100', id: '100', text: 'export is broken', user: 'U_ADA' })
@@ -129,11 +129,11 @@ describe('sync on a board on http()', () => {
     const { team, backend, webhook, s } = setup()
     const here = await julianOn(team.fetch)
     // The team's board knows the project syncs Slack from its registration, and says so.
-    await backend.register()
+    await backend.registerWatchers()
     expect((await (await team.fetch(new Request(BOARD_URL))).json()).sync).toEqual([{ key: 'slack', platform: 'slack' }])
-    // The code comes from the board that keeps the log, for the person asking.
-    const challenge = (await here('POST', '/identity/link', { sync: 'slack' })).body
-    expect(challenge).toMatchObject({ method: 'code', sync: 'slack', platform: 'slack', code: expect.stringMatching(/^vb-[A-Z2-9]{4}-[A-Z2-9]{4}$/) })
+    // The code comes from the board that keeps the log, for the person asking: the project's entry signs no one in.
+    const challenge = (await here('POST', '/sync/codes', { sync: 'slack' })).body
+    expect(challenge).toEqual({ code: expect.stringMatching(/^vb-[A-Z2-9]{4}-[A-Z2-9]{4}$/), expiresAt: expect.any(String) })
     await webhook({ type: 'message', threadId: 'slack:C1:100', id: '100', text: challenge.code, user: 'U_JULIAN', name: 'jb' })
     await vi.waitFor(async () => expect((await here('GET', '/identity')).body.links).toEqual([expect.objectContaining({ actor: 'slack:user:U_JULIAN', method: 'code' })]))
     // The code was claimed, not imported, and Slack shows it worked.
@@ -295,13 +295,13 @@ describe('the sync permission', () => {
       token: async (principal: string) => signedIn.get(principal) ?? null,
     }
     const { team, project, backend } = setup({ users })
-    await backend.register()
+    await backend.registerWatchers()
     const julian = await julianOn(team.fetch)
     // The team's board sends the person to the project's sign-in, with a code of their own in it.
-    const challenge = (await julian('POST', '/identity/link', { sync: 'slack' })).body
-    expect(challenge).toMatchObject({ method: 'consent', sync: 'slack', platform: 'slack', url: expect.stringMatching(new RegExp(`^${SUPPORT_URL}/identity/sign-in\\?sync=slack&code=vb-`)) })
+    const challenge = (await julian('POST', '/sync/codes', { sync: 'slack' })).body
+    expect(challenge).toMatchObject({ code: expect.stringMatching(/^vb-/), signIn: expect.stringMatching(new RegExp(`^${SUPPORT_URL}/identity/sign-in\\?sync=slack&code=vb-`)) })
     // The project sends them to Slack as whoever the code is for, and back to itself.
-    const start = await project.fetch(new Request(challenge.url))
+    const start = await project.fetch(new Request(challenge.signIn))
     expect(start.status).toBe(302)
     const at = new URL(start.headers.get('location')!)
     expect(at.searchParams.get('subject')).toBe('vercel:user:u_julian')
@@ -313,7 +313,7 @@ describe('the sync permission', () => {
     expect(await (await project.fetch(new Request(back))).text()).toContain('Linked')
     expect((await julian('GET', '/identity')).body.links).toEqual([expect.objectContaining({ actor: 'slack:user:U_JULIAN', method: 'consent' })])
     // The code is spent: the link can't be replayed.
-    expect((await project.fetch(new Request(challenge.url))).status).toBe(404)
+    expect((await project.fetch(new Request(challenge.signIn))).status).toBe(404)
   })
 
   it('takes provenance only on the sync routes: a post never says who it is by', async () => {

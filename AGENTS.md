@@ -295,8 +295,8 @@ and GitHub.
 
 - **The page is just another handle.** `server.ts` serves the page, its
   bundle, and `/board/*`, a proxy that adds your credentials; the page is
-  `board({ backend: http(proxy, { token, headers }) })`, from the default
-  builds, which a browser can run. The page needs no inspector-specific API; if
+  `board({ backend: http(proxy, { fetch }) })`, from the default builds, its
+  `fetch` sending the per-run token. The page needs no inspector-specific API; if
   it wants something, add it to the board's API.
 - **State lives in `app/store.ts`, pure and tested.** Views merge by the log
   index they reflect (an older view never replaces a newer one); your writes are
@@ -348,11 +348,15 @@ for a person at a terminal first; `--json` is for programs.
 ## layering
 
 API → `board()` → CLI. The CLI makes no HTTP calls of its own; everything goes
-through a handle from `board()`. Request schemas live in `src/api/routes.ts` and
-are shared by the server and the handle. Nothing on the way to a handle over
-`http()` imports Node: finding the board and its token lives in the `node`
-builds of `vboard` and `vboard/backend-http`, and serving, watchers, sync, and
-middleware load when they're used (`test/browser.test.ts` checks).
+through a handle from `board()`, and `board()` only ever calls the backend's
+methods: the backend stores and decides, and nothing reaches around them. A
+board on `http()` answers only wake-ups and webhooks, so a repo links the
+team's board itself. Request schemas live in `src/api/routes.ts` and are
+shared by the server and the handle. Nothing on the way to a handle over
+`http()` imports Node: credentials go in `http(url, { fetch })`, whose Node
+default (`vb`'s) lives in the `node` builds of `vboard` and
+`vboard/backend-http`, and serving requests and sync load from there when
+they're used (`test/browser.test.ts` checks).
 
 ## invariants
 

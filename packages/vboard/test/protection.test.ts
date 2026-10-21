@@ -17,9 +17,10 @@ vi.mock('@vercel/oidc', async (original) => ({
 
 const { board } = await import('../src/server/index.ts')
 const { http } = await import('../src/backend-http/index.ts')
-type HttpOptions = NonNullable<Parameters<typeof http>[1]>
-/** A handle on the board at `url`, over http(), as `vb` makes one. */
-const handle = ({ url, ...options }: { url: string } & HttpOptions) => board({ backend: http(url, options) })
+const { connect } = await import('../src/client/node.ts')
+/** A handle on the board at `url`, over http(), reaching it the way `vb` does, over the network `fetch` is. */
+const handle = ({ url, ...options }: { url: string } & NonNullable<Parameters<typeof connect>[1]>) =>
+  board({ backend: http(url, { fetch: connect(url, options).fetch }) })
 const { BOARD_URL, personToken, testBoard } = await import('./harness.ts')
 
 const HOST = new URL(BOARD_URL).host

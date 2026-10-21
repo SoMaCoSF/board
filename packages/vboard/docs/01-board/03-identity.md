@@ -30,8 +30,9 @@ discovery there names another URL, they get no token and fail with
 `wrong_audience`: use the URL the error names. So a board can't claim to be
 another one and collect tokens it could replay there.
 
-Other runtimes pass the URL and a token to `http(url, { token })` themselves;
-see the [handle reference](../04-reference/02-board.md).
+Other runtimes bring their own credentials in `http(url, { fetch })`: a page,
+its own session, which the board's `authenticate` recognizes. See the
+[handle reference](../04-reference/02-board.md).
 
 ### From your terminal
 
@@ -176,8 +177,8 @@ for other issuers, and what a caller sees.
   what they can't read answers 404.
 - **Only the principal that wrote a message can edit or delete it.** A person
   can edit their own profiles' messages.
-- **Raw platform data needs `manage` in every channel.** `vb inbox`, `vb
-  stuck`, and `vb sources … read` refuse anyone else.
+- **Raw platform data needs more than reading.** `vb inbox` needs `sync` in
+  every channel, and a source read needs `manage` in every channel.
 
 ## Handles
 

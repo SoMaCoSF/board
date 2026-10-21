@@ -143,10 +143,10 @@ that one handler (`export const GET = team.fetch, POST = team.fetch`).
 
 - **A backend is a plain object** (`Backend` in `src/server/backend.ts`): one
   async method per protocol method (`Protocol` in `src/api/protocol.ts`), each
-  `(caller, input, signal)`, plus `remote`, `routes`, and `bind`, and for one
-  that keeps nothing, an optional `client(profile)`: a client of the board it
-  uses, as its token's holder, which a handle on a board that runs nothing of
-  its own is.
+  `(caller, input, signal)`, plus `issuers`, `routes`, and `bind`. `board()`
+  only ever calls these: the backend stores, and decides what a caller may do.
+  Discovery isn't one of them: `board()` answers it for a board that keeps its
+  own log, and a backend's own route at `/` takes its place.
   `input` is what the route's schema parsed; the output is what the route
   answers, 201 for `post`, `schedule`, and `upload`. `attachment` answers the
   file's record and bytes, and `board()` serves them with the headers that keep
@@ -180,9 +180,12 @@ that one handler (`export const GET = team.fetch, POST = team.fetch`).
   [Middleware](#middleware) and [Sync](#sync)). The middleware sees each post
   and edit before `board()` calls the backend, and each import's post or edit
   before sync does. Sync's adapters, webhooks (`/webhooks/:key`, no token),
-  `/sources/:key/read`, `/messages/:id/typing`, `/messages/:id/sync`, and
-  `/identity/link`, `/check`, `/unlink` are `board()`'s routes; sync reads and
-  writes only through the protocol, as its own caller.
+  `/sources/:key/read`, `/messages/:id/typing`, `/messages/:id/sync`,
+  `/identity/sign-in` and `/signed-in` (no token), and `/identity/unlink` are
+  `board()`'s routes; sync reads and writes only through the protocol, as its
+  own caller. A source read answers only on the board that runs that entry
+  (404 `not_synced_here` elsewhere), and typing shows only where the board's
+  own sync runs.
 - **SSE is built from `events`,** the long-poll: `board()` loops it, sends each
   event with `id: <its cursor>`, and a bare `id:` when a page's cursor moved
   past its last event. It honors `Last-Event-ID` when `after` is absent, pings
@@ -199,36 +202,43 @@ The backends vboard ships:
   watcher, `vboard:middleware` from the middleware's handle, and `vboard:sync`
   from sync. Its extras are `scheduler`
   (the scheduler's callback, for its own route: `export const { scheduler } =
-  backend`), `servers`, and, for tests and tools, `session` and `store`. Its
-  own routes are `/stuck` and `/stuck/redrive`. It delivers sync's
+  backend`), `servers`, and, for tests and tools, `session` and `store`. It
+  has no routes of its own. Its dead letters are A2's, on its `servers`. It
+  delivers sync's
   subscription in-process, on the `vboard-sync` consumer's thread lanes, and
   what sync pushes to its inbox on `vboard-inbox`'s platform-thread lanes, so
   both keep A2's retries and dead letters. It takes no `sync` or `middleware`:
   TypeScript flags them there.
-- **`http(url?, { fetch?, token?, handle?, headers? })`** uses the board at
-  `url` (in Node, the one the environment points at by default), which keeps
-  the log: its methods call it with a client of it. A `{ self }` caller writes
-  there as this deployment with `self` as its profile, and a post whose ID
+- **`http(url?, { fetch? })`** uses the board at `url` (in Node, the one the
+  environment points at by default), which keeps the log: its methods call it
+  through `fetch`, which brings the credentials. In Node the default `fetch`
+  adds what `vb` uses: a token from `VBOARD_TOKEN`, a local board's token
+  file, GitHub Actions or Vercel OIDC, then `vercel login` (reading the other
+  board's discovery to mint for its project), your handle, and the Deployment
+  Protection handling; in a browser it's `fetch`, sending the page's own
+  session, which the board's `authenticate` recognizes. A `{ self }` caller
+  writes there as this deployment with `self` as its profile (the handle's
+  own with the profile `VBOARD_AS` or the agent picks), and a post whose ID
   `board()` derived (from a watcher's trigger, or from the handle's `id` and
-  profile) gets `key:<principal>:<sha256 of that ID>`; a handle that goes
-  straight there derives the same. Any board takes a `key:<principal>:` ID
-  only from that principal, so the same `id` never posts twice and no one can
-  post with one first (and `posted`, a retry's lookup, asks for the same). It answers only wake-ups, webhooks,
-  and discovery, which names the other board as `remote`: a request's
-  `{ identity }` answers 404 `remote` (`<url> keeps no log: use <remote>`). It
-  has no `access`: what a caller may do is the other board's to say. Its own
-  routes are `POST /wake` and `POST /watchers`
-  (no token). Its watchers run here, on what the other board matches for them
+  profile) gets `key:<principal>:<sha256 of that ID>`, and so does a
+  schedule's. Any board takes a `key:<principal>:` ID only from that
+  principal, so the same `id` never posts or schedules twice and no one can
+  take one first (and `posted`, a retry's lookup, asks for the same). It
+  answers only wake-ups and webhooks, and its sync's
+  sign-ins: a request's `{ identity }`, and `GET /` from anyone, answer 404
+  `<url> answers only wake-ups and webhooks`. Its own handle's `GET /` reads
+  the other board's discovery. It has no `access`: what a caller may do is the
+  other board's to say. Its own routes are `GET /`, `POST /wake`, and
+  `POST /watchers` (no token; a handle's `POST /watchers` registers its own
+  there, as the protocol's does), and `registerWatchers()` registers this
+  board's now. Its watchers run here, on what the other board matches for them
   (below), and so does its sync: it registers its sync entries (`sync: [{ key,
   platform, signIn }]`), pulls what to deliver as matches of watcher `@sync`,
   and pulls back what it pushed to its inbox after each webhook and when it's
   woken. Sync's own calls go as the deployment itself, which the other board
   must let `sync`, and wait for that registration. The other board lists the
-  registered entries in its discovery and links accounts on them. A handle in
-  Node pointed at such a board follows `remote` for every route but
-  discovery: it mints a token for the other board and sends its requests
-  there. One handed a token for this board (`token`, `VBOARD_TOKEN`,
-  `vb serve`'s) doesn't follow.
+  registered entries in its discovery and links accounts on them. People and
+  the CLI use the other board: a repo links it with `vb link`.
 
 ### IDs, cursors, and versions
 
@@ -384,7 +394,7 @@ includes another board mounted on the same origin. The one exception is `/webhoo
 by the platform adapter (see [Sync](#sync)).
 
 In Node, a handle finds a token in this order, and the first match wins.
-Other runtimes pass `token` explicitly (see [The handle](#the-handle)).
+Other runtimes bring credentials in `http(url, { fetch })` (see [The handle](#the-handle)).
 
 | Where | How | Principal |
 | --- | --- | --- |
@@ -573,7 +583,7 @@ board({
   | `react` | add and remove reactions | `read` |
   | `label` | set and unset labels, including labels on a post | `read` |
   | `sync` | attach a thread to an external thread, including `sync` on a post | `read` |
-  | `manage` | cancel anyone's schedule in the channel; in every channel, the inbox, stuck events, redrive, and source reads | everything |
+  | `manage` | cancel anyone's schedule in the channel; in every channel, source reads | everything |
 
 - A reply needs `post` and `read` in its root's channel: addressing a thread
   you can't read would confirm it exists.
@@ -646,18 +656,24 @@ only their own accounts.
      just a message.
   2. **Signing in.** When an entry can sign people in (a Connect connector, or
      an adapter with `withUserTokens`, see [Posting as people](#posting-as-people)),
-     `vb identity link slack` prints a sign-in URL for your principal. Only you
-     should open it: whoever completes it binds *their* account to you. Once
-     you approve, the board asks for your token, asks the platform whose it is
-     (Slack's `auth.test`, GitHub's `GET /user`), and links that account
-     (`method: 'consent'`) by a code of your own it issues then.
+     `vb identity link slack` prints a sign-in URL for your principal: the
+     `signIn` that `POST /sync/codes` answers with the code, on the board that
+     runs the entry's sync (`/identity/sign-in?sync&code`). Only you should open
+     it: whoever completes it binds *their* account to you. Once you approve,
+     the board asks for your token, asks the platform whose it is (Slack's
+     `auth.test`, GitHub's `GET /user`), and at `/identity/signed-in` links that
+     account (`method: 'consent'`) by the code. The CLI watches `GET /identity`
+     for the link.
 - **Codes, only for people, each for themselves, from the board that keeps the
   log.** `POST /sync/codes` issues one to the person asking, and nothing names
   someone else: a sync can only redeem `{ account, code }` with a code a person
   handed it, by posting it or by carrying it through a sign-in. On a board
   whose sync runs elsewhere (a project on `http()`), the board that keeps the
   log knows the entry from the project's registration, issues the code, and
-  for a sign-in sends the person to the project's `/identity/sign-in?sync&code`.
+  for a sign-in names the project's `/identity/sign-in?sync&code` as its
+  `signIn`. The board's own entries sign in at its own, the same way. Which
+  entries a person hasn't linked, `GET /identity` says (`unlinked`), from the
+  same list.
   The project looks up whose code it is (`syncFind`'s `code`), sends them to the
   platform as them, and at `/identity/signed-in` redeems the code with the
   account they approved.
@@ -906,7 +922,8 @@ export const schedulesContract = contract({
   [Watchers](#watchers)), and scheduled messages in `vboard-schedules` (see
   [Scheduled messages](#scheduled-messages)).
 - **Idempotency:**
-  - A client may supply an event `id` on any write, and A2 deduplicates it.
+  - A client may supply an event `id` on a post or a schedule, and A2
+    deduplicates it.
     The same `id` from another author, or on a different write, answers 409
     `duplicate_id`. The API refuses UUIDv8s: `idempotentId` derives the board's
     own IDs in that shape, and they're guessable, so a caller can't take one
@@ -1023,7 +1040,7 @@ nothing else.
 - **Keep it out of the board's catch-all route.** A Vercel Queues trigger makes
   its function private, and the board's routes must stay public.
 
-### Stuck events
+### Dead letters
 
 An event whose consumer keeps throwing is dead-lettered for that consumer after
 10 tries, and a dead letter stops that consumer's lane: nothing after it in that
@@ -1031,30 +1048,9 @@ thread runs for that consumer. Other consumers on the same session keep their
 own place, so a stuck delivery doesn't stop the watchers, and the reverse. Sync
 and watchers avoid it where they can (`message.sync_failed`, `watch.failed`),
 but some causes are outside the board: a blob store that's down while files
-come in, a bug. Those need a person.
-
-- **`vb stuck`** (`GET /stuck`) lists every dead letter in the sessions that
-  run consumers on lanes: `board`, the inboxes, each watcher's, and `schedules`,
-  each with the consumer it's stuck for (`vboard-sync`, `vboard-watchers`,
-  `vboard-inbox`, `vboard-watch`, `vboard-schedules`, `vboard-schedule-sends`).
-  Inboxes are found from the mapped channels and from the threads synced
-  anywhere else, through the provider's `inboxChannel` (a Chat SDK provider
-  works it out from the thread; another provider without one only has its
-  mapped channels looked at). Each entry has the board thread it holds up and
-  its root, when there is one; an inbound event that never reached the board
-  has only its platform thread (`external`).
-- **`vb stuck retry`** (`POST /stuck/redrive`, `action: 'retry'`) runs the event
-  again with a fresh 10 tries, and the lane's later events follow it. It acts for
-  the `consumer` given, or for every consumer the event is stuck for. For a
-  cause that's been fixed: a deploy, a store that's back.
-- **`vb stuck skip`** marks it done without running it, and the lane goes on.
-- Both are A2's `session.redrive({ consumer, index })`, one atomic store
-  operation per consumer; an event that
-  isn't stuck (anymore) is a no-op, `{ redriven: false }`. The redrive is
-  logged with who asked, not written to the board log: it's bookkeeping, not a
-  board fact.
-- Everything here needs `manage` in every channel, like the inbox: errors can hold raw
-  platform data.
+come in, a bug. Those need a person, through A2: the backend's `servers` reach
+each session's `deadLetters()` and `redrive()`. vboard has no route or command
+for them.
 
 ## Reading state
 
@@ -1157,7 +1153,7 @@ status.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/` | Discovery (unauthenticated): `team_id`, `project_id`, `issuer`, `audience`, `version`, `sync` (each entry's `key` and `platform`), and `remote` on a board that keeps nothing |
+| GET | `/` | Discovery (unauthenticated): `team_id`, `project_id`, `issuer`, `audience`, `version`, `sync` (each entry's `key` and `platform`). A board on `http()` has none |
 | GET | `/me` | The resolved actor for this token and profile, and what it `can` do: each channel pattern and its permissions |
 | GET | `/avatars/:name` | Built-in SVG avatars for detected agents (unauthenticated) |
 | GET | `/channels` | Channels with `last_index`, `messages`, and their mirrored external channels |
@@ -1175,15 +1171,11 @@ status.
 | POST | `/messages/:id/sync` | `{ target }`: attach the message's thread to an external target and backfill it |
 | POST | `/messages/:id/typing` | `{ status? }`: show typing in the platform threads the message's thread is synced to. Answers `{ targets }`, the external threads that took it. Writes nothing to the log |
 | GET | `/events` | The event feed: SSE when `Accept: text/event-stream`, otherwise a JSON long-poll with `wait=<s>`. Takes the same filters as `/messages`, plus `after` and `all` |
-| GET | `/inbox/:key` | Raw platform events for a sync entry, newest first. Filters: `channel`, `limit`. Needs `manage` in every channel |
-| GET | `/stuck` | Events that failed 10 times and stopped their thread (see [Stuck events](#stuck-events)). Needs `manage` in every channel |
-| POST | `/stuck/redrive` | `{ session, index, action: 'retry' \| 'skip', consumer? }`: retries one with a fresh 10 tries, or skips it, for `consumer` or every consumer it's stuck for. Needs `manage` in every channel |
+| GET | `/inbox/:key` | Raw platform events for a sync entry, newest first. Filters: `channel`, `limit`. Needs `sync` in every channel for the board's own inbox |
 | GET | `/cursors` | The caller's cursors, for this session |
 | POST | `/cursors` | `{ scope, cursor }`: acknowledge reading up to `cursor` |
 | GET | `/identity` | Your linked platform accounts and the sync entries you haven't linked: `{ principal, links: [{ actor, handle, name, method, at }], unlinked, cursor }` |
-| POST | `/identity/link` | `{ sync, method?: 'code' \| 'consent' }`: start linking your account on that sync entry, the board's own or one a registration names. Answers `{ method: 'consent', url }` when it can sign you in (on a registrant's entry, at its `/identity/sign-in`), otherwise `{ method: 'code', code, expiresAt }`. People only |
-| POST | `/identity/check` | `{ sync }`: after a sign-in, link the account it authorized. Answers `{ linked }`, null until you've approved, and always null for a registrant's entry, whose sign-in links it there |
-| GET | `/identity/sign-in` | `?sync&code`: sends a person to the platform's sign-in for that entry, carrying a code the board that keeps the log issued. Takes no board token |
+| GET | `/identity/sign-in` | `?sync&code`: on the board that runs the entry's sync, sends a person to the platform's sign-in for it, carrying a code the board that keeps the log issued (`POST /sync/codes` names it as `signIn`). Takes no board token |
 | GET | `/identity/signed-in` | `?sync&code`: where that sign-in comes back; links the account it authorized to whoever the code was issued to. Takes no board token |
 | POST | `/identity/unlink` | `{ actor }`: an actor ID or handle among your linked accounts |
 | POST | `/webhooks/:name` | Platform ingress for the sync entry `name` (e.g. `/webhooks/slack`). Takes no board token; the adapter authenticates the request |
@@ -1250,8 +1242,11 @@ for await (const event of team.events({ channel: 'errors-www', after: page.curso
 const reply = await team.wait({ re: msg.id, after: msg.id, timeout: '30m' }) // resolves null on timeout
 ```
 
-- **Who it acts as depends on the backend.** Over `http()` it's the token's
-  holder, with the profile `VBOARD_AS` or the detected agent picks and that
+- **Every call goes through `board()`, which calls the backend's methods.**
+  Nothing reaches around them: the backend stores, and decides what the caller
+  may do.
+- **Who it acts as depends on the backend.** Over `http()` it's whoever its
+  `fetch`'s credentials say, with the profile `VBOARD_AS` or the detected agent picks and that
   agent's session; `as(profile)` acts with another (`<principal>+<profile>`),
   and `as(null)` as yourself, outside any session, which is the CLI's
   `--human`. On `a2()` it's the board's own code, in-process, with no URL or
@@ -1260,27 +1255,29 @@ const reply = await team.wait({ re: msg.id, after: msg.id, timeout: '30m' }) // 
 - **`board()` with no backend is `http()` to the board the environment points
   at.** The `node` export condition of `vboard` and `vboard/backend-http`
   finds the URL from `VBOARD_URL`, the project link, or the global default
-  (see [Configuration](#configuration)), then the token order in
-  [Tokens](#tokens), with Deployment Protection and following `remote`. The
-  default build, for browsers, finds nothing, so you pass both:
-  `board({ backend: http(url, { token: () => … }) })`. `token` is an OIDC JWT
-  or a function that returns one.
-- **Nothing on the way to a handle over HTTP needs Node.** IDs hash with
-  WebCrypto, and finding the board and its token lives in the `node` build.
-  Serving (token verification), the watcher runtime, sync and its adapters,
-  and middleware load when the handle first serves, watches, or syncs, or
-  calls through a backend that keeps the log. A test bundles `board` and
-  `http` for a browser and finds no Node import, and the inspector's page is
-  built that way.
-- **A post's `id` makes it idempotent, and it's the handle's own.** On `a2()`
-  the handle derives a UUIDv8 from the `id` and its profile, which no request
-  may post with; over `http()` it goes as `key:<principal>:<hash>`, which a
-  board takes only from that principal. A retry with the same `id` posts once,
-  and `posted(id)` finds it. This replaces `client(name, { key })`: the same
+  (see [Configuration](#configuration)), and its default `fetch` sends a token
+  in the order in [Tokens](#tokens), through Deployment Protection. The default
+  build, for browsers, finds nothing: `board({ backend: http(url) })`, whose
+  `fetch` sends the page's own session (a cookie, say), which the board's
+  `authenticate` recognizes. A browser never gets a token of the deployment's.
+- **Nothing on the way to a handle over HTTP needs Node.** `board()`'s
+  pipeline (routing, validation, middleware) runs in a browser, IDs hash with
+  WebCrypto, and finding the board and its credentials lives in the `node`
+  build. Serving requests (token verification, the board's own project) and
+  sync and its adapters load from the `node` build when they're first used,
+  and the default build can do neither. A test bundles `board` and `http` for
+  a browser and finds no Node import, and the inspector's page is built that
+  way.
+- **Live events loop the backend's long-poll:** `events()` asks for the page
+  after its last cursor, each waiting up to 25 seconds, on every backend. SSE
+  is for requests to a board.
+- **A post's or schedule's `id` makes it idempotent, and it's the handle's
+  own.** On `a2()` the handle derives a UUIDv8 from the `id` and its profile,
+  which no request may write with; over `http()` it goes as
+  `key:<principal>:<hash>`, which a board takes only from that principal. A
+  retry with the same `id` posts or schedules once, and `posted(id)` finds a
+  post. This replaces `client(name, { key })`: the same
   delivery's `id` on each post does what its key did.
-- **A board on `http()` that runs watchers, sync, or middleware** puts its
-  handle's calls through them, as its own code's; one that runs none is a
-  client of the board it uses.
 - `post(channel, input)` and `reply(id, input)` accept a string or an object.
 - **This is the only client.** The CLI is built on it, watchers receive it as
   `board`, acting as the watcher, and the middleware as `vboard:middleware`.
@@ -1437,9 +1434,6 @@ vboard typing <id> [status]                     show typing in the thread's sync
                                                 Slack shows the status, if given, instead of "Typing…"
 
 vboard inbox <key> [channel] [--limit N]        raw platform events, for debugging sync ("did Slack send it?")
-vboard stuck                                    events that failed 10 times and stopped their thread
-vboard stuck retry|skip <session>#<index> [consumer]
-                                                retry one with a fresh 10 tries, or skip it so its thread goes on
 vboard sources                                 the board's sources (sync entries) and their platforms
 vboard sources <key> read <channel|thread|link> [--limit N]  read a source's channel, thread, or message link without syncing it
 vboard download <attachment> [path]             save an attachment: its own name here by default, `-` for stdout
@@ -2323,8 +2317,8 @@ nothing to bring in, so the reply lands as a root of its own. So does one whose
 fetch fails 5 times, so the thread's lane never dead-letters on it. Callbacks
 that skip default imports skip the fetch too.
 
-**Reading on demand.** `vb sources slack read <target>` (`GET /sources/:key/read`)
-reads a channel (`#name` or `C0123`, newest 50 by default, shown oldest first),
+**Reading on demand.** `GET /sources/:key/read` (`readSource` on the handle),
+on the board that runs the entry, reads a channel (`#name` or `C0123`, newest 50 by default, shown oldest first),
 a thread (`C0123:1727000000.123456`, or a reply's ts, which reads the thread
 it's in), or the thread a message permalink is in, for research and references:
 an agent can read a channel the board doesn't sync. `more` says the platform had
@@ -2574,8 +2568,9 @@ export const { scheduler } = backend
   done; `vb read --label wake` lists every pending one. The board never calls a
   URL it was given at runtime: only code you deployed runs.
 - **`board` is the handle, acting as the watcher.** Its writes are authored
-  by the watcher, `vboard:watch:<id>`, with IDs derived from the match, so a
-  retried `run` doesn't post twice if it writes in the same order.
+  by the watcher, `vboard:watch:<id>`, and its posts and schedules get IDs
+  derived from the match, so a retried `run` doesn't post or schedule twice if
+  it writes in the same order.
   They sync like any other write.
 - **`when: 'enters'` runs only when a message comes into view:** an existing
   message changes from not matching to matching (a label is set, a text is
@@ -2692,6 +2687,12 @@ vb schedule cancel s12              # ada answered: nothing automatic, whoever r
   The next send is the next slot after now, so after downtime it sends once
   rather than replaying every missed slot. Vercel Queues delays at most 6 days,
   so a send further out goes in hops of up to 5.
+- **Scheduling twice:** an `id` on `POST /schedules` is its
+  `schedule.created` event's ID, under a post's rules. The same `id` from its
+  creator in the same place returns the schedule it made; another author's, or
+  one elsewhere, answers 409 `duplicate_id`. Watchers and sync callbacks
+  derive it from their trigger and call order, and a handle from its `id` and
+  profile, as they do a post's.
 - **It runs on the scheduler.** `a2()` has one in this process in development,
   requires one in production, and has none in tests, where `POST /schedules`
   answers 501.
