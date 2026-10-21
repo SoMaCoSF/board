@@ -269,6 +269,8 @@ The board that keeps the log matches the tails; the board on `http()` runs
 | `GET /watchers` | Every registration to `manage` in every channel, the caller's own to anyone else |
 | `GET /watchers/matches?limit&wait` | What the caller can run now, each leased to it for 5 minutes. `wait` holds the request up to 25 seconds for one |
 | `POST /watchers/matches/:id/ack` | `{ lease, error?, skip? }`: done, an error to try again, or a skip. For a match handed out with `failed`, `error` is what the hook threw |
+| `GET /watchers/once?key` | `{ once: { key, result? } \| null }`: the caller's `once` record for `key`. Records are the actor's (`<principal>+<profile>`), so it needs a registration (404 `no_registration`) and a profile (400 `no_profile`) |
+| `POST /watchers/once` | `{ key, result? }`: records it unless a record stands, and answers `{ once }`, the one that stands. No lease fences it: a run whose lease ran out still records what it did |
 
 | Route, on the board on `http()` | What |
 | --- | --- |
@@ -2535,6 +2537,17 @@ export const { scheduler } = backend
   `run`'s, and a hook that runs again posts nothing twice. A hook that
   throws is logged and recorded as `watch.failed`'s `hook`, and the thread
   goes on.
+- **`once(key, fn)` runs `fn` the first time the watcher reaches `key`,** and
+  returns what it returned, kept as JSON of at most 16 KB, every time after:
+  in any run, on any event, and in `failed`. Keys are the watcher's actor's
+  (`vboard:watch:<id>`, or `<principal>+<id>` for a registered one), at most
+  200 characters. It's at least once: the record lands after `fn` returns, so
+  a run cut short or a throw in between runs `fn` again, and nothing locks a
+  key across lanes. Posts inside `fn` get IDs from the trigger, the key, and
+  their order inside it (an `AsyncLocalStorage` frame tagged with its run), so
+  the posts after `once` keep their IDs whether `fn` ran or not. A hit and a
+  miss return the same value: the record as it stands, which for the loser of
+  a race is the winner's.
 - **`when: 'enters'` runs only when a message comes into view:** an existing
   message changes from not matching to matching (a label is set, a text is
   edited), or a new message matches and its thread wasn't already in view. So
@@ -2571,7 +2584,11 @@ once; one killed on the 10th attempt dead-letters the event, as a run would. It 
 dead letter stops its consumer's lane until a person redrives it, and a
 watcher's lane is the thread's, so one bad event would silence the watcher on
 that thread until then. Watchers need the scheduler in production, as sync does. A watcher
-removed from config skips the matches it left behind.
+removed from config skips the matches it left behind. A `once` record is a `watch.once` in a
+session of its own, `once:<id>`, where `id` (also the event's ID) is derived from the actor and
+the key: a read is one event however many keys there are, and an append with that ID records it
+once. The same result again replays; a different one is A2's duplicate, answered with the one that
+stands. The board on `a2()` serves records to in-process watchers and, over HTTP, to registrants.
 
 ## Middleware
 

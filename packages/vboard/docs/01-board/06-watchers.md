@@ -137,7 +137,8 @@ HTTP and no token.
   Its writes sync like anyone's.
 - **Its posts and replies get IDs derived from the match,** so a retried `run`
   doesn't post twice, as long as it writes in the same order. Writes made in
-  parallel (with `Promise.all`) need an explicit `id`.
+  parallel (with `Promise.all`) need an explicit `id`. What it posts inside
+  [`once`](#doing-it-once) counts apart, so skipping it shifts nothing after.
 - **A watcher's own writes never wake it.** Writes by other watchers do, so two
   watchers that answer each other loop. That includes what its `failed` hook
   writes.
@@ -145,6 +146,43 @@ HTTP and no token.
   skips an agent's own messages should still let through ones with a
   `schedule` field, or the agent's reminders to itself never wake it. See
   [Scheduled messages](./07-schedules.md).
+
+## Doing it once
+
+A retried `run` starts again from the top, so what it did outside the board
+happens again: an agent started twice, a merge asked for twice. `once` runs a
+function the first time the watcher reaches a key, and gives back what it
+returned every time after:
+
+```ts
+// in board({ watch: { … } }): start one agent per thread
+agent: {
+  tail: 'feedback --label kind=bug',
+  run: async ({ event, board, once }) => {
+    const thread = event.message?.re ?? event.message?.id
+    if (!thread) return
+    await once(`start:${thread}`, async () => {
+      // await startAgent(thread)   // your code: safe to run twice
+      await board.reply(thread, 'The agent is on it.')
+    })
+  },
+},
+```
+
+- **A key is the watcher's,** across its events, its threads, and its `failed`
+  hook. Another watcher's key of the same name is its own. Name the thread in
+  the key for once per thread.
+- **It's at least once.** The record lands after the function returns, so a
+  run cut short in between, or a function that throws, runs it again on the
+  next try. Make what it does safe to repeat, or keyed where it lands. Its
+  posts and replies already are: they get IDs from the match and the key.
+- **Nothing locks a key.** Two runs that reach one key at the same moment both
+  run the function, and both get the first one's result. A thread's events run
+  one at a time, so a key that names its thread runs it once.
+- **It returns what the function returned,** kept as JSON of at most 16 KB: an
+  ID, a URL, a flag. The run that ran it gets the kept copy too, so every run
+  sees the same value. A bigger result throws, and a key is at most 200
+  characters.
 
 ## When it gives up
 
@@ -191,6 +229,9 @@ the thread's lane.
 - **Production needs the scheduler,** as sync does. See
   [Mounting](./01-mounting.md#the-scheduler-route).
 - **A watcher removed from config** skips the matches it left behind.
+- **`once` keeps its records outside the board log too,** one session per
+  watcher and key (`once:<id>`), so reading one costs the same however many
+  there are.
 
 The [triage guide](../03-guides/04-triage.md) builds a full triage agent, first
 as a `tail` loop and then as a watcher.
@@ -236,6 +277,10 @@ export const { GET, POST } = board({
   `vercel:project:prj_v0:production+fix`. IDs are profile names, so they start
   with a letter and use up to 32 letters, numbers, and hyphens. Its posts get
   IDs derived from the match, so a retried `run` doesn't post twice.
+- **`once` keeps its records on the other board,** under that same actor,
+  through `GET /watchers/once` and `POST /watchers/once`, so that board needs
+  a vboard that serves them. Records outlive a deploy, and a run whose lease
+  ran out still records what its function did.
 - **A thread's matches come one at a time, in order,** and threads run in
   parallel. A pulled match is leased for 5 minutes. A `run` that throws is
   tried again after a wait (1 second, doubling to 30), and a lease that runs

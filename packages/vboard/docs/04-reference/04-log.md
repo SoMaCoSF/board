@@ -103,7 +103,7 @@ thread's events in order on its lane.
 | Contract | Sessions | Events | Holds |
 | --- | --- | --- | --- |
 | `vboard-inbox` | `inbox:<external channel>`, e.g. `inbox:slack:C0123ABC`, and `inboxes` | `external.received { sync, event, raw }`, `inbox.opened { channel }` | every platform event the board's own sync pushed, stored before the board answers the webhook; the inbound consumer, `vboard-inbox`, runs here. `inboxes` lists each inbox, for `vb stuck` |
-| `vboard-watch` | `watch:<id>`, e.g. `watch:triage`, and `watch:@<principal>` | `watch.matched { thread, event }` | each [watcher's](../01-board/06-watchers.md) matches; its `run` happens here. A registrant's session queues its watchers' matches, its sync's (when it registers sync entries), and what it pushed to an inbox (`inbox: <key>`), for it to pull |
+| `vboard-watch` | `watch:<id>`, e.g. `watch:triage`, `watch:@<principal>`, and `once:<id>` | `watch.matched { thread, event }`, `watch.once { actor, key, result? }` | each [watcher's](../01-board/06-watchers.md) matches; its `run` happens here. A registrant's session queues its watchers' matches, its sync's (when it registers sync entries), and what it pushed to an inbox (`inbox: <key>`), for it to pull. `once:<id>` holds one [`once`](../01-board/06-watchers.md#doing-it-once) record |
 | `vboard-identity` | `identity` | `identity.code_issued`, `identity.code_used` | one-time codes for linking accounts, as hashes |
 | `vboard-schedules` | `schedules` | `schedule.created`, `schedule.canceled`, `schedule.due`, `schedule.fired` | [scheduled messages](../01-board/07-schedules.md) |
 
@@ -114,6 +114,9 @@ thread's events in order on its lane.
   sessions be thrown away.
 - **`watch.matched`** holds the event exactly as `vb tail --json` prints it.
   One session per watcher means each watcher fails on its own.
+- **`watch.once`** is the only event in its session, and its ID is the
+  session's `<id>`: both derived from the watcher's actor and the key, so a key
+  is recorded once, the first result stands, and reading one costs one event.
 
 ### Schedule events
 
@@ -200,7 +203,8 @@ A message, as the tables keep it and `messagesReducer` folds it:
 | A root without `id` | a random UUID, which becomes the thread key |
 | `thread.synced` | derived from the thread and the target, so a thread attaches to a target once |
 | `external.received` | derived from the sync key and the platform's own event or message ID, so platform retries do nothing |
-| A sync callback's, watcher's, or keyed in-process client's posts | derived from the triggering event (or key) and the call order, so a retry that writes in the same order doesn't post twice |
+| A sync callback's, watcher's, or keyed in-process client's posts | derived from the triggering event (or key) and the call order, so a retry that writes in the same order doesn't post twice. Inside a watcher's `once`, from the event, the key, and the order within it |
+| A watcher's `once` record | derived from its actor and the key, so the first result recorded stands |
 | A schedule's send | derived from the schedule and the send number, so a retry gets back the message it already posted |
 
 A2 event IDs are unique across the whole store.
