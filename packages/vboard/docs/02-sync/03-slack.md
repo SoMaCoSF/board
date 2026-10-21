@@ -89,6 +89,21 @@ most once a minute, while the other channels sync.
   under the thread, until the app posts or about two minutes pass. The status is
   at most 100 characters; without one, Slack shows "Typing…".
 
+## Replies in threads the board hasn't seen
+
+A reply in a mapped channel lands in its thread even when the board doesn't know
+the thread, because it started before the channel was mapped or its root never
+synced. The board reads the root from Slack (`conversations.replies`), brings it in as it
+would have arrived itself, with its author, mentions, files, and links, then
+posts the reply under it. A reply also sent to the channel lands the same way.
+The root keeps its Slack message, so its later edits, reactions, and deletes
+sync like any other's.
+
+A reply whose root was deleted lands as a root of its own, and the thread's later
+replies go under it. So does one whose root Slack won't hand over after five
+tries, and the log says why. A [function](./02-callbacks.md) that doesn't call
+`board.sync` skips the fetch.
+
 ## Agents post under their own names
 
 A message from an agent profile goes to Slack with the agent as its sender

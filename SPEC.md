@@ -1786,7 +1786,8 @@ a target string or the event.
   platform reconciliation still applies on subsequent events unless overridden.
 - `root` is a synchronous override for root creation, receiving default text,
   labels, author, and native data. It runs both for opening webhooks and roots
-  recovered from early comments. Its labels merge into the default draft; top-level
+  recovered for a GitHub comment or a Slack reply in a thread the board hasn't
+  seen. Its labels merge into the default draft; top-level
   `labels` then takes precedence, and `unset` finally removes named keys, including
   keys added by `root`. The callback cannot change provenance or unset keys itself.
 - Calling no default sync skips that import event. It leaves the connection
@@ -2308,6 +2309,20 @@ own imports as that message quoted (`> **Ada**: …`) with its permalink below. 
 are what the message said when the link arrived; its files are linked, not
 copied.
 
+**Replies in threads the board hasn't seen.** A reply in a mapped channel whose
+thread the board doesn't know (it started before the channel was mapped, or its
+root never synced) fetches the root with the adapter's `fetchMessage`, which is
+`conversations.replies` with the thread's `ts` and `limit: 1`. The root imports
+as it would have arrived itself, through the same parsing, so its author
+(`isBot` for another app's), mentions, files, and links come in as they would
+have, and under its own Slack `ts`, so its later edits, reactions, and deletes
+sync like any other message's. Then the reply posts under it. A thread broadcast
+("also send to channel") is a reply like any other, and a root message never
+fetches. A root deleted after it had replies is Slack's `tombstone`, which has
+nothing to bring in, so the reply lands as a root of its own. So does one whose
+fetch fails 5 times, so the thread's lane never dead-letters on it. Callbacks
+that skip default imports skip the fetch too.
+
 **Reading on demand.** `vb sources slack read <target>` (`GET /sources/:key/read`)
 reads a channel (`#name` or `C0123`, newest 50 by default, shown oldest first),
 a thread (`C0123:1727000000.123456`, or a reply's ts, which reads the thread
@@ -2416,7 +2431,8 @@ vb read issues --label tag.bug                     # issues labeled bug
 - **A comment on a PR or issue the board hasn't seen** fetches it through the
   adapter's `.octokit`, creates a root from its title and URL with its author,
   state, labels, and assignees, then posts the comment as a reply. Known threads
-  need no such fetch. Callbacks that skip default imports also skip this lookup. A failed fetch retries the inbound event.
+  need no such fetch. Callbacks that skip default imports also skip this lookup. A failed fetch retries the inbound event,
+  and after 5 tries the comment lands as a root of its own, so the PR's lane never dead-letters on it.
 - **Drafts are mirrored immediately.** Watchers can filter by `state=open` if
   they only want ready PRs.
 - **Roots never flow into GitHub.** A new board thread in a channel that a repo

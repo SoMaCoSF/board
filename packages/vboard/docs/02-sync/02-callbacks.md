@@ -119,9 +119,9 @@ The third argument changes the default import:
 | `noSync` | Keeps the imported reply on the board, like `vb reply --no-sync`: no other platform the thread syncs to gets it, now or in a backfill. A root it creates still syncs. |
 
 `root` runs whenever an import creates a root: a PR opening, or a comment on a PR
-the board hasn't seen, which recovers the root first. Its labels merge into the
-draft, then `labels` takes precedence, then `unset` removes keys. It can't change
-the author or other provenance.
+or a Slack reply in a thread the board hasn't seen, which recovers the root first.
+Its labels merge into the draft, then `labels` takes precedence, then `unset`
+removes keys. It can't change the author or other provenance.
 
 `noSync` keeps a GitHub PR's inline review threads out of its Slack thread, while
 top-level comments and reviews still go through:

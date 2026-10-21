@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { ExternalEvent, ExternalLocation } from '../contract/contract.ts'
+import { ExternalEvent, ExternalLocation, type ExternalAuthor, type ExternalFile, type ExternalLink } from '../contract/contract.ts'
 import { Labels, LabelKey } from '../contract/schemas.ts'
 
 export const EventBase = z.object({
@@ -41,7 +41,19 @@ export function eventSchema<P extends string, M extends string>(platform: P, mes
   ])
 }
 
-export type SyncRoot = { text: string; labels: Record<string, string>; author: import('../contract/contract.ts').ExternalAuthor; raw: unknown }
+/**
+ * A thread's root, as an import drafts it. One that is a platform message (a Slack thread's first)
+ * names it in `message`, and brings its files and links in as any message does.
+ */
+export type SyncRoot = {
+  text: string
+  labels: Record<string, string>
+  author: ExternalAuthor
+  raw: unknown
+  message?: string
+  files?: ExternalFile[]
+  links?: ExternalLink[]
+}
 export type RootOverride = (root: Readonly<SyncRoot>) => { text?: string; labels?: Record<string, string> }
 
 export const SyncOverrides = z.object({

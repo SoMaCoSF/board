@@ -121,7 +121,8 @@ export abstract class SyncProvider<E extends ProviderEvent = ProviderEvent> {
 
   async findByEmail(_email: string): Promise<ExternalAuthor | null> { return null }
   mention(_actor: Actor): string | null { return null }
-  async fetchRoot(_thread: string): Promise<SyncRoot | null> { return null }
+  /** The root of a thread the board hasn't seen, under sync key `key`, or null when it has none to bring in. */
+  async fetchRoot(_thread: string, _key: string): Promise<SyncRoot | null> { return null }
   async fetchFile(_file: ExternalFile): Promise<Uint8Array | null> { return null }
   /** The platform's own link to an event's message, or null when it has none. */
   async permalink(_event: E): Promise<string | null> { return null }

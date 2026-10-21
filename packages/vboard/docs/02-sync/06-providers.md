@@ -156,7 +156,7 @@ Each has a default that does nothing, or says the platform can't:
 | `startTyping(thread, latest, status?)` | `vb typing` |
 | `uploadFiles(thread, files)`, `deleteFiles(ids)`, `refusesFiles(error)` | Files out. `refusesFiles` tells a permanent refusal (notes instead) from a failure worth retrying |
 | `fetchFile(file)` | Files in |
-| `fetchRoot(thread)` | Recovering a root when a reply arrives in a thread the board hasn't seen |
+| `fetchRoot(thread, key)` | Recovering a root when a reply arrives in a thread the board hasn't seen. A root that is a platform message also returns its `message` ID, `files`, and `links` |
 | `fetchLink(link)` | Reading a linked message the platform didn't describe |
 | `read(target, { limit })` | `vb sources <key> read` |
 | `mention(actor)` | A board mention in the platform's native form |

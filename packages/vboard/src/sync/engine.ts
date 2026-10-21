@@ -85,6 +85,9 @@ const ECHO_ATTEMPTS = 6
 /** Tries per file before it's noted instead: a retry repeats the whole message, so keep it short. */
 const FILE_ATTEMPTS = 3
 
+/** Tries per root fetch before its reply lands as a root of its own: a dead letter would stop the thread's lane. */
+const ROOT_ATTEMPTS = 5
+
 /** How long a webhook waits for the board's tables before it lets an event into the inbox anyway: platforms resend after about 3 seconds. */
 const GATE_WAIT_MS = 2_000
 
@@ -684,16 +687,24 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
           await setExtraLabels(event.author, rootId)
           return result(await post({ ...reply, re: rootId }))
         }
-        const fetched = await platform.fetchRoot(native(event.thread))
+        const fetched = event.isRoot ? null : await platform.fetchRoot(native(event.thread), key).catch((error: unknown) => {
+          if (meta.attempt < ROOT_ATTEMPTS) throw error
+          console.warn(`[vboard] couldn't fetch the root of ${event.thread}; ${event.message} lands as a root instead:`, describe(error))
+          return null
+        })
         if (fetched === null) {
           const draft = rootDraft({ text: event.text, labels: {}, author: event.author, raw })
           return result(await post({ ...base, channel, text: clampText(withNotes(overrides.text ?? draft.text, notes), attachments.length > 0), labels: labels(draft.labels) }))
         }
         const draft = rootDraft({ ...fetched, raw: fetched.raw ?? null })
+        const rootFiles = await importFiles(platform, fetched.files ?? [], meta.attempt)
+        const rootLinks = await resolveLinks(platform, fetched.links ?? [])
         const root = await post({
           author: fetched.author, channel,
-          text: clampText(draft.text), labels: labels(draft.labels),
-          origin: { channel: event.channel, thread: event.thread, subthread: null, message: `root:${meta.id}`, context: null },
+          text: clampText(withNotes(draft.text, rootFiles.notes), rootFiles.attachments.length > 0), labels: labels(draft.labels),
+          attachments: rootFiles.attachments,
+          ...(rootLinks.length ? { links: rootLinks } : {}),
+          origin: { channel: event.channel, thread: event.thread, subthread: null, message: fetched.message ?? `root:${meta.id}`, context: null },
           id: await writeId(1),
         })
         return result(await post({ ...reply, re: root.id }))
