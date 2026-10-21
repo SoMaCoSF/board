@@ -22,6 +22,9 @@ import type {
   MessagesPage,
   MessagesQuery,
   MessageView,
+  OnceBody,
+  OnceQuery,
+  OnceView,
   PersonView,
   PostBody,
   ReactBody,
@@ -79,6 +82,10 @@ export type Protocol = {
   register: { input: Input<typeof RegisterBody>; output: RegistrationView }
   matches: { input: Input<typeof MatchesQuery>; output: { matches: MatchView[] } }
   ack: { input: Id & Input<typeof AckBody>; output: { ok: true } }
+  /** The calling watcher's once record for `key`, or null: its own, as the actor it writes as. */
+  once: { input: Input<typeof OnceQuery>; output: { once: OnceView | null } }
+  /** Records unless a record stands, and answers the one that stands: maybe another run's. */
+  recordOnce: { input: Input<typeof OnceBody>; output: { once: OnceView } }
   /** Long-polls with `wait`. board() serves SSE from it, so a backend has one way to read events. */
   events: { input: Input<typeof EventsQuery>; output: EventsPage }
 

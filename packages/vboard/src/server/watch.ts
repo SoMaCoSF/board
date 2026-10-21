@@ -1,10 +1,11 @@
 import { A2Error, idempotentId } from 'experimental-a2'
 import { consumer, createServer, type A2Scheduler, type A2Store, type ConsumerContext } from 'experimental-a2/server'
-import type { BoardEventView } from '../api/routes.ts'
+import type { BoardEventView, OnceView } from '../api/routes.ts'
 import { parseWatchTail } from '../api/tail.ts'
 import type { BoardClient } from '../client/client.ts'
-import { boardContract, watchContract, watchSession, type BoardEvent, type BoardEvents } from '../contract/contract.ts'
+import { boardContract, onceSession, watchContract, watchSession, type BoardEvent, type BoardEvents } from '../contract/contract.ts'
 import { actorsReducer, type Message, type MessagesState } from '../contract/reducers.ts'
+import type { Json } from '../contract/schemas.ts'
 import { FULL_ACCESS, type Access } from './access.ts'
 import { compileFilter, eventView, foldEvent, hasCriteria, loadBefore, OWN_CODE, view as messageView, type ParsedFilters } from './feed.ts'
 import type { BoardReads } from './reads.ts'
@@ -18,6 +19,12 @@ export type WatcherContext = {
   event: BoardEventView
   /** Writes as this watcher. */
   board: BoardClient
+  /**
+   * Runs `fn` unless this watcher already finished it for `key`, and returns the recorded result
+   * either way: JSON, at most 16 KB. At least once: a run that dies before the record runs `fn`
+   * again. Keys are the watcher's, across events and threads, and nothing locks one.
+   */
+  once<T extends Json | void>(key: string, fn: () => Promise<T>): Promise<T>
 }
 
 /** What a watcher's `failed` gets: the event it gave up on, and why. */
@@ -413,9 +420,34 @@ export function createWatchers(options: {
     lane: ({ event }) => `thread:${(event.payload as { thread: string }).thread}`,
   }).run(dispatch)
 
+  /** An actor's record for one key: its own session, holding at most one event, so a read costs the same however many keys there are. */
+  const recordOf = async (actor: string, key: string) => {
+    const id = await idempotentId('vboard-once', actor, key)
+    return { id, session: server.session(onceSession(id)) }
+  }
+  const onceView = ({ key, result }: { key: string; result?: Json | undefined }): OnceView => (result === undefined ? { key } : { key, result })
+  async function readOnce(actor: string, key: string): Promise<OnceView | null> {
+    const [found] = await (await recordOf(actor, key)).session.history()
+    return found?.type === 'watch.once' ? onceView(found.payload) : null
+  }
+  /** The first record stands: the same one again replays, and another is A2's duplicate, answered with the one that stands. */
+  async function recordOnce(actor: string, key: string, result: Json | undefined): Promise<OnceView> {
+    const { id, session } = await recordOf(actor, key)
+    const payload = { actor, key, ...(result === undefined ? {} : { result }) }
+    try {
+      await session.append({ type: 'watch.once', id, payload })
+      return onceView(payload)
+    } catch (error) {
+      if (!(error instanceof A2Error && error.code === 'PARTIAL_DUPLICATE_BATCH')) throw error
+    }
+    return (await readOnce(actor, key))!
+  }
+
   return {
     server,
     boardConsumer,
+    /** `once`'s records, by the actor they're kept for. */
+    once: { read: readOnce, record: recordOnce },
     /** Every watcher's session: one per watcher in config, one per registrant. */
     sessions: async () => [
       ...watchers.map((watcher) => watchSession(watcher.id)),

@@ -395,3 +395,46 @@ describe('watchers that run when a message enters the view', () => {
     )
   })
 })
+
+describe('once', () => {
+  /** A thread's replies, as text and who posted them. */
+  const repliesOf = async (julian: ReturnType<typeof caller>, id: string) =>
+    ((await julian('GET', `/messages/${id}`)).body.replies as { text: string; by: { actor: string } }[]).map((reply) => [reply.text, reply.by.actor])
+
+  it('posts what comes after a fn a retry skips, on IDs of its own', async () => {
+    let calls = 0
+    let runs = 0
+    let finished = false
+    const board = testBoard({
+      watch: {
+        w: {
+          tail: 'firehose',
+          run: async ({ event, board, once }) => {
+            if (event.message?.re !== null) return
+            const root = event.message.id
+            await once('k', async () => {
+              calls++
+              await board.reply(root, 'A')
+            })
+            if (++runs === 1) throw new Error('cut short after once')
+            await board.reply(root, 'B')
+            finished = true
+          },
+        },
+      },
+    })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    const root = (await julian('POST', '/messages', { channel: 'firehose', text: 'export is broken' })).body.message
+    const watches = board.servers.at(-1)!
+    await vi.waitFor(async () => {
+      await board.skipHold(watches, 'watch:w')
+      await watches.drain('watch:w')
+      expect(finished).toBe(true)
+    })
+    expect(await repliesOf(julian, root.id)).toEqual([
+      ['A', 'vboard:watch:w'],
+      ['B', 'vboard:watch:w'],
+    ])
+    expect(calls, 'fn ran once').toBe(1)
+  })
+})

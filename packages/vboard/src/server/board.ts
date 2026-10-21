@@ -1,4 +1,3 @@
-import { idempotentId } from 'experimental-a2'
 import {
   AckBody,
   EditBody,
@@ -13,6 +12,8 @@ import {
   LabelBody,
   MatchesQuery,
   MessagesQuery,
+  OnceBody,
+  OnceQuery,
   PostBody,
   ReactBody,
   Ref,
@@ -54,7 +55,8 @@ import { discoveryIdentity, ownProjectId, ownTeamId } from './identity.ts'
 import { runMiddleware, type Middleware, type Write, type WriteSource } from './middleware.ts'
 import { createRouter, openapi, queryObject, readCapped, readJson, type BoardRoute } from './routing.ts'
 import { syncTarget, withEmailMentions, type SyncTarget, type WriteOrigin } from './writes.ts'
-import type { Watcher } from './watch.ts'
+import type { Watcher, WatcherContext } from './watch.ts'
+import { createOnce, nextWriteId, writesOf, type Writes } from './once.ts'
 
 /** `board()`'s options: where the board lives, who may use it, and the watchers that run here. */
 export type BoardOptions = {
@@ -169,6 +171,10 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
       return SchedulesQuery.parse(queryObject(url))
     case 'matches':
       return MatchesQuery.parse(queryObject(url))
+    case 'once':
+      return OnceQuery.parse(queryObject(url))
+    case 'recordOnce':
+      return OnceBody.parse(await body())
     case 'events': {
       const query = EventsQuery.parse(queryObject(url))
       // SSE's own resume header, when the client reconnects by itself.
@@ -322,18 +328,17 @@ export function board(options: BoardOptions): Board {
     return domain && base !== null ? `https://${domain}${base}`.replace(/\/+$/, '') : null
   }
 
-  /** An in-process client through the board, as `caller`: its posts are idempotent per trigger. */
-  function clientAs(caller: Caller | PlatformCaller, trigger: string | null): BoardClient {
-    let writesMade = 0
+  /** An in-process client through the board, as `caller`: its posts get IDs from `writes`, so they're idempotent per trigger. */
+  function clientAs(caller: Caller | PlatformCaller, writes: Writes | null): BoardClient {
     return createBoardClient({
       // Under the configured mount, so the router accepts the paths it builds.
       url: `http://in-process.board${(options.basePath ?? '').replace(/\/+$/, '')}`,
       token: 'in-process',
       fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
         let request = new Request(input, init)
-        if (trigger !== null && request.method === 'POST' && new URL(request.url).pathname.endsWith('/messages')) {
+        if (writes !== null && request.method === 'POST' && new URL(request.url).pathname.endsWith('/messages')) {
           const body = ((await request.json()) ?? {}) as Record<string, unknown>
-          body.id ??= await idempotentId('vboard-inbound', trigger, 'client', String(writesMade++))
+          body.id ??= await nextWriteId(writes)
           request = new Request(request.url, { method: 'POST', headers: request.headers, body: JSON.stringify(body) })
         }
         return dispatch(request, caller)
@@ -760,17 +765,32 @@ export function board(options: BoardOptions): Board {
     Object.entries(watch).map(([id, watcher]) => [id, { kind: 'tail', tail: watcher.tail, when: watcher.when ?? 'matches' }]),
   )
   if (engine) subscriptions[SYNC] = { kind: 'sync' }
-  const asWatcher = (id: string, trigger: string) => clientAs({ self: id, origin: { via: { kind: 'watcher', id } } }, trigger)
+  /** A watcher's run, or its failed hook's: its client and its `once` draw post IDs from one source. */
+  function asWatcher(id: string, trigger: string): Omit<WatcherContext, 'event'> {
+    const caller: Caller = { self: id, origin: { via: { kind: 'watcher', id } } }
+    const run = writesOf(trigger)
+    const signal = new AbortController().signal
+    return {
+      board: clientAs(caller, run),
+      once: createOnce({
+        run,
+        records: {
+          read: async (key) => (await backend.once(caller, { key }, signal)).once,
+          record: async (key, result) => (await backend.recordOnce(caller, { key, result }, signal)).once,
+        },
+      }),
+    }
+  }
   const binding: BoardBinding = {
     subscriptions,
     async run(id, event, { trigger, attempt }) {
       if (id === SYNC && engine) return engine.deliver(event as SyncEvent, { attempt })
       const watcher = watch[id]
       if (!watcher) throw new Error(`this board has no watcher ${id}`)
-      await watcher.run({ event, board: asWatcher(id, trigger) })
+      await watcher.run({ event, ...asWatcher(id, trigger) })
     },
     async failed(id, event, { trigger, error, attempts }) {
-      await watch[id]?.failed?.({ event, board: asWatcher(id, trigger), error, attempts })
+      await watch[id]?.failed?.({ event, ...asWatcher(id, trigger), error, attempts })
     },
     async receive(key, item, { id, attempt }) {
       if (!engine) throw new Error(`this board has no sync, so nothing reads ${key}'s inbox`)
@@ -779,14 +799,14 @@ export function board(options: BoardOptions): Board {
     pull: () => (engine ? engine.pull() : Promise.resolve(0)),
     sync: ownEntries,
     project: async () => ({ id: await ownProjectId(options.project), teamId: await ownTeamId(options.project) }),
-    client: clientAs,
+    client: (caller, trigger) => clientAs(caller, trigger === null ? null : writesOf(trigger)),
     url: ownUrl,
   }
   backend.bind(binding)
   engine?.bind({
     backend,
     screen: (write, context, commit) => screen(write, context, commit),
-    client: (platform, trigger) => clientAs({ platform: { author: platform.author, key: platform.key }, origin: platform.origin }, trigger),
+    client: (platform, trigger) => clientAs({ platform: { author: platform.author, key: platform.key }, origin: platform.origin }, writesOf(trigger)),
   })
 
   /** Server-sent events, from the backend's long-poll: each event's `id` is its cursor, so `Last-Event-ID` resumes exactly. */
@@ -910,8 +930,8 @@ export function board(options: BoardOptions): Board {
     POST: handle,
     fetch: handle,
     client(name, clientOptions = {}) {
-      const key = clientOptions.key === undefined ? null : `client:${name}:${clientOptions.key}`
-      return clientAs({ self: name, origin: { via: { kind: 'client', name } } }, key)
+      const writes = clientOptions.key === undefined ? null : writesOf(`client:${name}:${clientOptions.key}`)
+      return clientAs({ self: name, origin: { via: { kind: 'client', name } } }, writes)
     },
   }
 }

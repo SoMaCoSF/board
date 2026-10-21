@@ -481,6 +481,21 @@ function build(options: A2Options, binding: BoardBinding) {
   /** A registrant's queue, in the watch contract: its watchers' and sync's matches, and its inbox. */
   const queueOf = (owner: string) => watchers.server.session(registrantSession(owner))
 
+  /**
+   * Whose once records a caller keeps: the actor its watcher writes as. A config watcher's is
+   * `vboard:watch:<id>`; a registrant's is `<principal>+<profile>`, the actor its posts carry.
+   */
+  async function onceActor(caller: Caller): Promise<string> {
+    if (!('identity' in caller)) {
+      if (caller.origin.via?.kind !== 'watcher') throw forbidden('only a watcher keeps once records')
+      return selfIdentity(caller).actor.id
+    }
+    const { principal, author, actor } = caller.identity
+    if (!(await registry.state()).byOwner[principal.id]) throw notFound('this token has no watchers registered here', 'no_registration')
+    if (author.profile === null) throw badRequest("once records are a watcher's: send its ID as the profile", 'no_profile')
+    return actor.id
+  }
+
   const methods: ProtocolMethods = {
     async me(caller) {
       const { principal, author, actor } = (await identityOf(caller))
@@ -713,6 +728,12 @@ function build(options: A2Options, binding: BoardBinding) {
       if (result === 'gone') throw notFound(`no match ${id} is waiting for this token`, 'no_match')
       if (result === 'stale') throw new HttpError(409, 'stale_lease', 'that lease ran out, and the match was pulled again')
       return { ok: true }
+    },
+    async once(caller, { key }) {
+      return { once: await watchers.once.read(await onceActor(caller), key) }
+    },
+    async recordOnce(caller, { key, result }) {
+      return { once: await watchers.once.record(await onceActor(caller), key, result) }
     },
     async events(caller, query, signal) {
       const { principal, actor } = (await identityOf(caller))

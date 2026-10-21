@@ -14,6 +14,8 @@ import {
   MessageId,
   MessageText,
   MESSAGE_TEXT_MAX,
+  OnceKey,
+  OnceResult,
   RemoteWatcherId,
   SCOPE_MAX,
   storable,
@@ -355,6 +357,14 @@ export const watchContract = contract({
     'watch.armed': z.object({ at: z.number().int().nonnegative() }),
     /** A timer: an error's wait is over (`matched`), or a sweep (`sweep`). Its consumer decides what it still means. */
     'watch.due': z.object({ matched: MatchId.optional(), retry: z.boolean().optional(), sweep: z.number().int().nonnegative().optional() }),
+    /** A watcher finished `once(key)`: the only event in its session, `once:<id>`, whose ID is `id` too. */
+    'watch.once': z.object({
+      /** Whose record it is: the actor the watcher writes as. */
+      actor: ActorId,
+      key: OnceKey,
+      /** What `fn` returned, as JSON: left out for `undefined`. */
+      result: OnceResult.optional(),
+    }),
   },
 })
 
@@ -362,6 +372,9 @@ export type WatchEvents = typeof watchContract.events
 
 /** `watch:triage`: the session for one watcher, or `watch:@<principal>` for everything a registrant registered. */
 export const watchSession = (id: string) => `watch:${id}`
+
+/** `once:<id>`: one actor's record for one key, where `id = idempotentId('vboard-once', actor, key)`. */
+export const onceSession = (id: string) => `once:${id}`
 
 /**
  * A principal as the board keeps it, to work out its access again later under

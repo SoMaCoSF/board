@@ -11,3 +11,4 @@ export {
   type WritePatch,
   type WriteSource,
 } from './middleware.ts'
+export type { Json } from '../contract/schemas.ts'

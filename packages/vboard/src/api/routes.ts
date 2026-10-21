@@ -9,7 +9,10 @@ import {
   Labels,
   MESSAGE_TEXT_MAX,
   MessageText,
+  OnceKey,
+  OnceResult,
   storable,
+  type Json,
 } from '../contract/schemas.ts'
 import { ExternalAuthor, ExternalEvent, ExternalTarget, Link as LinkSchema, LINKS_PER_MESSAGE_MAX, Origin } from '../contract/contract.ts'
 import type { BoardEvent, Link } from '../contract/contract.ts'
@@ -195,6 +198,15 @@ export const AckBody = z.object({
   error: z.string().min(1).max(500).optional(),
   skip: z.boolean().optional(),
 })
+
+/** A watcher's once record to read, by its key. */
+export const OnceQuery = z.object({ key: OnceKey })
+
+/** A watcher's once record to write: `result` left out is `fn`'s `undefined`. */
+export const OnceBody = z.object({ key: OnceKey, result: OnceResult.optional() })
+
+/** A watcher's once record, as it stands. */
+export type OnceView = { key: string; result?: Json }
 
 /** A stuck event to retry (with a fresh 10 tries) or skip (so its thread goes on), as `vb stuck` lists it. */
 export const RedriveBody = z.object({
@@ -715,6 +727,10 @@ export const routes = {
   /** The caller's matches it can run now, each leased to it until it acks. */
   matches: { method: 'GET', path: '/watchers/matches', query: MatchesQuery },
   ack: { method: 'POST', path: '/watchers/matches/:id/ack', body: AckBody },
+  /** The calling watcher's once record for a key: a registrant's watcher sends its ID as the profile. */
+  once: { method: 'GET', path: '/watchers/once', query: OnceQuery },
+  /** Records it unless one stands, and answers the one that stands. */
+  recordOnce: { method: 'POST', path: '/watchers/once', body: OnceBody },
   /** On a board on `http()`: something matched. No body, no token: the board pulls what. */
   wake: { method: 'POST', path: '/wake' },
 } as const

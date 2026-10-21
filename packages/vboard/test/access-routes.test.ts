@@ -162,6 +162,9 @@ const WALK: Record<RouteName, Walk> = {
   register: () => [{ method: 'POST', path: '/watchers', body: { watch: { fix: { tail: 'secret' } } }, status: 200 }],
   matches: () => [{ method: 'GET', path: '/watchers/matches', status: 200, check: (body) => expect(body.matches).toEqual([]) }],
   ack: () => [{ method: 'POST', path: '/watchers/matches/m1/ack', body: { lease: 'l1' }, status: 404 }],
+  // A registrant's once records are its watchers': a token with no profile names none.
+  once: () => [{ method: 'GET', path: '/watchers/once?key=k', status: 400, check: (body) => expect(body.error.code).toBe('no_profile') }],
+  recordOnce: () => [{ method: 'POST', path: '/watchers/once', body: { key: 'k' }, status: 400, check: (body) => expect(body.error.code).toBe('no_profile') }],
   wake: () => [{ method: 'POST', path: '/wake', status: 404 }],
 }
 

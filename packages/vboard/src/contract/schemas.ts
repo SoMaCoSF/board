@@ -93,6 +93,27 @@ export type ActorKind = z.infer<typeof ActorKind>
 export type Author = z.infer<typeof Author>
 export type Attachment = z.infer<typeof Attachment>
 
+/** A JSON value, as `JSON.parse` returns it. */
+export type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
+
+export const ONCE_KEY_MAX = 200
+/** A once record is a marker, not storage: an ID, a URL, a flag. Bytes of its JSON, as UTF-8. */
+export const ONCE_RESULT_BYTES_MAX = 16_384
+
+export const utf8Bytes = (text: string) => new TextEncoder().encode(text).byteLength
+
+/** What a watcher names a `once` by: `review:<thread>`. */
+export const OnceKey = z
+  .string()
+  .min(1, 'key is empty')
+  .max(ONCE_KEY_MAX, `key is over ${ONCE_KEY_MAX} characters`)
+  .refine(storable, 'key has a NUL character or a lone surrogate')
+
+/** What a `once`'s `fn` returned, as JSON. */
+export const OnceResult = z
+  .json()
+  .refine((value) => utf8Bytes(JSON.stringify(value)) <= ONCE_RESULT_BYTES_MAX, `a result is at most ${ONCE_RESULT_BYTES_MAX} bytes as JSON`)
+
 /** A registered watcher's ID: a profile name, since its writes are by that profile. */
 export const RemoteWatcherId = z
   .string()
