@@ -41,7 +41,8 @@ export function eventSchema<P extends string, M extends string>(platform: P, mes
   ])
 }
 
-export type SyncRoot = { text: string; labels: Record<string, string>; author: import('../contract/contract.ts').ExternalAuthor; raw: unknown }
+/** A thread's root, read from the platform. `url` is its link there. */
+export type SyncRoot = { text: string; labels: Record<string, string>; author: import('../contract/contract.ts').ExternalAuthor; raw: unknown; url?: string | null }
 export type RootOverride = (root: Readonly<SyncRoot>) => { text?: string; labels?: Record<string, string> }
 
 export const SyncOverrides = z.object({

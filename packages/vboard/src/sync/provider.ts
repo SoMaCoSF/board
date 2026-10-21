@@ -71,7 +71,8 @@ export type ProviderFile = { data: Buffer; filename: string; mimeType?: string }
  */
 export type ProviderSender = { name: string; avatar: string | null }
 export type ProviderPost = { markdown: string; files?: ProviderFile[]; as?: ProviderSender }
-export type ProviderDelivery = { thread: string; message: string; files?: string[] }
+/** Where a post landed. `url` is its link there, built from what the platform answered, never fetched: none when it has no links. */
+export type ProviderDelivery = { thread: string; message: string; files?: string[]; url?: string | null }
 export type ProviderOptions = {
   platform: string
   canStartThreads?: boolean

@@ -225,6 +225,17 @@ describe('the sync permission', () => {
     expect((await julian('GET', '/identity')).body.links).toEqual([])
   })
 
+  it('shows a null link for an import that came without one, as every one before links did', async () => {
+    const team = testBoard({ access: [vercelProject({ project: 'prj_support', can: 'all' })] })
+    const support = caller(team.fetch, await supportToken())
+    const julian = await julianOn(team.fetch)
+    expect((await support('POST', '/watchers', { watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })).status).toBe(200)
+    const origin = { channel: 'slack:C1', thread: 'slack:C1:1', subthread: null, message: '1', context: null }
+    expect((await support('POST', '/sync/imports', { op: 'post', author, from: 'slack', channel: 'firehose', text: 'from before links', origin, id: 'old-1' })).status).toBe(200)
+    const [message] = await read(julian, 'firehose')
+    expect(message!.origin).toEqual({ ...origin, url: null })
+  })
+
   it("lets a caller with it in another subtree import there, and not here", async () => {
     const team = testBoard({ access: [vercelProject({ project: 'prj_support', can: { 'support/': 'all', firehose: ['read'] } })] })
     const support = caller(team.fetch, await supportToken())

@@ -128,7 +128,55 @@ describe('sync', () => {
     await vi.waitFor(() => expect(landed).toHaveLength(1))
     // Each thread delivers on its own lane, so the two roots reach Slack in either order.
     const copy = s.channelPosts.find((post) => post.text.includes('PR #12'))!
-    expect(landed[0]).toEqual({ id: pr.id, external: { thread: `slack:C2:${copy.id}`, message: copy.id }, pr: 'acme/www#12' })
+    expect(landed[0]).toEqual({ id: pr.id, external: { thread: `slack:C2:${copy.id}`, message: copy.id, url: null }, pr: 'acme/www#12' })
+  })
+
+  it("links a Slack message to where it came from, and a delivery's receipt to where it went, on the workspace's host", async () => {
+    const client = { conversations: { list: async () => ({}), info: async () => ({}), join: async () => ({}) }, auth: { test: vi.fn(async () => ({ url: 'https://acme.slack.com/' })) } }
+    let sent = 1700000100
+    const s = fakePlatform('slack', (adapter) => {
+      withSlackClient(client, false)(adapter)
+      adapter.postMessage = async (threadId: string) => ({ id: `${++sent}.000100`, threadId, raw: {} })
+    })
+    const board = testBoard({ sync: { slack: slack({ adapter: s.adapter, client: async () => client, channels: { C1: 'firehose' } }) } })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    const webhook = (body: WebhookPayload) =>
+      board.fetch(new Request(`${BOARD_URL}/webhooks/slack`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }))
+
+    await webhook({ type: 'message', threadId: 'slack:C1:1700000000.000100', id: '1700000000.000100', text: 'export is broken', user: 'U_ADA' })
+    await webhook({ type: 'message', threadId: 'slack:C1:1700000000.000100', id: '1700000000.000200', text: 'same here', user: 'U_BOB' })
+    await vi.waitFor(async () => expect(await read(julian, 'firehose')).toHaveLength(2))
+    const [root, reply] = (await julian('GET', '/messages?channel=firehose')).body.messages as { id: string; origin: { url: string | null } }[]
+    expect(root!.origin.url).toBe('https://acme.slack.com/archives/C1/p1700000000000100')
+    expect(reply!.origin.url).toBe('https://acme.slack.com/archives/C1/p1700000000000200?thread_ts=1700000000.000100&cid=C1')
+
+    const answer = (await julian('POST', '/messages', { re: root!.id, text: 'looking into it' })).body.message
+    const receipt = async () =>
+      ((await julian('GET', '/events?channel=firehose&after=0&all=true')).body.events as { type: string; payload: { id: string; external: unknown } }[])
+        .find((e) => e.type === 'message.synced' && e.payload.id === answer.id)
+    await vi.waitFor(async () => expect(await receipt()).toBeDefined())
+    expect((await receipt())!.payload.external).toEqual({
+      thread: 'slack:C1:1700000000.000100', message: '1700000101.000100',
+      url: 'https://acme.slack.com/archives/C1/p1700000101000100?thread_ts=1700000000.000100&cid=C1',
+    })
+    expect(client.auth.test).toHaveBeenCalledOnce()
+  })
+
+  it("links a GitHub root to its PR and a comment to its own html_url, from what GitHub sent", async () => {
+    const { board, webhook } = setup()
+    const julian = caller(board.fetch, await personToken())
+    await webhook('github', {
+      action: 'opened',
+      repository: { full_name: 'basehub-ai/vboard' },
+      sender: { login: 'julianbenegas', id: 42 },
+      pull_request: { number: 7, title: 'Add sync', html_url: 'https://github.com/basehub-ai/vboard/pull/7', draft: false, merged: false },
+    }, { 'x-github-event': 'pull_request', 'x-github-delivery': 'd1' })
+    await vi.waitFor(async () => expect(await read(julian, 'prs')).toHaveLength(1))
+    const html_url = 'https://github.com/basehub-ai/vboard/pull/7#issuecomment-77'
+    await webhook('github', { type: 'message', threadId: 'github:basehub-ai/vboard:7', id: '77', text: 'LGTM', user: 'julianbenegas', raw: { comment: { id: 77, html_url } } })
+    await vi.waitFor(async () => expect(await read(julian, 'prs')).toHaveLength(2))
+    const messages = (await julian('GET', '/messages?channel=prs')).body.messages as { origin: { url: string | null } }[]
+    expect(messages.map((m) => m.origin.url)).toEqual(['https://github.com/basehub-ai/vboard/pull/7', html_url])
   })
 
   it('mirrors a Slack thread into the board, and board replies back into Slack', async () => {

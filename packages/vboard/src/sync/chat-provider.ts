@@ -29,6 +29,11 @@ export type ChatTransport = Omit<ProviderOptions, 'uploadsFiles'> & {
   toChatId?(id: string): string
   context?(message: ChatMessage): string | null
   markdown?(message: ChatMessage): string
+  /**
+   * A message's link on the platform, from its native thread, its ID, and what the
+   * adapter had for it: built, never fetched, since it runs for every message in and out.
+   */
+  url?(thread: string, message: string, raw: unknown): string | null | Promise<string | null>
   /** Platform messages a message links to, located under sync key `key`. */
   links?(key: string, message: ChatMessage): ExternalLink[]
   fetchLink?(link: ExternalLink): Promise<FetchedLink>
@@ -146,6 +151,7 @@ export abstract class ChatSyncProvider<E extends ProviderEvent = ProviderEvent> 
       kind: 'message', ...common,
       isRoot: this.transport.isRoot?.(this.toNative(message.threadId), message.id) ?? false,
       context: this.transport.context?.(message) ?? null,
+      url: await this.urlOf(message),
       ...(message.attachments?.length ? { files: message.attachments.slice(0, 20).map(externalFile) } : {}),
     } }
   }
@@ -210,9 +216,17 @@ export abstract class ChatSyncProvider<E extends ProviderEvent = ProviderEvent> 
   }
   override async post(target: string, kind: ResolvedTarget['kind'], { as: _sender, ...body }: ProviderPost): Promise<ProviderDelivery> {
     if (kind === 'channel' && !this.canStartThreads) throw new Error(`${this.platform} cannot start threads`)
-    await this.ready()
-    const sent = await (kind === 'channel' ? this.chat.channel(this.toChat(target)) : this.chat.thread(this.toChat(target))).post(body.files?.length ? { ...body, files: this.named(body.files) } : body)
-    return { thread: this.toNative(sent.threadId), message: sent.id, ...(body.files?.length ? { files: this.transport.fileIds?.(sent.raw) ?? [] } : {}) }
+    const adapter = await this.ready()
+    const to = this.toChat(target)
+    const message = body.files?.length ? { ...body, files: this.named(body.files) } : body
+    // Straight to the adapter: Chat SDK's `post` drops what the platform answered, which has the link and the file IDs.
+    const answer = kind === 'channel' && adapter.postChannelMessage ? await adapter.postChannelMessage(to, message) : await adapter.postMessage(to, message)
+    const sent = { ...answer, threadId: answer.threadId || to }
+    return { thread: this.toNative(sent.threadId), message: sent.id, url: await this.urlOf(sent), ...(body.files?.length ? { files: this.transport.fileIds?.(sent.raw) ?? [] } : {}) }
+  }
+
+  private async urlOf(message: { threadId: string; id: string; raw: unknown }): Promise<string | null> {
+    return (await this.transport.url?.(this.toNative(message.threadId), message.id, message.raw)) ?? null
   }
   override async whoAmI(token: string) {
     if (!this.transport.whoAmI) return super.whoAmI(token)

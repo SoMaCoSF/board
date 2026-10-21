@@ -272,7 +272,8 @@ export const actorsReducer = reducer({
 /** A copy of a board message on a platform. */
 /** `files`: the platform's IDs for the message's files, or null when it refused them; unset until they're sent. */
 /** `asUser`: posted with its author's own token, so editing or deleting it needs that token too. */
-export type ExternalCopy = { thread: string; message: string; files?: string[] | null; asUser?: true }
+/** `url`: its link there, from its receipt. */
+export type ExternalCopy = { thread: string; message: string; files?: string[] | null; asUser?: true; url?: string | null }
 
 export type SyncedThread = {
   root: number

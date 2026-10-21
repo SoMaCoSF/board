@@ -83,6 +83,7 @@ export function view(message: Message, actors: ActorsState, reader: Reader): Mes
     re: message.re === null ? null : ref(message.re),
     replyTo: message.replyTo === null ? null : ref(message.replyTo),
     version: version ?? message.id,
+    origin: message.origin && { ...message.origin, url: message.origin.url ?? null },
     ...(schedule ? { schedule: { id: ref(schedule.id), n: schedule.n } } : {}),
     links: readableLinks(message.links, reader),
     labels: { ...message.labels },

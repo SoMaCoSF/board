@@ -11,7 +11,7 @@ import {
   MessageText,
   storable,
 } from '../contract/schemas.ts'
-import { ExternalAuthor, ExternalEvent, ExternalTarget, Link as LinkSchema, LINKS_PER_MESSAGE_MAX, Origin } from '../contract/contract.ts'
+import { ExternalAuthor, ExternalEvent, ExternalTarget, Link as LinkSchema, LINKS_PER_MESSAGE_MAX, Origin, PlatformUrl } from '../contract/contract.ts'
 import type { BoardEvent, Link } from '../contract/contract.ts'
 import type { Actor, Channel, ExternalCopy, Message } from '../contract/reducers.ts'
 import type { AccessSummary } from '../server/access.ts'
@@ -278,7 +278,7 @@ export const SyncReceiptBody = z.discriminatedUnion('kind', [
     kind: z.literal('message'),
     message: Ref,
     target: ExternalTarget,
-    external: z.object({ thread: ExternalTarget, message: z.string().min(1).max(300), asUser: z.literal(true).optional() }),
+    external: z.object({ thread: ExternalTarget, message: z.string().min(1).max(300), asUser: z.literal(true).optional(), url: PlatformUrl.nullable().optional() }),
     /** Its files, when they went with it: the platform's IDs, or null when it refused them. */
     files: PlatformFiles.optional(),
   }),
@@ -398,8 +398,10 @@ export type PersonView = { id: string; handle: string; name: string; avatar: str
  */
 export type ActorView = Pick<Actor, 'kind' | 'handle' | 'name' | 'avatar'> & { person?: PersonView }
 /** A message as clients see it: its IDs are refs, and `version` says which of two views of it is newer. */
-export type MessageView = Omit<Message, 'id' | 're' | 'replyTo' | 'links' | 'schedule' | 'blind' | 'version'> & {
+export type MessageView = Omit<Message, 'id' | 're' | 'replyTo' | 'links' | 'schedule' | 'blind' | 'version' | 'origin'> & {
   id: string
+  /** Where it came from on a platform. `url` is its link there: null on a platform without links, and on messages from before them. */
+  origin: (Origin & { url: string | null }) | null
   /** The thread's root, or null for a root. */
   re: string | null
   /** The exact message replied to, when it isn't the root. */

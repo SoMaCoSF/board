@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto'
 import { createGitHubAdapter } from '@chat-adapter/github'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { github } from '../src/sync/github.ts'
 import type { ReceivedEvent } from '../src/sync/provider.ts'
 
@@ -34,7 +34,10 @@ const issue = { number: 100, title: 'slack: agents post under their own name', p
 it('syncs an edited PR comment, like the Vercel deployment comment moving from Building to Ready', async () => {
   const send = setup()
   const [created] = await send('issue_comment', { action: 'created', comment: comment('Building'), issue, repository, sender: vercel })
-  expect(created?.event).toMatchObject({ kind: 'message', thread: 'github:basehub-ai/vboard:100', message: '77', text: 'Building' })
+  expect(created?.event).toMatchObject({
+    kind: 'message', thread: 'github:basehub-ai/vboard:100', message: '77', text: 'Building',
+    url: 'https://github.com/basehub-ai/vboard/pull/100#issuecomment-77',
+  })
 
   const edited = await send('issue_comment', {
     action: 'edited', comment: comment('Ready', '2026-10-07T19:53:10Z'), changes: { body: { from: 'Building' } }, issue, repository, sender: vercel,
@@ -66,4 +69,36 @@ it("ignores edits to the board's own comments, which it already has", async () =
   const theirs = { ...own, user: vercel }
   const [edited] = await send('issue_comment', { action: 'edited', comment: theirs, issue, repository, sender: vercel })
   expect(edited?.event).toMatchObject({ kind: 'edited', message: '77', text: 'from the board' })
+})
+
+it("links a comment the board posts to its html_url, from GitHub's answer to creating it", async () => {
+  const created: string[] = []
+  vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input instanceof Request ? input.url : input)
+    created.push(`${init?.method ?? 'GET'} ${url}`)
+    const reply = url.includes('/replies')
+    const id = reply ? 91 : 90
+    const html_url = `https://github.com/basehub-ai/vboard/pull/100#${reply ? `discussion_r${id}` : `issuecomment-${id}`}`
+    return Response.json({ id, body: 'on it', user: { id: 1, login: 'vboard-factory[bot]', type: 'Bot' }, html_url }, { status: 201 })
+  })
+  try {
+    const adapter = createGitHubAdapter({ token: 'ghp_test', webhookSecret: secret, userName: 'vboard-factory[bot]', botUserId: 1 })
+    const provider = github({ adapter, repos: { 'basehub-ai/vboard': 'dev' } })
+    expect(await provider.post('basehub-ai/vboard:100', 'thread', { markdown: 'on it' })).toEqual({
+      thread: 'basehub-ai/vboard:100', message: '90', url: 'https://github.com/basehub-ai/vboard/pull/100#issuecomment-90',
+    })
+    expect(await provider.post('basehub-ai/vboard:100:rc:88', 'thread', { markdown: 'on it' })).toMatchObject({
+      message: '91', url: 'https://github.com/basehub-ai/vboard/pull/100#discussion_r91',
+    })
+    expect(await provider.postAs('ghu_ada', 'basehub-ai/vboard:100', 'thread', { markdown: 'on it' })).toEqual({
+      thread: 'basehub-ai/vboard:100', message: '90', url: 'https://github.com/basehub-ai/vboard/pull/100#issuecomment-90',
+    })
+    expect(created).toEqual([
+      'POST https://api.github.com/repos/basehub-ai/vboard/issues/100/comments',
+      'POST https://api.github.com/repos/basehub-ai/vboard/pulls/100/comments/88/replies',
+      'POST https://api.github.com/repos/basehub-ai/vboard/issues/100/comments',
+    ])
+  } finally {
+    vi.unstubAllGlobals()
+  }
 })

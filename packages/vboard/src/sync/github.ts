@@ -25,7 +25,7 @@ const author = (user: User | undefined): ExternalAuthor => ({
   isBot: user?.type === 'Bot',
 })
 
-type Comment = { id: number; in_reply_to_id?: number; user?: User; body?: string }
+type Comment = { id: number; in_reply_to_id?: number; user?: User; body?: string; html_url?: string }
 type Repository = { name: string; owner: { login: string } }
 type CommentPayload = {
   action?: string
@@ -327,6 +327,7 @@ export class GitHubProvider extends ChatSyncProvider<GitHubEvent> {
         return {
           text: `${issue ? 'Issue' : 'PR'} #${data.number}: ${data.title}\n${data.html_url}`,
           raw: issue ? { issue: data } : { pull_request: data },
+          url: data.html_url,
           author: author(data.user),
           labels: {
             ...tagsOf(data),
@@ -340,6 +341,11 @@ export class GitHubProvider extends ChatSyncProvider<GitHubEvent> {
         const raw = message.raw as { body?: unknown; comment?: { body?: unknown } } | null
         const body = raw?.comment?.body ?? raw?.body
         return typeof body === 'string' && body.trim() ? body.trim() : markdownOf(message)
+      },
+      // The comment's own `html_url`, in the webhook and in what creating it answered.
+      url: (_thread, _message, raw) => {
+        const url = (raw as { comment?: Comment } | null)?.comment?.html_url
+        return typeof url === 'string' ? url : null
       },
       async avatar(message: ChatMessage) {
         const raw = message.raw as { user?: { avatar_url?: unknown }; comment?: { user?: { avatar_url?: unknown } } } | null
@@ -442,8 +448,8 @@ export class GitHubProvider extends ChatSyncProvider<GitHubEvent> {
     const body = this.body(post)
     const comment = (await (review !== null
       ? asPerson(token, 'POST', `/repos/${owner}/${repo}/pulls/${number}/comments/${review}/replies`, { body })
-      : asPerson(token, 'POST', `/repos/${owner}/${repo}/issues/${number}/comments`, { body }))) as { id: number }
-    return { thread: target, message: String(comment.id) }
+      : asPerson(token, 'POST', `/repos/${owner}/${repo}/issues/${number}/comments`, { body }))) as Comment
+    return { thread: target, message: String(comment.id), url: comment.html_url ?? null }
   }
   override async editAs(token: string, thread: string, message: string, post: ProviderPost) {
     const { owner, repo, review } = parseThread(thread)

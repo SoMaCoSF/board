@@ -675,7 +675,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
           author: event.author,
           text: clampText(withNotes(overrides.text ?? event.text, notes), attachments.length > 0),
           ...(attachments.length ? { attachments } : {}),
-          origin: { channel: event.channel, thread: event.thread, subthread: event.subthread, message: event.message, context: event.context },
+          origin: { channel: event.channel, thread: event.thread, subthread: event.subthread, message: event.message, context: event.context, url: event.url ?? null },
           id: await writeId(0),
         }
         // A reply kept on the board: no other platform gets it. A root always syncs, so its thread can.
@@ -693,7 +693,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
         const root = await post({
           author: fetched.author, channel,
           text: clampText(draft.text), labels: labels(draft.labels),
-          origin: { channel: event.channel, thread: event.thread, subthread: null, message: `root:${meta.id}`, context: null },
+          origin: { channel: event.channel, thread: event.thread, subthread: null, message: `root:${meta.id}`, context: null, url: fetched.url ?? null },
           id: await writeId(1),
         })
         return result(await post({ ...reply, re: root.id }))
@@ -744,7 +744,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
         const draft = rootDraft({ text: event.url ? `${event.title}\n${event.url}` : event.title, labels: event.labels, author: event.author, raw })
         const root = await post({
           author: event.author, channel, text: clampText(event.reply ? draft.text : overrides.text ?? draft.text), labels: labels(draft.labels),
-          origin: { channel: event.channel, thread: event.thread, subthread: null, message: `lifecycle:${meta.id}`, context: null },
+          origin: { channel: event.channel, thread: event.thread, subthread: null, message: `lifecycle:${meta.id}`, context: null, url: event.url },
           id: await writeId(0),
         })
         if (event.reply) return result(await post({ author: event.author, re: root.id, text: clampText(overrides.text ?? event.reply), ...(overrides.noSync ? { noSync: true } : {}), id: await writeId(1) }))
@@ -893,29 +893,29 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
     const platform = platformOf(keyOf(target))
     let body = renderFor(target, message, actors)
     let files: string[] | null | undefined
-    let sentId: string
+    let sent: { message: string; url?: string | null }
     if (!body.markdown.trim() && message.attachments.length && platform.uploadsFiles) {
       try {
-        const sent = await uploadMessageFiles(message, target, place)
-        sentId = sent.message
-        files = sent.files
+        const uploaded = await uploadMessageFiles(message, target, place)
+        sent = uploaded
+        files = uploaded.files
       } catch (error) {
         if (!platform.refusesFiles(error)) throw error
         body = renderFor(target, message, actors, true)
-        sentId = (await platform.post(native(place), 'thread', body)).message
+        sent = await platform.post(native(place), 'thread', body)
         files = null
       }
     } else {
       const asPerson = await postAsPerson(target, place, 'thread', message, actors)
       if (asPerson) {
-        const external: ExternalCopy = { thread: place, message: asPerson.message, asUser: true }
+        const external: ExternalCopy = { thread: place, message: asPerson.message, url: asPerson.url, asUser: true }
         await recordDelivery(message, target, external)
         return external
       }
       if (!body.markdown.trim()) throw badRequest('a renderer must return text unless the message has media')
-      sentId = (await platform.post(native(place), 'thread', body)).message
+      sent = await platform.post(native(place), 'thread', body)
     }
-    const external = { thread: place, message: sentId, ...(files !== undefined ? { files } : {}) }
+    const external: ExternalCopy = { thread: place, message: sent.message, url: sent.url, ...(files !== undefined ? { files } : {}) }
     await recordDelivery(message, target, external)
     return external
   }
@@ -925,7 +925,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
       kind: 'message',
       message: message.id,
       target,
-      external: { thread: copy.thread, message: copy.message, ...(copy.asUser ? { asUser: true as const } : {}) },
+      external: { thread: copy.thread, message: copy.message, url: copy.url ?? null, ...(copy.asUser ? { asUser: true as const } : {}) },
       ...(copy.files !== undefined ? { files: copy.files } : {}),
     })
   }
@@ -1030,7 +1030,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
         }
         const sent = await post()
         externalThread = `${keyOf(target)}:${sent.thread}`
-        const external: ExternalCopy = { thread: externalThread, message: sent.message, ...(uploaded !== undefined ? { files: uploaded } : {}), ...(postedAsPerson ? { asUser: true as const } : {}) }
+        const external: ExternalCopy = { thread: externalThread, message: sent.message, url: sent.url, ...(uploaded !== undefined ? { files: uploaded } : {}), ...(postedAsPerson ? { asUser: true as const } : {}) }
         await recordDelivery(root, target, external)
         await deliverFiles(root, target, external, actors)
       } catch (error) {
