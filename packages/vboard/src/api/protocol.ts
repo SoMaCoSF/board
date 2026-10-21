@@ -33,6 +33,7 @@ import type {
   ThreadsPage,
   SyncAccountBody,
   SyncCodeBody,
+  SyncCodeView,
   SyncCopiesQuery,
   SyncCopiesView,
   SyncFindQuery,
@@ -98,7 +99,8 @@ export type Protocol = {
   inboxAck: { input: Key & Id & Input<typeof InboxAckBody>; output: { ok: true } }
   /** Raw platform events, newest first, for debugging sync. */
   inbox: { input: Key & Input<typeof InboxQuery>; output: { events: InboxEntry[] } }
-  syncCode: { input: Input<typeof SyncCodeBody>; output: { code: string; expiresAt: string } }
+  /** A code for linking the caller's account, and the sign-in that carries it when the entry signs people in. */
+  syncCode: { input: Input<typeof SyncCodeBody>; output: SyncCodeView }
   /** 404 `bad_code` for a code that isn't live. */
   syncAccount: { input: Input<typeof SyncAccountBody>; output: { person: string; link: LinkedAccount } }
   syncUnlink: { input: Input<typeof SyncUnlinkBody>; output: { ok: true } }

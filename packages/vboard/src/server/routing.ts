@@ -7,14 +7,21 @@ import type { BackendRoute } from './backend.ts'
 import { badRequest, HttpError } from './errors.ts'
 
 /** board()'s own routes: discovery and the files it serves, and sync's, which run where board() does. */
-export const BOARD_ROUTES = ['avatar', 'openapi', 'webhook', 'signIn', 'signedIn', 'sourceRead', 'typing', 'identityLink', 'identityCheck', 'identityUnlink', 'sync'] as const
+export const BOARD_ROUTES = ['avatar', 'openapi', 'webhook', 'signIn', 'signedIn', 'sourceRead', 'typing', 'identityUnlink', 'sync'] as const
 export type BoardRoute = 'discovery' | (typeof BOARD_ROUTES)[number]
 
 /** What a request is for: one of board()'s own routes, a protocol method, or one of the backend's routes. */
 export type Target = { kind: 'board'; name: BoardRoute } | { kind: 'protocol'; name: Method } | { kind: 'backend'; route: BackendRoute }
 
 /** `params` by name, from the path's `:name` segments; `param` is the first, for a backend's own routes. */
-export type Match = { target: Target; base: string; param: string | null; params: Record<string, string> }
+export type Match = {
+  target: Target
+  base: string
+  param: string | null
+  params: Record<string, string>
+  /** At the mount itself: discovery, or a backend's own route there. Any unknown GET lands here too, so it teaches no mount. */
+  root?: true
+}
 
 type Pattern = { method: string; pattern: RegExp; names: string[]; target: Target; segments: number; literals: number; own: boolean }
 
@@ -26,7 +33,7 @@ export const METHODS: readonly Method[] = [
   'syncCode', 'syncAccount', 'syncUnlink',
 ]
 
-const escape = (literal: string) => literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+export const escape = (literal: string) => literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 function compile(method: string, path: string, target: Target, own: boolean): Pattern {
   const parts = path.split('/').filter(Boolean)
@@ -48,11 +55,14 @@ function compile(method: string, path: string, target: Target, own: boolean): Pa
  * route at a protocol path takes its place.
  */
 export function createRouter(backendRoutes: readonly BackendRoute[], basePath?: string) {
+  const isRoot = (route: BackendRoute) => route.path.replace(/\/+$/, '') === ''
   const patterns: Pattern[] = [
     ...BOARD_ROUTES.map((name) => compile(routes[name].method, routes[name].path, { kind: 'board', name }, false)),
     ...METHODS.map((name) => compile(routes[name].method, routes[name].path, { kind: 'protocol', name }, false)),
-    ...backendRoutes.map((route) => compile(route.method, route.path, { kind: 'backend', route }, true)),
+    ...backendRoutes.filter((route) => !isRoot(route)).map((route) => compile(route.method, route.path, { kind: 'backend', route }, true)),
   ].sort((a, b) => b.segments - a.segments || b.literals - a.literals || Number(b.own) - Number(a.own))
+  /** A backend's own route at the mount itself, in discovery's place. */
+  const roots = backendRoutes.filter(isRoot)
 
   /** A segment that isn't URI-encoded names nothing: no route. */
   const found = (candidate: Pattern, base: string, values: string[]): Match | null => {
@@ -65,7 +75,10 @@ export function createRouter(backendRoutes: readonly BackendRoute[], basePath?: 
     const first = candidate.names[0]
     return { target: candidate.target, base, param: first === undefined ? null : params[first]!, params }
   }
-  const discovery = (base: string): Match => ({ target: { kind: 'board', name: 'discovery' }, base, param: null, params: {} })
+  const discovery = (base: string): Match => {
+    const own = roots.find((route) => route.method === 'GET')
+    return { target: own ? { kind: 'backend', route: own } : { kind: 'board', name: 'discovery' }, base, param: null, params: {}, root: true }
+  }
 
   return function route(method: string, pathname: string): Match | null {
     const path = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname

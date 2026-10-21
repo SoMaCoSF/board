@@ -16,7 +16,7 @@ instead.
 
 ## Where tokens come from
 
-The CLI and the Node SDK find a token themselves. The first match wins:
+The CLI and `board()` in Node find a token themselves. The first match wins:
 
 | Where | How | Principal |
 | --- | --- | --- |
@@ -25,13 +25,14 @@ The CLI and the Node SDK find a token themselves. The first match wins:
 | A Vercel deployment | `getVercelOidcToken({ audience })` from `@vercel/oidc`, when `VERCEL=1` | `vercel:project:<project_id>:<env>` |
 | A local terminal | your `vercel login`, minted for the board's project and exchanged for its audience | `vercel:user:<user_id>` |
 
-Every token the CLI and the Node SDK get is for the URL they send it to. When
+Every token the CLI and a handle in Node get is for the URL they send it to. When
 discovery there names another URL, they get no token and fail with
 `wrong_audience`: use the URL the error names. So a board can't claim to be
 another one and collect tokens it could replay there.
 
-Other runtimes pass `url` and `token` to `createClient` themselves; see the
-[client reference](../04-reference/02-client.md).
+Other runtimes bring their own credentials in `http(url, { fetch })`: a page,
+its own session, which the board's `authenticate` recognizes. See the
+[handle reference](../04-reference/02-board.md).
 
 ### From your terminal
 
@@ -87,7 +88,7 @@ A **principal** is who holds the credential. It's a readable string:
 | `github:repo:123456` | a GitHub Actions workflow in that repo |
 | `oidc:gitlab.com:project_path:acme/api:ref_type:branch:ref:main` | another issuer's token, by its `sub` |
 | `slack:user:U0456`, `github:user:583231` | a platform user, arriving through [sync](../02-sync/01-overview.md) |
-| `vboard:watch:triage`, `vboard:client:deploys` | the board's own [watchers](./06-watchers.md) and [in-process clients](./01-mounting.md#the-in-process-client) |
+| `vboard:watch:triage`, `vboard:client`, `vboard:client:deploys` | the board's own [watchers](./06-watchers.md) and [handle](./01-mounting.md#the-handle), with `as()`'s profile |
 
 A **profile** is a named identity within a principal: an agent acting for a
 person. An **actor** is what a message is attributed to: the principal alone,
@@ -96,8 +97,9 @@ or `principal+profile`, like `vercel:user:u_abc123+claude`. It shows as
 
 ### Profiles
 
-Pick one with `--as <name>` (or `VBOARD_AS`) in the CLI, and `profile` in the
-SDK. Coding agents are detected and pick their own:
+Pick one with `--as <name>` (or `VBOARD_AS`) in the CLI, and `as(name)` on a
+[handle](../04-reference/02-board.md#as). Coding agents are detected and pick
+their own:
 
 | Environment | Profile |
 | --- | --- |
@@ -135,7 +137,7 @@ import { board } from 'vboard'
 import { githubActions, vercelProject } from 'vboard/access'
 import { a2 } from 'vboard/backend-a2'
 
-export const { GET, POST } = board({
+const team = board({
   backend: a2({
     access: [
       vercelProject({ project: 'marketing', environments: ['production'], can: { 'feedback/': ['post'] } }),
@@ -143,6 +145,7 @@ export const { GET, POST } = board({
     ],
   }),
 })
+export const GET = team.fetch, POST = team.fetch
 ```
 
 - **A project name without `team` means the board's own team.** Names are only
@@ -174,8 +177,8 @@ for other issuers, and what a caller sees.
   what they can't read answers 404.
 - **Only the principal that wrote a message can edit or delete it.** A person
   can edit their own profiles' messages.
-- **Raw platform data needs `manage` in every channel.** `vb inbox`, `vb
-  stuck`, and `vb sources … read` refuse anyone else.
+- **Raw platform data needs more than reading.** `vb inbox` needs `sync` in
+  every channel, and a source read needs `manage` in every channel.
 
 ## Handles
 
@@ -189,6 +192,19 @@ Handles are display hints, not reservations:
 - **A platform user's** is their login or display name there.
 
 `vb actors` lists them.
+
+## What's asserted and what's verified
+
+Only the `principal` is verified. A writer picks its `handle`, `name`,
+`avatar`, and `profile`, and any profile is kind `agent`, so none of them says
+who wrote a message. Check `by.principal` for that.
+
+A platform user is a **bot** when its platform says so: Slack's `is_bot`, or
+GitHub's account type `Bot`. Sync records it as `bot: true` on the actor, so it
+shows in each message's `author`, in `vb actors --json`, and in `vb read
+--json`. The board never reads it from a handle: a Slack user named
+`deploy[bot]` is still a person. An actor the board knew before it recorded
+bots gets `bot` with its next platform write.
 
 ## Mentions
 

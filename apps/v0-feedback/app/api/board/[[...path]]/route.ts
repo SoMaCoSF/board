@@ -37,7 +37,7 @@ const backend = a2({
   blob: env ? vercelBlob() : undefined,
 });
 
-export const { GET, POST, client } = board({
+export const feedback = board({
   backend,
   sync: {
     slack: slack({
@@ -59,6 +59,7 @@ export const { GET, POST, client } = board({
     report: { tail: "feedback --label v0state=done", when: "enters", run: report },
   },
 });
+export const GET = feedback.fetch, POST = feedback.fetch;
 export const { scheduler } = backend;
 
 /** How sure triage must be that a report is worth fixing before it starts a v0 chat. */

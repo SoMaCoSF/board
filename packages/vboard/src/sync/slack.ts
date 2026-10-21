@@ -2,7 +2,7 @@ import { ChatSyncProvider, type ChatInput } from './chat-provider.ts'
 import type { Adapter, Message as ChatMessage } from 'chat'
 import { markdownOf } from './chat.ts'
 import { z } from 'zod'
-import { envelope, eventSchema } from './events.ts'
+import { envelope, eventSchema, type SyncRoot } from './events.ts'
 import { UnreadableError, type ResolvedTarget, type ProviderPost, type ProviderDelivery, type ProviderSender, type SyncContext, type SyncHandler, type EventMapping, type RenderInput, type ReceivedEvent, type FetchedLink } from './provider.ts'
 import type { SourceMessage, SourceRead } from '../api/routes.ts'
 import { stringifyMarkdown } from 'chat'
@@ -37,10 +37,12 @@ export type SlackClient = {
     /** A message's link, with the workspace's own host and a reply's `thread_ts`. */
     getPermalink?(args: { channel: string; message_ts: string }): Promise<{ permalink?: string }>
   }
-  /** Says which scopes the app has (`response_metadata.scopes`, from Slack's `x-oauth-scopes`). */
+  /** Says which scopes the app has (`response_metadata.scopes`, from Slack's `x-oauth-scopes`) and its workspace's host (`url`). */
   /** Also whose a token is (`user_id`), for a person's own. */
-  auth?: { test(args?: Record<string, unknown>): Promise<{ user_id?: string; user?: string; response_metadata?: { scopes?: string[] } }> }
+  auth?: { test(args?: Record<string, unknown>): Promise<SlackAuth> }
 }
+
+type SlackAuth = { user_id?: string; user?: string; url?: string; response_metadata?: { scopes?: string[] } }
 
 type SlackPost = {
   channel: string
@@ -132,6 +134,7 @@ type SlackUser = {
 type SlackFile = { name?: string; title?: string; permalink?: string }
 type SlackMessage = {
   ts?: string
+  subtype?: string
   text?: string
   user?: string
   username?: string
@@ -161,6 +164,16 @@ type SlackAttachment = {
  * with `?thread_ts=…` for a reply. Slack escapes `&` in text as `&amp;`.
  */
 const PERMALINK = /https:\/\/[a-z0-9-]+(?:\.enterprise)?\.slack\.com\/archives\/([A-Z0-9]+)\/p(\d{10})(\d{6})((?:\?|&amp;|&)[^\s|>]*)?/g
+
+/**
+ * A message's link on the workspace's `host`, the way `chat.getPermalink` writes it:
+ * `https://acme.slack.com/archives/C0123/p1727000000123456`, and a reply's with its thread.
+ */
+function slackPermalink(host: string, thread: string, message: string): string {
+  const [channel, root] = thread.split(':')
+  const link = `${host}/archives/${channel}/p${message.replace('.', '')}`
+  return root && root !== message ? `${link}?thread_ts=${root}&cid=${channel}` : link
+}
 
 /** `1727000000.123456` → its ISO time. */
 const tsTime = (ts: string | undefined) => {
@@ -302,7 +315,7 @@ function fromConnector(connector: string) {
 
 export class SlackProvider extends ChatSyncProvider<SlackEvent> {
   private readonly web: () => Promise<SlackClient | undefined>
-  private customize: Promise<boolean> | undefined
+  private readonly auth: () => Promise<SlackAuth | undefined>
 
   constructor(given: SlackOptions) {
     const connected = typeof given.adapter === 'string' ? fromConnector(given.adapter) : null
@@ -442,6 +455,19 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
         names.set(user, promise)
       }
       return promise
+    }
+
+    // The app's own `auth.test`, asked once: its scopes, and the workspace's host that every message's link is built on.
+    let authed: Promise<SlackAuth | undefined> | undefined
+    function auth(): Promise<SlackAuth | undefined> {
+      if (!authed) {
+        const promise = client().then((web) => web?.auth?.test())
+        promise.catch(() => {
+          if (authed === promise) authed = undefined
+        })
+        authed = promise
+      }
+      return authed
     }
 
     const fileIds = (raw: unknown) => ((raw as { uploadedFileIds?: string[] } | null)?.uploadedFileIds ?? []).filter(Boolean)
@@ -641,6 +667,16 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
       },
       avatar: (message: ChatMessage) => (message.author.userId ? avatarOf(message.author.userId) : Promise.resolve(null)),
       groupThread: (thread) => thread,
+      async url(thread, message) {
+        let host: string | undefined
+        try {
+          const url = (await auth())?.url
+          host = url ? new URL(url).origin : undefined
+        } catch (error) {
+          console.warn(`[vboard] slack: couldn't ask auth.test for the workspace's host (${slackError(error)}); the message has no link`)
+        }
+        return host ? slackPermalink(host, thread, message) : null
+      },
       // A Slack thread is named by its root message's ts.
       isRoot: (thread, messageId) => thread.slice(thread.lastIndexOf(':') + 1) === messageId,
       context: () => null,
@@ -670,6 +706,7 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
     })
     for (const [key, value] of Object.entries(options.channels)) this.map(key, value)
     this.web = client
+    this.auth = auth
   }
 
   /**
@@ -694,7 +731,7 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
   private async postNamed(target: string, as: ProviderSender, markdown: string): Promise<ProviderDelivery | null> {
     const adapter = (await this.ready()) as SlackInternals
     const web = await this.web()
-    if (!web?.chat || !adapter.formatConverter?.toSlackPayload || !(await this.canCustomize(web))) return null
+    if (!web?.chat || !adapter.formatConverter?.toSlackPayload || !(await this.canCustomize())) return null
     const threadId = this.toChat(target)
     const { channel, threadTs } = adapter.decodeThreadId(threadId)
     const message = { markdown: withoutLabel(markdown, as.name) }
@@ -710,19 +747,18 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
       ...(icon ? { icon_url: icon } : {}),
     })
     if (!sent.ts) throw new Error('slack: chat.postMessage returned no ts')
-    return { thread: this.toNative(`${adapter.name}:${channel}:${threadTs || sent.ts}`), message: sent.ts }
+    const thread = this.toNative(`${adapter.name}:${channel}:${threadTs || sent.ts}`)
+    return { thread, message: sent.ts, url: await this.transport.url!(thread, sent.ts, null) }
   }
 
   /** Whether the app may set a message's username and icon (`chat:write.customize`), asked once. */
-  private canCustomize(web: SlackClient): Promise<boolean> {
-    this.customize ??= (async () => (await web.auth?.test())?.response_metadata?.scopes?.includes('chat:write.customize') ?? false)().catch(
-      (error: unknown) => {
-        this.customize = undefined
-        console.warn(`[vboard] slack: couldn't check the app's scopes (${slackError(error)}); posting as the app`)
-        return false
-      },
-    )
-    return this.customize
+  private async canCustomize(): Promise<boolean> {
+    try {
+      return (await this.auth())?.response_metadata?.scopes?.includes('chat:write.customize') ?? false
+    } catch (error) {
+      console.warn(`[vboard] slack: couldn't check the app's scopes (${slackError(error)}); posting as the app`)
+      return false
+    }
   }
 
   /** Whether a message Slack has went out under `name`. */
@@ -755,6 +791,15 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
     }
     if (!found) throw new Error('slack: chat.getPermalink returned no permalink')
     return found
+  }
+
+  override async fetchRoot(thread: string, key: string): Promise<SyncRoot | null> {
+    const message = await (await this.ready()).fetchMessage?.(this.toChat(thread), thread.slice(thread.lastIndexOf(':') + 1))
+    // A root deleted after it had replies stays in Slack as a tombstone, with nothing to bring in.
+    if (!message || (message.raw as SlackMessage).subtype === 'tombstone') return null
+    const { event, raw } = await this.normalize(key, { kind: 'message', message })
+    if (event.kind !== 'message') return null
+    return { text: event.text, labels: {}, author: event.author, raw, message: event.message, files: event.files, links: event.links, url: event.url ?? null }
   }
 
   override eventId(key: string, input: ChatInput): string {

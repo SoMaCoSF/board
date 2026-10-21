@@ -1,7 +1,7 @@
 import { v0 } from "v0";
 import { generateText, Output } from "ai";
 import { z } from "zod";
-import { client } from "@/app/api/board/[[...path]]/route";
+import { feedback } from "@/app/api/board/[[...path]]/route";
 
 // v0 calls this when a reply in a chat the board started finishes (a chat-scoped
 // webhook, registered in v0.ts). v0 doesn't sign deliveries, so the body is only a
@@ -34,7 +34,7 @@ export async function POST(request: Request) {
     return Response.json({ ok: true });
   }
 
-  const board = client("v0-hook", { key: messageId });
+  const board = feedback.as("v0-hook");
   const [report] = (await board.messages({ channel: "feedback", label: { v0: chatId } })).messages;
   if (!report || report.labels.v0state === "done") return Response.json({ ok: true });
 

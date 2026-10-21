@@ -1,5 +1,4 @@
 import type { Watcher } from "vboard";
-import { sourceLink } from "./agent.ts";
 import { github, prNumber, type GitHubOptions } from "./github.ts";
 import { threadOfBranch } from "./owner.ts";
 
@@ -16,25 +15,25 @@ export const CROSSPOST_ACTOR = `vboard:watch:${CROSSPOST}`;
 export function crosspost(options: GitHubOptions = {}): Watcher {
   return {
     // `--all`: where the PR root landed in Slack only shows in its delivery receipt.
-    tail: "dev --label pr --all",
+    tail: "dev --label pr --roots --all",
     run: async ({ event, board }) => {
       const root = event.message;
-      if (event.type !== "message.synced" || !root || root.re !== null || root.labels.crosspost) return;
-      const here = sourceLink({ thread: event.payload.external.thread });
-      if (here?.platform !== "Slack") return;
+      if (event.type !== "message.synced" || !root || root.labels.crosspost) return;
+      const here = event.payload.external.url;
+      if (!event.payload.target.startsWith("slack:") || !here) return;
       const number = prNumber(root.labels);
       if (!number) return;
       const pr = await (await github(options))(`/pulls/${number}`);
       const sourceId = threadOfBranch(pr.head?.ref);
       if (!sourceId) return;
       const { message: source } = await board.thread(sourceId);
-      const there = sourceLink(source.origin);
-      if (there?.platform !== "Slack") return;
+      const there = source.origin?.url;
+      if (source.from !== "slack" || !there) return;
       await board.label(root.id, { set: { crosspost: "yes" } });
       const who = source.author?.name ?? source.author?.handle;
       const title = (/^PR #\d+: (.+)/.exec(root.text)?.[1] ?? pr.title ?? "").replace(/[[\]]/g, "\\$&");
-      await board.reply(root.id, `:crosspost: From [${who ? `${who}'s` : "its"} Slack thread](${there.url}) · board #${source.id}`);
-      await board.reply(source.id, `:crosspost: [#${number} ${title}](${here.url})`);
+      await board.reply(root.id, `:crosspost: From [${who ? `${who}'s` : "its"} Slack thread](${there}) · board #${source.id}`);
+      await board.reply(source.id, `:crosspost: [#${number} ${title}](${here})`);
     },
   };
 }

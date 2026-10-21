@@ -5,13 +5,13 @@ import { vercelProject } from '../src/access/index.ts'
 import { http as httpBackend } from '../src/backend-http/index.ts'
 import { slack } from '../src/sync/slack.ts'
 import { CLI, tmp } from './cli-harness.ts'
-import { caller, deploymentToken, personToken, PROJECT_ID, signedInHome, TEAM_ID, testAuth, testBoard } from './harness.ts'
+import { bearer, caller, deploymentToken, personToken, PROJECT_ID, signedInHome, TEAM_ID, testAuth, testBoard } from './harness.ts'
 import { serve } from './http.ts'
 import { fakePlatform } from './sync-fixtures.ts'
 
 /**
- * The CLI against a project's board on http() that syncs Slack, over real HTTP: the team's board on
- * a2() keeps the log, and the project's runs the sync.
+ * The CLI on a project whose board is on http() and syncs Slack, over real HTTP: the team's board on
+ * a2() keeps the log, the project's runs the sync, and the repo links the team's board.
  */
 let team: ReturnType<typeof testBoard>
 let project: ReturnType<typeof board>
@@ -29,7 +29,7 @@ beforeAll(async () => {
   teamUrl = `${teamServer.origin}/api/board`
   projectUrl = `${projectServer.origin}/api/board`
   team = testBoard({ url: teamUrl, access: [vercelProject({ project: 'prj_support', can: 'all' })] })
-  backend = httpBackend(teamUrl, { token: () => deploymentToken('support', 'prj_support', 'production', { audience: teamUrl }) })
+  backend = httpBackend(teamUrl, { fetch: bearer(globalThis.fetch, () => deploymentToken('support', 'prj_support', 'production', { audience: teamUrl })) })
   project = board({
     backend,
     url: projectUrl,
@@ -38,12 +38,12 @@ beforeAll(async () => {
     sync: { slack: slack({ adapter: s.adapter, channels: { C1: 'firehose' } }) },
   })
   // Its registration tells the team's board it syncs Slack, as its first request would.
-  await backend.register()
+  await backend.registerWatchers()
   const clean = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !/^(CLAUDE|CODEX|GROK|PI_|AI_AGENT|VBOARD|VERCEL|ACTIONS_ID_TOKEN)/.test(key)),
   )
-  // Signed in as `vercel login` leaves it, with a token for each board: none is handed to the CLI.
-  env = { ...clean, VBOARD_URL: projectUrl, VBOARD_HANDLE: 'julian', HOME: await tmp('vboard-home-'), XDG_CONFIG_HOME: await signedInHome([projectUrl, teamUrl]) }
+  // Linked to the team's board, signed in as `vercel login` leaves it: no token is handed to the CLI.
+  env = { ...clean, VBOARD_URL: teamUrl, VBOARD_HANDLE: 'julian', HOME: await tmp('vboard-home-'), XDG_CONFIG_HOME: await signedInHome([teamUrl]) }
 })
 
 afterAll(async () => {
@@ -64,7 +64,7 @@ function vb(args: string[]) {
 }
 
 describe('the CLI on a project whose board is on http()', () => {
-  it("follows it to the team's board to link a Slack account, which the project's sync links when the code comes in", async () => {
+  it("links a Slack account on the team's board, which the project's sync links when the code comes in", async () => {
     const linked = await vb(['identity', 'link', 'slack', '--no-wait'])
     expect(linked).toMatchObject({ code: 0, stderr: '' })
     const code = linked.stdout.match(/vb-[A-Z2-9]{4}-[A-Z2-9]{4}/)?.[0]
@@ -82,7 +82,7 @@ describe('the CLI on a project whose board is on http()', () => {
     await vi.waitFor(async () => expect((await julian('GET', '/identity')).body.links).toEqual([expect.objectContaining({ actor: 'slack:user:U_JULIAN', method: 'code' })]))
     expect(s.reactions).toEqual([{ threadId: 'slack:C1:100', messageId: '100', emoji: 'check', added: true }])
 
-    // The CLI reads it there too, and its other commands go there.
+    // The CLI reads it there too, and posts there.
     const listed = await vb(['identity'])
     expect(listed).toMatchObject({ code: 0, stderr: '' })
     expect(listed.stdout).toContain('slack:user:U_JULIAN  by code')

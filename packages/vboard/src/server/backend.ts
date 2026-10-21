@@ -1,5 +1,5 @@
 import type { Protocol } from '../api/protocol.ts'
-import type { BoardClient } from '../client/client.ts'
+import type { BoardClient, ProfileOption } from '../client/client.ts'
 import type { ExternalEvent } from '../contract/contract.ts'
 import type { Actor } from '../contract/reducers.ts'
 import type { Author } from '../contract/schemas.ts'
@@ -21,21 +21,32 @@ export type Caller =
    */
   | { identity: CallerIdentity; origin: WriteOrigin }
   /**
-   * This deployment's own code, writing as `self`: `client(name)`, a watcher, the middleware's
-   * client (`via: middleware`), or sync (`via: engine`). Each backend decides who that is on its
-   * board: `vboard:client:<name>` on a2(), `<principal>+<name>` elsewhere.
+   * This deployment's own code, writing as `self`: a handle (`via: client`, with the profile from
+   * `as(profile)`, or null for the board's own), a watcher, the middleware's handle
+   * (`via: middleware`), or sync (`via: engine`). Each backend decides who that is on its board:
+   * `vboard:client` and `vboard:client:<profile>` on a2(), the token's holder with that profile
+   * elsewhere.
    */
-  | { self: string; origin: WriteOrigin }
+  | {
+      self: string | null
+      /**
+       * What `as(profile)` asked for, its avatar included, or null for yourself. Absent on the
+       * handle itself, whose caller is whoever the environment picks: a backend elsewhere sends
+       * the profile `VBOARD_AS` or the agent it runs in names.
+       */
+      profile?: ProfileOption
+      origin: WriteOrigin
+    }
 
 /** One method per protocol route: the caller, the parsed input, and the request's signal. */
 export type ProtocolMethods = {
   [M in keyof Protocol]: (caller: Caller, input: Protocol[M]['input'], signal: AbortSignal) => Promise<Protocol[M]['output']>
 }
 
-/** A route of a backend's own, beside the protocol: a2()'s stuck list, http()'s wake-ups. */
+/** A route of a backend's own, beside the protocol: http()'s wake-ups. */
 export type BackendRoute = {
   method: 'GET' | 'POST'
-  /** Under the board's mount, with `:param` segments, e.g. `/stuck` or `/wake`. */
+  /** Under the board's mount, with `:param` segments, e.g. `/wake`. */
   path: string
   /** Whether board() verifies the caller first. A wake-up carries no board token. */
   auth: boolean
@@ -101,14 +112,15 @@ export type BoardBinding = {
  * stores and answers.
  */
 export interface Backend extends ProtocolMethods {
-  /** Set when this backend keeps nothing here: discovery sends clients to that board instead. */
-  readonly remote: string | null
   /**
    * OIDC issuers past Vercel's and GitHub's whose tokens board() verifies, so the backend can say
    * what they may do: a2() names its `oidc()` rules'.
    */
   readonly issuers: readonly string[]
-  /** Routes of its own, beside the protocol. */
+  /**
+   * Routes of its own, beside the protocol: one at a protocol route's path, or at `/` (discovery),
+   * takes its place.
+   */
   readonly routes: readonly BackendRoute[]
   /**
    * board() calls it once, when it's created, before any request: what background work needs

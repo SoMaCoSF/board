@@ -21,18 +21,19 @@ const backend = a2({
   // store and scheduler as in Mounting
 })
 
-export const { GET, POST } = board({
+const team = board({
   backend,
   // sync as in Sync
   middleware: [guard],
 })
+export const GET = team.fetch, POST = team.fetch
 export const { scheduler } = backend
 ```
 
 Every post and edit goes through `middleware`, in order, before it reaches the
-backend: the API (the CLI, the SDK, CI), messages synced in from Slack, GitHub,
-and WhatsApp (sync callbacks' writes included), watchers, in-process clients,
-and scheduled sends. Reactions, labels, and deletes don't. It's `board()`'s, so
+backend: the API (the CLI, scripts, CI), messages synced in from Slack, GitHub,
+and WhatsApp (sync callbacks' writes included), watchers, the board's
+[handle](./01-mounting.md#the-handle), and scheduled sends. Reactions, labels, and deletes don't. It's `board()`'s, so
 it runs the same on any backend: on a board on `http()`, here, before a write
 goes to the board it uses.
 
@@ -49,8 +50,8 @@ goes to the board it uses.
   the backend for the caller's post with that `id` (`GET /posts/:id`). The
   same `id` from the same author, in the same channel or thread, returns the
   message on the board, whatever the middleware would say now. That covers
-  the API, a keyed `client()`, watchers, schedule sends, and a sync callback's
-  posts. An author that can't read the channel gets it back as it landed, and
+  the API, the handle's posts with an `id`, watchers, schedule sends, and a
+  sync callback's posts. An author that can't read the channel gets it back as it landed, and
   only if it posted without reading too. Anyone else's post with that `id`
   fails with `duplicate_id`. A write it dropped has nothing on the board, so a
   retry goes through it again: keep side effects like `respond` idempotent, or
@@ -61,10 +62,10 @@ goes to the board it uses.
 | | |
 | --- | --- |
 | `write` | `{ kind: 'post', channel, re, text, labels, attachments }` or `{ kind: 'edit', id, channel, re, text }`. `re` is the thread's root, or null for a root; IDs are strings, as clients see them |
-| `author` | Who's writing: the actor, with `kind` (`person`, `agent`, `deployment`, `workflow`, `external`) |
+| `author` | Who's writing: the actor, with `kind` (`person`, `agent`, `deployment`, `workflow`, `external`), and `bot: true` for a platform's bot |
 | `source` | Where it came from (below) |
 | `respond(text)` | Tells the author, where they wrote from |
-| `board` | An in-process client, writing as `vboard:middleware` |
+| `board` | The board's handle, acting as `vboard:middleware` |
 | `next(patch?)` | Passes the write on |
 
 `source` is one of:
@@ -73,7 +74,8 @@ goes to the board it uses.
 - `{ kind: 'sync', key, platform, channel, thread }`: a platform event, with its
   sync key (`slack`), and the platform channel and thread it's in.
 - `{ kind: 'watcher', id }`, `{ kind: 'client', name }`, or
-  `{ kind: 'schedule', id }`: the board's own code.
+  `{ kind: 'schedule', id }`: the board's own code. A `client` is its handle:
+  `name` is the profile from `as(name)`, or null.
 
 ## Telling the author
 
@@ -84,7 +86,7 @@ goes to the board it uses.
 - **The API:** a dropped write answers `422` with code `dropped`, and the
   message is what was responded (or `the board dropped this message`). The CLI
   prints it as `error: …`.
-- **A watcher or in-process client:** its call throws that same error.
+- **A watcher or the handle:** its call throws that same error.
 - **A schedule:** nobody's there to tell. Its text never changes, so the
   schedule ends, with `reason: 'dropped'`.
 

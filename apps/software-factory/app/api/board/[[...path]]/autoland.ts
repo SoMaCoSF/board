@@ -48,14 +48,13 @@ const clip = (text: string) => (text.length > 256 ? `${text.slice(0, 255)}…` :
 
 export function autoland(options: GitHubOptions = {}): Watcher {
   return {
-    tail: "dev --label pr",
+    tail: "dev --label pr --roots",
     run: async ({ event, board }) => {
       const root = event.message;
       if (
         event.type !== "labels.changed" ||
         !("land" in event.payload.set) ||
         !root ||
-        root.re !== null ||
         !byPi(root.id, event.payload.by)
       ) return;
       const number = prNumber(root.labels);

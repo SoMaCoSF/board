@@ -38,11 +38,10 @@ test("a factory PR's root is labeled with whoever opened its source thread", asy
   assert.deepEqual(h.labels, [{ id: "1625", change: { set: { owner: "slack:user:U0AP7QRUM7E", "owner.name": "Martin Sione" } } }]);
 });
 
-test("PRs from other branches, replies, and labeled roots are skipped", async () => {
+test("PRs from other branches and labeled roots are skipped", async () => {
   const h = harness({ head: { ref: "jb/some-branch" } });
   await h.run({ type: "message.posted", message: root() });
   assert.deepEqual(h.labels, []);
-  await h.run({ type: "message.posted", message: { ...root(), re: "1600" } });
   await h.run({ type: "message.posted", message: root({ pr: "vercel-labs/vboard#89", owner: "slack:user:U1" }) });
   await h.run({ type: "labels.changed", message: root() });
   assert.equal(h.requests.length, 1);
