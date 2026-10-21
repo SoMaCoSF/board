@@ -26,7 +26,7 @@ export const METHODS: readonly Method[] = [
   'syncCode', 'syncAccount', 'syncUnlink',
 ]
 
-const escape = (literal: string) => literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+export const escape = (literal: string) => literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 function compile(method: string, path: string, target: Target, own: boolean): Pattern {
   const parts = path.split('/').filter(Boolean)

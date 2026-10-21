@@ -19,6 +19,7 @@ export default defineConfig([
       'backend-a2/scheduler-vercel': 'src/scheduler/vercel.ts',
       'backend-a2/scheduler-qstash': 'src/scheduler/qstash.ts',
       'backend-http': 'src/backend-http/index.ts',
+      sandbox: 'src/sandbox/index.ts',
       sync: 'src/sync/index.ts',
       'sync.chat': 'src/sync/chat-provider.ts',
       'sync-slack': 'src/sync/slack.ts',
