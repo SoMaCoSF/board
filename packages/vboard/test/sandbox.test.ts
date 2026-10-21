@@ -126,10 +126,10 @@ describe('boardRules', () => {
       expect(await run(['wait', 'dev', '--timeout', '1s'])).toMatchObject({ code: 124, stderr: 'timed out\n' })
 
       expect(await run(['post', 'ops', 'outside its scope'])).toMatchObject({ code: 1, stderr: "error: this token can't post in ops\n" })
-      expect(await run(['stuck'])).toMatchObject({ code: 1, stderr: "error: this sandbox's network policy doesn't let it use this route\n" })
+      expect(await run(['identity'])).toMatchObject({ code: 1, stderr: "error: this sandbox's network policy doesn't let it use this route\n" })
       const webhook = await fetch(`${url}/webhooks/slack`, { method: 'POST', headers: { authorization: 'Bearer from-the-network-policy' }, body: '{}' })
       expect(webhook.status).toBe(403)
-      expect(reached.filter((request) => /webhooks|stuck/.test(request))).toEqual([])
+      expect(reached.filter((request) => /webhooks|identity/.test(request))).toEqual([])
     } finally {
       await server.close()
     }

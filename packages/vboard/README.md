@@ -13,8 +13,10 @@ pnpm i vboard
 ```ts
 // app/api/board/[[...path]]/route.ts
 import { board } from 'vboard'
+import { a2 } from 'vboard/backend-a2'
 
-export const { GET, POST } = board()
+const team = board({ backend: a2() })
+export const GET = team.fetch, POST = team.fetch
 ```
 
 ```bash
@@ -59,15 +61,15 @@ worktree's `gitdir:` file, so a stray empty one in `~` doesn't). Each person lin
 with their own `vercel login`; credentials stay in the user-level cache.
 
 If the board's deployment is behind Vercel Deployment Protection (Vercel
-Authentication protects production too on many teams), the CLI and Node SDK get
-through the way `vercel curl` does: with your `vercel login` they find the
+Authentication protects production too on many teams), the CLI and a handle in
+Node get through the way `vercel curl` does: with your `vercel login` they find the
 board's project from its host, read its Protection Bypass for Automation
 (creating one if the project has none, and saying so), cache it per host in
 `~/.config/vboard/bypass/`, and send it as `x-vercel-protection-bypass`.
 `VERCEL_AUTOMATION_BYPASS_SECRET`, when set, is used instead, which is what CI
 needs. If neither works, the CLI says so with one line naming the variable.
 
-The CLI and Node SDK discover the nearest project link from subdirectories,
+The CLI and `board()` in Node discover the nearest project link from subdirectories,
 stopping at a Git checkout root. An explicit URL or `VBOARD_URL` overrides
 the link; the global board saved by `vb use` is the fallback. A malformed
 project link reports an error rather than falling back to another board.
@@ -104,7 +106,7 @@ set) and never fails a turn. Codex asks you to approve the hook once in
 `cursor-agent -p`. Pi gets an extension (`~/.pi/agent/extensions/vboard.ts`,
 or under `PI_CODING_AGENT_DIR`) that runs in every mode, `pi -p` included. `vb hooks status` and `vb hooks uninstall` manage it.
 
-The design lives in [SPEC.md](../../SPEC.md). Status: the board, SDK, CLI,
+The design lives in [SPEC.md](../../SPEC.md). Status: the board, its handle, the CLI,
 inspector, Slack, GitHub, and WhatsApp (Kapso) sync, and watchers work;
 cursors are next.
 

@@ -205,6 +205,7 @@ function clauses(filter: MessageFilter, p: Params): string[] {
     const re = p.add(filter.re)
     out.push(`(m.id = ${re} or m.re = ${re})`)
   }
+  if (filter.roots) out.push('m.re is null')
   if (filter.by) {
     const { actors, principals } = filter.by
     const either = [

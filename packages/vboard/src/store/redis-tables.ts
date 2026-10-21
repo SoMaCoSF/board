@@ -522,6 +522,8 @@ export function redisTables(send: RedisCall, prefix: string, options: { scanBudg
     for (const label of filter.labels ?? [])
       group(label.values === null ? [k.label(`l${SEP}${label.key}`)] : label.values.map((value) => k.label(`lv${SEP}${label.key}${SEP}${value}`)))
     const drivers = groups.filter((sets) => sets.length === 1).map((sets) => sets[0]!)
+    // Every root is in the thread order, scored by its latest reply rather than its ID: a test, never the set a query walks.
+    if (filter.roots) group([k.threads])
     return { spec: { groups, drivers, fallback: slot(k.all), text: filter.text ?? null }, asOf }
   }
 
@@ -592,7 +594,8 @@ export function redisTables(send: RedisCall, prefix: string, options: { scanBudg
 
     async threads(filter: MessageFilter, page: Page) {
       const asc = page.after !== undefined
-      const { channel, channels, ...rest } = filter
+      // Every thread has its root, so roots alone narrows nothing.
+      const { channel, channels, roots: _roots, ...rest } = filter
       let position: number | null = null
       // Each root and when its thread last changed: its latest reply, or itself.
       const roots = new Map<string, number>()

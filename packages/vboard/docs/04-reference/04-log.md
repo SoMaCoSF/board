@@ -49,7 +49,7 @@ A new root or reply.
 | `noSync` | `boolean` | kept on the board, not delivered to platforms |
 | `mentions` | `string[]` | (server) the actor IDs its mentions resolved to |
 | `by` | `{ actor, principal, profile, session }` | (server) who wrote it |
-| `origin` | `{ channel?, thread, subthread, message, context } \| null` | (server) where it came from on a platform |
+| `origin` | `{ channel?, thread, subthread, message, context, url } \| null` | (server) where it came from on a platform. `url` is its link there, or null where the platform gave none. Views show null for events from before links |
 | `from` | `string \| null` | (server) the sync key it came from, or null when written on the board |
 | `attachments` | `{ id, name, type, size }[]` | (server) its files, as the board stored them. A request names only IDs |
 | `links` | `{ url, message, snapshot, unavailable }[]` | (server) platform messages it links to, each with what it said |
@@ -69,10 +69,10 @@ thread's events in order on its lane.
 | `reaction.removed` | `id`, `emoji`, `by`, `from` | someone removes their reaction |
 | `labels.changed` | `id`, `set`, `unset`, `by` | labels are set or unset |
 | `thread.synced` | `target`, `cause` (`config` or `request`), `kind` (`channel` or `thread`), `by` | a thread is synced with an external channel (a thread starts there) or thread (it joins) |
-| `message.synced` | `id`, `target`, `external: { thread, message }` | (server) a platform accepted a delivery: the receipt that maps a message to its copy |
+| `message.synced` | `id`, `target`, `external: { thread, message, url, asUser? }` | (server) a platform accepted a delivery: the receipt that maps a message to its copy. `url` is the copy's link there, or null where the platform gave none; receipts from before links have none |
 | `message.files_synced` | `id`, `target`, `files` | (server) a message's files reached a platform after its text: the platform's IDs, or null when it refused files |
 | `message.sync_failed` | `id`, `target`, `error` | (server) a delivery gave up after its retries |
-| `actor.seen` | `actor`, `kind`, `handle`, `name`, `avatar` | an actor writes for the first time or changes its display details, in the same batch as its write |
+| `actor.seen` | `actor`, `kind`, `handle`, `name`, `avatar`, `bot` (only `true`, when its platform says it's a bot) | an actor writes for the first time or changes its display details, in the same batch as its write |
 
 - **`by`** is `{ actor, principal, profile, session }`: the actor ID
   (`vercel:user:u_abc123+claude`), the verified principal, the profile, and
@@ -102,7 +102,7 @@ thread's events in order on its lane.
 
 | Contract | Sessions | Events | Holds |
 | --- | --- | --- | --- |
-| `vboard-inbox` | `inbox:<external channel>`, e.g. `inbox:slack:C0123ABC`, and `inboxes` | `external.received { sync, event, raw }`, `inbox.opened { channel }` | every platform event the board's own sync pushed, stored before the board answers the webhook; the inbound consumer, `vboard-inbox`, runs here. `inboxes` lists each inbox, for `vb stuck` |
+| `vboard-inbox` | `inbox:<external channel>`, e.g. `inbox:slack:C0123ABC`, and `inboxes` | `external.received { sync, event, raw }`, `inbox.opened { channel }` | every platform event the board's own sync pushed, stored before the board answers the webhook; the inbound consumer, `vboard-inbox`, runs here. `inboxes` lists each inbox, for a key's `GET /inbox/:key` |
 | `vboard-watch` | `watch:<id>`, e.g. `watch:triage`, and `watch:@<principal>` | `watch.matched { thread, event }` | each [watcher's](../01-board/06-watchers.md) matches; its `run` happens here. A registrant's session queues its watchers' matches, its sync's (when it registers sync entries), and what it pushed to an inbox (`inbox: <key>`), for it to pull |
 | `vboard-identity` | `identity` | `identity.code_issued`, `identity.code_used` | one-time codes for linking accounts, as hashes |
 | `vboard-schedules` | `schedules` | `schedule.created`, `schedule.canceled`, `schedule.due`, `schedule.fired` | [scheduled messages](../01-board/07-schedules.md) |
@@ -127,7 +127,7 @@ A schedule's ID is the index of its `schedule.created` event in the
 | `schedule.due` | (server) `id`, `n`, `at`: an A2 timer saying send `n` is due |
 | `schedule.fired` | (server) `id`, `n`, `message`, `next`: send `n` was posted as `message`; the next is due at `next`, or never |
 
-### Stuck events
+### Consumers and dead letters
 
 The board's work runs as A2 consumers. Each runs events in order on lanes, and
 most lanes are threads, so a thread's events run in order:
@@ -143,22 +143,15 @@ most lanes are threads, so a thread's events run in order:
 | `vboard-schedule-sends` | `schedules` | schedule | posts a send when it's due |
 
 Each consumer keeps its own place, so one that fails holds up only itself,
-except `vboard-tables`: reads by message ID and writes wait on it, and
-`vb stuck` lists it first. When
-an event keeps failing, A2 gives up on it after 10 tries: it's dead-lettered for
+except `vboard-tables`: reads by message ID and writes wait on it. When an
+event keeps failing, A2 gives up on it after 10 tries: it's dead-lettered for
 that consumer, and nothing after it on that consumer's lane runs. vboard keeps that rare. A delivery that keeps
 failing is recorded as `message.sync_failed`, and a watcher gives up on its
 event, so neither stops its thread. What's left is mostly the cause outside
 vboard's control: a blob store that's down while files come in, or a bug.
 
-`vb stuck` lists them across the `board` session, every inbox (the mapped
-channels', and those of threads synced anywhere else), every watcher, and
-`schedules`. Each names the consumer it's stuck for. `vb stuck retry` runs one again with a
-fresh 10 tries, and its thread's later events follow; `vb stuck skip` marks it
-done without running it. Given a consumer, either acts for that consumer alone;
-otherwise for every consumer the event is stuck for.
-Both are one atomic A2 operation (`session.redrive()`), and the board logs who
-did which.
+Dead letters are A2's: list and redrive them through A2, on the sessions of
+the backend's `servers` (`session.deadLetters()`, `session.redrive()`).
 
 ## Reducers and tables
 
@@ -172,7 +165,7 @@ as the tables keep it, for anyone reading the log themselves.
 | Reducer | A2 name | State | Used by |
 | --- | --- | --- | --- |
 | `channelsReducer` | `vboard.channels.v1` | path → `{ path, lastIndex, messages, threads }` | `channels` |
-| `actorsReducer` | `vboard.actors.v2` | `byId`: actor ID → `{ id, kind, handle, name, avatar }`; `byHandle`: lowercased handle → actor IDs; `links`: platform actor → the person it's linked to | mention resolution, `actors`, rendering |
+| `actorsReducer` | `vboard.actors.v2` | `byId`: actor ID → `{ id, kind, handle, name, avatar, bot? }`; `byHandle`: lowercased handle → actor IDs; `links`: platform actor → the person it's linked to | mention resolution, `actors`, rendering |
 | `messagesReducer` | `vboard.messages.v5` | `byId`: message ID → the message as it is now; `replies`: root → reply IDs, in log order | not the board: its tables hold the same messages |
 
 A message, as the tables keep it and `messagesReducer` folds it:
@@ -196,11 +189,12 @@ A message, as the tables keep it and `messagesReducer` folds it:
 
 | Write | Its event ID |
 | --- | --- |
-| A post with `id` | that `id`. The same `id` never posts twice; reusing it for a different write, or another author's, answers 409 `duplicate_id`. The API refuses UUIDv8s, the shape of the IDs below |
+| A post or schedule with `id` | that `id`. The same `id` never posts or schedules twice; reusing it for a different write, or another author's, answers 409 `duplicate_id`. The API refuses UUIDv8s, the shape of the IDs below |
 | A root without `id` | a random UUID, which becomes the thread key |
 | `thread.synced` | derived from the thread and the target, so a thread attaches to a target once |
 | `external.received` | derived from the sync key and the platform's own event or message ID, so platform retries do nothing |
-| A sync callback's, watcher's, or keyed in-process client's posts | derived from the triggering event (or key) and the call order, so a retry that writes in the same order doesn't post twice |
+| A sync callback's or watcher's posts and schedules | derived from the triggering event and the call order, so a retry that writes in the same order doesn't post or schedule twice |
+| The board's handle's posts and schedules with `id` | derived from the `id` and the profile it acts as, so the same `id` never posts or schedules twice and no request can write with it first |
 | A schedule's send | derived from the schedule and the send number, so a retry gets back the message it already posted |
 
 A2 event IDs are unique across the whole store.

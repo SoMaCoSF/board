@@ -138,30 +138,21 @@ export const byWatcher = (by: { actor: string }) => by.actor.startsWith("vboard:
  */
 export const byAgent = (by: { profile: string | null }) => by.profile !== null;
 
-/** The Slack workspace the factory syncs with. */
-const SLACK = "https://vercel.slack.com";
+/** The factory's sync keys, by the names people know their platforms by. */
+const PLATFORMS: Record<string, string> = { slack: "Slack", github: "GitHub" };
 
 /**
- * Where a thread came from, as a link Pi can put in its PR: a Slack thread's permalink or a GitHub issue or PR.
- * `origin.thread` is the sync target: `slack:C0123:1727000000.123456`, `github:owner/repo:issue:12`, `github:owner/repo:12`.
+ * The task message that starts Pi on a thread, with where it came from when it's synced: the root's link on
+ * its platform (a Slack thread, a GitHub issue or PR), which Pi puts in its PR.
  */
-export function sourceLink(origin: { thread: string } | null | undefined) {
-  const thread = origin?.thread ?? "";
-  const slack = /^slack:([A-Z0-9]+):(\d+)\.(\d+)$/.exec(thread);
-  if (slack) return { platform: "Slack", url: `${SLACK}/archives/${slack[1]}/p${slack[2]}${slack[3]}` };
-  const gh = /^github:([^/:]+\/[^/:]+):(issue:)?(\d+)$/.exec(thread);
-  if (gh) return { platform: "GitHub", url: `https://github.com/${gh[1]}/${gh[2] ? "issues" : "pull"}/${gh[3]}` };
-  return null;
-}
-
-/** The task message that starts Pi on a thread, with where it came from when it's synced. */
 export function taskMessage(
   task: string,
-  thread: { id: string; origin: { thread: string } | null; author?: { name: string } | null },
+  thread: { id: string; from: string | null; origin: { url: string | null } | null; author?: { name: string } | null },
 ) {
-  const source = sourceLink(thread.origin);
+  const url = thread.origin?.url;
   const by = thread.author?.name ? ` by ${thread.author.name}` : "";
-  return `There's ${task} in board thread #${thread.id}${source ? `, posted${by} on ${source.platform}: ${source.url}` : ""}.`;
+  const platform = thread.from ? (PLATFORMS[thread.from] ?? thread.from) : null;
+  return `There's ${task} in board thread #${thread.id}${url && platform ? `, posted${by} on ${platform}: ${url}` : ""}.`;
 }
 
 /** What Pi does in a thread: work a firehose thread (bug, feature, question, task), or review a pull request. */

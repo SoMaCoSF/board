@@ -1,3 +1,4 @@
+import type { ExternalAuthor } from '../contract/contract.ts'
 import type { ActorsState, Actor } from '../contract/reducers.ts'
 import { toStorable, type Author } from '../contract/schemas.ts'
 import { extractMentions } from '../contract/mentions.ts'
@@ -78,6 +79,16 @@ function isAvatarUrl(value: string): boolean {
   }
 }
 
+/** A platform user as the board's actor. */
+export const externalActor = (author: ExternalAuthor): Actor => ({
+  id: author.id,
+  kind: 'external',
+  handle: author.handle,
+  name: author.name,
+  avatar: author.avatar,
+  ...(author.isBot ? { bot: true } : {}),
+})
+
 /** An `actor.seen` event, or null when the board already knows these details. */
 export function actorSeen(seen: Actor, known: ActorsState) {
   const existing = known.byId[seen.id]
@@ -89,7 +100,8 @@ export function actorSeen(seen: Actor, known: ActorsState) {
     existing.kind === actor.kind &&
     existing.handle === actor.handle &&
     existing.name === actor.name &&
-    existing.avatar === actor.avatar
+    existing.avatar === actor.avatar &&
+    existing.bot === actor.bot
   )
     return null
   return {
@@ -101,6 +113,7 @@ export function actorSeen(seen: Actor, known: ActorsState) {
       handle: toStorable(actor.handle),
       name: toStorable(actor.name),
       avatar: actor.avatar,
+      ...(actor.bot ? { bot: actor.bot } : {}),
     },
   }
 }

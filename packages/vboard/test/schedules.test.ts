@@ -1,3 +1,4 @@
+import { idempotentId } from 'experimental-a2'
 import { createServer } from 'experimental-a2/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SCHEDULES_SESSION, schedulesContract } from '../src/contract/contract.ts'
@@ -59,6 +60,8 @@ describe('scheduled messages', () => {
     expect(sent).toMatchObject([{ text: '@pi is the PR still open?', by: { actor: root.by.actor }, schedule: { id: body.schedule.id, n: 0 } }])
     expect((await julian('GET', `/messages/${root.id}`)).body.schedules).toEqual([])
     expect((await julian('GET', '/schedules?all=1')).body.schedules).toMatchObject([{ state: 'done', sent: 1 }])
+    expect((await julian('GET', '/schedules?all=false')).body.schedules).toEqual([])
+    expect((await julian('GET', '/schedules?all=yes')).status).toBe(400)
   })
 
   it('repeat every 30m until they reach `times`, skipping slots missed while down', async () => {
@@ -107,6 +110,24 @@ describe('scheduled messages', () => {
     await advance(HOUR)
     const { body } = await julian('GET', '/messages?channel=standup')
     expect(body.messages).toMatchObject([{ text: 'standup time', re: null, labels: { kind: 'standup' } }])
+  })
+
+  it('schedule once per id, which only its creator can retry, in the same place', async () => {
+    const { julian, pi, root } = await setup()
+    const first = await julian('POST', '/schedules', { re: root.id, text: 'still open?', in: '1d', id: 'nudge-12' })
+    vi.setSystemTime(T0 + MINUTE)
+    const retry = await julian('POST', '/schedules', { re: root.id, text: 'still open?', in: '1d', id: 'nudge-12' })
+    expect([retry.status, retry.body.schedule]).toEqual([201, first.body.schedule])
+
+    const theirs = await pi('POST', '/schedules', { re: root.id, text: 'still open?', in: '1d', id: 'nudge-12' })
+    const elsewhere = await julian('POST', '/schedules', { channel: 'dev', text: 'still open?', in: '1d', id: 'nudge-12' })
+    const derived = await julian('POST', '/schedules', { re: root.id, text: 'still open?', in: '1d', id: await idempotentId('vboard-inbound', 'x') })
+    expect([theirs, elsewhere, derived].map((r) => [r.status, r.body.error?.code])).toEqual([
+      [409, 'duplicate_id'],
+      [409, 'duplicate_id'],
+      [400, 'invalid_request'],
+    ])
+    expect((await julian('GET', '/schedules')).body.schedules).toHaveLength(1)
   })
 
   it('keep sending after a deploy: a timer an earlier deployment armed goes only to it', async () => {

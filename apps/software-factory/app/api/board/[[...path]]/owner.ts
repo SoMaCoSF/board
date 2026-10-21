@@ -15,10 +15,10 @@ export const threadOfBranch = (ref: unknown) => {
  */
 export function owner(options: GitHubOptions = {}): Watcher {
   return {
-    tail: "dev --label pr",
+    tail: "dev --label pr --roots",
     run: async ({ event, board }) => {
       const root = event.message;
-      if (event.type !== "message.posted" || !root || root.re !== null || root.labels.owner) return;
+      if (event.type !== "message.posted" || !root || root.labels.owner) return;
       const number = prNumber(root.labels);
       if (!number) return;
       const pr = await (await github(options))(`/pulls/${number}`);
