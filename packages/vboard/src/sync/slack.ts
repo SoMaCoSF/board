@@ -2,7 +2,7 @@ import { ChatSyncProvider, type ChatInput } from './chat-provider.ts'
 import type { Adapter, Message as ChatMessage } from 'chat'
 import { markdownOf } from './chat.ts'
 import { z } from 'zod'
-import { envelope, eventSchema } from './events.ts'
+import { envelope, eventSchema, type SyncRoot } from './events.ts'
 import { UnreadableError, type ResolvedTarget, type ProviderPost, type ProviderDelivery, type ProviderSender, type SyncContext, type SyncHandler, type EventMapping, type RenderInput, type ReceivedEvent, type FetchedLink } from './provider.ts'
 import type { SourceMessage, SourceRead } from '../api/routes.ts'
 import { stringifyMarkdown } from 'chat'
@@ -134,6 +134,7 @@ type SlackUser = {
 type SlackFile = { name?: string; title?: string; permalink?: string }
 type SlackMessage = {
   ts?: string
+  subtype?: string
   text?: string
   user?: string
   username?: string
@@ -790,6 +791,15 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
     }
     if (!found) throw new Error('slack: chat.getPermalink returned no permalink')
     return found
+  }
+
+  override async fetchRoot(thread: string, key: string): Promise<SyncRoot | null> {
+    const message = await (await this.ready()).fetchMessage?.(this.toChat(thread), thread.slice(thread.lastIndexOf(':') + 1))
+    // A root deleted after it had replies stays in Slack as a tombstone, with nothing to bring in.
+    if (!message || (message.raw as SlackMessage).subtype === 'tombstone') return null
+    const { event, raw } = await this.normalize(key, { kind: 'message', message })
+    if (event.kind !== 'message') return null
+    return { text: event.text, labels: {}, author: event.author, raw, message: event.message, files: event.files, links: event.links, url: event.url ?? null }
   }
 
   override eventId(key: string, input: ChatInput): string {

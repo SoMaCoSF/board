@@ -142,15 +142,16 @@ board({
 | `react` | add and remove reactions | `read` |
 | `label` | set and unset labels, including labels on a post | `read` |
 | `sync` | attach a thread to a Slack or GitHub thread, including `--sync` on a post; speak for platform users there, through [sync's routes](../04-reference/03-http.md#syncs-routes); in every channel, the board's own inbox | `read` |
-| `manage` | cancel anyone's schedule there; in every channel, stuck events, redrive, and source reads | everything |
+| `manage` | cancel anyone's schedule there; in every channel, source reads | everything |
 
 - **A reply needs `post` and `read`** in its thread's channel. Addressing a
   thread you can't read would confirm it exists. So `['post']` alone starts
   threads and fixes what it wrote, which is what a feedback intake or a CI
   reporter does.
-- **The board's bookkeeping needs `manage` in every channel,** since stuck
-  events span all of them, and its inbox needs `sync` in every channel for
-  the same reason. `{ '*': 'all', 'security/': [] }` can't read either.
+- **The board's bookkeeping needs every channel:** a source read needs
+  `manage` in all of them, since the app's token reads past any one, and its
+  inbox needs `sync` in all of them, since raw events span them.
+  `{ '*': 'all', 'security/': [] }` can do neither.
 - **`sync` speaks for platform users.** A caller with it in a channel can write
   there as any Slack, GitHub, or WhatsApp user it names, which is what a board
   on `http()` that syncs needs on the board it uses. Give it only to the

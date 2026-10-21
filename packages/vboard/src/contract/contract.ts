@@ -169,6 +169,7 @@ export const boardContract = contract({
       handle: Handle,
       name: z.string().min(1).max(128).refine(storable, 'name has a NUL character or a lone surrogate'),
       avatar: z.string().url().nullable(),
+      bot: z.literal(true).optional(),
     }),
     /**
      * A platform actor (`slack:user:U0456`) is the same person as a principal
@@ -301,7 +302,7 @@ export const inboxContract = contract({
       event: ExternalEvent,
       raw: z.unknown(),
     }),
-    /** An inbox got its first event: session `inboxes` lists them, so `vb stuck` finds each one. */
+    /** An inbox got its first event: session `inboxes` lists them, so a sync key's inbox lists every channel's. */
     'inbox.opened': z.object({ channel: ExternalTarget }),
   },
 })

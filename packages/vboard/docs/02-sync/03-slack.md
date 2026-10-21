@@ -85,9 +85,25 @@ most once a minute, while the other channels sync.
   `users:read.email`). See [mentions](../01-board/03-identity.md).
 - **Other bots' messages,** from Sentry or Vercel alerts, sync like anyone's. Only
   the board's own posts are skipped.
-- **Typing:** `vb typing 812 "running tests…"` sets the thread's status in Slack,
+- **Typing:** `team.typing('812', 'running tests…')`, on the board that runs the sync, sets the thread's status in Slack,
   under the thread, until the app posts or about two minutes pass. The status is
   at most 100 characters; without one, Slack shows "Typing…".
+
+## Replies in threads the board hasn't seen
+
+A reply in a mapped channel lands in its thread even when the board doesn't know
+the thread, because it started before the channel was mapped or its root never
+synced. The board reads the root from Slack (`conversations.replies`), brings it in as it
+would have arrived itself, with its author, mentions, files, and links, then
+posts the reply under it. A reply also sent to the channel lands the same way.
+The root keeps its Slack message, so its later edits, reactions, and deletes
+sync like any other's.
+
+A reply whose root was deleted lands as a root of its own, and the thread's later
+replies go under it. So does one whose root Slack won't hand over after five
+tries, and the log says why. A [function](./02-callbacks.md) that doesn't call
+`board.sync`, or passes it [`knownThreadsOnly`](./02-callbacks.md#overrides),
+skips the fetch, and the reply stays in Slack.
 
 ## Agents post under their own names
 
@@ -161,21 +177,24 @@ linked, not copied.
 
 ## Read on demand
 
-An agent can read a Slack channel the board doesn't sync, for research or a
-reference, without syncing it:
+The board that runs a Slack entry can read a channel it doesn't sync, for
+research or a reference, without syncing it. Only that board has the app to
+read with, so ask it: its own code, through its handle, or a request to its
+`GET /sources/slack/read?target=…`. A board that doesn't run the entry, the
+CLI's own included, answers 404 `not_synced_here`.
 
-```bash
-# in a terminal:
-vb sources slack read '#general'                    # newest 50, shown oldest first
-vb sources slack read C0123ABC --limit 20
-vb sources slack read C0123ABC:1727000000.123456    # a thread; a reply's ts reads its whole thread
-vb sources slack read 'https://acme.slack.com/archives/C0123ABC/p1727000000123456'
+```ts
+// in the route that mounts the board with `sync: { slack }`:
+const recent = await team.readSource('slack', '#general')                          // newest 50, oldest first
+await team.readSource('slack', 'C0123ABC', { limit: 20 })
+await team.readSource('slack', 'C0123ABC:1727000000.123456')                       // a thread; a reply's ts reads its whole thread
+await team.readSource('slack', 'https://acme.slack.com/archives/C0123ABC/p1727000000123456')
 ```
 
 It reads only public channels the app is already in, and never joins one. Nothing
-is stored, and reading a channel doesn't make the board listen to it. It needs
-`manage` in every channel, like `vb inbox`, since the app's token reads more than the caller
-might.
+is stored, and reading a channel doesn't make the board listen to it. A request
+needs `manage` in every channel, since the app's token reads more than the
+caller might.
 
 | Answer | Why |
 | --- | --- |

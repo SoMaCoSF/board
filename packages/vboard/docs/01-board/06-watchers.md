@@ -41,7 +41,7 @@ vb tail firehose --from slack --json
 
 A channel (or `prefix/` for a subtree) and the shared
 [filters](./05-reading.md#filters): `--re`, `--by`, `--mentions`, `--from`,
-`--label`, `--text`, and `--all`.
+`--label`, `--text`, `--roots`, and `--all`.
 
 - **Positions aren't filters.** A watcher starts at the head when it's deployed
   and sees every match after it, so `--after` fails the boot.
@@ -59,7 +59,8 @@ A watcher sees what a tail sees:
   watcher runs when a thread enters its view (someone labels it) and when it
   leaves.
 - **Labels match a message or its thread's root,** so a watcher on
-  `--label pr` runs on the replies in every PR thread too.
+  `--label pr` runs on the replies in every PR thread too. Add `--roots` for
+  the PRs alone: a reply, and a reaction or edit on one, never wakes it.
 - **It runs on every kind of message event:** posts, edits, deletes, reactions,
   label changes, and failed deliveries. Check `event.type` for the ones you
   want.
@@ -72,9 +73,9 @@ A watcher sees what a tail sees:
 ```ts
 // in board({ watch: { … } }): where did each new PR root land in Slack?
 announce: {
-  tail: 'prs --all',
+  tail: 'prs --roots --all',
   run: async ({ event }) => {
-    if (event.type !== 'message.synced' || event.message?.re !== null) return
+    if (event.type !== 'message.synced' || !event.message) return
     const { thread, url } = event.payload.external
     // thread: 'slack:C0123:1727000000.123456'
     // url: 'https://acme.slack.com/archives/C0123/p1727000000123456'
@@ -140,10 +141,11 @@ watcher, with no HTTP and no token.
 
 - **It writes as the watcher,** `vboard:watch:<id>`, with the id as its handle.
   Its writes sync like anyone's.
-- **Its posts and replies get IDs derived from the match,** so a retried `run`
-  doesn't post twice, as long as it writes in the same order. Writes made in
-  parallel (with `Promise.all`) need an explicit `id`, which is the watcher's
-  own.
+- **Its posts, replies, and schedules get IDs derived from the match,** so a
+  retried `run` doesn't post or schedule twice, as long as it writes in the same
+  order. Writes made in parallel (with `Promise.all`) need an explicit `id`,
+  which is the watcher's own. Labels, reactions, and edits need none: writing
+  them again changes nothing.
 - **A watcher's own writes never wake it.** Writes by other watchers do, so two
   watchers that answer each other loop.
 - **Scheduled messages post as the person who scheduled them.** A watcher that
@@ -209,8 +211,9 @@ export const GET = team.fetch, POST = team.fetch
   event matches and again when it's pulled.
 - **Its writes are by the deployment, with the watcher's ID as its profile:**
   `vercel:project:prj_v0:production+fix`. IDs are profile names, so they start
-  with a letter and use up to 32 letters, numbers, and hyphens. Its posts get
-  IDs derived from the match, so a retried `run` doesn't post twice.
+  with a letter and use up to 32 letters, numbers, and hyphens. Its posts and
+  schedules get IDs derived from the match, so a retried `run` doesn't post or
+  schedule twice.
 - **A thread's matches come one at a time, in order,** and threads run in
   parallel. A pulled match is leased for 5 minutes. A `run` that throws is
   tried again after a wait (1 second, doubling to 30), and a lease that runs

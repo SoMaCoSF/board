@@ -7,15 +7,18 @@ import { board } from '../src/server/index.ts'
 import { http } from '../src/backend-http/index.ts'
 import { board as defaultBoard } from '../src/server/index.default.ts'
 import { http as defaultHttp } from '../src/backend-http/index.default.ts'
-import { BOARD_URL, caller, personToken, testBoard } from './harness.ts'
-import { detectAgent } from '../src/client/node.ts'
+import { bearer, BOARD_URL, caller, personToken, testBoard } from './harness.ts'
+import { connect, detectAgent } from '../src/client/node.ts'
 
 async function setup(userId = 'u_julian', handle = 'julian', profile: string | null = null) {
   const team = testBoard()
   const token = await personToken(userId)
-  const fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
-    team.fetch(new Request(input, init))) as typeof globalThis.fetch
-  const client = board({ backend: http(BOARD_URL, { token, handle, fetch }) }).as(profile)
+  const fetch = bearer((input, init) => {
+    const request = new Request(input, init)
+    request.headers.set('x-board-handle', handle)
+    return team.fetch(request)
+  }, token)
+  const client = board({ backend: http(BOARD_URL, { fetch }) }).as(profile)
   return { team, client, fetch }
 }
 
@@ -78,10 +81,8 @@ describe('a handle on a board over http()', () => {
 
   it('streams live events and resumes after the server closes the stream', async () => {
     const team = testBoard({ streamMaxMs: 150 })
-    const token = await personToken()
-    const fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
-      team.fetch(new Request(input, init))) as typeof globalThis.fetch
-    const client = board({ backend: http(BOARD_URL, { token, fetch }) })
+    const fetch = bearer((input, init) => team.fetch(new Request(input, init)), await personToken())
+    const client = board({ backend: http(BOARD_URL, { fetch }) })
     const controller = new AbortController()
     const seen: string[] = []
     const reading = (async () => {
@@ -134,23 +135,24 @@ describe('board() with no backend', () => {
     vi.stubEnv('VBOARD_AS', 'ci')
     vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => team.fetch(new Request(input, init)))
     const here = board()
-    expect(here.url).toBe(BOARD_URL)
-    expect(await here.source()).toBe('VBOARD_TOKEN')
     expect((await here.post('dev', 'from CI')).by.actor).toBe('vercel:user:u_julian+ci')
     expect((await here.as(null).me()).actor).toBe('vercel:user:u_julian')
   })
 
-  it('outside Node, needs the URL and a token, and serves nothing', async () => {
+  it('outside Node, needs the URL, sends what its fetch sends, and serves nothing', async () => {
     const team = testBoard()
-    const fetch = ((input: RequestInfo | URL, init?: RequestInit) => team.fetch(new Request(input, init))) as typeof globalThis.fetch
+    // A page's own session, as the board recognizes it: here, a token its fetch adds.
+    const fetch = bearer((input, init) => team.fetch(new Request(input, init)), await personToken())
     expect(() => defaultBoard()).toThrow("http: pass the board's URL: outside Node there's no environment to find it in")
-    expect(() => defaultHttp(BOARD_URL)).toThrow("there's no environment to find a token in: pass `token`")
-    const page = defaultBoard({ backend: defaultHttp(BOARD_URL, { token: await personToken(), fetch }) })
+    const page = defaultBoard({ backend: defaultHttp(BOARD_URL, { fetch }) })
     expect((await page.as('page').post('dev', 'from a browser')).by.actor).toBe('vercel:user:u_julian+page')
-    expect((await page.fetch(new Request(BOARD_URL))).status).toBe(501)
-    expect(() => defaultBoard({ backend: defaultHttp(BOARD_URL, { token: 't' }), watch: { fix: { tail: 'dev', run: () => {} } } })).toThrow(
-      "board: this build of vboard can't serve, watch, sync, or run middleware",
+    expect((await page.discovery()).url).toBe(BOARD_URL)
+    const served = await page.fetch(new Request(`${BOARD_URL}/me`, { headers: { authorization: `Bearer ${await personToken()}` } }))
+    expect([served.status, (await served.json()).error.code]).toEqual([501, 'not_served'])
+    expect(() => defaultBoard({ backend: defaultHttp(BOARD_URL), watch: { fix: { tail: 'dev', run: () => {} } } })).toThrow(
+      'watch fix: watchers run on a server: this build of vboard has none',
     )
+    expect(() => defaultBoard({ backend: defaultHttp(BOARD_URL), sync: { slack: {} as never } })).toThrow("board: this build of vboard can't sync")
   })
 })
 
@@ -194,7 +196,7 @@ describe('the audience a handle mints a token for, in Node', () => {
     }) as typeof globalThis.fetch
     return { fetch, bearers }
   }
-  const against = (fetch: typeof globalThis.fetch) => board({ backend: http(EVIL, { fetch }) }).as(null)
+  const against = (fetch: typeof globalThis.fetch) => board({ backend: http(EVIL, { fetch: connect(EVIL, { fetch }).fetch }) }).as(null)
 
   // GitHub Actions, minting a token for whatever audience it's asked for.
   function actions() {

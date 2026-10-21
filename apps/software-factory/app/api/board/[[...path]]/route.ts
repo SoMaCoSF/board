@@ -14,8 +14,8 @@ import { owner } from "./owner";
 import { crosspost } from "./crosspost";
 import { guard } from "./guard";
 import { renderForSlack } from "./render";
-import { boardOnly, unseenPr } from "./quiet";
-import { asksPi, isDraft, reviewStarts } from "./review";
+import { syncPull } from "./quiet";
+import { isDraft, reviewStarts, wakesReview } from "./review";
 import { CONNECTOR, REPO } from "./github";
 import { vercelTrustedSources } from "./trusted-sources";
 
@@ -53,16 +53,7 @@ const factory = board({
       adapter: CONNECTOR,
       repos: {
         [REPO]: {
-          // Inline review threads and "closed by …" replies stay on GitHub and the board,
-          // out of Slack: top-level comments, review verdicts and merges still go through.
-          // Comments on a PR the board has no thread for stay on GitHub.
-          pulls: {
-            channel: "dev",
-            run: async ({ event, board }) => {
-              if (await unseenPr(event, board, "dev")) return;
-              await board.sync("dev", event, { noSync: boardOnly(event) });
-            },
-          },
+          pulls: { channel: "dev", run: syncPull },
           issues: "dev",
         },
       },
@@ -180,13 +171,7 @@ const factory = board({
         } else if (
           event.type === "message.posted" &&
           message.re !== null &&
-          (scheduled(message) || !byPi(message.re, message.by)) &&
-          !message.author?.handle.endsWith("[bot]") &&
-          !byWatcher(message.by) &&
-          // In a draft, a reminder Pi scheduled for itself still reaches it.
-          ((scheduled(message) && byPi(message.re, message.by)) ||
-            asksPi(message.re, message.text) ||
-            !isDraft((await board.thread(message.re)).message.labels))
+          (await wakesReview(message, async (thread) => isDraft((await board.thread(thread)).message.labels)))
         ) {
           await tellPi({
             board,

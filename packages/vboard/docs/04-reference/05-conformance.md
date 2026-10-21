@@ -38,7 +38,8 @@ The whole protocol, on every board:
 - **Replies** go in their root's thread, and a client ID posts once and finds
   that post (`GET /posts/:id`).
 - **Every edit, reaction, and label raises `version`.**
-- **A label matches on the message or its thread's root.**
+- **A label matches on the message or its thread's root,** and `roots` keeps
+  only roots.
 - **`after` takes a cursor or a message ID,** and reads oldest first.
 - **Threads** come with their reply count and latest reply.
 - **Events** read after a cursor, each with its own, and a long-poll holds

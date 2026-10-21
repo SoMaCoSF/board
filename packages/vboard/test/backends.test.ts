@@ -1,18 +1,20 @@
 import { describe, expect, it, vi } from 'vitest'
+import { connect } from '../src/client/node.ts'
 import { memory } from '../src/store/memory.ts'
 import { board, HttpError, type Backend, type Caller } from '../src/server/index.ts'
 import { vercelProject } from '../src/access/index.ts'
 import { a2 } from '../src/backend-a2/index.ts'
 import { http } from '../src/backend-http/index.ts'
-import { BOARD_URL, caller, deploymentToken, personToken, PROJECT_ID, signedInHome, TEAM_ID, testAuth, testBoard } from './harness.ts'
+import { fakeQueue } from './queue.ts'
+import { bearer, BOARD_URL, caller, deploymentToken, personToken, PROJECT_ID, signedInHome, TEAM_ID, testAuth, testBoard } from './harness.ts'
 
 /** Where v0's board is mounted: a board on the team's board, over http(). */
 const V0_URL = 'https://v0.test/api/board'
 const V0 = 'vercel:project:prj_v0:production'
 
 /** The team's board, and v0's board using it over http(), calling each other in-process. */
-function team(options: Parameters<typeof http>[1] = {}) {
-  const remote = testBoard({ access: [vercelProject({ project: 'prj_v0', can: 'all' }), vercelProject({ project: 'prj_marketing', can: 'all' })] })
+function team(options: Parameters<typeof http>[1] = {}, remoteOptions: Parameters<typeof testBoard>[0] = {}) {
+  const remote = testBoard({ access: [vercelProject({ project: 'prj_v0', can: 'all' }), vercelProject({ project: 'prj_marketing', can: 'all' })], ...remoteOptions })
   const seen: Request[] = []
   const route = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = new Request(input, init)
@@ -21,7 +23,7 @@ function team(options: Parameters<typeof http>[1] = {}) {
     return Promise.resolve(new Response('no such host', { status: 502 }))
   }
   const project = board({
-    backend: http(BOARD_URL, { fetch: route as typeof fetch, token: () => deploymentToken('v0', 'prj_v0', 'production'), ...options }),
+    backend: http(BOARD_URL, { fetch: bearer(route, () => deploymentToken('v0', 'prj_v0', 'production')), ...options }),
     url: V0_URL,
     // v0's own people sign in to it, as to any board.
     project: { id: PROJECT_ID, teamId: TEAM_ID },
@@ -51,7 +53,6 @@ describe('board() and its backend', () => {
     const here = board({ backend, url: BOARD_URL })
     const discovery = await (await here.fetch(new Request(BOARD_URL))).json()
     expect(discovery).toMatchObject({ url: BOARD_URL })
-    expect(discovery.remote).toBeUndefined()
     expect(discovery.capabilities).toBeUndefined()
     // a2()'s own extras are on the backend: its A2 servers, for a shared scheduler.
     expect(backend.servers.length).toBeGreaterThan(0)
@@ -103,7 +104,7 @@ describe('board() and its backend', () => {
 
     // A route it doesn't own, protocol or not, isn't there; its own routes are.
     expect((await julian('GET', '/channels')).status).toBe(404)
-    expect((await julian('POST', '/stuck/redrive', { session: 'board', index: 1, action: 'skip' })).status).toBe(404)
+    expect((await julian('POST', '/wake', {})).status).toBe(404)
     expect(await (await fetch(new Request(`${BOARD_URL}/health`))).json()).toEqual({ ok: true })
     // And nothing reaches it without a token.
     expect((await fetch(new Request(`${BOARD_URL}/messages`))).status).toBe(401)
@@ -114,7 +115,7 @@ describe('board() and its backend', () => {
     await own.messages()
     expect(calls.at(-1)!.caller).toEqual({ self: null, origin: { via: { kind: 'client', name: null } } })
     await own.as('deploys').messages()
-    expect(calls.at(-1)!.caller).toEqual({ self: 'deploys', origin: { via: { kind: 'client', name: 'deploys' } } })
+    expect(calls.at(-1)!.caller).toEqual({ self: 'deploys', profile: 'deploys', origin: { via: { kind: 'client', name: 'deploys' } } })
   })
 
   it('takes a backend made from another, with one method changed', async () => {
@@ -136,36 +137,31 @@ describe('board() and its backend', () => {
 })
 
 describe('a board on http()', () => {
-  it('keeps no log, and sends clients to the board it uses', async () => {
-    // With a token in the environment, a client skips discovery; this is the one without.
-    vi.stubEnv('VBOARD_TOKEN', '')
+  it('answers only wake-ups and webhooks, and its handle reads the board it uses', async () => {
     const { project } = team()
-    const discovery = await (await project.fetch(new Request(V0_URL))).json()
-    expect(discovery).toMatchObject({ url: V0_URL, remote: BOARD_URL })
-
-    expect(await (await julianOn(project.fetch, V0_URL))('GET', '/messages')).toEqual({
-      status: 404,
-      body: { error: { code: 'remote', message: `${V0_URL} keeps no log: use ${BOARD_URL}` } },
-    })
-
-    vi.unstubAllEnvs()
+    const nothing = { error: { code: 'not_found', message: `${V0_URL} answers only wake-ups and webhooks` } }
+    // No discovery to send anyone elsewhere: a repo links the team's board itself.
+    const discovery = await project.fetch(new Request(V0_URL))
+    expect([discovery.status, await discovery.json()]).toEqual([404, nothing])
+    expect(await (await julianOn(project.fetch, V0_URL))('GET', '/messages')).toEqual({ status: 404, body: nothing })
+    // Its own handle asks the board it uses.
+    expect(await project.discovery()).toMatchObject({ url: BOARD_URL, audience: BOARD_URL })
   })
 
-  it('is followed by a handle on it, which mints a token for the board it uses', async () => {
-    const { remote, project } = team()
-    await signedIn([V0_URL, BOARD_URL])
+  it('reaches the board it uses with the credentials `vb` finds, minting one for that board', async () => {
+    const { remote } = team()
+    await signedIn([BOARD_URL])
     const seen: string[] = []
     const route = (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init)
       seen.push(`${request.method} ${request.url}`)
-      return request.url.startsWith(V0_URL) ? project.fetch(request) : remote.fetch(request)
+      return remote.fetch(request)
     }
-    const client = board({ backend: http(V0_URL, { fetch: route as typeof fetch }) }).as(null)
-    expect((await client.me()).principal).toBe('vercel:user:u_julian')
-    expect((await client.post('dev', 'from the project')).text).toBe('from the project')
-    expect(await client.discovery()).toMatchObject({ url: V0_URL, remote: BOARD_URL })
-    // Its discovery, then the other board's, and everything else there.
-    expect(seen).toEqual([`GET ${V0_URL}`, `GET ${BOARD_URL}`, `GET ${BOARD_URL}/me`, `POST ${BOARD_URL}/messages`, `GET ${V0_URL}/`])
+    const here = board({ backend: http(BOARD_URL, { fetch: connect(BOARD_URL, { fetch: route as typeof fetch }).fetch }) }).as(null)
+    expect((await here.me()).principal).toBe('vercel:user:u_julian')
+    expect((await here.post('dev', 'from a script')).text).toBe('from a script')
+    // Discovery first, for the project to mint for, then the calls, each with the token it minted.
+    expect(seen).toEqual([`GET ${BOARD_URL}`, `GET ${BOARD_URL}/me`, `POST ${BOARD_URL}/messages`])
     vi.unstubAllEnvs()
   })
 
@@ -183,6 +179,16 @@ describe('a board on http()', () => {
       ['a1b2c3 is live', `${V0}+deploys`],
       ['d4e5f6 is live', `${V0}+deploys`],
     ])
+  })
+
+  it("schedules from your own code once per id", async () => {
+    const { remote, project } = team({}, { scheduler: fakeQueue().scheduler })
+    const nudge = () => project.as('deploys').schedule('deploys', { text: 'is a1b2c3 still live?', in: '1d', id: 'd1' })
+    const first = await nudge()
+    expect((await nudge()).id).toBe(first.id)
+
+    const { body } = await (await julianOn(remote.fetch))('GET', '/schedules')
+    expect(body.schedules).toMatchObject([{ id: first.id, by: { actor: `${V0}+deploys` } }])
   })
 
   it("keeps a handle's post IDs its own, so no one can take one first", async () => {

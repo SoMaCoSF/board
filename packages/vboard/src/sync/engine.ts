@@ -7,6 +7,7 @@ import { fileSize, typeOf } from '../contract/files.ts'
 import { ATTACHMENT_BYTES_MAX, ATTACHMENTS_PER_MESSAGE_MAX, MESSAGE_TEXT_MAX, toStorable, type Attachment } from '../contract/schemas.ts'
 import type { BoardEventView, InboxItem, LinkedAccount, LinkView, MessageView, SyncThreadView } from '../api/routes.ts'
 import type { Method, Protocol } from '../api/protocol.ts'
+import { externalActor } from '../server/actors.ts'
 import { afterRetry } from '../server/attempts.ts'
 import type { Backend, Caller, InboxDelivery } from '../server/backend.ts'
 import { badRequest, HttpError, notFound } from '../server/errors.ts'
@@ -85,6 +86,9 @@ const ECHO_ATTEMPTS = 6
 /** Tries per file before it's noted instead: a retry repeats the whole message, so keep it short. */
 const FILE_ATTEMPTS = 3
 
+/** Tries per root fetch before its reply lands as a root of its own: a dead letter would stop the thread's lane. */
+const ROOT_ATTEMPTS = 5
+
 /** How long a webhook waits for the board's tables before it lets an event into the inbox anyway: platforms resend after about 3 seconds. */
 const GATE_WAIT_MS = 2_000
 
@@ -117,8 +121,6 @@ const storableJson = <T>(value: T): T => {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [toStorable(key), storableJson(item)])) as T
   return value
 }
-
-const actorOf = (author: ExternalAuthor): Actor => ({ id: author.id, kind: 'external', handle: author.handle, name: author.name, avatar: author.avatar })
 
 /** A platform error's code (`not_in_channel`) when it has one, else its message. */
 const describe = (error: unknown): string => {
@@ -242,7 +244,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
   async function findByEmail(email: string): Promise<Actor | null> {
     for (const platform of Object.values(entries)) {
       const author = await platform.findByEmail(email).catch(() => null)
-      if (author) return { id: author.id, kind: 'external', handle: author.handle, name: author.name, avatar: author.avatar }
+      if (author) return externalActor(author)
     }
     return null
   }
@@ -602,10 +604,11 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
     const threadKey = (await find({ thread: event.thread })).thread ?? undefined
     const synced = threadKey ? await syncOf(threadKey) : null
     const rootId = synced?.root
+    if (overrides.knownThreadsOnly && rootId === undefined) return { root: null, message: null }
     const writeId = (n: number) => idempotentId('vboard-inbound', meta.id, String(n))
     // The middleware sees each post and edit first, and `respond` answers in the platform thread.
     const screen = <W extends Write, T>(author: ExternalAuthor, write: W, commit: (write: W) => Promise<T>) =>
-      host().screen(write, { author: actorOf(author), source: source.via as WriteSource, respond: source.respond }, commit)
+      host().screen(write, { author: externalActor(author), source: source.via as WriteSource, respond: source.respond }, commit)
     type Post = {
       author: ExternalAuthor
       channel?: string
@@ -684,16 +687,24 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
           await setExtraLabels(event.author, rootId)
           return result(await post({ ...reply, re: rootId }))
         }
-        const fetched = await platform.fetchRoot(native(event.thread))
+        const fetched = event.isRoot ? null : await platform.fetchRoot(native(event.thread), key).catch((error: unknown) => {
+          if (meta.attempt < ROOT_ATTEMPTS) throw error
+          console.warn(`[vboard] couldn't fetch the root of ${event.thread}; ${event.message} lands as a root instead:`, describe(error))
+          return null
+        })
         if (fetched === null) {
           const draft = rootDraft({ text: event.text, labels: {}, author: event.author, raw })
           return result(await post({ ...base, channel, text: clampText(withNotes(overrides.text ?? draft.text, notes), attachments.length > 0), labels: labels(draft.labels) }))
         }
         const draft = rootDraft({ ...fetched, raw: fetched.raw ?? null })
+        const rootFiles = await importFiles(platform, fetched.files ?? [], meta.attempt)
+        const rootLinks = await resolveLinks(platform, fetched.links ?? [])
         const root = await post({
           author: fetched.author, channel,
-          text: clampText(draft.text), labels: labels(draft.labels),
-          origin: { channel: event.channel, thread: event.thread, subthread: null, message: `root:${meta.id}`, context: null, url: fetched.url ?? null },
+          text: clampText(withNotes(draft.text, rootFiles.notes), rootFiles.attachments.length > 0), labels: labels(draft.labels),
+          attachments: rootFiles.attachments,
+          ...(rootLinks.length ? { links: rootLinks } : {}),
+          origin: { channel: event.channel, thread: event.thread, subthread: null, message: fetched.message ?? `root:${meta.id}`, context: null, url: fetched.url ?? null },
           id: await writeId(1),
         })
         return result(await post({ ...reply, re: root.id }))

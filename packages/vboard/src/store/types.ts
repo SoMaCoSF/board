@@ -23,6 +23,8 @@ export type MessageFilter = {
   text?: string
   /** Each on the message or its thread's root; `values: null` is any value. */
   labels?: readonly { key: string; values: readonly string[] | null }[]
+  /** Only roots. */
+  roots?: true
 }
 
 /** By message ID: `after` takes the first `limit` after it; otherwise the last `limit`. */

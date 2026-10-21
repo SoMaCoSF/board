@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { piName } from "../app/api/board/[[...path]]/agent.ts";
-import { asksPi, isDraft, reviewStarts } from "../app/api/board/[[...path]]/review.ts";
+import { asksPi, isDraft, reviewStarts, wakesReview } from "../app/api/board/[[...path]]/review.ts";
+
+process.env.VERCEL_PROJECT_ID = "prj_factory";
 
 const root = (state) => ({ re: null, labels: { pr: "vercel-labs/vboard#170", ...(state ? { state } : {}) } });
 
@@ -46,4 +48,28 @@ test("asksPi: a reply in a draft wakes Pi only when it asks Pi", () => {
   // Words and names that contain "pi" aren't Pi.
   assert.equal(asksPi("170", "the api route picks the wrong pipeline"), false);
   assert.equal(asksPi("170", "see pi-pr.yml and the pi/170 branch"), false);
+});
+
+const person = { actor: "slack:user:U1", principal: "slack:user:U1", profile: null, session: null };
+const pi = { actor: "vercel:project:prj_factory:production+pi", principal: "vercel:project:prj_factory:production", profile: piName("170"), session: "thread-170" };
+const reply = (over = {}) => ({ re: "170", text: "looks good", by: person, author: { handle: "eve" }, ...over });
+const ready = async () => false;
+const draft = async () => true;
+
+test("wakesReview: a person's reply wakes Pi, even when their handle ends in [bot]", async () => {
+  assert.equal(await wakesReview(reply(), ready), true);
+  assert.equal(await wakesReview(reply({ author: { handle: "eve[bot]" } }), ready), true);
+});
+
+test("wakesReview: a platform bot's, a watcher's, or Pi's own reply doesn't", async () => {
+  assert.equal(await wakesReview(reply({ author: { handle: "vercel[bot]", bot: true } }), ready), false);
+  assert.equal(await wakesReview(reply({ by: { ...person, actor: "vboard:watch:crosspost" } }), ready), false);
+  assert.equal(await wakesReview(reply({ by: pi }), ready), false);
+  assert.equal(await wakesReview(reply({ re: null }), ready), false);
+});
+
+test("wakesReview: in a draft, only a reply asking Pi or Pi's own reminder", async () => {
+  assert.equal(await wakesReview(reply(), draft), false);
+  assert.equal(await wakesReview(reply({ text: "@pi can you look?" }), draft), true);
+  assert.equal(await wakesReview(reply({ by: pi, schedule: { id: "s1", n: 0 } }), draft), true);
 });

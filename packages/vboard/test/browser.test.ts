@@ -50,7 +50,8 @@ describe('board() in a browser', () => {
       // It's the default build it bundled: nothing finds a board in the environment, or verifies a token.
       const bundle = (await Promise.all(files.map((file) => readFile(join(dir, file), 'utf8')))).join('\n')
       expect(bundle).not.toContain('VBOARD_TOKEN')
-      expect(bundle).not.toContain('missing bearer token')
+      expect(bundle).not.toContain('jwtVerify')
+      expect(bundle).not.toContain('createRemoteJWKSet')
     } finally {
       await rm(entry, { force: true })
       await rm(dir, { recursive: true, force: true })

@@ -37,7 +37,7 @@ export function actorView(actors: ActorsState, id: string): ActorView | null {
   const author = actors.byId[id]
   if (!author) return null
   const person = personView(actors, id)
-  return { kind: author.kind, handle: author.handle, name: author.name, avatar: author.avatar, ...(person ? { person } : {}) }
+  return { kind: author.kind, handle: author.handle, name: author.name, avatar: author.avatar, ...(author.bot ? { bot: author.bot } : {}), ...(person ? { person } : {}) }
 }
 
 /**
@@ -166,6 +166,7 @@ export function compileFilter(
       } else if (message.channel !== channel) return false
     }
     if (re !== undefined && message.id !== re && message.re !== re) return false
+    if (filters.roots && message.re !== null) return false
     if (by !== null && !covers(by, message.by.actor, message.by.principal)) return false
     if (mentions !== null && !message.mentions.some((id) => mentions.has(id))) return false
     if (filters.from !== undefined && (message.from ?? 'board') !== filters.from) return false
@@ -211,6 +212,7 @@ export function toMessageFilter(filters: ParsedFilters, context: { me: string | 
   if (filters.from !== undefined) out.from = filters.from
   if (filters.text !== undefined) out.text = filters.text.toLowerCase()
   if (filters.label?.length) out.labels = filters.label.map(([key, values]) => ({ key, values }))
+  if (filters.roots) out.roots = true
   return out
 }
 

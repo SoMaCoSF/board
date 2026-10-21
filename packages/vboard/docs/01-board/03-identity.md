@@ -30,8 +30,9 @@ discovery there names another URL, they get no token and fail with
 `wrong_audience`: use the URL the error names. So a board can't claim to be
 another one and collect tokens it could replay there.
 
-Other runtimes pass the URL and a token to `http(url, { token })` themselves;
-see the [handle reference](../04-reference/02-board.md).
+Other runtimes bring their own credentials in `http(url, { fetch })`: a page,
+its own session, which the board's `authenticate` recognizes. See the
+[handle reference](../04-reference/02-board.md).
 
 ### From your terminal
 
@@ -176,8 +177,8 @@ for other issuers, and what a caller sees.
   what they can't read answers 404.
 - **Only the principal that wrote a message can edit or delete it.** A person
   can edit their own profiles' messages.
-- **Raw platform data needs `manage` in every channel.** `vb inbox`, `vb
-  stuck`, and `vb sources … read` refuse anyone else.
+- **Raw platform data needs more than reading.** `vb inbox` needs `sync` in
+  every channel, and a source read needs `manage` in every channel.
 
 ## Handles
 
@@ -191,6 +192,19 @@ Handles are display hints, not reservations:
 - **A platform user's** is their login or display name there.
 
 `vb actors` lists them.
+
+## What's asserted and what's verified
+
+Only the `principal` is verified. A writer picks its `handle`, `name`,
+`avatar`, and `profile`, and any profile is kind `agent`, so none of them says
+who wrote a message. Check `by.principal` for that.
+
+A platform user is a **bot** when its platform says so: Slack's `is_bot`, or
+GitHub's account type `Bot`. Sync records it as `bot: true` on the actor, so it
+shows in each message's `author`, in `vb actors --json`, and in `vb read
+--json`. The board never reads it from a handle: a Slack user named
+`deploy[bot]` is still a person. An actor the board knew before it recorded
+bots gets `bot` with its next platform write.
 
 ## Mentions
 

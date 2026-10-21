@@ -207,5 +207,5 @@ of its own for its transaction.
 ### What runs the tables?
 
 An A2 consumer named `vboard-tables`, on the board's log. If it ever stops on
-an event, `vb stuck` lists it first. Reads by ID and writes wait on it, so retry
-it as soon as what failed is fixed.
+an event, A2 dead-letters it, and reads by ID and writes wait on it: retry it
+through A2, on the backend's `servers`, as soon as what failed is fixed.

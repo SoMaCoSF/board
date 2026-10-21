@@ -4,6 +4,7 @@ import { parseTail, parseWatchTail, words } from '../src/api/tail.ts'
 import type { Watcher } from '../src/server/index.ts'
 import { runMatch } from '../src/server/watch.ts'
 import { caller, personToken, testBoard } from './harness.ts'
+import { fakeQueue } from './queue.ts'
 
 /** A watcher that records every event it runs on. */
 function recorder(tail: string) {
@@ -28,6 +29,7 @@ describe('tail expressions', () => {
       mentions: 'claude',
       re: '12',
     })
+    expect(parseTail('prs --label pr --roots')).toEqual({ channel: 'prs', label: [['pr', null]], roots: true })
     expect(parseTail('--mentions')).toEqual({ mentions: 'me' })
     expect(parseTail('')).toEqual({})
     expect(parseWatchTail('prs --label pr --all')).toEqual({ filters: { channel: 'prs', label: [['pr', null]] }, all: true })
@@ -80,6 +82,20 @@ describe('watchers', () => {
     await julian('POST', '/messages', { re: pr.id, text: 'looks good' })
 
     await vi.waitFor(() => expect(review.events.map((event) => event.message?.text)).toEqual(['PR #12', 'looks good']))
+  })
+
+  it('wake only on PR roots with --roots, never on their replies', async () => {
+    const merge = recorder('prs --label pr --roots')
+    const { fetch } = testBoard({ watch: { merge: merge.watcher } })
+    const julian = caller(fetch, await personToken(), { 'x-board-handle': 'julian' })
+
+    const pr = (await julian('POST', '/messages', { channel: 'prs', text: 'PR #12', labels: { pr: 'acme/www#12' } })).body.message
+    const reply = (await julian('POST', '/messages', { re: pr.id, text: 'looks good' })).body.message
+    await julian('POST', `/messages/${reply.id}/reactions`, { emoji: 'shipit' })
+    await julian('POST', `/messages/${pr.id}/reactions`, { emoji: 'shipit' })
+
+    await vi.waitFor(() => expect(merge.types()).toEqual(['message.posted', 'reaction.added']))
+    expect(merge.events.map((event) => event.message?.id)).toEqual([pr.id, pr.id])
   })
 
   it('wake for any of a label\'s values, and not for others', async () => {
@@ -227,6 +243,33 @@ describe('watchers', () => {
     expect(failed).toEqual([expect.objectContaining({ payload: expect.objectContaining({ thread: root.body.message.thread, error: 'sandbox setup failed' }) })])
     expect(error).toHaveBeenCalledWith(expect.stringContaining('watcher flaky gave up on event'), 'sandbox setup failed')
     error.mockRestore()
+  })
+
+  it('schedule once when a run that scheduled throws and is retried', async () => {
+    const queue = fakeQueue()
+    let runs = 0
+    const board = testBoard({
+      scheduler: queue.scheduler,
+      watch: {
+        reminder: {
+          tail: 'firehose',
+          run: async ({ event, board }) => {
+            await board.schedule({ re: event.message!.id }, { text: 'still broken?', in: '1d' })
+            if (runs++ === 0) throw new Error('sandbox setup failed')
+          },
+        },
+      },
+    })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    await julian('POST', '/messages', { channel: 'firehose', text: 'export is broken' })
+
+    const watches = board.servers.find((server) => server.contract.name === 'vboard-watch')!
+    await vi.waitFor(async () => {
+      await board.skipHold(watches, 'watch:reminder')
+      await watches.drain('watch:reminder')
+      expect(runs).toBe(2)
+    })
+    expect((await julian('GET', '/schedules')).body.schedules).toMatchObject([{ text: 'still broken?' }])
   })
 
   it('give up without running once runs keep getting killed, which never throw, until a retry', async () => {

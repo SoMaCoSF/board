@@ -16,16 +16,15 @@ export const GET = project.fetch, POST = project.fetch
 **Breaking:**
 
 - `access` is `a2()`'s, where the log is: `a2({ access: [vercelProject(…), …] })`. `board()` only works out who's calling, and the `Caller` carries the principal and its scope, never what it may do. A host's own verifier splits in two: `board({ authenticate: (request) => ({ id, kind, handle, expiresAt? }) })` says who, and `a2({ access: (principal) => can })` says what, asked again at every send of a schedule. `BoardBinding` has no `accessFor`; it hands the backend board()'s `project()` and `sync` entries. A backend has `issuers`, the OIDC issuers whose tokens board() verifies for its rules.
-- `http()` has no `init`: a board on it answers wake-ups, webhooks, and discovery, and people's requests to it answer 404 `remote`.
+- `http()` has no `init`: a board on it answers only wake-ups, webhooks, and its sync's sign-ins.
 - An import's author, and an account a sync links, must be a user of a platform the caller syncs: never an ID the board authenticates (`vercel:`, `github:repo:`, `oidc:`, `local:`, `vboard:`). A sync names its platforms when it registers.
 - Codes go only to people, each for themselves, from the board that keeps the log: `POST /sync/codes` takes no `person`, and `POST /sync/accounts` links an account only by a code (`{ sync, account, code }`). A sign-in carries a code: on a board whose sync runs elsewhere, the person signs in at that sync's `/identity/sign-in`, and it redeems the code at `/identity/signed-in`. `UserTokens.authorize` takes a `callback`.
-- A registration's `sync` is its sync entries, `[{ key, platform, signIn }]`, not a flag. The board lists them in discovery and links accounts on them, so `vb identity link` against a project on `http()` goes to the board it uses.
+- A registration's `sync` is its sync entries, `[{ key, platform, signIn }]`, not a flag. The board lists them in discovery and links accounts on them, so `vb identity link` on the team's board links a project's entries too.
 - `sync` and `middleware` are `board()`'s options, not `a2()`'s: `board({ backend: a2({ … }), sync, middleware })`. TypeScript flags them on `a2()`.
 - `Write`'s IDs are strings, as clients see them: an edit's `id`, and `re` on a post or an edit.
 - A provider's `render` gets the message as clients see it, with string IDs.
 - `GET /inbox/:key` needs `sync` in every channel for the board's own inbox, not `manage`.
 - A sync callback's own writes through `board` (a reply, a label, a reaction, an edit or delete of the user's own message) are imports as its platform user, and its reads are sync's: on every backend, a board on `http()` included. A `schedule` or a `me()` from a callback is sync's now, not the platform user's.
-- The Node client and the CLI pointed at a board on `http()` follow it to the board it uses, minting a token for that board, instead of failing with `keeps no log`. A client handed a token for one board stays there.
 - A backend has no `sync` field: discovery lists `board()`'s sync entries. `BoardBinding` has `subscriptions` (each watcher's tail, and sync's at `@sync`) instead of `watch`, `run` takes an `attempt`, and `receive` and `pull` hand sync's inbound to it. `typing` isn't a protocol method: `POST /messages/:id/typing` is `board()`'s.
 - `a2()` has no `engine`.
 

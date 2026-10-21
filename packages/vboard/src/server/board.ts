@@ -1,10 +1,11 @@
-import { createBoardClient, type BoardClient, type PostOptions, type ProfileOption, type ReplyOptions } from '../client/client.ts'
+import type { BoardEventView } from '../api/routes.ts'
+import { BoardError, createBoardClient, type BoardClient, type PostOptions, type ProfileOption, type ReplyOptions } from '../client/client.ts'
 import { derivedId } from '../client/ids.ts'
 import type { SyncProvider } from '../sync/provider.ts'
 import { SYNC, type Backend, type BoardBinding, type Caller, type Subscription, type SyncEntry } from './backend.ts'
 import type { Authenticate, AuthOptions } from './auth.ts'
 import type { Middleware } from './middleware.ts'
-import type { PlatformCaller, Serve } from './serve.ts'
+import { createServe, type PlatformCaller, type Serve } from './serve.ts'
 import type { Watcher } from './watch.ts'
 
 /** `board()`'s options: where the board lives, who may use it, and what runs here. */
@@ -50,9 +51,10 @@ export type BoardOptions = {
 }
 
 /**
- * The handle on a board: its methods act as the board's caller, and `fetch` serves it. Over
- * `http()` that's the token's holder, with the profile `VBOARD_AS` or the agent it runs in picks;
- * on a board it keeps (`a2()`), its own code, as `vboard:client`.
+ * The handle on a board: its methods act as the board's caller, through board(), which calls the
+ * backend's methods, and `fetch` serves it. Over `http()` the caller is whoever its `fetch`'s
+ * credentials say, with the profile `VBOARD_AS` or the agent it runs in picks; on a board it keeps
+ * (`a2()`), its own code, as `vboard:client`.
  */
 export type Board = BoardClient & {
   /**
@@ -67,18 +69,24 @@ export type Board = BoardClient & {
   as(profile: ProfileOption): Board
 }
 
-/** What a build of vboard gives board(): Node's finds boards in the environment and can serve. */
+/** What a board needs to serve requests: token verification, and its own Vercel project. */
+export type Serving = typeof import('./serving.ts')
+
+/** What a build of vboard gives board(): Node's finds boards in the environment, serves, and syncs. */
 export type Runtime = {
   /** The backend for a board() given none: `http()`, to the board the environment points at. */
   http(): Backend
-  /** Loads board()'s server half: serving, the watcher runtime, sync, and middleware. Null where it can't run. */
-  server: (() => Promise<{ createServe(context: BoardContext): Promise<Serve> }>) | null
+  /** Loads what serving requests needs. Null where it can't serve. */
+  serving: (() => Promise<Serving>) | null
+  /** Loads the sync engine, for a board that syncs. Null where sync can't run. */
+  sync: (() => Promise<typeof import('../sync/engine.ts')>) | null
 }
 
-/** What board()'s server half shares with its handle. */
+/** What the board's pipeline shares with its handle. */
 export type BoardContext = {
   options: BoardOptions
   backend: Backend
+  runtime: Runtime
   /** The mount path, as the last request that reached a route had it. */
   state: { learned: string | null }
   ownUrl(): string | null
@@ -88,7 +96,10 @@ export type BoardContext = {
   handleOf(caller: Extract<Caller, { self: string | null }>, trigger: string | null): Board
 }
 
-const NO_SERVER = "board: this build of vboard can't serve, watch, sync, or run middleware: import it where the `node` condition applies"
+const NO_SYNC = "board: this build of vboard can't sync: import it where the `node` condition applies"
+
+/** How long a handle's live events wait for the next, in seconds, before asking again. */
+const EVENTS_WAIT_S = 25
 
 /**
  * A board for this project, on `backend`: `a2({ store, … })` keeps it in this deployment, and
@@ -101,10 +112,7 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
   const backend = options.backend ?? runtime.http()
   const watch = options.watch ?? {}
   const entries = options.sync ?? {}
-  const runsHere = Object.keys(watch).length > 0 || Object.keys(entries).length > 0 || (options.middleware?.length ?? 0) > 0
-  if (runsHere && !runtime.server) throw new Error(NO_SERVER)
-  // A board that keeps nothing here and runs nothing here is a client of the one it uses.
-  const direct = backend.remote !== null && typeof backend.client === 'function' && !runsHere
+  if (Object.keys(entries).length > 0 && !runtime.sync) throw new Error(NO_SYNC)
   const state: BoardContext['state'] = { learned: null }
   /** Under the configured mount, so the router accepts the paths an in-process client builds. */
   const inProcess = `http://in-process.board${(options.basePath ?? '').replace(/\/+$/, '')}`
@@ -122,10 +130,9 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
   }
 
   let loading: Promise<Serve> | null = null
-  /** The server half, loaded once, when the board first serves, watches, syncs, or calls in-process. */
+  /** The board's pipeline, made once, when the board first serves, watches, syncs, or a handle calls it. */
   function server(): Promise<Serve> {
-    if (!runtime.server) return Promise.reject(new Error(NO_SERVER))
-    loading ??= runtime.server().then((loaded) => loaded.createServe(context))
+    loading ??= createServe(context)
     loading.catch(() => (loading = null))
     return loading
   }
@@ -139,10 +146,7 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
     })
   }
 
-  const serve = async (request: Request): Promise<Response> => {
-    if (!runtime.server) return Response.json({ error: { code: 'not_served', message: NO_SERVER } }, { status: 501 })
-    return (await server()).dispatch(request, null)
-  }
+  const serve = async (request: Request): Promise<Response> => (await server()).dispatch(request, null)
 
   /** A handle on `client`, which `as` gives other profiles of. */
   function handle(client: BoardClient, url: (() => string) | null): Board {
@@ -152,8 +156,8 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
   }
 
   /**
-   * A handle through board(), as `caller`: a post's `id` is its own, derived under who it writes as,
-   * so a retry posts once and no request can take it first.
+   * A handle through board(), as `caller`: a post's or schedule's `id` is its own, derived under who
+   * it writes as, so a retry writes once and no request can take it first.
    */
   function handleOf(caller: Extract<Caller, { self: string | null }>, trigger: string | null): Board {
     const client = clientAs(caller, trigger)
@@ -166,12 +170,14 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
         ...client,
         post: async (channel, input) => client.post(channel, await owned(input)),
         reply: async (re, input) => client.reply(re, await owned(input)),
+        schedule: async (target, input) => client.schedule(target, input.id === undefined ? input : { ...input, id: await id(input.id) }),
         posted: async (given) => client.posted(await id(given)),
         // In-process, a request is this caller's whatever its headers say: another profile is another handle's.
         request: (path, init = {}) => {
           const { as: profile, ...rest } = init
           return profile !== undefined ? as(profile).request(path, rest) : client.request(path, rest)
         },
+        events: (query, opts) => events(client, query, opts),
       },
       () => ownUrl() ?? inProcess,
     )
@@ -179,14 +185,14 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
 
   const profileCaller = (profile: ProfileOption): Extract<Caller, { self: string | null }> => {
     const name = profile === null ? null : typeof profile === 'string' ? profile : profile.name
-    return { self: name, origin: { via: { kind: 'client', name } } }
+    return { self: name, profile, origin: { via: { kind: 'client', name } } }
   }
 
   function as(profile: ProfileOption): Board {
-    return direct ? handle(backend.client!(profile), null) : handleOf(profileCaller(profile), null)
+    return handleOf(profileCaller(profile), null)
   }
 
-  const context: BoardContext = { options, backend, state, ownUrl, clientAs, handleOf }
+  const context: BoardContext = { options, backend, runtime, state, ownUrl, clientAs, handleOf }
 
   const subscriptions: Record<string, Subscription> = Object.fromEntries(
     Object.entries(watch).map(([id, watcher]) => [id, { kind: 'tail', tail: watcher.tail, when: watcher.when ?? 'matches' }]),
@@ -206,5 +212,35 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
   }
   backend.bind(binding)
 
-  return direct ? handle(backend.client!(undefined), null) : handleOf({ self: null, origin: { via: { kind: 'client', name: null } } }, null)
+  return handleOf({ self: null, origin: { via: { kind: 'client', name: null } } }, null)
+}
+
+/**
+ * Live events for a handle, from the backend's long-poll: each page from the last cursor it saw,
+ * waiting for the next. It backs off after a failure, up to 30 seconds; a 4xx throws.
+ */
+async function* events(
+  client: BoardClient,
+  query: Parameters<BoardClient['events']>[0] = {},
+  opts: { signal?: AbortSignal } = {},
+): AsyncGenerator<BoardEventView> {
+  let after = query.after
+  let failures = 0
+  while (!opts.signal?.aborted) {
+    let page: Awaited<ReturnType<BoardClient['poll']>>
+    try {
+      page = await client.poll({ ...query, ...(after !== undefined ? { after } : {}), wait: EVENTS_WAIT_S } as Parameters<BoardClient['poll']>[0], opts.signal)
+    } catch (error) {
+      if (opts.signal?.aborted) return
+      if (error instanceof BoardError && error.status >= 400 && error.status < 500) throw error
+      await new Promise((resolve) => setTimeout(resolve, Math.min(30_000, 500 * 2 ** failures++)))
+      continue
+    }
+    failures = 0
+    for (const event of page.events) {
+      yield event
+      if (opts.signal?.aborted) return
+    }
+    after = page.cursor
+  }
 }

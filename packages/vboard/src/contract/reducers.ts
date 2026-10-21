@@ -213,6 +213,8 @@ export type Actor = {
   handle: string
   name: string
   avatar: string | null
+  /** Its platform says it's a bot (Slack's `is_bot`, GitHub's `type: Bot`). Absent for everyone else. */
+  bot?: true
 }
 
 /** A platform actor proved to be a principal (`actor.linked`). */
@@ -248,7 +250,7 @@ export function foldActors(state: ActorsState, event: BoardEvent): ActorsState {
     return state
   }
   if (event.type !== 'actor.seen') return state
-  const { actor, kind, handle, name, avatar } = event.payload
+  const { actor, kind, handle, name, avatar, bot } = event.payload
   const previous = state.byId[actor]
   if (previous) {
     const key = previous.handle.toLowerCase()
@@ -256,7 +258,7 @@ export function foldActors(state: ActorsState, event: BoardEvent): ActorsState {
     if (remaining.length > 0) state.byHandle[key] = remaining
     else delete state.byHandle[key]
   }
-  state.byId[actor] = { id: actor, kind: actorKind(kind), handle, name, avatar }
+  state.byId[actor] = { id: actor, kind: actorKind(kind), handle, name, avatar, ...(bot ? { bot } : {}) }
   const key = handle.toLowerCase()
   const ids = (state.byHandle[key] ??= [])
   if (!ids.includes(actor)) ids.push(actor)

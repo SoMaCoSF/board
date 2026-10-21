@@ -27,17 +27,26 @@ export type Caller =
    * `vboard:client` and `vboard:client:<profile>` on a2(), the token's holder with that profile
    * elsewhere.
    */
-  | { self: string | null; origin: WriteOrigin }
+  | {
+      self: string | null
+      /**
+       * What `as(profile)` asked for, its avatar included, or null for yourself. Absent on the
+       * handle itself, whose caller is whoever the environment picks: a backend elsewhere sends
+       * the profile `VBOARD_AS` or the agent it runs in names.
+       */
+      profile?: ProfileOption
+      origin: WriteOrigin
+    }
 
 /** One method per protocol route: the caller, the parsed input, and the request's signal. */
 export type ProtocolMethods = {
   [M in keyof Protocol]: (caller: Caller, input: Protocol[M]['input'], signal: AbortSignal) => Promise<Protocol[M]['output']>
 }
 
-/** A route of a backend's own, beside the protocol: a2()'s stuck list, http()'s wake-ups. */
+/** A route of a backend's own, beside the protocol: http()'s wake-ups. */
 export type BackendRoute = {
   method: 'GET' | 'POST'
-  /** Under the board's mount, with `:param` segments, e.g. `/stuck` or `/wake`. */
+  /** Under the board's mount, with `:param` segments, e.g. `/wake`. */
   path: string
   /** Whether board() verifies the caller first. A wake-up carries no board token. */
   auth: boolean
@@ -96,25 +105,19 @@ export type BoardBinding = {
  * stores and answers.
  */
 export interface Backend extends ProtocolMethods {
-  /** Set when this backend keeps nothing here: discovery sends clients to that board instead. */
-  readonly remote: string | null
   /**
    * OIDC issuers past Vercel's and GitHub's whose tokens board() verifies, so the backend can say
    * what they may do: a2() names its `oidc()` rules'.
    */
   readonly issuers: readonly string[]
-  /** Routes of its own, beside the protocol. */
+  /**
+   * Routes of its own, beside the protocol: one at a protocol route's path, or at `/` (discovery),
+   * takes its place.
+   */
   readonly routes: readonly BackendRoute[]
   /**
    * board() calls it once, when it's created, before any request: what background work needs
    * from the board (its rules, its subscriptions, an in-process client). It does no I/O.
    */
   bind(board: BoardBinding): void
-  /**
-   * For a backend that keeps nothing here (`remote` is set): a client of the board it uses, as the
-   * token's holder, with `profile` (`undefined`: the one the environment picks). A handle on a
-   * board that runs no watchers, sync, or middleware is this client; without it, a handle calls
-   * through board() like any other.
-   */
-  client?(profile?: ProfileOption): BoardClient
 }

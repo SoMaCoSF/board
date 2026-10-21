@@ -161,11 +161,10 @@ test("only the PR thread's own Pi can set the verdict", async () => {
   assert.equal(own.labels[0].set.autoland, "would", "thread-59's own Pi sets it");
 });
 
-test("the watcher ignores other labels, replies, and other repos", async () => {
+test("the watcher ignores other labels, posts, and other repos", async () => {
   const h = harness(routes());
   await h.run(event({ payload: { ...event().payload, set: { kind: "bug" } } }));
   await h.run(event({ type: "message.posted" }));
-  await h.run(event({ message: { ...event().message, re: "12" } }));
   await h.run(event({ message: { ...event().message, labels: { ...event().message.labels, pr: "vercel/v0#1" } } }));
   assert.deepEqual(h.labels, []);
   assert.deepEqual(h.requests, []);

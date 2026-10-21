@@ -369,11 +369,6 @@ export function createWatchers(options: {
   return {
     server,
     boardConsumer,
-    /** Every watcher's session: one per watcher in config, one per registrant. */
-    sessions: async () => [
-      ...watchers.map((watcher) => watchSession(watcher.id)),
-      ...(await registrations()).map((registration) => registrantSession(registration.owner)),
-    ],
     bind: (binding: { reads: BoardReads }) => {
       reads = binding.reads
     },

@@ -9,6 +9,7 @@ export const hasCriteria = (filters: ParsedFilters) =>
   filters.mentions !== undefined ||
   filters.from !== undefined ||
   filters.text !== undefined ||
+  filters.roots === true ||
   (filters.label?.length ?? 0) > 0
 
 export type Compiled = { filters: ParsedFilters; criteria: boolean; enters: boolean; all: boolean }

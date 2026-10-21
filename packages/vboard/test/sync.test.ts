@@ -106,6 +106,7 @@ describe('sync', () => {
       ((await julian('GET', `/events?channel=firehose&after=0${query}`)).body.events as { type: string }[]).map((e) => e.type)
     await vi.waitFor(async () => expect(await types('&all=true')).toContain('message.synced'))
     expect(await types('')).toEqual(['message.posted', 'message.posted'])
+    expect(await types('&all=false')).toEqual(['message.posted', 'message.posted'])
     await vi.waitFor(() => expect(seen).toEqual(['message.posted', 'message.posted']))
   })
 
@@ -667,6 +668,42 @@ describe('sync', () => {
     expect(g.posts).toHaveLength(0) // GitHub's own reply never goes back to GitHub
   })
 
+  it("marks the platform's bots as bots, and only them", async () => {
+    const { board, webhook } = setup()
+    const julian = caller(board.fetch, await personToken())
+    const dependabot = { login: 'dependabot[bot]', id: 49699333, type: 'Bot' }
+    await webhook(
+      'github',
+      {
+        action: 'opened',
+        repository: { full_name: 'basehub-ai/vboard' },
+        sender: dependabot,
+        pull_request: { number: 9, title: 'Bump zod', html_url: 'https://github.com/basehub-ai/vboard/pull/9', draft: false, merged: false, user: dependabot },
+      },
+      { 'x-github-event': 'pull_request', 'x-github-delivery': 'b1' },
+    )
+    await vi.waitFor(async () => expect(await read(julian, 'prs')).toHaveLength(1))
+    await webhook('github', { type: 'message', threadId: 'github:basehub-ai/vboard:9', id: 'c1', text: 'Building', user: '35613825', name: 'vercel[bot]', bot: true })
+    await webhook('github', { type: 'message', threadId: 'github:basehub-ai/vboard:9', id: 'c2', text: 'lgtm', user: '42', name: 'julianbenegas' })
+    await webhook('slack', { type: 'message', threadId: 'slack:C1:700', id: '700', text: 'deploy failed', user: 'B_DEPLOYS', name: 'deploys', bot: true })
+    await webhook('slack', { type: 'message', threadId: 'slack:C1:700', id: '701', text: 'looking', user: 'U_ADA', name: 'ada[bot]' })
+    await vi.waitFor(async () => expect(await read(julian, 'prs')).toHaveLength(3))
+    await vi.waitFor(async () => expect(await read(julian, 'firehose')).toHaveLength(2))
+
+    const bots = async (channel: string) =>
+      ((await julian('GET', `/messages?channel=${channel}`)).body.messages as { author: { bot?: true } }[]).map((m) => m.author.bot ?? false)
+    expect(await bots('prs')).toEqual([true, true, false])
+    expect(await bots('firehose')).toEqual([true, false])
+    const actors = (await julian('GET', '/actors')).body.actors as { id: string; bot?: true }[]
+    expect(Object.fromEntries(actors.filter((a) => a.id.includes(':user:')).map((a) => [a.id, a.bot ?? false]))).toEqual({
+      'github:user:49699333': true,
+      'github:user:35613825': true,
+      'github:user:42': false,
+      'slack:user:B_DEPLOYS': true,
+      'slack:user:U_ADA': false,
+    })
+  })
+
   it("keeps a GitHub author's avatar when a comment arrives without one", async () => {
     const { board, webhook } = setup()
     const julian = caller(board.fetch, await personToken())
@@ -925,6 +962,42 @@ describe('sync', () => {
     await vi.waitFor(() => expect(seen).toHaveBeenCalledTimes(1))
     expect(seen.mock.calls[0]![0].event).toMatchObject({ type: 'comment', text: 'Building' })
     expect(await read(julian, 'prs')).toHaveLength(0)
+    expect(get).not.toHaveBeenCalled()
+  })
+
+  it('imports GitHub events only into threads the board has, when the callback asks', async () => {
+    const results: import('../src/sync/events.ts').SyncResult[] = []
+    let knownThreadsOnly = true
+    const get = vi.fn()
+    const { board, webhook } = setup({
+      githubClient: { rest: { pulls: { get } } },
+      repos: { 'basehub-ai/vboard': async ({ event, board }) => void results.push(await board.sync('prs', event, { knownThreadsOnly })) },
+    })
+    const julian = caller(board.fetch, await personToken())
+    const comment = (id: string) => webhook('github', { type: 'message', threadId: 'github:basehub-ai/vboard:53', id, text: `comment ${id}`, user: '42' })
+    const opened = (delivery: string) => webhook('github', {
+      action: 'opened', repository: { full_name: 'basehub-ai/vboard' }, sender: { id: 42, login: 'julianbenegas' },
+      pull_request: { number: 53, title: 'Known', html_url: 'https://github.com/basehub-ai/vboard/pull/53', draft: false, merged: false },
+    }, { 'x-github-event': 'pull_request', 'x-github-delivery': delivery })
+
+    await comment('c1')
+    await vi.waitFor(() => expect(results).toHaveLength(1))
+    await opened('o1')
+    await vi.waitFor(() => expect(results).toHaveLength(2))
+    expect(results).toEqual([{ root: null, message: null }, { root: null, message: null }])
+    expect(await read(julian, 'prs')).toHaveLength(0)
+    expect(get).not.toHaveBeenCalled()
+
+    knownThreadsOnly = false
+    await opened('o2')
+    await vi.waitFor(() => expect(results).toHaveLength(3))
+    knownThreadsOnly = true
+    await comment('c2')
+    await vi.waitFor(() => expect(results).toHaveLength(4))
+    const [root, reply] = await read(julian, 'prs')
+    expect(root!.text).toContain('PR #53: Known')
+    expect(reply).toMatchObject({ text: 'comment c2', re: root!.id })
+    expect(results.slice(2)).toEqual([{ root: String(root!.id), message: String(root!.id) }, { root: String(root!.id), message: String(reply!.id) }])
     expect(get).not.toHaveBeenCalled()
   })
 
@@ -1481,6 +1554,27 @@ describe('provider callbacks', () => {
     await vi.waitFor(() => expect(seen).toEqual(['message', 'message', 'message.edited', 'reaction.added', 'message.deleted']))
     const reply = (await read(call, 'support'))[1]!
     await vi.waitFor(async () => expect((await call('GET', `/messages/${reply.id}`)).body.replies.find((message: { id: number }) => message.id === reply.id).deleted).toBe(true))
+  })
+
+  it('imports a Slack reply only into a thread the board has, when the callback asks', async () => {
+    const results: import('../src/sync/events.ts').SyncResult[] = []
+    let knownThreadsOnly = false
+    const { board, webhook } = setup({ channels: { C4: async ({ event, board }) => void results.push(await board.sync('support', event, { knownThreadsOnly })) } })
+    const call = caller(board.fetch, await personToken())
+    const send = (thread: string, id: string, text: string) => webhook('slack', { type: 'message', threadId: `slack:C4:${thread}`, id, text, user: 'U1' })
+    await send('100', '100', 'root')
+    await vi.waitFor(() => expect(results).toHaveLength(1))
+
+    knownThreadsOnly = true
+    await send('200', '201', 'unknown thread')
+    await vi.waitFor(() => expect(results).toHaveLength(2))
+    await send('100', '101', 'known thread')
+    await vi.waitFor(() => expect(results).toHaveLength(3))
+    const messages = await read(call, 'support')
+    expect(messages).toHaveLength(2)
+    const [root, reply] = messages
+    expect(reply).toMatchObject({ text: 'known thread', re: root!.id })
+    expect(results.slice(1)).toEqual([{ root: null, message: null }, { root: String(root!.id), message: String(reply!.id) }])
   })
 
   it('gives a Slack callback the message permalink lazily, without importing the thread', async () => {

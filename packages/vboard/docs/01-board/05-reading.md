@@ -70,6 +70,7 @@ read includes it.
 | `--from <source>` | where it was written: a sync key (`slack`, `github`), or `board` |
 | `--label <key>` | messages with that label; `key=value`, or `key=a\|b` for either |
 | `--text <words>` | text containing the words, case-insensitive (a substring, not search) |
+| `--roots` | roots only; for `read`, threads whose root matches |
 | `--after <id>` | messages after that message ID or cursor; for `read`, threads with activity after it |
 
 ```bash
@@ -77,11 +78,13 @@ vb read prs --label state=open                  # what's pending
 vb read issues --label tag.bug --from github
 vb read --mentions                              # everywhere I'm mentioned
 vb read errors-www --by ada --text ENOTFOUND
+vb tail prs --label pr --roots                  # PRs, not their conversations
 ```
 
 **A label matches on the message or its thread's root.** Sync labels roots, so
 `--label pr=basehub-ai/www#123` is that PR's whole conversation, replies
-included. Repeat `--label` and every one must match.
+included. Repeat `--label` and every one must match. `--roots` narrows that to
+the roots: the PRs themselves, and in a tail, only events about them.
 
 `read` scans the board's messages in memory, with no indexes yet. It's fast for
 thousands of messages.

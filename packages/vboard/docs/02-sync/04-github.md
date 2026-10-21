@@ -133,8 +133,11 @@ is the PR's whole conversation. Label changes are ordinary events: a PR leaving
 A comment on a PR or issue that opened before you mapped the repo still lands.
 The board fetches the PR or issue through the adapter's `octokit`, creates its root
 with its author, state, labels, and assignees, then posts the comment as a reply. A
-failed fetch retries the event. A [function](./02-callbacks.md) that doesn't call
-`board.sync` skips the fetch too.
+failed fetch retries the event, and after five tries the comment lands as a root of
+its own, so the PR's later events keep syncing. A [function](./02-callbacks.md) that
+doesn't call `board.sync`, or passes it
+[`knownThreadsOnly`](./02-callbacks.md#overrides), skips the fetch too, and the
+comment stays on GitHub.
 
 ## Vercel's deployment comment
 

@@ -46,7 +46,8 @@ Call it once, await it, and the event lands on the board. Don't call it, and the
 event is skipped; the thread stays connected, so later events still reach you.
 
 For an event in a thread that's already synced, the channel is ignored: the event
-lands in that thread. The channel only places new roots.
+lands in that thread. The channel only places new roots, and `knownThreadsOnly`
+makes none.
 
 The function's other writes through `board` (a reply, a label, a reaction, an
 edit or delete of the user's own message) are the platform user's, with the
@@ -124,11 +125,12 @@ The third argument changes the default import:
 | `unset` | Label keys removed from the root, applied last. |
 | `root` | A synchronous function that shapes a new root. It receives the default draft (`text`, `labels`, `author`, `raw`) and returns `{ text?, labels? }`. |
 | `noSync` | Keeps the imported reply on the board, like `vb reply --no-sync`: no other platform the thread syncs to gets it, now or in a backfill. A root it creates still syncs. |
+| `knownThreadsOnly` | Imports the event only into a thread the board already has. In any other thread it does nothing and returns `{ root: null, message: null }`: no new root, and no root recovered from the platform. |
 
 `root` runs whenever an import creates a root: a PR opening, or a comment on a PR
-the board hasn't seen, which recovers the root first. Its labels merge into the
-draft, then `labels` takes precedence, then `unset` removes keys. It can't change
-the author or other provenance.
+or a Slack reply in a thread the board hasn't seen, which recovers the root first.
+Its labels merge into the draft, then `labels` takes precedence, then `unset`
+removes keys. It can't change the author or other provenance.
 
 `noSync` keeps a GitHub PR's inline review threads out of its Slack thread, while
 top-level comments and reviews still go through:
@@ -142,6 +144,22 @@ top-level comments and reviews still go through:
   },
 },
 ```
+
+`knownThreadsOnly` keeps comments on PRs that opened before the board was
+listening on GitHub, while a PR that opens now still starts its thread:
+
+```ts
+// in github({ repos: { … } }):
+'acme/www': {
+  channel: 'prs',
+  run: async ({ event, board }) => {
+    await board.sync('prs', event, { knownThreadsOnly: event.kind === 'message' })
+  },
+},
+```
+
+A thread is known once the board has it, however it got there: imported, or
+attached with `vb sync`.
 
 Platform reconciliation still applies on later events: GitHub's next event
 rewrites `state`, `review`, `tag.*`, and `assignee.*` unless you override them
@@ -201,8 +219,8 @@ connection. Outgoing delivery never runs your function.
 
 A function that throws is retried. Writes made through `board` take IDs derived
 from the inbox event and the order of calls, so a retry that writes in the same
-order doesn't post twice, and a default import that already succeeded returns its
-existing message. Two rules follow:
+order doesn't post or schedule twice, and a default import that already
+succeeded returns its existing message. Two rules follow:
 
 - Writes made in parallel (`Promise.all`) need explicit `id`s.
 - Your own side effects aren't covered. Key them on `event.id`:

@@ -62,7 +62,7 @@ goes to the board it uses.
 | | |
 | --- | --- |
 | `write` | `{ kind: 'post', channel, re, text, labels, attachments }` or `{ kind: 'edit', id, channel, re, text }`. `re` is the thread's root, or null for a root; IDs are strings, as clients see them |
-| `author` | Who's writing: the actor, with `kind` (`person`, `agent`, `deployment`, `workflow`, `external`) |
+| `author` | Who's writing: the actor, with `kind` (`person`, `agent`, `deployment`, `workflow`, `external`), and `bot: true` for a platform's bot |
 | `source` | Where it came from (below) |
 | `respond(text)` | Tells the author, where they wrote from |
 | `board` | The board's handle, acting as `vboard:middleware` |
