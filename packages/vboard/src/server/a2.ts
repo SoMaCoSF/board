@@ -260,6 +260,7 @@ function build(options: A2Options, binding: BoardBinding) {
   const watchers = createWatchers({
     watch: tails,
     run: (id, event, trigger, attempt) => binding.run(id, event, { trigger, attempt }),
+    failed: (id, event, trigger, failure) => binding.failed(id, event, { trigger, ...failure }),
     store: log,
     scheduler: options.scheduler,
     registered: { state: registry.state, accessNow: (principal) => authority.accessNow(principal), wake },

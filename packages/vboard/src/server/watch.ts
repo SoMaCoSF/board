@@ -20,6 +20,14 @@ export type WatcherContext = {
   board: BoardClient
 }
 
+/** What a watcher's `failed` gets: the event it gave up on, and why. */
+export type WatcherFailure = WatcherContext & {
+  /** The last try's error, or why its tries never finished: a timeout, or out of memory. */
+  error: string
+  /** How many tries `run` got. */
+  attempts: number
+}
+
 /** A `vb tail` the board runs for you: every event the tail would print, handed to `run`. */
 export type Watcher = {
   /**
@@ -33,6 +41,12 @@ export type Watcher = {
    */
   when?: 'matches' | 'enters'
   run: (context: WatcherContext) => unknown
+  /**
+   * Runs once when the watcher gives up on an event, after `run` kept throwing or kept getting cut
+   * short. Its posts get IDs of their own, so they never collide with what `run` posted. A throw
+   * here is recorded with the failure, and the thread goes on.
+   */
+  failed?: (context: WatcherFailure) => unknown
 }
 
 export const ID = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -90,27 +104,39 @@ type Match = { id: string; payload: { thread: string; event: unknown } }
 
 /**
  * One match, on its thread's lane: `run`, retried by A2 while it fails, then
- * given up on (recorded as `watch.failed`) so the thread's next event runs.
+ * given up on: the watcher's `failed` hook runs, then `watch.failed` is recorded
+ * so the thread's next event runs. A hook cut short runs again on the next try.
  */
 export async function runMatch(input: {
-  watcher: { id: string; run: (event: BoardEventView) => unknown }
+  watcher: {
+    id: string
+    run: (event: BoardEventView) => unknown
+    failed: (event: BoardEventView, failure: { error: string; attempts: number }) => unknown
+  }
   match: Match
   attempt: number
-  record: (failure: { matched: string; thread: string; error: string }) => Promise<unknown>
+  record: (failure: { matched: string; thread: string; error: string; hook?: string }) => Promise<unknown>
 }) {
   const { watcher, match, attempt } = input
   const event = match.payload.event as BoardEventView
-  const giveUp = async (error: string) => {
+  const giveUp = async (error: string, attempts: number) => {
     console.error(`[vboard] watcher ${watcher.id} gave up on event #${event.cursor} after ${attempt} tries:`, error)
-    await input.record({ matched: match.id, thread: match.payload.thread, error })
+    let hook: string | undefined
+    try {
+      await watcher.failed(event, { error, attempts })
+    } catch (thrown) {
+      console.error(`[vboard] watcher ${watcher.id}'s failed hook threw on event #${event.cursor}:`, thrown)
+      hook = describe(thrown)
+    }
+    await input.record({ matched: match.id, thread: match.payload.thread, error, ...(hook === undefined ? {} : { hook }) })
   }
   const early = !afterRetry(attempt)
-  if (early && attempt >= KILLED_ATTEMPTS) return giveUp(`its run was cut short ${attempt - 1} times (a timeout, or out of memory)`)
+  if (early && attempt >= KILLED_ATTEMPTS) return giveUp(`its run was cut short ${attempt - 1} times (a timeout, or out of memory)`, attempt - 1)
   try {
     await watcher.run(event)
   } catch (error) {
     if (!early || attempt < RUN_ATTEMPTS) throw error
-    await giveUp(describe(error))
+    await giveUp(describe(error), attempt)
   }
 }
 
@@ -156,6 +182,8 @@ export function createWatchers(options: {
   watch: Record<string, { tail: string; when: 'matches' | 'enters' }>
   /** Runs one on an event it matched; posts it makes get IDs derived from `trigger`. A throw is retried. */
   run: (id: string, event: BoardEventView, trigger: string, attempt: number) => Promise<void>
+  /** Runs one's `failed` hook once it gives up on an event; posts it makes get IDs derived from `trigger`. */
+  failed: (id: string, event: BoardEventView, trigger: string, failure: { error: string; attempts: number }) => Promise<void>
   store?: A2Store | undefined
   scheduler?: A2Scheduler | undefined
   /** Watchers that boards on `http()` registered here, and how to tell one it has matches. */
@@ -187,10 +215,14 @@ export function createWatchers(options: {
     const watcher = byId.get(ctx.session.id.slice('watch:'.length))
     if (!watcher) return
     await runMatch({
-      watcher: { id: watcher.id, run: (event) => options.run(watcher.id, event, ctx.event.id, ctx.attempt) },
+      watcher: {
+        id: watcher.id,
+        run: (event) => options.run(watcher.id, event, ctx.event.id, ctx.attempt),
+        failed: (event, failure) => options.failed(watcher.id, event, `failed:${ctx.event.id}`, failure),
+      },
       match: ctx.event,
       attempt: ctx.attempt,
-      record: (payload) => ctx.session.append(`failed:${ctx.event.id}`, { type: 'watch.failed', payload }),
+      record: (payload) => ctx.session.append(ctx.event.id, { type: 'watch.failed', payload }),
     })
   })
 

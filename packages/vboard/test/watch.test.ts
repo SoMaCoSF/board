@@ -229,12 +229,66 @@ describe('watchers', () => {
     error.mockRestore()
   })
 
+  it("run its failed hook once when it gives up on an event, with writes of its own, and go on", async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const failures: { error: string; attempts: number }[] = []
+    const board = testBoard({
+      watch: {
+        pi: {
+          tail: 'firehose',
+          run: async ({ event, board }) => {
+            if (event.message?.re !== null) return
+            await board.reply(event.message.id, 'starting Pi')
+            throw new Error('sandbox setup failed')
+          },
+          failed: async ({ event, board, error, attempts }) => {
+            failures.push({ error, attempts })
+            await board.reply(event.message!.id, `Pi couldn't start: ${error}`)
+          },
+        },
+      },
+    })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    const root = await julian('POST', '/messages', { channel: 'firehose', text: 'export is broken' })
+
+    const watches = board.servers.at(-1)!
+    await vi.waitFor(async () => {
+      await board.skipHold(watches, 'watch:pi')
+      await watches.drain('watch:pi')
+      expect(failures).toHaveLength(1)
+    })
+    for (let n = 0; n < 3; n++) await watches.drain('watch:pi')
+    expect(failures).toEqual([{ error: 'sandbox setup failed', attempts: 5 }])
+    const { body } = await julian('GET', `/messages/${root.body.message.id}`)
+    expect(body.replies.map((reply: { text: string; by: { actor: string } }) => [reply.text, reply.by.actor])).toEqual([
+      ['starting Pi', 'vboard:watch:pi'],
+      ["Pi couldn't start: sandbox setup failed", 'vboard:watch:pi'],
+    ])
+    error.mockRestore()
+  })
+
+  it('record what a failed hook throws, and go on', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const recorded: unknown[] = []
+    const match = { id: 'm1', payload: { thread: 't1', event: { cursor: '7', type: 'message.posted' } } }
+    const failed = () => {
+      throw new Error('slack is down')
+    }
+    const run = () => {
+      throw new Error('sandbox setup failed')
+    }
+    await runMatch({ watcher: { id: 'pi', run, failed }, match, attempt: 5, record: async (failure) => void recorded.push(failure) })
+    expect(recorded).toEqual([{ matched: 'm1', thread: 't1', error: 'sandbox setup failed', hook: 'slack is down' }])
+    error.mockRestore()
+  })
+
   it('give up without running once runs keep getting killed, which never throw, until a retry', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     const run = vi.fn()
+    const failed = vi.fn()
     const recorded: unknown[] = []
     const match = { id: 'm1', payload: { thread: 't1', event: { cursor: '7', type: 'message.posted' } } }
-    const input = { watcher: { id: 'pi', run }, match, board: () => ({}) as never, record: async (failure: unknown) => void recorded.push(failure) }
+    const input = { watcher: { id: 'pi', run, failed }, match, record: async (failure: unknown) => void recorded.push(failure) }
 
     // Short of twice the tries, a run gets another go: earlier attempts may have been kills.
     await runMatch({ ...input, attempt: 9 })
@@ -244,6 +298,7 @@ describe('watchers', () => {
     await runMatch({ ...input, attempt: 10 })
     expect(run).toHaveBeenCalledTimes(1)
     expect(recorded).toEqual([{ matched: 'm1', thread: 't1', error: 'its run was cut short 9 times (a timeout, or out of memory)' }])
+    expect(failed.mock.calls).toEqual([[match.payload.event, { error: 'its run was cut short 9 times (a timeout, or out of memory)', attempts: 9 }]])
     expect(error).toHaveBeenCalledWith('[vboard] watcher pi gave up on event #7 after 10 tries:', 'its run was cut short 9 times (a timeout, or out of memory)')
 
     // Retried from a dead letter, A2 keeps counting: the run gets A2's fresh tries, and a throw goes back to A2.
@@ -252,6 +307,7 @@ describe('watchers', () => {
     run.mockRejectedValueOnce(new Error('still down'))
     await expect(runMatch({ ...input, attempt: 16 })).rejects.toThrow('still down')
     expect(recorded).toHaveLength(1)
+    expect(failed).toHaveBeenCalledTimes(1)
     error.mockRestore()
   })
 

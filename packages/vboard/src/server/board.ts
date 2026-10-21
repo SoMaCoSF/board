@@ -760,13 +760,17 @@ export function board(options: BoardOptions): Board {
     Object.entries(watch).map(([id, watcher]) => [id, { kind: 'tail', tail: watcher.tail, when: watcher.when ?? 'matches' }]),
   )
   if (engine) subscriptions[SYNC] = { kind: 'sync' }
+  const asWatcher = (id: string, trigger: string) => clientAs({ self: id, origin: { via: { kind: 'watcher', id } } }, trigger)
   const binding: BoardBinding = {
     subscriptions,
     async run(id, event, { trigger, attempt }) {
       if (id === SYNC && engine) return engine.deliver(event as SyncEvent, { attempt })
       const watcher = watch[id]
       if (!watcher) throw new Error(`this board has no watcher ${id}`)
-      await watcher.run({ event, board: clientAs({ self: id, origin: { via: { kind: 'watcher', id } } }, trigger) })
+      await watcher.run({ event, board: asWatcher(id, trigger) })
+    },
+    async failed(id, event, { trigger, error, attempts }) {
+      await watch[id]?.failed?.({ event, board: asWatcher(id, trigger), error, attempts })
     },
     async receive(key, item, { id, attempt }) {
       if (!engine) throw new Error(`this board has no sync, so nothing reads ${key}'s inbox`)

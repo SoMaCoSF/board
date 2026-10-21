@@ -333,6 +333,8 @@ export const watchContract = contract({
       matched: MatchId,
       thread: QueueLane,
       error: z.string().min(1).max(500),
+      /** What the watcher's `failed` hook threw, when it did. */
+      hook: z.string().min(1).max(500).optional(),
     }),
     /** A registrant pulled a match: it's theirs to run until `until`, or until they ack it. */
     'watch.leased': z.object({ matched: MatchId, lease: LeaseId, until: z.number().int().nonnegative() }),

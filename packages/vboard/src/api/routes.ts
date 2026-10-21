@@ -478,6 +478,11 @@ export type MatchView = {
   lease: string
   /** How many tries came before this one. */
   attempt: number
+  /**
+   * Set once its tries are spent: the last one's error. The registrant runs its watcher's `failed`
+   * hook instead of `run`, and acks with what the hook threw, if it did. Then it's given up on.
+   */
+  failed?: string
   /** The event, as `vb tail --json` prints it, as the registrant may see it. */
   event: BoardEventView
 }

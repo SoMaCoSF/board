@@ -217,13 +217,15 @@ export function http(url: string, options: HttpOptions = {}) {
     return registering
   }
 
-  /** Runs one match and acks it: done, its error, or a skip for a watcher this board no longer has. */
+  /** Runs one match, or its watcher's `failed` hook once its tries are spent, and acks it: done, its error, or a skip for a watcher this board no longer has. */
   async function runOne(match: MatchView) {
     let outcome: { error?: string; skip?: boolean } = {}
     if (!bound().subscriptions[match.watcher]) outcome = { skip: true }
     else
       try {
-        await bound().run(match.watcher, match.event, { trigger: `watch:${match.watcher}:${match.id}`, attempt: match.attempt + 1 })
+        const trigger = `watch:${match.watcher}:${match.id}`
+        if (match.failed === undefined) await bound().run(match.watcher, match.event, { trigger, attempt: match.attempt + 1 })
+        else await bound().failed(match.watcher, match.event, { trigger: `failed:${trigger}`, error: match.failed, attempts: match.attempt })
       } catch (error) {
         console.error(`[vboard] watcher ${match.watcher} failed:`, error)
         outcome = { error: describe(error) }

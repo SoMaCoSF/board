@@ -68,6 +68,13 @@ export type BoardBinding = {
    */
   run(id: string, event: WatcherContext['event'], meta: { trigger: string; attempt: number }): Promise<void>
   /**
+   * Runs a watcher's `failed` hook once the backend gives up on an event, with `run`'s last error
+   * and how many tries it got. `trigger` must differ from every one `run` got, so the hook's posts
+   * get IDs of their own. Nothing runs for a subscription without a hook. A throw is the backend's
+   * to record with the failure.
+   */
+  failed(id: string, event: WatcherContext['event'], meta: { trigger: string; error: string; attempts: number }): Promise<void>
+  /**
    * Runs one platform event this board's sync pushed to the backend's inbox, for a backend that
    * delivers them in-process: one platform thread at a time, in order. `id` is the event's in the
    * inbox, which the writes it makes derive their IDs from. A throw is the backend's to retry.

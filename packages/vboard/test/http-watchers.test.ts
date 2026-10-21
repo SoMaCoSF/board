@@ -193,7 +193,7 @@ async function queued(tail = 'feedback') {
   expect((await v0('POST', '/watchers', { watch: { fix: { tail } } })).status).toBe(200)
   const julian = await julianOn(t.remote.fetch)
   const pull = async (headers: Record<string, string> = {}) =>
-    (await caller(t.remote.fetch, await v0Token(), headers)('GET', '/watchers/matches')).body.matches as { id: string; lease: string; attempt: number; event: { message: { text: string } } }[]
+    (await caller(t.remote.fetch, await v0Token(), headers)('GET', '/watchers/matches')).body.matches as { id: string; lease: string; attempt: number; failed?: string; event: { message: { text: string } } }[]
   const ack = (match: { id: string; lease: string }, body: Record<string, unknown> = {}) => v0('POST', `/watchers/matches/${match.id}/ack`, { lease: match.lease, ...body })
   return { t, v0, julian, pull, ack }
 }
@@ -225,6 +225,39 @@ describe('pulling matches', () => {
     })
   })
 
+  it("run a watcher's failed hook once when they give up on an event, then go on", async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const failures: { error: string; attempts: number }[] = []
+    const t = team({
+      flaky: {
+        tail: 'feedback',
+        run: ({ event }) => {
+          if (event.message?.text === 'boom') throw new Error('sandbox setup failed')
+        },
+        failed: async ({ event, board, error, attempts }) => {
+          failures.push({ error, attempts })
+          await board.reply(event.message!.id, `couldn't start: ${error}`)
+        },
+      },
+    })
+    await t.project.register()
+    const julian = await julianOn(t.remote.fetch)
+    const root = (await julian('POST', '/messages', { channel: 'feedback', text: 'boom' })).body.message
+    await vi.waitFor(async () => {
+      await t.fireTimers()
+      expect(failures).toHaveLength(1)
+    })
+    await t.fireTimers()
+    expect(failures).toEqual([{ error: 'sandbox setup failed', attempts: 5 }])
+    const { body } = await julian('GET', `/messages/${root.id}`)
+    expect(body.replies.map((reply: { text: string; by: { actor: string } }) => [reply.text, reply.by.actor])).toEqual([
+      ["couldn't start: sandbox setup failed", `${V0}+flaky`],
+    ])
+    const history = await t.remote.servers.at(-1)!.session(`watch:@${V0}`).history()
+    expect(history.filter((event: { type: string }) => event.type === 'watch.failed')).toHaveLength(1)
+    error.mockRestore()
+  })
+
   it('tries an error again after a wait, gives up after 5 tries, and the thread goes on', async () => {
     const { t, julian, pull, ack } = await queued()
     const root = (await julian('POST', '/messages', { channel: 'feedback', text: 'flaky' })).body.message
@@ -241,6 +274,10 @@ describe('pulling matches', () => {
       match = (await pull())[0]
       expect(match?.event.message.text).toBe('flaky')
     }
+    // Once more at once, for the watcher's failed hook.
+    const last = (await pull())[0]!
+    expect([last.id, last.attempt, last.failed]).toEqual([match!.id, 5, 'boom'])
+    expect((await ack(last)).status).toBe(200)
     expect((await pull()).map((next) => next.event.message.text)).toEqual(['after it'])
     const history = await t.remote.servers.at(-1)!.session(`watch:@${V0}`).history()
     expect(history.filter((event: { type: string }) => event.type === 'watch.failed')).toHaveLength(1)
@@ -264,6 +301,35 @@ describe('pulling matches', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('hands a match whose leases keep running out to its failed hook, then gives up on it', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { t, julian, pull } = await queued()
+    const root = (await julian('POST', '/messages', { channel: 'feedback', text: 'slow' })).body.message
+    await julian('POST', '/messages', { re: root.id, text: 'after it' })
+    let match: Awaited<ReturnType<typeof pull>>[number] | undefined
+    await vi.waitFor(async () => expect((match = (await pull())[0])).toBeDefined())
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      // Its puller is killed every time, and never acks: the 5th time, it's handed out for the failed hook.
+      const handed: [number | undefined, string | undefined][] = []
+      for (let n = 0; n < 6; n++) {
+        vi.setSystemTime(Date.now() + LEASE_MS + 1000)
+        match = (await pull())[0]
+        handed.push([match?.attempt, match?.failed])
+      }
+      const cut = 'its lease ran out (a timeout, or out of memory)'
+      expect(handed).toEqual([[1, undefined], [2, undefined], [3, undefined], [4, undefined], [5, cut], [undefined, undefined]])
+      expect((await pull()).map((next) => next.event.message.text)).toEqual(['after it'])
+    } finally {
+      vi.useRealTimers()
+    }
+    const failed = (await t.remote.servers.at(-1)!.session(`watch:@${V0}`).history()).filter((event: { type: string }) => event.type === 'watch.failed')
+    expect(failed.map((event: { payload: unknown }) => event.payload)).toEqual([
+      expect.objectContaining({ error: 'its lease ran out (a timeout, or out of memory)', hook: 'its lease ran out (a timeout, or out of memory)' }),
+    ])
+    error.mockRestore()
   })
 
   it('sets one sweep a minute for its leases, however many it pulls', async () => {
