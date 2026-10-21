@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { GITHUB_TOKEN, byAgent, byPi, byWatcher, piAvatar, piName, sourceLink, startOrSay, taskMessage } from "../app/api/board/[[...path]]/agent.ts";
+import { GITHUB_TOKEN, byAgent, byPi, byWatcher, piAvatar, piCouldntStart, piName, sourceLink, taskMessage } from "../app/api/board/[[...path]]/agent.ts";
 
 // Pi posts as the factory's production deployment.
 process.env.VERCEL_PROJECT_ID = "prj_factory";
@@ -123,35 +123,11 @@ function thread() {
   return { replies, board: { reply: async (id, text) => { replies.push({ id, text }); } } };
 }
 
-test("startOrSay: a start that fails is tried again, and once Pi starts the thread hears nothing", async () => {
+test("piCouldntStart: once its watcher gives up, the thread hears why, on its first line, and to try again", async () => {
   const { replies, board } = thread();
-  let tries = 0;
-  await startOrSay(board, 7, async () => {
-    if (++tries < 3) throw new Error("sandbox setup failed: ");
-  }, 0);
-  assert.equal(tries, 3);
-  assert.deepEqual(replies, []);
-});
-
-test("startOrSay: a Pi that never starts says why in its thread instead of throwing, so its watcher keeps listening", async () => {
-  const { replies, board } = thread();
-  let tries = 0;
-  const error = console.error;
-  console.error = () => {};
-  try {
-    await startOrSay(board, 2903, async () => {
-      tries++;
-      throw new Error("sandbox setup failed: curl: (22) The requested URL returned error: 403\ncurl: (22) The requested URL returned error: 404");
-    }, 0);
-  } finally {
-    console.error = error;
-  }
-  assert.ok(tries > 1, "it was retried first");
-  assert.equal(replies.length, 1);
-  assert.equal(replies[0].id, 2903);
-  assert.match(replies[0].text, /couldn't start/);
-  assert.match(replies[0].text, /returned error: 403/);
-  assert.match(replies[0].text, /try again/);
+  const error = "sandbox setup failed: curl: (22) The requested URL returned error: 403\ncurl: (22) The requested URL returned error: 404";
+  await piCouldntStart({ event: { message: { id: "2904", re: "2903" } }, board, error, attempts: 5 });
+  assert.deepEqual(replies, [{ id: "2903", text: "Pi couldn't start: `sandbox setup failed: curl: (22) The requested URL returned error: 403`. Reply here to try again." }]);
 });
 
 test("the reviewer tells the PR's source thread, and that thread's Pi acts on it", async () => {

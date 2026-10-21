@@ -1,5 +1,5 @@
 import type { Watcher } from "vboard";
-import type { tellPi } from "./agent";
+import { piCouldntStart, type tellPi } from "./agent.ts";
 import { github, prNumber, type GitHubOptions } from "./github.ts";
 
 /** Reactions that request a merge. Slack delivers :shipit: as `squirrel`. */
@@ -8,7 +8,7 @@ const MERGE_EMOJI = new Set(["shipit", "squirrel", "approved"]);
 export function shipit(options: GitHubOptions & { tellPi: typeof tellPi }): Watcher {
   return {
     tail: "dev --label pr",
-    run: async ({ event, board }) => {
+    run: async ({ event }) => {
       const root = event.message;
       if (
         event.type !== "reaction.added" ||
@@ -43,7 +43,6 @@ export function shipit(options: GitHubOptions & { tellPi: typeof tellPi }): Watc
         const emoji = event.payload.emoji === "approved" ? ":approved:" : ":shipit:";
         const reason = error instanceof Error ? error.message : String(error);
         await options.tellPi({
-          board,
           task: "review",
           thread: root.id,
           key: `shipit-${event.cursor}`,
@@ -55,5 +54,6 @@ export function shipit(options: GitHubOptions & { tellPi: typeof tellPi }): Watc
         });
       }
     },
+    failed: piCouldntStart,
   };
 }

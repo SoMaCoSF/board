@@ -1,5 +1,5 @@
 import type { Watcher } from "vboard";
-import type { tellPi } from "./agent";
+import { piCouldntStart, type tellPi } from "./agent.ts";
 import { prNumber, REPO } from "./github.ts";
 
 /** Long enough for deepsec at its maximum thinking on a PR's diff, inside the 45m each Pi turn gets (`SANDBOX_MS` in agent.ts). */
@@ -33,7 +33,6 @@ export function security(options: { tellPi: typeof tellPi }): Watcher {
       // Named, not $(mktemp -d): each of Pi's commands runs in a new shell, so a variable wouldn't last.
       const dir = `/tmp/deepsec-${event.cursor}`;
       await options.tellPi({
-        board,
         task: "review",
         thread: root.id,
         key: `security-${event.cursor}`,
@@ -50,5 +49,6 @@ export function security(options: { tellPi: typeof tellPi }): Watcher {
         ].join("\n"),
       });
     },
+    failed: piCouldntStart,
   };
 }

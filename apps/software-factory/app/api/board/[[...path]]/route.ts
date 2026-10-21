@@ -4,7 +4,7 @@ import { slack } from "vboard/sync-slack";
 import { github } from "vboard/sync-github";
 import { vercelBlob } from "vboard/backend-a2/blob-vercel";
 import { queues, store } from "./a2";
-import { byAgent, byPi, byWatcher, piTokens, taskMessage, tellPi } from "./agent";
+import { byAgent, byPi, byWatcher, piCouldntStart, piTokens, taskMessage, tellPi } from "./agent";
 import { classifyThread } from "./classify";
 import { isPiKind, PI_KINDS, piTask, scheduled, scheduledThread } from "./kinds";
 import { security } from "./security";
@@ -122,7 +122,7 @@ const factory = board({
     // changes, and hears when anyone else replies, then reads what's new itself.
     pi: {
       tail: `dev --label kind=${PI_KINDS.join("|")}`,
-      run: async ({ event, board }) => {
+      run: async ({ event }) => {
         const message = event.message;
         if (!message) {
           return;
@@ -135,7 +135,6 @@ const factory = board({
               : undefined;
         if (kind && isPiKind(kind) && message.re === null) {
           await tellPi({
-            board,
             task: "thread",
             thread: message.id,
             key: `kind-${kind}`,
@@ -148,7 +147,6 @@ const factory = board({
           !byWatcher(message.by)
         ) {
           await tellPi({
-            board,
             task: "thread",
             thread: message.re,
             key: `news-${message.id}`,
@@ -156,6 +154,7 @@ const factory = board({
           });
         }
       },
+      failed: piCouldntStart,
     },
     // Pi reviews PRs once they're ready: a PR opened ready when its thread opens in `dev`, a
     // draft when it's marked ready (its root relabeled state=open). Pi hears when anyone but a
@@ -171,7 +170,6 @@ const factory = board({
         }
         if (reviewStarts(event)) {
           await tellPi({
-            board,
             task: "review",
             thread: message.id,
             key: "pr",
@@ -189,7 +187,6 @@ const factory = board({
             !isDraft((await board.thread(message.re)).message.labels))
         ) {
           await tellPi({
-            board,
             task: "review",
             thread: message.re,
             key: `news-${message.id}`,
@@ -197,6 +194,7 @@ const factory = board({
           });
         }
       },
+      failed: piCouldntStart,
     },
   },
 });

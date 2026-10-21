@@ -1,5 +1,5 @@
 import type { NetworkPolicy, Sandbox } from "@vercel/sandbox";
-import type { WatcherContext } from "vboard";
+import type { WatcherFailure } from "vboard";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import vboard from "vboard/package.json" with { type: "json" };
@@ -315,46 +315,15 @@ async function sh(sandbox: Sandbox, script: string) {
   if (done.exitCode !== 0) throw new Error(`sandbox setup failed: ${(await done.stderr()).slice(-500)}`);
 }
 
-/** How many times a message to Pi is tried before the thread hears Pi couldn't start, and the wait after a first failure. */
-const TRIES = 3;
-const RETRY_MS = 5_000;
-
 /**
- * Runs `start` until it works, up to TRIES times, and if it never does, says so in the thread instead of throwing.
- * A watcher that throws gets 5 tries in about 15 seconds, then vboard drops that event without a word in the thread:
- * one bad start (setup hitting GitHub's rate limit) would leave a reply unanswered, with no reason given. Saying so
- * tells the thread, and the next reply tries again.
+ * The `failed` hook of every watcher that tells Pi: once vboard gives up on an event (setup hitting GitHub's rate
+ * limit five times, say), the thread hears that Pi couldn't start and why, instead of nothing. The next reply tries
+ * again.
  */
-export async function startOrSay(
-  board: Pick<WatcherContext["board"], "reply">,
-  thread: string,
-  start: () => Promise<void>,
-  retryMs = RETRY_MS,
-) {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return await start();
-    } catch (error) {
-      if (attempt < TRIES) {
-        await new Promise((resolve) => setTimeout(resolve, retryMs * attempt));
-        continue;
-      }
-      console.error(`[factory] Pi couldn't start on board thread #${thread}:`, error);
-      const reason = (error instanceof Error ? error.message : String(error)).split("\n")[0]!.slice(0, 200);
-      await board.reply(thread, `Pi couldn't start: \`${reason}\`. Reply here to try again.`);
-      return;
-    }
-  }
-}
-
-/**
- * Sends Pi a message about a thread: the first one is its task (a thread to work or a PR to review), later ones say
- * there's news. Pi's sandbox and session for the thread are created on first use. If Pi can't be reached, `board`
- * (the calling watcher's) says so in the thread; see `startOrSay`.
- * `key` names the message, so telling Pi the same thing twice is a no-op.
- */
-export async function tellPi({ board, ...input }: PiMessage & { board: Pick<WatcherContext["board"], "reply"> }) {
-  await startOrSay(board, input.thread, () => deliver(input));
+export async function piCouldntStart({ event, board, error }: WatcherFailure) {
+  const message = event.message;
+  if (!message) return;
+  await board.reply(message.re ?? message.id, `Pi couldn't start: \`${error.split("\n")[0]!.slice(0, 200)}\`. Reply here to try again.`);
 }
 
 type PiMessage = {
@@ -397,7 +366,12 @@ export const piTokens = tokenRefreshes({
   },
 });
 
-async function deliver({ task, thread, key, message }: PiMessage) {
+/**
+ * Sends Pi a message about a thread: the first one is its task (a thread to work or a PR to review), later ones say
+ * there's news. Pi's sandbox and session for the thread are created on first use. A throw is the watcher's to retry;
+ * see `piCouldntStart`. `key` names the message, so telling Pi the same thing twice is a no-op.
+ */
+export async function tellPi({ task, thread, key, message }: PiMessage) {
   const { Sandbox } = await import("@vercel/sandbox");
   const settings = {
     name: piSandbox(thread),
