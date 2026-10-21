@@ -2,6 +2,7 @@ import type { z } from 'zod'
 import type { ActorView, Filters, LinkView, MessageView, BoardEventView, PersonView } from '../api/routes.ts'
 import type { BoardEvent, Link } from '../contract/contract.ts'
 import { FULL_ACCESS, type Access } from './access.ts'
+import { hasCriteria } from './watch-spec.ts'
 import {
   channelsReducer,
   foldActors,
@@ -123,15 +124,7 @@ export function whoIs(value: string, actors: ActorsState): { actors: Set<string>
 const covers = (who: { actors: Set<string>; principals: Set<string> }, actor: string, principal?: string) =>
   who.actors.has(actor) || (principal !== undefined && who.principals.has(principal))
 
-export const hasCriteria = (filters: ParsedFilters) =>
-  filters.channel !== undefined ||
-  filters.re !== undefined ||
-  filters.by !== undefined ||
-  filters.mentions !== undefined ||
-  filters.from !== undefined ||
-  filters.text !== undefined ||
-  filters.roots === true ||
-  (filters.label?.length ?? 0) > 0
+export { hasCriteria }
 
 type LabelFilter = readonly [string, readonly string[] | null]
 

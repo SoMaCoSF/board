@@ -45,11 +45,11 @@ In code, the same writes:
 
 ```ts
 // anywhere in Node:
-import { createClient } from 'vboard/client'
+import { board } from 'vboard'
 
-const board = createClient()
-const message = await board.post('errors-www', 'deploy failed on a1b2c3')
-await board.reply(message.id, 'rolled back to d4e5f6')
+const team = board()
+const message = await team.post('errors-www', 'deploy failed on a1b2c3')
+await team.reply(message.id, 'rolled back to d4e5f6')
 ```
 
 ## Text
@@ -80,7 +80,7 @@ vb react 812 👀 --remove
 ```
 
 Emoji are stored as normalized short names, the ones Chat SDK uses: `eyes`,
-`thumbs_up`, `check`. The CLI and SDK accept a name, `:name:`, Slack's names
+`thumbs_up`, `check`. The CLI and a handle accept a name, `:name:`, Slack's names
 (`+1`, `white_check_mark`), or the character itself, so a 👍 from Slack and one
 from the board are the same reaction. Each actor reacts with an emoji once.
 
@@ -145,11 +145,11 @@ In code, `upload` first, then post with what it returns:
 ```ts
 // anywhere in Node:
 import { readFile } from 'node:fs/promises'
-import { createClient } from 'vboard/client'
+import { board } from 'vboard'
 
-const board = createClient()
-const shot = await board.upload({ data: new Uint8Array(await readFile('after.png')), name: 'after.png' })
-await board.reply('812', { text: 'fixed, see after', attachments: [shot] })
+const team = board()
+const shot = await team.upload({ data: new Uint8Array(await readFile('after.png')), name: 'after.png' })
+await team.reply('812', { text: 'fixed, see after', attachments: [shot] })
 ```
 
 ## Idempotent writes
@@ -161,10 +161,13 @@ vb post deploys "a1b2c3 is live" --id deploy-a1b2c3
 ```
 
 The same ID with the same write returns the message it already posted. The same
-ID with a different write fails with `duplicate_id`, and so does someone else's
-post with your ID. IDs are up to 200 characters. UUIDv8s are the board's own,
-for the writes it makes itself, so the API refuses them. Your own server code gets this through the
-[in-process client's `key`](./01-mounting.md#the-in-process-client).
+ID with a different write fails with `duplicate_id`. The CLI and a
+[handle](./01-mounting.md#the-handle) make the ID their own, so no one can post
+with it first: over HTTP it goes as `key:<principal>:…`, which the board takes
+only from that principal. Through the HTTP API yourself, IDs are up to 200
+characters, and someone else's post with your ID fails with `duplicate_id`.
+UUIDv8s are the board's own, for the writes it makes itself, so the API refuses
+them, and so are `key:` IDs under another principal.
 
 ## Keeping a message on the board
 

@@ -16,7 +16,7 @@ log: `a2({ access })`. Some get everything without asking; the rest get what
 | The board's own deployments in the environment it runs in | everything |
 | The board's own deployments in any other environment | nothing |
 | Another Vercel project, a GitHub Actions workflow, any other OIDC issuer | nothing |
-| The board's own code: watchers, sync, middleware, `board.client()` | everything |
+| The board's own code: watchers, sync, middleware, its [handle](./01-mounting.md#the-handle) | everything |
 
 A caller no rule matches is refused with 403 before it reaches a route.
 
@@ -55,7 +55,8 @@ const backend = a2({
   ],
 })
 
-export const { GET, POST } = board({ backend })
+const team = board({ backend })
+export const GET = team.fetch, POST = team.fetch
 export const { scheduler } = backend
 ```
 
@@ -125,7 +126,7 @@ board({
   deployments, audience check, or platform token header count, and with a
   function as `access`, only the principals `authenticate` returned get
   anything. Schedules made before a board switched to or from them are
-  revoked; the board's own code's (`board.client()`, watchers) keep sending.
+  revoked; the board's own code's (its handle's, watchers') keep sending.
 - **One board per team.** Create a `board()` for each team and cache them.
   Give each its own store prefix, scheduler topic, and attachments prefix, so
   no team's board reads another's log or files. A board holds no timers or
@@ -141,15 +142,16 @@ board({
 | `react` | add and remove reactions | `read` |
 | `label` | set and unset labels, including labels on a post | `read` |
 | `sync` | attach a thread to a Slack or GitHub thread, including `--sync` on a post; speak for platform users there, through [sync's routes](../04-reference/03-http.md#syncs-routes); in every channel, the board's own inbox | `read` |
-| `manage` | cancel anyone's schedule there; in every channel, stuck events, redrive, and source reads | everything |
+| `manage` | cancel anyone's schedule there; in every channel, source reads | everything |
 
 - **A reply needs `post` and `read`** in its thread's channel. Addressing a
   thread you can't read would confirm it exists. So `['post']` alone starts
   threads and fixes what it wrote, which is what a feedback intake or a CI
   reporter does.
-- **The board's bookkeeping needs `manage` in every channel,** since stuck
-  events span all of them, and its inbox needs `sync` in every channel for
-  the same reason. `{ '*': 'all', 'security/': [] }` can't read either.
+- **The board's bookkeeping needs every channel:** a source read needs
+  `manage` in all of them, since the app's token reads past any one, and its
+  inbox needs `sync` in all of them, since raw events span them.
+  `{ '*': 'all', 'security/': [] }` can do neither.
 - **`sync` speaks for platform users.** A caller with it in a channel can write
   there as any Slack, GitHub, or WhatsApp user it names, which is what a board
   on `http()` that syncs needs on the board it uses. Give it only to the

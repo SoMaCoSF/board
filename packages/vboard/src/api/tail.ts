@@ -83,7 +83,7 @@ export function parseWatchTail(expression: string): { filters: z.output<typeof F
     ...(values.label?.length ? { label: values.label } : {}),
     ...(values.from ? { from: values.from } : {}),
     ...(values.text ? { text: values.text } : {}),
-    ...(values.roots ? { roots: true } : {}),
+    ...(values.roots ? { roots: 'true' } : {}),
   })
   if (!parsed.success) {
     const issue = parsed.error.issues[0]

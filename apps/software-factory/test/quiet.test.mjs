@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { boardOnly, unseenPr } from "../app/api/board/[[...path]]/quiet.ts";
+import { boardOnly, syncPull } from "../app/api/board/[[...path]]/quiet.ts";
+import { BOARD_URL, caller, personToken, testBoard } from "../../../packages/vboard/test/harness.ts";
+import { fakePlatform } from "../../../packages/vboard/test/sync-fixtures.ts";
+import { github } from "../../../packages/vboard/src/sync/github.ts";
 
 const lifecycle = (type, labels = {}) => ({ subthread: null, type, labels });
 
@@ -19,28 +22,39 @@ test("inline review comments stay off Slack", () => {
   assert.equal(boardOnly({ subthread: "github:vercel-labs/vboard:40:rc:9", type: "comment" }), true);
 });
 
-const comment = (thread, subthread = null) => ({ kind: "message", type: "comment", thread, subthread });
-const boardWith = (prs) => {
-  const queries = [];
-  return {
-    queries,
-    messages: async (query) => {
-      queries.push(query);
-      return { messages: prs.includes(query.label.pr) ? [{ id: "1" }] : [] };
-    },
+test("PR comments land only in threads the board has, which start when a PR opens", async () => {
+  const lookups = [];
+  const octokit = { rest: { pulls: { get: async (args) => { lookups.push(args); throw new Error("no root lookups"); } } } };
+  const platform = fakePlatform("github", (adapter) => Object.assign(adapter, { octokit }));
+  let handled = 0;
+  const run = async (args) => { await syncPull(args); handled++; };
+  const board = testBoard({ sync: { github: github({ adapter: platform.adapter, repos: { "vercel-labs/vboard": { pulls: { channel: "dev", run } } } }) } });
+  const operator = caller(board.fetch, await personToken());
+  const send = async (body, headers = {}) => {
+    const before = handled;
+    await board.fetch(new Request(`${BOARD_URL}/webhooks/github`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) }));
+    const deadline = Date.now() + 5000;
+    while (handled === before && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(handled, before + 1);
   };
-};
+  const comment = (id, threadId = "github:vercel-labs/vboard:114") => send({ type: "message", threadId, id, text: `comment ${id}`, user: "42" });
+  const dev = async () => (await operator("GET", "/messages?channel=dev")).body.messages;
 
-test("a comment on a PR the board has no thread for stays on GitHub", async () => {
-  const board = boardWith(["vercel-labs/vboard#180"]);
-  assert.equal(await unseenPr(comment("github:vercel-labs/vboard:114"), board, "dev"), true);
-  assert.equal(await unseenPr(comment("github:vercel-labs/vboard:114", "github:vercel-labs/vboard:114:rc:9"), board, "dev"), true);
-  assert.deepEqual(board.queries[0], { channel: "dev", label: { pr: "vercel-labs/vboard#114" }, limit: 1 });
-});
+  await comment("c1");
+  await comment("c2", "github:vercel-labs/vboard:114:rc:9");
+  assert.deepEqual(await dev(), []);
 
-test("comments on known PRs, and PR events, still sync", async () => {
-  const board = boardWith(["vercel-labs/vboard#180"]);
-  assert.equal(await unseenPr(comment("github:vercel-labs/vboard:180"), board, "dev"), false);
-  assert.equal(await unseenPr({ kind: "lifecycle", type: "pr.opened", thread: "github:vercel-labs/vboard:181", subthread: null }, board, "dev"), false);
-  assert.equal(board.queries.length, 1);
+  await send({
+    action: "opened", repository: { full_name: "vercel-labs/vboard" }, sender: { login: "ada", id: 42 },
+    pull_request: { number: 114, title: "Seen", html_url: "https://github.com/vercel-labs/vboard/pull/114", draft: false, merged: false },
+  }, { "x-github-event": "pull_request", "x-github-delivery": "opened-114" });
+  await comment("c3");
+  await comment("c4", "github:vercel-labs/vboard:114:rc:9");
+  const [root, top, inline, ...rest] = await dev();
+  assert.equal(root.labels.pr, "vercel-labs/vboard#114");
+  assert.equal(root.noSync, false);
+  assert.deepEqual([top.text, top.re, top.noSync], ["comment c3", root.id, false]);
+  assert.deepEqual([inline.text, inline.re, inline.noSync], ["comment c4", root.id, true]);
+  assert.deepEqual(rest, []);
+  assert.deepEqual(lookups, []);
 });

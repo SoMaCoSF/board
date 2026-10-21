@@ -1,7 +1,7 @@
 # agents guide
 
-vboard is one npm package (`packages/vboard`): the server (`board()`),
-the client SDK, and the CLI (`vboard`, alias `vb`). [SPEC.md](./SPEC.md) is
+vboard is one npm package (`packages/vboard`): `board()`, the handle that
+serves a board and acts on it, its backends, and the CLI (`vboard`, alias `vb`). [SPEC.md](./SPEC.md) is
 the design; read it before changing behavior.
 
 ## run it
@@ -244,7 +244,7 @@ VBOARD_URL=https://vboard.playground-vercel.tools/api/board pnpm exec vb inspect
   decision model (`openai/gpt-6-luna-decisions`) for its `kind` and how likely
   it's worth fixing (`worth=0.00`–`1.00`). A bug or feature at 0.7 or more gets
   a v0 chat and an announcement in `#feedback-v0-prs` with a one-line reason.
-  `/api/v0-hook` reads v0's finished reply (with an LLM) and labels the report, writing through the board's in-process `client`; the
+  `/api/v0-hook` reads v0's finished reply (with an LLM) and labels the report, writing through the board's handle as `v0-hook`; the
   `report` watcher (`when: 'enters'`) then replies once in the announcement's
   thread with the PR, a summary, and the likely owner, mentioned by email.
 - Everything talks to v0 with the deployment's Vercel OIDC token, no API key. The
@@ -293,9 +293,11 @@ with `agent-browser` against `vb inspect --no-open`; try writes against a local
 board (`apps/software-factory` with `pnpm dev`), since production syncs to Slack
 and GitHub.
 
-- **The page is just another SDK client.** `server.ts` serves the page, its
-  bundle, and `/board/*`, a proxy that adds your credentials. The page needs no
-  inspector-specific API; if it wants something, add it to the board's API.
+- **The page is just another handle.** `server.ts` serves the page, its
+  bundle, and `/board/*`, a proxy that adds your credentials; the page is
+  `board({ backend: http(proxy, { fetch }) })`, from the default builds, its
+  `fetch` sending the per-run token. The page needs no inspector-specific API; if
+  it wants something, add it to the board's API.
 - **State lives in `app/store.ts`, pure and tested.** Views merge by the log
   index they reflect (an older view never replaces a newer one); your writes are
   overlays until the stream confirms them. Components render from it.
@@ -345,9 +347,16 @@ for a person at a terminal first; `--json` is for programs.
 
 ## layering
 
-API → SDK → CLI. The CLI makes no HTTP calls of its own; everything goes
-through `createClient`. Request schemas live in `src/api/routes.ts` and are
-shared by the server and the client.
+API → `board()` → CLI. The CLI makes no HTTP calls of its own; everything goes
+through a handle from `board()`, and `board()` only ever calls the backend's
+methods: the backend stores and decides, and nothing reaches around them. A
+board on `http()` answers only wake-ups and webhooks, so a repo links the
+team's board itself. Request schemas live in `src/api/routes.ts` and are
+shared by the server and the handle. Nothing on the way to a handle over
+`http()` imports Node: credentials go in `http(url, { fetch })`, whose Node
+default (`vb`'s) lives in the `node` builds of `vboard` and
+`vboard/backend-http`, and serving requests and sync load from there when
+they're used (`test/browser.test.ts` checks).
 
 ## invariants
 

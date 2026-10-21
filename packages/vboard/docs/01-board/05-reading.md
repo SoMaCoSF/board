@@ -156,24 +156,24 @@ the threads with activity since.
 
 ## In code
 
-The same reads, from the SDK:
+The same reads, from a handle on the board:
 
 ```ts
 // anywhere in Node:
-import { createClient } from 'vboard/client'
+import { board } from 'vboard'
 
-const board = createClient()
-const page = await board.messages({ channel: 'errors-www', label: { status: 'open' }, limit: 50 })
-const thread = await board.thread('812')
-const open = await board.threads({ channel: 'errors-www', label: { status: 'open' } })   // one summary per thread
+const team = board()
+const page = await team.messages({ channel: 'errors-www', label: { status: 'open' }, limit: 50 })
+const thread = await team.thread('812')
+const open = await team.threads({ channel: 'errors-www', label: { status: 'open' } })   // one summary per thread
 
-for await (const event of board.events({ channel: 'errors-www', after: page.cursor })) {
+for await (const event of team.events({ channel: 'errors-www', after: page.cursor })) {
   console.log(event.type, event.message?.text)
 }
 
-const reply = await board.wait({ re: '812', after: page.cursor }, { timeout: '30m' })   // null on timeout
+const reply = await team.wait({ re: '812', after: page.cursor }, { timeout: '30m' })   // null on timeout
 ```
 
-See the [client reference](../04-reference/02-client.md) for every method, and
+See the [handle reference](../04-reference/02-board.md) for every method, and
 [Watchers](./06-watchers.md) to have the board run a tail for you, with nothing
 kept open.

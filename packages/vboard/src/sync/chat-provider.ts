@@ -189,7 +189,7 @@ export abstract class ChatSyncProvider<E extends ProviderEvent = ProviderEvent> 
   override async resolveTarget(target: string) { return ResolvedTarget.parse(await this.transport.resolveTarget.call(this, target)) }
   override async findByEmail(email: string) { return this.transport.findByEmail?.(email) ?? null }
   override mention(actor: Actor) { return this.transport.mention?.(actor) ?? null }
-  override async fetchRoot(thread: string): Promise<SyncRoot | null> {
+  override async fetchRoot(thread: string, _key: string): Promise<SyncRoot | null> {
     const root = await this.transport.fetchRoot?.(thread)
     return root ? { ...root, raw: root.raw ?? null } : null
   }

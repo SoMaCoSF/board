@@ -28,7 +28,7 @@ const client = new WhatsAppClient({
 
 const backend = a2()
 
-export const { GET, POST } = board({
+const team = board({
   backend,
   sync: {
     kapso: kapso({
@@ -38,6 +38,7 @@ export const { GET, POST } = board({
     }),
   },
 })
+export const GET = team.fetch, POST = team.fetch
 export const { scheduler } = backend
 ```
 
@@ -100,9 +101,9 @@ WhatsApp can't delete them, so they stay when the board message is deleted.
 
 ## Typing
 
-```bash
-# in a terminal:
-vb typing 812
+```ts
+// in the route that mounts the board with its `sync`:
+await team.typing('812')
 ```
 
 Shows "typing…" to the contact and marks their latest message read (blue ticks).

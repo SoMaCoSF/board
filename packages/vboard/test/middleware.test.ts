@@ -75,13 +75,13 @@ describe('middleware', () => {
     expect(calls).toBe(2)
   })
 
-  it("doesn't run again on a retry from the board's own code: a keyed client's post", async () => {
+  it("doesn't run again on a retry from the board's own code: a post with an id", async () => {
     let calls = 0
     const board = testBoard({ middleware: [async ({ next }) => (calls++ === 0 ? next() : undefined)] })
     const julian = await person(board)
-    const first = await board.client('deploys', { key: 'd1' }).post('dev', 'a1b2c3 is live')
+    const first = await board.as('deploys').post('dev', { text: 'a1b2c3 is live', id: 'd1' })
     // The same delivery again, as a redelivered webhook would send it: its post lands once.
-    const again = await board.client('deploys', { key: 'd1' }).post('dev', 'a1b2c3 is live')
+    const again = await board.as('deploys').post('dev', { text: 'a1b2c3 is live', id: 'd1' })
     expect(again.id).toBe(first.id)
     expect(calls).toBe(1)
     expect(await texts(julian, 'dev')).toEqual(['a1b2c3 is live'])
