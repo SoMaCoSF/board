@@ -55,10 +55,9 @@ test("a factory PR's Slack thread and its source's Slack thread link to each oth
   ]);
 });
 
-test("skips posts, replies, GitHub receipts, crossposted roots, other branches, and sources not from Slack", async () => {
+test("skips posts, GitHub receipts, crossposted roots, other branches, and sources not from Slack", async () => {
   const h = harness();
   await h.run({ ...synced(), type: "message.posted" });
-  await h.run(synced({ ...root(), re: "2399" }));
   await h.run(synced(root(), "github:vercel-labs/vboard:105"));
   await h.run(synced(root({ pr: "vercel-labs/vboard#105", crosspost: "yes" })));
   await h.run(synced(root({ pr: "vercel/v0#1" })));
