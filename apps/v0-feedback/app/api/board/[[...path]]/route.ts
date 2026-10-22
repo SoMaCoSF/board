@@ -119,7 +119,7 @@ async function report({ event, board }: WatcherContext) {
   const { pr, owner, summary } = labels;
   const text = [
     pr ? `v0 opened a draft PR: ${pr}` : `v0 finished without a PR: https://v0.app/chat/${labels.v0}`,
-    summary,
+    summary && quoted(summary),
     // A mention by email pings them in Slack when they're there, and reads as the email otherwise.
     owner ? `likely owner: @[${owner}]` : null,
   ].filter(Boolean).join("\n");
