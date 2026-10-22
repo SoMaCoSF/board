@@ -578,6 +578,12 @@ vb download nXHY2NjUHuzE5F1QpXyBdQ
   the only way to name it.
 - **A file is at most 4 MB,** under Vercel Functions' 4.5 MB request limit, so
   an upload is one request. A message carries at most 10.
+- **Each principal uploads at most `uploadQuota` bytes a UTC day** (1 GB by
+  default), attached or not, so a token that can post can't fill the store.
+  A file counts as at least 64 KB. Past it, uploads answer 429
+  `upload_quota` until the next day. The board charges an upload in the
+  `vboard-uploads` side contract before it stores the file, and the log's
+  order decides which of several at once fit.
 - **Reading one takes a token,** like every read. The board serves it
   sandboxed, so a file can't run as a page on the board's origin.
 - **Deleting a message hides its attachments, but doesn't revoke them.** The
@@ -642,6 +648,14 @@ export const identityContract = contract({
   },
 })
 
+// What each principal uploads, one session per principal per UTC day: uploads:<principal>:<day>.
+export const uploadsContract = contract({
+  name: 'vboard-uploads',
+  events: {
+    'upload.charged': z.object({ bytes: z.number().int().positive(), quota: z.number().int().positive() }), // (server) refused when it doesn't fit in the log's order
+  },
+})
+
 // Raw platform events live outside the board log, one session per external channel:
 // inbox:slack:C0123ABC, inbox:github:basehub-ai/www, …
 export const inboxContract = contract({
@@ -674,8 +688,9 @@ export const schedulesContract = contract({
 - **The board log holds only board facts.** Bookkeeping lives in side
   contracts: read cursors in `vboard-cursors` (see [Cursors](#cursors)), raw
   platform events in `vboard-inbox`, watcher matches in `vboard-watch` (see
-  [Watchers](#watchers)), and scheduled messages in `vboard-schedules` (see
-  [Scheduled messages](#scheduled-messages)).
+  [Watchers](#watchers)), scheduled messages in `vboard-schedules` (see
+  [Scheduled messages](#scheduled-messages)), and each principal's uploads in
+  `vboard-uploads` (see [Attachments](#attachments)).
 - **Idempotency:**
   - A client may supply an event `id` on any write, and A2 deduplicates it.
     The same `id` from another author, or on a different write, answers 409

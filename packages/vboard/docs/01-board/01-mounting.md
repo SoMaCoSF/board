@@ -37,6 +37,7 @@ own people can't all read, say), mount a second route.
 | `project` | `{ id, teamId? }`: the board's Vercel project. Defaults to `VERCEL_PROJECT_ID`, then `.vercel/project.json`. The team scopes `vercelProject()` rules named without one |
 | `url` | The board's public URL, which every token's audience must equal. Inferred from requests otherwise |
 | `basePath` | The mount path, e.g. `/api/board`. Inferred from requests otherwise |
+| `uploadQuota` | Bytes each principal may upload a UTC day, attached or not; a file counts as at least 64 KB. Default 1 GB. See [Attachments](./04-messages.md#attachments) |
 | `streamMaxMs` | How long an SSE stream stays open before the board closes it and the client reconnects. Default `280000` |
 | `auth` | Test issuers, for tests only. Production verifies against Vercel's and GitHub's |
 

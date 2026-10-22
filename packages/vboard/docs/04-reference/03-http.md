@@ -182,6 +182,9 @@ curl -X POST "$VBOARD_URL/attachments" \
   an immutable cache header. Images (PNG, JPEG, GIF, WebP, AVIF), MP4 and WebM
   video, and plain text display inline; everything else downloads.
 - **A board without a blob store refuses uploads** with `no_blob_store`.
+- **Each principal uploads at most the board's `uploadQuota` a UTC day,** 1 GB
+  by default, with each file counted as at least 64 KB. Past it, uploads
+  answer 429 `upload_quota` until the next day.
 
 See [Messages](../01-board/04-messages.md).
 
@@ -315,6 +318,7 @@ Every failure is JSON with a matching status:
 | 409 | `already_synced` | a sync target that's a platform thread another board thread is synced with |
 | 413 | `too_large` | an upload over 4 MB |
 | 429 | `ratelimited` | the platform rate-limited a source read |
+| 429 | `upload_quota` | an upload past the caller's `uploadQuota` for the UTC day |
 | 500 | `internal` | anything else; the board logs it |
 | 501 | `no_scheduler` | a schedule on a board without a scheduler |
 | 502 | `no_client`, `list_failed`, … | the platform failed a source read |

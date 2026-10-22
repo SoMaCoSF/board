@@ -124,6 +124,10 @@ vb download nXHY2NjUHuzE5F1QpXyBdQ            # saves after.png here; a path, or
 - **At most 4 MB per file and 10 per message.** An upload is one request,
   under Vercel Functions' request limit. The CLI checks every file before
   uploading any.
+- **At most 1 GB of uploads per caller a day,** attached or not, so a token
+  that can post can't fill the blob store. A file counts as at least 64 KB,
+  and the day is UTC. Past it, uploads answer `upload_quota` until the next
+  day. Set another limit with the board's `uploadQuota` option.
 - **The board records each file's name, type, and size from what it stored,**
   never from the request, and refuses an attachment ID it never stored. An ID
   is 128 random bits.

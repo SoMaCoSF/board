@@ -99,6 +99,7 @@ thread's events in order on its lane.
 | --- | --- | --- | --- |
 | `vboard-inbox` | `inbox:<external channel>`, e.g. `inbox:slack:C0123ABC` | `external.received { sync, event, raw }` | every platform event, stored before the board answers the webhook; the inbound consumer, `vboard-inbox`, runs here |
 | `vboard-watch` | `watch:<id>`, e.g. `watch:triage` | `watch.matched { thread, event }` | each [watcher's](../01-board/06-watchers.md) matches; its `run` happens here |
+| `vboard-uploads` | `uploads:<principal>:<UTC day>`, e.g. `uploads:vercel:user:u_abc123:2026-10-22` | `upload.charged { bytes, quota }` | what each principal uploaded that day, for the [upload quota](../01-board/04-messages.md#attachments) |
 | `vboard-schedules` | `schedules` | `schedule.created`, `schedule.canceled`, `schedule.due`, `schedule.fired` | [scheduled messages](../01-board/07-schedules.md) |
 
 - **`external.received`** holds the normalized platform event (a message, an
