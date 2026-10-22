@@ -1,6 +1,7 @@
 import type { z } from 'zod'
 import type { ActorView, Filters, MessageView, BoardEventView, PersonView } from '../api/routes.ts'
 import type { BoardEvent, Link } from '../contract/contract.ts'
+import { own } from '../contract/own.ts'
 import { FULL_ACCESS, type Access } from './access.ts'
 import {
   channelsReducer,
@@ -86,7 +87,7 @@ export function view(message: Message, actors: ActorsState, reader: Reader): Mes
 const hasLinks = (actors: ActorsState, id: string) => Object.values(actors.links).some((link) => link.to === id)
 
 const actorSet = (value: string, actors: ActorsState): Set<string> =>
-  actors.byId[value] || actors.links[value] || hasLinks(actors, value) ? new Set([value]) : new Set(actors.byHandle[value.toLowerCase()] ?? [])
+  own(actors.byId, value) || own(actors.links, value) || hasLinks(actors, value) ? new Set([value]) : new Set(own(actors.byHandle, value.toLowerCase()) ?? [])
 
 /**
  * Who a `--by` or `--mentions` value covers. A person (`julian`, or one of their
@@ -125,7 +126,7 @@ export const hasCriteria = (filters: ParsedFilters) =>
 type LabelFilter = readonly [string, readonly string[] | null]
 
 const hasLabel = (labels: Record<string, string>, [key, values]: LabelFilter) =>
-  key in labels && (values === null || values.includes(labels[key]!))
+  Object.hasOwn(labels, key) && (values === null || values.includes(labels[key]!))
 
 /**
  * Compiles filters once; handles resolve against the actors known at that

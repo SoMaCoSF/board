@@ -573,7 +573,7 @@ export function createSyncEngine(options: {
       if (!overrides.labels && !overrides.unset) return
       const root = await writes.reads.message(id)
       const set = Object.fromEntries(Object.entries(overrides.labels ?? {}).filter(([key, value]) => root?.labels[key] !== value))
-      const unset = (overrides.unset ?? []).filter((key) => root?.labels[key] !== undefined)
+      const unset = (overrides.unset ?? []).filter((key) => root && Object.hasOwn(root.labels, key))
       if (Object.keys(set).length || unset.length) await writeLabels(writes, { identity, authorized: await authorized('label', id), set, unset })
     }
 
@@ -651,7 +651,7 @@ export function createSyncEngine(options: {
           const desired = labels(draft?.labels ?? event.labels)
           const owned = (key: string) => event.owns?.some((prefix) => key.startsWith(prefix)) ?? false
           const set = Object.fromEntries(Object.entries(desired).filter(([key, value]) => root?.labels[key] !== value))
-          const unset = Object.keys(root?.labels ?? {}).filter((key) => !(key in desired) && (event.unset.includes(key) || overrides.unset?.includes(key) || owned(key)))
+          const unset = Object.keys(root?.labels ?? {}).filter((key) => !Object.hasOwn(desired, key) && (event.unset.includes(key) || overrides.unset?.includes(key) || owned(key)))
           if (root && !root.deleted && (Object.keys(set).length || unset.length)) await writeLabels(writes, { identity, authorized: await authorized('label', rootId), set, unset })
           if (event.reply) return result(await post({ ...source, identity, re: rootId, text: clampText(overrides.text ?? event.reply!), from: key, lenientMentions: true, ...(overrides.noSync ? { noSync: true } : {}), id: await writeId(1) }))
           return { root: rootId, message: createdHere ? rootId : null }

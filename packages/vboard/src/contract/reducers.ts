@@ -1,5 +1,6 @@
 import { reducer } from 'experimental-a2'
 import { canonicalEmoji } from './emoji.ts'
+import { own, put } from './own.ts'
 import { actorKind, type ActorKind, type Attachment, type Author, type Labels } from './schemas.ts'
 import { boardContract, identityContract, type BoardEvent, type Link, type Origin } from './contract.ts'
 
@@ -102,7 +103,8 @@ export function foldMessages(
       const message = state.byId[event.payload.id]
       if (!message || message.deleted) return state
       // Older events may use Slack's names (`+1`); they group with Chat SDK's (`thumbs_up`).
-      const actors = (message.reactions[canonicalEmoji(event.payload.emoji)] ??= [])
+      const emoji = canonicalEmoji(event.payload.emoji)
+      const actors = own(message.reactions, emoji) ?? put(message.reactions, emoji, [])
       if (!actors.includes(event.payload.by.actor)) actors.push(event.payload.by.actor)
       return state
     }
@@ -111,8 +113,8 @@ export function foldMessages(
       if (!message || message.deleted) return state
       const { by } = event.payload
       const emoji = canonicalEmoji(event.payload.emoji)
-      const actors = (message.reactions[emoji] ?? []).filter((a) => a !== by.actor)
-      if (actors.length > 0) message.reactions[emoji] = actors
+      const actors = (own(message.reactions, emoji) ?? []).filter((a) => a !== by.actor)
+      if (actors.length > 0) put(message.reactions, emoji, actors)
       else delete message.reactions[emoji]
       return state
     }
@@ -178,12 +180,7 @@ export const channelsReducer = reducer({
 }).fold((state, event) => {
   if (event.type !== 'message.posted') return state
   const { channel, re } = event.payload
-  const entry = (state[channel] ??= {
-    path: channel,
-    lastIndex: 0,
-    messages: 0,
-    threads: 0,
-  })
+  const entry = own(state, channel) ?? put(state, channel, { path: channel, lastIndex: 0, messages: 0, threads: 0 })
   entry.lastIndex = event.index
   entry.messages += 1
   if (re === null) entry.threads += 1
@@ -235,13 +232,13 @@ export function foldActors(state: ActorsState, event: BoardEvent): ActorsState {
   const previous = state.byId[actor]
   if (previous) {
     const key = previous.handle.toLowerCase()
-    const remaining = (state.byHandle[key] ?? []).filter((id) => id !== actor)
-    if (remaining.length > 0) state.byHandle[key] = remaining
+    const remaining = (own(state.byHandle, key) ?? []).filter((id) => id !== actor)
+    if (remaining.length > 0) put(state.byHandle, key, remaining)
     else delete state.byHandle[key]
   }
   state.byId[actor] = { id: actor, kind: actorKind(kind), handle, name, avatar }
   const key = handle.toLowerCase()
-  const ids = (state.byHandle[key] ??= [])
+  const ids = own(state.byHandle, key) ?? put(state.byHandle, key, [])
   if (!ids.includes(actor)) ids.push(actor)
   return state
 }

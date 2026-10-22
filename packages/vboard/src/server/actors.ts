@@ -1,6 +1,7 @@
 import type { ActorsState, Actor } from '../contract/reducers.ts'
 import { toStorable, type Author } from '../contract/schemas.ts'
 import { extractMentions } from '../contract/mentions.ts'
+import { own } from '../contract/own.ts'
 import type { Principal } from './auth.ts'
 import { badRequest } from './errors.ts'
 
@@ -132,11 +133,11 @@ export function resolveMentions(
   }
   for (const token of extractMentions(text)) {
     if (token.kind === 'actor') {
-      if (known.byId[token.actor] || pending?.id === token.actor) add(token.actor)
+      if (own(known.byId, token.actor) || pending?.id === token.actor) add(token.actor)
       else fail(badRequest(`unknown actor @[${token.actor}]`, 'unknown_mention'))
       continue
     }
-    const ids = new Set(known.byHandle[token.handle] ?? [])
+    const ids = new Set(own(known.byHandle, token.handle) ?? [])
     if (pending && pending.handle.toLowerCase() === token.handle) ids.add(pending.id)
     if (ids.size === 1) add([...ids][0]!)
     else if (ids.size === 0) unknown.push(token.handle)
