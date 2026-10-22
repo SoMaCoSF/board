@@ -6,7 +6,7 @@ import type { BoardStore } from './types.ts'
 const IOREDIS: string = 'ioredis'
 
 export type RedisOptions = {
-  /** Isolates boards on one Redis: A2's log and vboard's tables both live under it. Default `'a2'`. */
+  /** Where the board's keys go, so boards can share a Redis: A2's log and vboard's tables both live under it. Not access control: a connection reaches every key. Default `'a2'`. */
   keyPrefix?: string
 } & (
   | {

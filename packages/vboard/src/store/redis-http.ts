@@ -7,7 +7,7 @@ export type RedisHttpOptions = {
   url: string
   /** Its bearer token, e.g. `process.env.UPSTASH_REDIS_REST_TOKEN`. */
   token: string
-  /** Isolates boards on one Redis: A2's log and vboard's tables both live under it. Default `'a2'`. */
+  /** Where the board's keys go, so boards can share a Redis: A2's log and vboard's tables both live under it. Not access control: the token reaches every key. Default `'a2'`. */
   keyPrefix?: string
 }
 

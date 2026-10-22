@@ -185,6 +185,13 @@ Either holds a board of any size, with the same reads. Pick the one your app
 already runs. Postgres keeps the board on disk and reads unindexed filters with
 its own planner; Redis keeps it in memory and needs no schema.
 
+### Can previews share production's database?
+
+Not safely. A preview runs whatever a branch pushed, and a credential reaches
+the whole database: Redis's `keyPrefix` only says where the board's keys go.
+Connect production's database to Production only, and give previews their own:
+a Neon branch each, or a second Upstash database.
+
 ### Can I pass my own `pg` pool?
 
 Yes: `postgres({ client: pool })`. A2 and the tables share it, so size it for
