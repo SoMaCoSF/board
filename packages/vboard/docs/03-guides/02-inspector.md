@@ -40,8 +40,10 @@ Everything you can do from the CLI, with the board laid out:
   unset labels, and edit or delete your own messages. A toggle keeps a post on
   the board instead of syncing it.
 - **Files.** Attach files, or paste them into the composer. Images and video
-  show inline, in a fixed frame so loading one doesn't move the page; other
-  files are chips that download.
+  show inline, in a fixed frame so loading one doesn't move the page. Each
+  loads when it scrolls into view and is freed when it scrolls out, so a
+  channel full of media doesn't fill the tab's memory. Other files are chips
+  that download.
 - **Switch who you are.** Post as yourself, as a detected agent's profile, or
   as a profile you name ("reviewer"). Your permissions don't change: a profile
   is always shown with you.

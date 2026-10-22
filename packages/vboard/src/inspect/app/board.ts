@@ -291,29 +291,50 @@ export const retry = ({ files: _shown, ...pending }: store.Pending) => send(pend
 
 // --- attachments -----------------------------------------------------------------
 
-const objectUrls = new Map<string, Promise<string>>()
+type Held = { url: Promise<string>; holders: number; abort: AbortController }
 
-/** An attachment as a `blob:` URL. The page fetches it with its token: an `<img>` can't send one. */
-export function attachmentUrl(id: string): Promise<string> {
-  let url = objectUrls.get(id)
-  if (!url) {
-    url = client.download(id).then(async (response) => URL.createObjectURL(await response.blob()))
-    url.catch(() => objectUrls.delete(id))
-    objectUrls.set(id, url)
+const held = new Map<string, Held>()
+
+/**
+ * An attachment as a `blob:` URL, kept until its last holder releases it. The
+ * page fetches it with its token: an `<img>` can't send one.
+ */
+export function holdAttachment(id: string): { url: Promise<string>; release: () => void } {
+  let entry = held.get(id)
+  if (!entry) {
+    const abort = new AbortController()
+    const url = client.download(id, { signal: abort.signal }).then(async (response) => URL.createObjectURL(await response.blob()))
+    const created: Held = { url, holders: 0, abort }
+    url.catch(() => held.get(id) === created && held.delete(id))
+    held.set(id, created)
+    entry = created
   }
-  return url
+  entry.holders++
+  const mine = entry
+  return {
+    url: mine.url,
+    release: () => {
+      if (--mine.holders > 0) return
+      if (held.get(id) === mine) held.delete(id)
+      mine.abort.abort()
+      mine.url.then(URL.revokeObjectURL, () => {})
+    },
+  }
 }
 
 /** Saves an attachment under its own name. */
 export async function saveAttachment(attachment: Attachment) {
+  const file = holdAttachment(attachment.id)
   try {
     const link = document.createElement('a')
-    link.href = await attachmentUrl(attachment.id)
+    link.href = await file.url
     link.download = attachment.name
     link.click()
   } catch (error) {
     toast(`couldn't download ${attachment.name}: ${message(error)}`)
   }
+  // The browser reads the file after click() returns.
+  setTimeout(file.release, 10_000)
 }
 export const discard = (key: string) => {
   outgoing.delete(key)

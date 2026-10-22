@@ -115,7 +115,8 @@ const VIDEO = /^video\/(mp4|webm)$/
 
 /**
  * A message's files: images and videos in a fixed-size frame, so one loading
- * never moves what you're reading; anything else as a chip that saves it.
+ * never moves what you're reading, loaded only while on screen; anything else
+ * as a chip that saves it.
  */
 export function Attachments({ items }: { items: Attachment[] }) {
   if (items.length === 0) return null
@@ -130,27 +131,38 @@ export function Attachments({ items }: { items: Attachment[] }) {
 
 function AttachmentView({ attachment }: { attachment: Attachment }) {
   const media = IMAGE.test(attachment.type) ? 'image' : VIDEO.test(attachment.type) ? 'video' : null
+  const [frame, setFrame] = useState<HTMLElement | null>(null)
+  const [onScreen, setOnScreen] = useState(false)
   const [url, setUrl] = useState<string | null>(null)
   useEffect(() => {
-    if (!media) return
+    if (!frame) return
+    const observer = new IntersectionObserver(([entry]) => setOnScreen(entry!.isIntersecting))
+    observer.observe(frame)
+    return () => observer.disconnect()
+  }, [frame])
+  useEffect(() => {
+    if (!onScreen) return
     let live = true
-    board.attachmentUrl(attachment.id).then(
+    const file = board.holdAttachment(attachment.id)
+    file.url.then(
       (next) => live && setUrl(next),
       () => {},
     )
     return () => {
       live = false
+      setUrl(null)
+      file.release()
     }
-  }, [attachment.id, media])
+  }, [attachment.id, onScreen])
   const title = `${attachment.name} · ${fileSize(attachment.size)}`
   if (media === 'image')
     return (
-      <button className="attachment-media" title={`${title} · click to open`} onClick={() => url && window.open(url, '_blank', 'noopener')}>
+      <button ref={setFrame} className="attachment-media" title={`${title} · click to open`} onClick={() => url && window.open(url, '_blank', 'noopener')}>
         {url && <img src={url} alt={attachment.name} />}
       </button>
     )
   if (media === 'video')
-    return <span className="attachment-media" title={title}>{url && <video src={url} controls preload="metadata" />}</span>
+    return <span ref={setFrame} className="attachment-media" title={title}>{url && <video src={url} controls preload="metadata" />}</span>
   return (
     <button className="file" title={`download ${attachment.name}`} onClick={() => void board.saveAttachment(attachment)}>
       <FileText size={14} strokeWidth={1.75} />
