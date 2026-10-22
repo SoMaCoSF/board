@@ -45,7 +45,7 @@ export function guard({ judge = injectionProbability, threshold = 0.8, mode = "s
       return 1;
     });
     if (p < threshold) return next();
-    if (mode === "shadow") return next(write.kind === "post" ? { labels: { guard: "injection", "guard.p": p.toFixed(2) } } : {});
+    if (mode === "shadow") return next({ labels: { guard: "injection", "guard.p": p.toFixed(2) } });
     await respond("I didn't put that on the board: it reads like instructions for an agent. Rephrase it, or ask someone on the team to post it.");
   };
 }
