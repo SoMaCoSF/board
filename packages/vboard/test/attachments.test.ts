@@ -18,8 +18,7 @@ vi.mock('node:crypto', async (original) => {
 async function setup(options: Parameters<typeof testBoard>[0] = {}) {
   const board = testBoard(options)
   const token = await personToken()
-  const fetch = ((input: RequestInfo | URL, init?: RequestInit) => board.fetch(new Request(input, init))) as typeof globalThis.fetch
-  return { board, token, client: createBoardClient({ url: BOARD_URL, token, fetch }), call: caller(board.fetch, token) }
+  return { board, token, client: createBoardClient({ url: BOARD_URL, token, fetch: fetchVia(board) }), call: caller(board.fetch, token) }
 }
 
 describe('attachments', () => {
@@ -109,4 +108,47 @@ describe('attachments', () => {
       vi.unstubAllEnvs()
     }
   })
+
+  it("refuses a principal's uploads past its daily quota, counting each file as at least 64 KB", async () => {
+    const stored = countingBlob()
+    const { board, client } = await setup({ blob: stored.blob, uploadQuota: 4 * 64 * 1024 })
+    for (let i = 0; i < 4; i++) await client.upload({ data: PNG, name: `shot-${i}.png` })
+    await expect(client.upload({ data: PNG, name: 'one-more.png' })).rejects.toMatchObject({ status: 429, code: 'upload_quota' })
+    expect(stored.files()).toBe(4)
+
+    const other = createBoardClient({ url: BOARD_URL, token: await personToken('u_other'), fetch: fetchVia(board) })
+    await other.upload({ data: PNG, name: 'theirs.png' })
+    expect(stored.files()).toBe(5)
+
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 86_400_000 })
+    try {
+      const tomorrow = createBoardClient({ url: BOARD_URL, token: await personToken(), fetch: fetchVia(board) })
+      await tomorrow.upload({ data: PNG, name: 'tomorrow.png' })
+      expect(stored.files()).toBe(6)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('holds the quota when uploads race', async () => {
+    const stored = countingBlob()
+    const { client } = await setup({ blob: stored.blob, uploadQuota: 4 * 64 * 1024 })
+    const results = await Promise.allSettled(Array.from({ length: 12 }, (_, i) => client.upload({ data: PNG, name: `shot-${i}.png` })))
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(4)
+    expect(results.filter((result) => result.status === 'rejected').map((result) => (result as PromiseRejectedResult).reason.code)).toEqual(Array(8).fill('upload_quota'))
+    expect(stored.files()).toBe(4)
+  })
 })
+
+const fetchVia = (board: ReturnType<typeof testBoard>) =>
+  ((input: RequestInfo | URL, init?: RequestInit) => board.fetch(new Request(input, init))) as typeof globalThis.fetch
+
+/** A memory blob store that counts the files in it, metadata aside. */
+function countingBlob() {
+  const blob = memoryBlob()
+  const keys = new Set<string>()
+  return {
+    blob: { ...blob, put: async (key: string, data: Uint8Array, type: string) => (keys.add(key), blob.put(key, data, type)) },
+    files: () => [...keys].filter((key) => !key.endsWith('.json')).length,
+  }
+}
