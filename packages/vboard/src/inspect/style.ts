@@ -202,7 +202,6 @@ a:focus-visible, button:focus-visible, [role='separator']:focus-visible { outlin
 .text table { margin: 4px 0 6px; border-collapse: collapse; font-size: 12px; display: block; overflow-x: auto; max-width: 100%; }
 .text th, .text td { padding: 3px 10px; border: 1px solid var(--hairline); text-align: left; white-space: nowrap; }
 .text th { color: var(--bright); font-weight: 600; background: var(--shade); }
-.text img { max-width: 100%; max-height: 260px; vertical-align: middle; }
 .text hr { border: 0; height: 1px; margin: 8px 0; background: var(--hairline); }
 .text input[type='checkbox'] { margin: 0 6px 0 0; vertical-align: middle; }
 .text ul.contains-task-list { list-style: none; padding-left: 2px; }

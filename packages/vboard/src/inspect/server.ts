@@ -46,7 +46,7 @@ const shell = (token: string) => `<!doctype html>
 const CSP = [
   "default-src 'none'",
   // Attachments arrive as `blob:` URLs: the page fetches them through the proxy, with its token.
-  'img-src https: http://localhost:* http://127.0.0.1:* data: blob:',
+  'img-src https: data: blob:',
   'media-src blob:',
   "style-src 'unsafe-inline'",
   "script-src 'self'",

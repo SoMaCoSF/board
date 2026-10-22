@@ -8,6 +8,7 @@ import type { MessageView } from '../../api/routes.ts'
 import { authorName, who } from '../../cli/format.ts'
 import { displayEmoji } from '../../contract/emoji.ts'
 import { fileSize } from '../../contract/files.ts'
+import { builtInAvatarSvg } from '../../server/avatars.ts'
 import type { Attachment } from '../../contract/schemas.ts'
 import * as board from './board.ts'
 import { Ago } from './nav.tsx'
@@ -64,11 +65,21 @@ const COMPONENTS = {
       {children}
     </a>
   ),
+  img: ({ src, alt }: { src?: string; alt?: string }) =>
+    src ? (
+      <a href={src} target="_blank" rel="noreferrer">
+        {alt || src}
+      </a>
+    ) : (
+      alt
+    ),
 }
 
 /**
  * Markdown, as GitHub and Slack (through Chat SDK) write it: tables, lists,
- * code, links. Raw HTML is dropped. Right-clicking it gives the browser's menu.
+ * code, links. Raw HTML is dropped, and images are links: anyone who can post
+ * would otherwise make every reader's browser fetch a URL of their choosing.
+ * Right-clicking it gives the browser's menu.
  */
 export const Text = memo(function Text({ text, edited = false }: { text: string; edited?: boolean }) {
   return (
@@ -186,11 +197,27 @@ export function SourceLogo({ platform }: { platform: string }) {
   )
 }
 
+/** Anyone can set an avatar, so it never points the reader's browser at their own machine. */
+function avatarSrc(value: string): string | null {
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return null
+  }
+  const builtIn = builtInAvatarSvg(url)
+  if (builtIn) return `data:image/svg+xml,${encodeURIComponent(builtIn)}`
+  const host = url.hostname.replace(/\.$/, '')
+  const local = host === 'localhost' || host.endsWith('.localhost') || host.startsWith('[') || /^[\d.]+$/.test(host)
+  return url.protocol === 'https:' && !local ? value : null
+}
+
 export function Avatar({ name, url, size = 28 }: { name: string; url: string | null | undefined; size?: number }) {
   const [broken, setBroken] = useState(false)
+  const src = url ? avatarSrc(url) : null
   return (
     <span className="avatar" style={{ width: size, height: size, fontSize: size * 0.43 }}>
-      {url && !broken ? <img src={url} alt="" referrerPolicy="no-referrer" onError={() => setBroken(true)} /> : name.slice(0, 1).toUpperCase()}
+      {src && !broken ? <img src={src} alt="" referrerPolicy="no-referrer" onError={() => setBroken(true)} /> : name.slice(0, 1).toUpperCase()}
     </span>
   )
 }
