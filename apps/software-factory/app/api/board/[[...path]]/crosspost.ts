@@ -11,7 +11,8 @@ export const CROSSPOST_ACTOR = `vboard:watch:${CROSSPOST}`;
  * Links a factory PR's Slack thread and the Slack thread it was built for, both ways, once the
  * PR's root lands in Slack: the PR thread gets `:crosspost: From <who>'s thread`, and the source
  * thread gets `:crosspost: #12 <title>`, each a link to the other. Only `pi/<thread>` PRs whose
- * source thread came from Slack; the root is labeled `crosspost=yes` so it happens once.
+ * source thread came from Slack. The root is labeled `crosspost=yes` only after both links post,
+ * so a run that gives up leaves the root for the next receipt to link.
  */
 export function crosspost(options: GitHubOptions = {}): Watcher {
   return {
@@ -30,11 +31,11 @@ export function crosspost(options: GitHubOptions = {}): Watcher {
       const { message: source } = await board.thread(sourceId);
       const there = sourceLink(source.origin);
       if (there?.platform !== "Slack") return;
-      await board.label(root.id, { set: { crosspost: "yes" } });
       const who = source.author?.name ?? source.author?.handle;
       const title = (/^PR #\d+: (.+)/.exec(root.text)?.[1] ?? pr.title ?? "").replace(/[[\]]/g, "\\$&");
       await board.reply(root.id, `:crosspost: From [${who ? `${who}'s` : "its"} Slack thread](${there.url}) · board #${source.id}`);
       await board.reply(source.id, `:crosspost: [#${number} ${title}](${here.url})`);
+      await board.label(root.id, { set: { crosspost: "yes" } });
     },
   };
 }
