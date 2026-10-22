@@ -135,9 +135,12 @@ export const { GET, POST } = board({
 ```
 
 There's nothing to apply: the keys appear as the board writes them. Each write
-is one script that checks the log index and changes every key the event
-touches, so it applies once or not at all. That needs one server, or a
-provider without cluster mode, like Upstash.
+is a script that checks the log index and changes every key the event touches,
+so it applies once or not at all. An event too big for one request, like a
+label on the root of a long thread, goes in scripts of at most 500 writes:
+each checks the index, only the last moves it, and a retry redoes the event
+from the start. That needs one server, or a provider without cluster mode, like
+Upstash.
 
 | Option | What it does |
 | --- | --- |

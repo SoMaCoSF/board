@@ -13,10 +13,11 @@ type Meta = { re: number | null; c: string; t: string; ca: number; d: boolean }
 type Summary = { n: number; at: number }
 
 /**
- * Applies an event's writes if it's the one to apply: with `next`, only the very
- * next index; otherwise any index past the position. The check and the writes are
- * one script, so a retried or superseded attempt changes nothing. Every key it
- * touches comes in KEYS: the position first, then the writes' own.
+ * Applies a part of an event's writes if it's the one to apply: with `next`, only
+ * the very next index; otherwise any index past the position. The check and the
+ * writes are one script, so a retried or superseded attempt changes nothing. The
+ * last part (ARGV[3] is 'last') moves the position. Every key it touches comes in
+ * KEYS: the position first, then the writes' own.
  */
 const APPLY = `
 local pos = tonumber(redis.call('GET', KEYS[1]) or '-1')
@@ -26,10 +27,10 @@ if ARGV[2] == 'next' then
 elseif pos >= index then
   return 0
 end
-for _, op in ipairs(cjson.decode(ARGV[3])) do
+for _, op in ipairs(cjson.decode(ARGV[4])) do
   redis.call(op[1], KEYS[op[2]], unpack(op, 3))
 end
-redis.call('SET', KEYS[1], ARGV[1])
+if ARGV[3] == 'last' then redis.call('SET', KEYS[1], ARGV[1]) end
 return 1
 `
 
@@ -284,7 +285,7 @@ while true do
 end
 `
 
-/** Every message in a set of IDs (a thread, or those carrying an attachment), a thousand to an HMGET. KEYS: the set, messages. */
+/** Every message in a set of IDs (those carrying an attachment), a thousand to an HMGET. KEYS: the set, messages. */
 const THREAD = `
 local ids = redis.call('ZRANGE', KEYS[1], 0, -1)
 local rows = {}
@@ -293,6 +294,13 @@ for first = 1, #ids, 1000 do
   for i = 1, #part do rows[#rows + 1] = part[i] end
 end
 return rows
+`
+
+/** A thread's messages after ARGV[1], at most ARGV[2] of them: the last one's ID, and the rows. KEYS: the thread, messages. */
+const THREAD_PAGE = `
+local ids = redis.call('ZRANGEBYSCORE', KEYS[1], ARGV[1], '+inf', 'LIMIT', 0, tonumber(ARGV[2]))
+if #ids == 0 then return false end
+return { ids[#ids], redis.call('HMGET', KEYS[2], unpack(ids)) }
 `
 
 /** The position and every channel, read together. KEYS: position, channels. */
@@ -304,6 +312,12 @@ const SEP = '\u001f'
 
 /** How many IDs one query script reads before it hands back where it got to. */
 const SCAN_BUDGET = 4000
+
+/** How many writes one script makes: a bigger event goes in several, so no request outgrows a provider's limit. */
+const WRITES_PER_SCRIPT = 500
+
+/** How many replies a root's label change reads at a time. */
+const REPLIES_PER_PAGE = 100
 
 /** JSON a script decodes: Redis's cjson refuses an escaped lone surrogate, so each goes out as U+FFFD. */
 const luaJson = (value: unknown) => JSON.stringify(value, (_key, item: unknown) => (typeof item === 'string' ? item.toWellFormed() : item))
@@ -322,8 +336,8 @@ type Op = [command: string, key: string, ...args: string[]]
  * The tables on Redis: messages, versions, and sync rows in hashes and sorted
  * sets under `${prefix}:vboard`, and a sorted set per filter value, scored by
  * message ID. Each event is two scripts, one that reads what it changes and
- * one that checks the position and writes; each query is one script, which
- * walks the smallest set that applies.
+ * one that checks the position and writes (several, for a big event); each
+ * query is one script, which walks the smallest set that applies.
  */
 export function redisTables(send: RedisCall, prefix: string, options: { scanBudget?: number } = {}): MessageTables {
   // Redis keeps a lone surrogate as U+FFFD: every string goes out well-formed, so a write and the read that finds it agree.
@@ -408,20 +422,31 @@ export function redisTables(send: RedisCall, prefix: string, options: { scanBudg
     return { read, sync }
   }
 
-  /** A root's replies, when its labels changed: they're in its label sets too. */
-  async function repliesOf(read: Read, change: Change): Promise<Message[]> {
+  /** A root's replies, read a page at a time, when its labels changed: they're in its label sets too. */
+  async function* repliesOf(read: Read, change: Change): AsyncGenerator<Message> {
     const after = change.message?.after
-    if (!after || after.re !== null || change.message!.created || !change.message!.terms) return []
-    if (JSON.stringify(after.labels) === JSON.stringify(read.message!.labels)) return []
-    const rows = (await evaluate(THREAD, [k.thread(after.id), k.messages], [])) as unknown[]
-    return rows.flatMap((row) => {
-      const message = parse<Message>(row)
-      return message && message.id !== after.id ? [message] : []
-    })
+    if (!after || after.re !== null || change.message!.created || !change.message!.terms) return
+    if (JSON.stringify(after.labels) === JSON.stringify(read.message!.labels)) return
+    for (let from = `(${after.id}`; ; ) {
+      const page = (await evaluate(THREAD_PAGE, [k.thread(after.id), k.messages], [from, REPLIES_PER_PAGE])) as [string, unknown[]] | null
+      if (!page) return
+      yield* page[1].flatMap((row) => parse<Message>(row) ?? [])
+      from = `(${page[0]}`
+    }
+  }
+
+  /** What a root's label change does to a reply's label sets. */
+  function inherited(reply: Message, was: Record<string, string>, is: Record<string, string>): Op[] {
+    const out: Op[] = []
+    const replyWas = inLabelSets(reply.labels, was)
+    const replyIs = inLabelSets(reply.labels, is)
+    for (const token of replyWas) if (!replyIs.has(token)) out.push(['ZREM', k.label(token), String(reply.id)])
+    for (const token of replyIs) if (!replyWas.has(token)) out.push(['ZADD', k.label(token), String(reply.id), String(reply.id)])
+    return out
   }
 
   /** The event's writes, as commands. */
-  function writes(event: BoardEvent, read: Read | null, replies: Message[], change: Change, sync: SyncChange): Op[] {
+  function writes(event: BoardEvent, read: Read | null, change: Change, sync: SyncChange): Op[] {
     const out: Op[] = []
     const m = change.message?.after
     if (m && read) {
@@ -452,13 +477,6 @@ export function redisTables(send: RedisCall, prefix: string, options: { scanBudg
         const files = new Set(m.attachments.map((file) => file.id))
         for (const file of filesBefore) if (!files.has(file)) out.push(['ZREM', k.attachment(file), id])
         for (const file of files) if (!filesBefore.has(file)) out.push(['ZADD', k.attachment(file), id, id])
-        // A root's labels count for its replies too.
-        for (const reply of replies) {
-          const replyWas = inLabelSets(reply.labels, old!.labels)
-          const replyIs = inLabelSets(reply.labels, m.labels)
-          for (const token of replyWas) if (!replyIs.has(token)) out.push(['ZREM', k.label(token), String(reply.id)])
-          for (const token of replyIs) if (!replyWas.has(token)) out.push(['ZADD', k.label(token), String(reply.id), String(reply.id)])
-        }
       }
     }
     if (change.summary) {
@@ -481,15 +499,32 @@ export function redisTables(send: RedisCall, prefix: string, options: { scanBudg
     if (!found) return false
     const { read, sync: syncRead } = found
     const change = read ? project(read, event) : {}
-    const replies = read ? await repliesOf(read, change) : []
-    const ops = writes(event, read, replies, change, projectSync(syncRead, event))
-    const keys = [k.pos]
-    const slots = new Map<string, number>()
-    const encoded = ops.map(([command, key, ...args]) => {
-      if (!slots.has(key)) slots.set(key, keys.push(key))
-      return [command, slots.get(key)!, ...args]
-    })
-    return Number(await evaluate(APPLY, keys, [event.index, mode, luaJson(encoded)])) === 1
+    const ops = writes(event, read, change, projectSync(syncRead, event))
+    /** One script's worth of writes: false when the event isn't the one to apply, or no longer is. */
+    const step = async (part: Op[], last: boolean) => {
+      const keys = [k.pos]
+      const slots = new Map<string, number>()
+      const encoded = part.map(([command, key, ...args]) => {
+        if (!slots.has(key)) slots.set(key, keys.push(key))
+        return [command, slots.get(key)!, ...args]
+      })
+      return Number(await evaluate(APPLY, keys, [event.index, mode, last ? 'last' : '', luaJson(encoded)])) === 1
+    }
+    // An event too big for one script goes in several: each checks the position, and only the last moves it.
+    let sets: Op[] = []
+    const drain = async (all: boolean) => {
+      while (sets.length >= WRITES_PER_SCRIPT || (all && sets.length > 0)) if (!(await step(sets.splice(0, WRITES_PER_SCRIPT), false))) return false
+      return true
+    }
+    if (read)
+      for await (const reply of repliesOf(read, change)) {
+        sets = sets.concat(inherited(reply, read.message!.labels, change.message!.after!.labels))
+        if (!(await drain(false))) return false
+      }
+    if (sets.length + ops.length <= WRITES_PER_SCRIPT) return step(sets.concat(ops), true)
+    // The hashes are what an attempt reads, so they change last: a retry after some parts landed makes the same writes.
+    sets = sets.concat(ops.filter(([command]) => command !== 'HSET'))
+    return (await drain(true)) && step(ops.filter(([command]) => command === 'HSET'), true)
   }
 
   /**

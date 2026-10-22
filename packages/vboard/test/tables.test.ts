@@ -538,6 +538,24 @@ describe.skipIf(!redisUrl)('the Redis tables', () => {
     const found = await tables.messages({ labels: [{ key: 'k49', values: ['v'] }] }, { limit: 1000 })
     expect(found.messages.map((m) => m.id)).toEqual(Array.from({ length: replies + 2 }, (_, i) => (i === replies + 1 ? replies + 3 : i + 1)))
   }, 60_000)
+
+  it('finish an event that stopped partway through its scripts on the next attempt', async () => {
+    let writes = 0
+    let failAt = 0
+    const tables = tablesOver((command, args) =>
+      command === 'EVAL' && String(args[0]).includes("ARGV[3] == 'last'") && ++writes === failAt ? new Error('ECONNRESET') : null,
+    )
+    await tables.apply(post(1, null))
+    await tables.apply(relabel(2, Object.fromEntries(keys(300).map((key) => [key, 'v'])), []))
+    const unlabeled = relabel(3, {}, keys(300))
+    failAt = writes + 2
+    await expect(tables.apply(unlabeled)).rejects.toThrow('ECONNRESET')
+    expect(await tables.position()).toBe(2)
+    await tables.apply(unlabeled)
+    expect(await tables.position()).toBe(3)
+    expect((await tables.message(1))!.labels).toEqual({})
+    expect((await tables.messages({ labels: [{ key: 'k299', values: null }] }, { limit: 10 })).messages).toEqual([])
+  })
 })
 
 describe('the SQL tables', () => {
