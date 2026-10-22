@@ -10,7 +10,8 @@ export const store = env
   ? redisHttp({
       url: process.env.KV_REST_API_URL!,
       token: process.env.KV_REST_API_TOKEN!,
-      // One Redis serves every environment: a preview never touches production's log.
+      // Production's Upstash database is connected to Production only: previews run any branch's code, and the
+      // token reaches every key whatever its prefix.
       // `-2` since A2 0.17 changed its Redis layout; the log under `vboard-factory` was copied over.
       keyPrefix: env === "production" ? "vboard-factory-2" : `vboard-factory-2:${env}`,
     })

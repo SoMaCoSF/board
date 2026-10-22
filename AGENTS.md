@@ -58,11 +58,13 @@ root. Posts to `dev` reach Slack's #development-messageboard and GitHub, so
 reply in an existing thread rather than starting one.
 
 - Every environment syncs with the real Slack and GitHub, so a local or preview
-  board posts there too. `VERCEL_ENV` only picks the store: production's Redis keys,
-  a preview's own keys in the same Redis, or SQLite at `.a2/dev.db` locally. On
-  Redis the store holds A2's log and the board's tables (`<prefix>:vboard:*`),
-  which fill from the log on their own. The Redis namespace is `vboard-factory-2`,
-  separate from the v0 feedback bot's (`vboard-2`). A2 0.21 reads what 0.17 to
+  board posts there too. `VERCEL_ENV` only picks the store: production's Upstash
+  database, the previews' own, or SQLite at `.a2/dev.db` locally. Production's
+  database is connected to Production only: previews run any branch's code, and
+  a key prefix isn't access control. On Redis the store holds A2's log and the
+  board's tables (`<prefix>:vboard:*`), which fill from the log on their own.
+  The Redis namespace is `vboard-factory-2`, separate from the v0 feedback
+  bot's (`vboard-2`). A2 0.21 reads what 0.17 to
   0.20 wrote under them; work they hadn't finished when 0.21 deployed is dropped.
   Slack channel `C0C8XN8SQRG` (#development-messageboard), GitHub
   PRs, and GitHub issues all mirror `dev`. Connect uses `slack/vboard-factory`,
@@ -236,11 +238,12 @@ VBOARD_URL=https://vboard.playground-vercel.tools/api/board pnpm exec vb inspect
 ```
 
 - Every environment syncs with the real Slack, so a local or preview board posts
-  there too. `VERCEL_ENV` only picks the store: production's Redis keys
-  (`vboard/store-redis-http` on the project's Upstash, prefix `vboard-2`), a
-  preview's own keys in the same Redis, or SQLite at `.a2/dev.db` locally. The
-  board's tables fill from the log on their own, so a new prefix needs nothing
-  applied. The channels are private, so they're mapped by ID.
+  there too. `VERCEL_ENV` only picks the store: production's Upstash database
+  (`vboard/store-redis-http`, prefix `vboard-2`), the previews' own, or SQLite
+  at `.a2/dev.db` locally. Production's database is connected to Production
+  only, as in the factory. The board's tables fill from the log on their own, so
+  a new prefix or database needs nothing applied. The channels are private, so
+  they're mapped by ID.
 - `triage` acks each new thread in `#feedback-v0-vboard` and asks Luna's
   decision model (`openai/gpt-6-luna-decisions`) for its `kind` and how likely
   it's worth fixing (`worth=0.00`–`1.00`). A bug or feature at 0.7 or more gets
