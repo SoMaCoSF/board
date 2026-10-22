@@ -667,6 +667,7 @@ export const schedulesContract = contract({
     'schedule.canceled': z.object({ id, by: Author, reason: z.enum(['canceled', 'thread_deleted']) }),
     'schedule.due': z.object({ id, n, at }),                 // (server) an A2 timer
     'schedule.fired': z.object({ id, n, message, next }),    // (server)
+    'schedule.takeover': z.object({ deployment }),           // (server) the Vercel deployment that sends from now on
   },
 })
 ```
@@ -2343,6 +2344,12 @@ vb schedule cancel s12              # ada answered: nothing automatic, whoever r
   The next send is the next slot after now, so after downtime it sends once
   rather than replaying every missed slot. Vercel Queues delays at most 6 days,
   so a send further out goes in hops of up to 5.
+- **The newest deployment sends.** Vercel Queues delivers a timer only to the
+  deployment that armed it, and each deployment checks access under its own
+  rules. So each instance's first request appends `schedule.takeover` with its
+  `VERCEL_DEPLOYMENT_ID` (unless its deployment is already the one that sends)
+  and arms every pending schedule's next send itself. A send due on any other
+  deployment is a no-op, so an earlier deployment's rules never post one.
 - **It needs a scheduler.** Without one, `POST /schedules` answers 501.
 
 ## Non-goals for v1
