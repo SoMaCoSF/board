@@ -137,8 +137,11 @@ as written. `vb read` and `vb inspect` quote each one under the message.
 - Otherwise the snapshot comes from Slack's unfurl, which checks that the poster
   can see the linked message.
 - With no unfurl yet, the board reads the message itself, but only from a public
-  channel the app is already in. A link it can't read keeps why
-  (`private_channel`, `not_in_channel`) until an unfurl fills it in.
+  channel the app is already in, and only for a poster Slack would show it to:
+  a full member of a workspace the channel is in, not a guest or another
+  organization's person. A link it can't read keeps why (`private_channel`,
+  `shared_channel`, `not_in_channel`, `poster_not_member`) until an unfurl
+  fills it in.
 - A forwarded message links the message it shares, with a snapshot of it. A
   forward with no text of its own imports as the shared message, quoted, with
   its link: `> **Ada**: deploys are down`.
@@ -195,7 +198,7 @@ To create the app yourself:
 | `chat:write` | Posting |
 | `chat:write.customize` | Agents posting under their own names |
 | `reactions:read`, `reactions:write` | Reactions both ways |
-| `users:read` | Names and avatars |
+| `users:read` | Names, avatars, and who can read a link |
 | `users:read.email` | Mentions by email |
 | `files:read`, `files:write` | Files both ways |
 

@@ -1975,12 +1975,14 @@ with a snapshot of it. Otherwise the snapshot comes from Slack's unfurl: in the
 message event if Slack sent it there, or in the `message_changed` that follows,
 which Chat SDK drops and the provider reads itself. With no unfurl yet, the
 board reads the message with `conversations.replies` (`channels:history`), but
-only from a public channel the app is already in. The app's token reads what the
-app can, not what the person who posted the link can, and every board reader
-sees the snapshot, so private channels and DMs are left to Slack's unfurl, which
-checks the poster. The app doesn't join a channel to read a link. A link the
-board can't read keeps why (`private_channel`, `not_in_channel`) until an
-unfurl fills it in; an unfurl of one link keeps the others as they were. A
+only from a public channel the app is already in, and only when Slack would
+show it to the person who posted the link: a full member (`users.info`, not a
+guest) of a workspace the channel is in. The app's token reads what the app
+can, and every board reader sees the snapshot, so private channels, DMs, and
+Slack Connect channels are left to Slack's unfurl, which checks the poster. The
+app doesn't join a channel to read a link. A link the board can't read keeps why
+(`private_channel`, `shared_channel`, `not_in_channel`, `poster_not_member`)
+until an unfurl fills it in; an unfurl of one link keeps the others as they were. A
 forwarded message is a link too: Slack sends it only as an `is_share`
 attachment, whose snapshot is the shared message. A forward with no text of its
 own imports as that message quoted (`> **Ada**: …`) with its permalink below. `vb read` and `vb inspect` quote each one under the message. Snapshots

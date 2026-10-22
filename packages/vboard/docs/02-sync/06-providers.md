@@ -157,7 +157,7 @@ Each has a default that does nothing, or says the platform can't:
 | `uploadFiles(thread, files)`, `deleteFiles(ids)`, `refusesFiles(error)` | Files out. `refusesFiles` tells a permanent refusal (notes instead) from a failure worth retrying |
 | `fetchFile(file)` | Files in |
 | `fetchRoot(thread)` | Recovering a root when a reply arrives in a thread the board hasn't seen |
-| `fetchLink(link)` | Reading a linked message the platform didn't describe |
+| `fetchLink(link, poster)` | Reading a linked message the platform didn't describe, if `poster` could read it there |
 | `read(target, { limit })` | `vb sources <key> read` |
 | `mention(actor)` | A board mention in the platform's native form |
 | `findByEmail(email)` | `@[ada@acme.com]` mentions |
