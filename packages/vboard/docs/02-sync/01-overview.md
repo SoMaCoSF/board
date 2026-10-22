@@ -143,8 +143,10 @@ the [client reference](../04-reference/02-client.md).
 
 Every entry gets its webhook route automatically: `/webhooks/<key>` under the
 board's mount, e.g. `https://example.com/api/board/webhooks/slack`. It's the only
-route that takes no board token; the adapter verifies the request instead. The
-setup happens on the platform, once per entry and deployment.
+route that takes no board token; the adapter verifies the request instead. It
+reads at most 4.5 MB of a body, the most a Vercel Function accepts, and answers
+anything larger with a 413 before the adapter sees it. The setup happens on the
+platform, once per entry and deployment.
 
 **With Vercel Connect,** the board holds no platform secrets: `botToken` mints a
 short-lived token per call, and `webhookVerifier` accepts only Vercel OIDC tokens

@@ -226,10 +226,12 @@ async function readJson(request: Request): Promise<unknown> {
   }
 }
 
-const tooLarge = () => new HttpError(413, 'too_large', `attachments are at most ${ATTACHMENT_BYTES_MAX / 1024 / 1024} MB`)
+/** Vercel Functions' request limit, so a delivery a platform could make before is never refused. */
+const WEBHOOK_BYTES_MAX = 4.5 * 1024 * 1024
 
 /** The body, refused as soon as it's past `max`: with or without a `content-length`, it never reads more. */
-async function readCapped(request: Request, max: number): Promise<Uint8Array> {
+async function readCapped(request: Request, max: number, what: string): Promise<Uint8Array<ArrayBuffer>> {
+  const tooLarge = () => new HttpError(413, 'too_large', `${what} are at most ${max / 1024 / 1024} MB`)
   if (Number(request.headers.get('content-length') ?? 0) > max) throw tooLarge()
   const chunks: Uint8Array[] = []
   let size = 0
@@ -520,7 +522,7 @@ export function board(options: BoardOptions = {}) {
         case 'webhook':
           // Platforms can't send a board token: the adapter verifies the request.
           if (!engine) throw notFound('this board has no sync configured')
-          return await engine.handleWebhook(match.param!, request)
+          return await engine.handleWebhook(match.param!, new Request(request, { body: await readCapped(request, WEBHOOK_BYTES_MAX, 'webhook bodies') }))
       }
 
       const principal = injected?.principal ?? (await authenticate(request, boardUrl))
@@ -719,7 +721,7 @@ export function board(options: BoardOptions = {}) {
             throw badRequest('`x-board-filename` is not URI-encoded')
           }
           const attachment = await writeUpload(blob, {
-            data: await readCapped(request, ATTACHMENT_BYTES_MAX),
+            data: await readCapped(request, ATTACHMENT_BYTES_MAX, 'attachments'),
             name: decoded,
             type: request.headers.get('content-type'),
             uploadedBy: principal.id,
