@@ -3,6 +3,7 @@ import { createGitHubAdapter } from '@chat-adapter/github'
 import { expect, it } from 'vitest'
 import { github } from '../src/sync/github.ts'
 import type { ReceivedEvent } from '../src/sync/provider.ts'
+import { BOARD_URL, testBoard } from './harness.ts'
 
 const secret = 'test-secret'
 const repository = { id: 1, name: 'vboard', full_name: 'basehub-ai/vboard', owner: { id: 2, login: 'basehub-ai' } }
@@ -66,4 +67,35 @@ it("ignores edits to the board's own comments, which it already has", async () =
   const theirs = { ...own, user: vercel }
   const [edited] = await send('issue_comment', { action: 'edited', comment: theirs, issue, repository, sender: vercel })
   expect(edited?.event).toMatchObject({ kind: 'edited', message: '77', text: 'from the board' })
+})
+
+it('stops reading an unsigned webhook body once it is past the limit, and still verifies a signed one', async () => {
+  const adapter = createGitHubAdapter({ token: 'ghp_test', webhookSecret: secret, userName: 'vboard-factory[bot]', botUserId: 1 })
+  const board = testBoard({ sync: { github: github({ adapter, repos: { 'basehub-ai/vboard': 'dev' } }) } })
+  let sent = 0
+  const flooding = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (sent === 64 * 1024 * 1024) return controller.close()
+      sent += 1024 * 1024
+      controller.enqueue(new Uint8Array(1024 * 1024).fill(0x20))
+    },
+  })
+  const flood = await board.fetch(new Request(`${BOARD_URL}/webhooks/github`, {
+    method: 'POST', headers: { 'x-github-event': 'issue_comment', 'x-github-delivery': 'flood' }, body: flooding, duplex: 'half',
+  } as RequestInit))
+  expect(sent).toBeLessThanOrEqual(6 * 1024 * 1024)
+  expect(flood.status).toBe(413)
+
+  const declared = await board.fetch(new Request(`${BOARD_URL}/webhooks/github`, {
+    method: 'POST', headers: { 'x-github-event': 'issue_comment', 'content-length': String(64 * 1024 * 1024) }, body: '{}',
+  }))
+  expect(declared.status).toBe(413)
+
+  const body = JSON.stringify({ action: 'deleted', comment: comment('Ready'), issue, repository, sender: vercel })
+  const signed = (signature: string) => board.fetch(new Request(`${BOARD_URL}/webhooks/github`, {
+    method: 'POST', body,
+    headers: { 'content-type': 'application/json', 'x-github-event': 'issue_comment', 'x-github-delivery': 'signed', 'x-hub-signature-256': signature },
+  }))
+  expect((await signed('sha256=0')).status).toBe(401)
+  expect((await signed(`sha256=${createHmac('sha256', secret).update(body).digest('hex')}`)).status).toBe(200)
 })
