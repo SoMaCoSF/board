@@ -12,6 +12,13 @@ const PR = new RegExp(`^${REPO.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}#([1-9]\\
 /** The PR number on a PR thread's root, from its `pr=vercel-labs/vboard#N` label. Other repos' PRs give none. */
 export const prNumber = (labels: Record<string, string>) => labels.pr?.match(PR)?.[1];
 
+/**
+ * Whether the factory opened a PR: its GitHub App's bot (`factory`, from `bot`), or the pi-pr workflow, which
+ * opens one as github-actions[bot] for each push to a `pi/` branch. Anyone can name a branch `pi/<thread>`.
+ */
+export const byFactory = (pr: { user: { login: string }; head: { ref?: string } }, factory: string) =>
+  pr.user.login === factory || (pr.user.login === "github-actions[bot]" && pr.head.ref?.startsWith("pi/") === true);
+
 /** What a watcher takes to reach GitHub, so tests can stand in for the token and the network. */
 export type GitHubOptions = { token?: () => Promise<string>; fetch?: typeof fetch };
 
