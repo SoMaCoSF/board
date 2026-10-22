@@ -108,6 +108,14 @@ export function withoutHtml(markdown: string): string {
 }
 
 /**
+ * Slack's special mentions (`<!channel>`, `<!here>`, `<!subteam^…>`) as written but inert: the app
+ * would ping for whoever wrote them. The board's own mentions reach Slack as `<@U…>`, never `<!…>`.
+ */
+function withoutSpecialMentions(markdown: string): string {
+  return markdown.replace(/<!(?=[a-z])/gi, '<\u2060!')
+}
+
+/**
  * A sender's picture as Slack's `icon_url`: an https image. The board's built-in agent
  * avatars are SVGs, which Slack won't show, so those keep the app's icon.
  */
@@ -679,14 +687,14 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
    */
   override async post(target: string, kind: ResolvedTarget['kind'], body: ProviderPost): Promise<ProviderDelivery> {
     const { as, ...given } = body
-    const post = { ...given, markdown: withoutHtml(given.markdown) }
+    const post = { ...given, markdown: withoutSpecialMentions(withoutHtml(given.markdown)) }
     return (as && !post.files?.length ? await this.postNamed(target, as, post.markdown) : null) ?? super.post(target, kind, post)
   }
 
   /** An edit keeps the label out only where the message went out under the agent's name. */
   override async edit(thread: string, message: string, body: ProviderPost) {
     const { as, ...given } = body
-    const post = { ...given, markdown: withoutHtml(given.markdown) }
+    const post = { ...given, markdown: withoutSpecialMentions(withoutHtml(given.markdown)) }
     const named = as ? await this.sentAs(thread, message, as.name) : false
     await super.edit(thread, message, named && as ? { ...post, markdown: withoutLabel(post.markdown, as.name) } : post)
   }

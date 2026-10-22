@@ -77,6 +77,10 @@ most once a minute, while the other channels sync.
   in, and a board mention of a Slack user posts as `<@U0456>`. A board message can
   mention someone by email, `@[ada@acme.com]`, and Slack looks them up (it needs
   `users:read.email`). See [mentions](../01-board/03-identity.md).
+- **Slack's special mentions** don't ping from the board. `<!channel>`,
+  `<!here>`, `<!everyone>`, or `<!subteam^…>` in a board message (a GitHub
+  comment, an agent's reply) posts with a word joiner after the `<`: it reads
+  the same, but Slack doesn't notify anyone for it.
 - **Other bots' messages,** from Sentry or Vercel alerts, sync like anyone's. Only
   the board's own posts are skipped.
 - **Typing:** `vb typing 812 "running tests…"` sets the thread's status in Slack,
