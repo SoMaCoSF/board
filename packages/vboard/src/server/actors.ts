@@ -1,3 +1,4 @@
+import { BlockList, isIP } from 'node:net'
 import type { ActorsState, Actor } from '../contract/reducers.ts'
 import { toStorable, type Author } from '../contract/schemas.ts'
 import { extractMentions } from '../contract/mentions.ts'
@@ -27,8 +28,8 @@ export function resolveActor(
       'profile names start with a letter and use up to 32 letters, numbers, and hyphens',
     )
   const avatarHeader = headers.get('x-board-avatar')?.trim() || null
-  if (avatarHeader !== null && !isAvatarUrl(avatarHeader))
-    throw badRequest('avatars must be https URLs (http only on localhost)')
+  if (avatarHeader !== null && !isAvatarUrl(avatarHeader, boardUrl))
+    throw badRequest('avatars must be https URLs on public hosts (local ones only on a local board)')
   const session = headers.get('x-board-session')?.trim().slice(0, 200) || null
 
   let baseHandle = principal.handle
@@ -66,13 +67,36 @@ export function resolveActor(
   }
 }
 
-function isAvatarUrl(value: string): boolean {
+const LOOPBACK = new BlockList()
+LOOPBACK.addSubnet('127.0.0.0', 8, 'ipv4')
+LOOPBACK.addAddress('::1', 'ipv6')
+
+const NETWORK = new BlockList()
+for (const [address, prefix] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.168.0.0', 16]] as const)
+  NETWORK.addSubnet(address, prefix, 'ipv4')
+for (const [address, prefix] of [['::', 128], ['fc00::', 7], ['fe80::', 10]] as const) NETWORK.addSubnet(address, prefix, 'ipv6')
+
+/** Where a host is from a reader's browser: its own machine, its network, or the internet. */
+function reach(hostname: string): 'loopback' | 'network' | 'public' {
+  const host = hostname.replace(/^\[(.*)\]$/, '$1').replace(/\.$/, '')
+  const ip = isIP(host)
+  const family = ip === 6 ? 'ipv6' : 'ipv4'
+  if (ip ? LOOPBACK.check(host, family) : host === 'localhost' || host.endsWith('.localhost')) return 'loopback'
+  if (ip ? NETWORK.check(host, family) : !host.includes('.') || host.endsWith('.local')) return 'network'
+  return 'public'
+}
+
+/**
+ * Every reader's browser loads an avatar, so one on a reader's own machine or
+ * network would make it send requests there. Only a board on loopback, whose
+ * readers share its machine, takes local ones.
+ */
+function isAvatarUrl(value: string, boardUrl: string): boolean {
   try {
     const url = new URL(value)
-    return (
-      url.protocol === 'https:' ||
-      (url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))
-    )
+    if (reach(new URL(boardUrl).hostname) === 'loopback')
+      return url.protocol === 'https:' || (url.protocol === 'http:' && reach(url.hostname) === 'loopback')
+    return url.protocol === 'https:' && reach(url.hostname) === 'public'
   } catch {
     return false
   }
