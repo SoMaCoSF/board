@@ -1,9 +1,12 @@
 import type { Watcher } from "vboard";
-import { github, prNumber, type GitHubOptions } from "./github.ts";
+import { github, prNumber, REPO, type GitHubOptions } from "./github.ts";
 
-/** The board thread a factory PR was built for, from its `pi/<thread>` branch (`pi/1559`, `pi/1559-vercel-logs`). */
-export const threadOfBranch = (ref: unknown) => {
-  const match = typeof ref === "string" ? /^pi\/([1-9]\d*)(?:-|$)/.exec(ref) : null;
+/**
+ * The board thread a factory PR was built for, from its head: a `pi/<thread>` branch (`pi/1559`,
+ * `pi/1559-vercel-logs`) in the factory's repo. A fork can name its branch anything.
+ */
+export const threadOfBranch = (head: { ref?: unknown; repo?: { full_name?: unknown } | null } | undefined) => {
+  const match = head?.repo?.full_name === REPO && typeof head.ref === "string" ? /^pi\/([1-9]\d*)(?:-|$)/.exec(head.ref) : null;
   return match ? Number(match[1]) : null;
 };
 
@@ -22,7 +25,7 @@ export function owner(options: GitHubOptions = {}): Watcher {
       const number = prNumber(root.labels);
       if (!number) return;
       const pr = await (await github(options))(`/pulls/${number}`);
-      const source = threadOfBranch(pr.head?.ref);
+      const source = threadOfBranch(pr.head);
       if (!source) return;
       const { message } = await board.thread(source);
       const name = message.author?.name ?? message.author?.handle ?? message.by.actor;

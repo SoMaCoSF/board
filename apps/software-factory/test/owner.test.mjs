@@ -57,10 +57,13 @@ test("PRs from other branches, replies, and labeled roots are skipped", async ()
   assert.equal(h.requests.length, 1);
 });
 
-test("threadOfBranch reads pi/<thread> branches only", () => {
-  assert.equal(threadOfBranch("pi/1628"), 1628);
-  assert.equal(threadOfBranch("pi/122-mentions"), 122);
-  assert.equal(threadOfBranch("pi/slack-text-files"), null);
-  assert.equal(threadOfBranch("main"), null);
+test("threadOfBranch reads pi/<thread> branches in the factory's repo only", () => {
+  const head = (ref, repo = "vercel-labs/vboard") => ({ ref, repo: { full_name: repo } });
+  assert.equal(threadOfBranch(head("pi/1628")), 1628);
+  assert.equal(threadOfBranch(head("pi/122-mentions")), 122);
+  assert.equal(threadOfBranch(head("pi/slack-text-files")), null);
+  assert.equal(threadOfBranch(head("main")), null);
+  assert.equal(threadOfBranch(head("pi/1628", "attacker/vboard")), null);
+  assert.equal(threadOfBranch({ ref: "pi/1628", repo: null }), null);
   assert.equal(threadOfBranch(undefined), null);
 });

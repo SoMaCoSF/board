@@ -25,7 +25,7 @@ export function crosspost(options: GitHubOptions = {}): Watcher {
       const number = prNumber(root.labels);
       if (!number) return;
       const pr = await (await github(options))(`/pulls/${number}`);
-      const sourceId = threadOfBranch(pr.head?.ref);
+      const sourceId = threadOfBranch(pr.head);
       if (!sourceId) return;
       const { message: source } = await board.thread(sourceId);
       const there = sourceLink(source.origin);
