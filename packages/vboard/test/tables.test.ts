@@ -502,6 +502,42 @@ describe.skipIf(!redisUrl)('the Redis tables', () => {
     const threads = await tables.threads({ channel: { path: 'dev', subtree: true } }, { limit: 10 })
     expect(threads.position).toBeLessThan(3)
   })
+
+  const by = AUTHORS[0]
+  const at = (index: number) => new Date(Date.UTC(2026, 9, 1, 0, 0, 0, index)).toISOString()
+  const post = (index: number, re: number | null) =>
+    ({
+      type: 'message.posted', id: `p${index}`, index, createdAt: at(index),
+      payload: { channel: 'dev', text: `post ${index}`, re, replyTo: null, thread: 'p1', labels: {}, noSync: false, mentions: [], by, origin: null, from: null },
+    }) as unknown as BoardEvent
+  const relabel = (index: number, set: Record<string, string>, unset: string[]) =>
+    ({ type: 'labels.changed', id: `l${index}`, index, createdAt: at(index), payload: { id: 1, thread: 'p1', by, set, unset } }) as unknown as BoardEvent
+  const keys = (n: number) => Array.from({ length: n }, (_, i) => `k${i}`)
+  const tablesOver = (refuse: (command: string, args: Array<string | number>) => Error | null) => {
+    const client = new Redis(redisUrl!)
+    clients.push(client)
+    return redisTables((command, ...args) => {
+      const error = refuse(command, args)
+      return error ? Promise.reject(error) : client.call(command, ...args)
+    }, `vbt${process.pid}x${++opened}`)
+  }
+
+  it("label a long thread's root on a provider that refuses requests over 1 MB", async () => {
+    let largest = 0
+    const tables = tablesOver((command, args) => {
+      const size = Buffer.byteLength(JSON.stringify([command, ...args]))
+      largest = Math.max(largest, size)
+      return size > 1024 * 1024 ? new Error('ERR max request size exceeded') : null
+    })
+    const replies = 500
+    for (let index = 1; index <= replies + 1; index++) await tables.apply(post(index, index === 1 ? null : 1))
+    await tables.apply(relabel(replies + 2, Object.fromEntries(keys(50).map((key) => [key, 'v'])), []))
+    await tables.apply(post(replies + 3, 1))
+    expect(await tables.position()).toBe(replies + 3)
+    expect(largest).toBeLessThanOrEqual(1024 * 1024)
+    const found = await tables.messages({ labels: [{ key: 'k49', values: ['v'] }] }, { limit: 1000 })
+    expect(found.messages.map((m) => m.id)).toEqual(Array.from({ length: replies + 2 }, (_, i) => (i === replies + 1 ? replies + 3 : i + 1)))
+  }, 60_000)
 })
 
 describe('the SQL tables', () => {
