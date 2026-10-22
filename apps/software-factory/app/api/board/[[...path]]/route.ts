@@ -63,8 +63,9 @@ const factory = board({
     }),
   },
   // Every message from Slack, GitHub, or CI is checked for prompt injection before it lands.
-  // Shadow mode: a flagged one is labeled guard=injection, and nothing is dropped yet.
-  middleware: [guard({ mode: "shadow" })],
+  // Shadow mode: a flagged one is labeled guard=injection, one past its hourly budget
+  // guard=unjudged, and nothing is dropped yet.
+  middleware: [guard({ mode: "shadow", store: store?.log })],
   watch: {
     shipit: shipit({ tellPi }),
     // Shadow mode: labels each reviewed factory PR autoland=would|no, and merges nothing.
