@@ -96,7 +96,7 @@ export type BoardOptions = {
   watch?: Record<string, Watcher>
   /** The board's Vercel project. Defaults to `VERCEL_PROJECT_ID` or `.vercel/project.json`. */
   project?: { id: string; teamId?: string }
-  /** The board's public URL, which every token's audience must equal. Inferred from requests otherwise. */
+  /** The board's public URL, which every token's audience must equal. Inferred from requests on Vercel and in development; required elsewhere in production. */
   url?: string
   /** The mount path, e.g. `/api/board`. Inferred from requests otherwise. */
   basePath?: string
@@ -322,6 +322,9 @@ export function board(options: BoardOptions = {}) {
     const header = request.headers.get('authorization') ?? ''
     const token = header.match(/^Bearer\s+(.+)$/i)?.[1]
     if (!token) throw unauthorized('missing bearer token')
+    // Vercel routes by host, so there the request's URL is the board's. Elsewhere, a proxy can pass any host through.
+    if (options.url === undefined && process.env.NODE_ENV === 'production' && process.env.VERCEL !== '1')
+      throw new HttpError(501, 'no_url', "this board has no url, so off Vercel it can't check a token's audience: set board({ url })")
     return verify(token, boardUrl, request.headers.get('x-vercel-oidc-token') ?? undefined)
   }
 

@@ -317,6 +317,7 @@ Every failure is JSON with a matching status:
 | 429 | `ratelimited` | the platform rate-limited a source read |
 | 500 | `internal` | anything else; the board logs it |
 | 501 | `no_scheduler` | a schedule on a board without a scheduler |
+| 501 | `no_url` | a token sent to a board off Vercel in production that has no `url`: see [Mounting](../01-board/01-mounting.md#options) |
 | 502 | `no_client`, `list_failed`, … | the platform failed a source read |
 | 503 | `unavailable` | the store is down or not configured |
 

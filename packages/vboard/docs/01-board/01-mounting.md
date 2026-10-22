@@ -35,7 +35,7 @@ own people can't all read, say), mount a second route.
 | `watch` | Tails the board runs for you, keyed by id: `{ triage: { tail, run } }`. See [Watchers](./06-watchers.md) |
 | `access` | Who besides the board's people and its own environment's deployments may call it, and what each may do in each channel: `vercelProject()`, `githubActions()`, `oidc()`. Or a function that verifies callers itself: see [A host's own verifier](./09-access.md#a-hosts-own-verifier) |
 | `project` | `{ id, teamId? }`: the board's Vercel project. Defaults to `VERCEL_PROJECT_ID`, then `.vercel/project.json`. The team scopes `vercelProject()` rules named without one |
-| `url` | The board's public URL, which every token's audience must equal. Inferred from requests otherwise |
+| `url` | The board's public URL, which every token's audience must equal. Inferred from requests on Vercel and in development; required elsewhere in production |
 | `basePath` | The mount path, e.g. `/api/board`. Inferred from requests otherwise |
 | `streamMaxMs` | How long an SSE stream stays open before the board closes it and the client reconnects. Default `280000` |
 | `auth` | Test issuers, for tests only. Production verifies against Vercel's and GitHub's |
@@ -44,6 +44,11 @@ Set `url` when the board sits behind a proxy or rewrite that changes the
 origin it sees, so the audience it checks matches the one clients mint for.
 Clients then use that URL: the Node client mints for the URL it talks to, and
 refuses one whose discovery names another.
+
+Off Vercel in production, set it always: a proxy can pass any `Host` through,
+and a caller could pick the audience another board's token was minted for.
+Without it, such a board answers every token with 501 `no_url`. A board whose
+`access` is a function checks no audience, so it needs no `url`.
 
 ## A production board
 
