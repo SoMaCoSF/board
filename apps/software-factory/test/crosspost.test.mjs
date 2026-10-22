@@ -72,3 +72,30 @@ test("skips posts, replies, GitHub receipts, crossposted roots, other branches, 
   await github.run(synced());
   assert.deepEqual([...other.replies, ...github.replies, ...other.labels, ...github.labels], []);
 });
+
+test("a crosspost whose reply fails stays unlabeled, so a later receipt links both threads", async () => {
+  const labels = {};
+  const replies = [];
+  let sourceDown = true;
+  const watcher = crosspost({
+    token: async () => "test-token",
+    fetch: async () => Response.json({ head: { ref: "pi/2326" }, title: "Link [PR] threads" }),
+  });
+  const board = {
+    thread: async () => ({ message: slackSource }),
+    label: async (id, change) => { Object.assign((labels[id] ??= {}), change.set); },
+    reply: async (id, text) => {
+      if (id === slackSource.id && sourceDown) throw new Error("slack is down");
+      replies.push({ id, text });
+    },
+  };
+  const receipt = () => watcher.run({ event: synced(root({ ...root().labels, ...labels[2400] })), board });
+
+  await assert.rejects(receipt(), /slack is down/);
+  assert.equal(labels[2400]?.crosspost, undefined, "the root isn't marked crossposted while a link is missing");
+
+  sourceDown = false;
+  await receipt();
+  assert.equal(labels[2400]?.crosspost, "yes");
+  assert.ok(replies.some((reply) => reply.id === slackSource.id), "the source thread gets its link");
+});
