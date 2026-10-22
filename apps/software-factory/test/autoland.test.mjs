@@ -143,6 +143,17 @@ test("the watcher pages through a PR's files", async () => {
   assert.deepEqual(h.labels[0].set, { autoland: "no", "autoland.why": "user-facing change to vboard core" });
 });
 
+test("a PR with more files than GitHub lists doesn't land", async () => {
+  const pages = {};
+  for (let page = 1; page <= 30; page++) {
+    pages[`/pulls/53/files?per_page=100&page=${page}`] = Array.from({ length: 100 }, (_, i) => file(`apps/${page}/${i}.ts`));
+  }
+  pages["/pulls/53/files?per_page=100&page=1"][0] = file(".changeset/x.md", "added");
+  const h = harness({ ...routes(), ...pages, "/pulls/53": pr({ changed_files: 3001 }) });
+  await h.run();
+  assert.deepEqual(h.labels[0].set, { autoland: "no", "autoland.why": "GitHub lists 3000 of the PR's 3001 files" });
+});
+
 test("only the PR thread's own Pi can set the verdict", async () => {
   for (const by of [
     { actor: "slack:user:U1", principal: "slack:user:U1", profile: null, session: null },
