@@ -41,6 +41,16 @@ describe('middleware', () => {
     expect(await texts(julian, 'dev')).toEqual(['export is broken'])
   })
 
+  it('labels the message an edit it passes on changes', async () => {
+    const board = testBoard({
+      middleware: [async ({ write, next }) => next(write.text.includes('flag') ? { labels: { flagged: 'yes' } } : {})],
+    })
+    const julian = await person(board)
+    const { id } = (await julian('POST', '/messages', { channel: 'dev', text: 'export is broken', labels: { kind: 'bug' } })).body.message
+    expect((await julian('POST', `/messages/${id}/edit`, { text: 'flag this' })).status).toBe(200)
+    expect((await julian('GET', `/messages/${id}`)).body.message).toMatchObject({ text: 'flag this', labels: { kind: 'bug', flagged: 'yes' } })
+  })
+
   it('runs in order, and a later one sees what an earlier one changed', async () => {
     const seen: string[] = []
     const board = testBoard({
