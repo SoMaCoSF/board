@@ -19,23 +19,24 @@ const slackSource = {
   author: { handle: "JB", name: "Julian Benegas" },
 };
 
-function harness({ ref = "pi/2326", source = slackSource } = {}) {
+function harness({ ref = "pi/2326", repo = "vercel-labs/vboard", source = slackSource } = {}) {
   const requests = [];
+  const threads = [];
   const labels = [];
   const replies = [];
   const watcher = crosspost({
     token: async () => "test-token",
     fetch: async (url) => {
       requests.push(url);
-      return Response.json({ head: { ref }, title: "Link [PR] threads" });
+      return Response.json({ head: { ref, repo: repo && { full_name: repo } }, title: "Link [PR] threads" });
     },
   });
   const board = {
-    thread: async () => ({ message: source }),
+    thread: async (id) => { threads.push(id); return { message: source }; },
     label: async (id, change) => { labels.push({ id, change }); },
     reply: async (id, text) => { replies.push({ id, text }); },
   };
-  return { requests, labels, replies, watcher, run: (event) => watcher.run({ event, board }) };
+  return { requests, threads, labels, replies, watcher, run: (event) => watcher.run({ event, board }) };
 }
 
 test("a factory PR's Slack thread and its source's Slack thread link to each other", async () => {
@@ -71,4 +72,13 @@ test("skips posts, replies, GitHub receipts, crossposted roots, other branches, 
   const github = harness({ source: { ...slackSource, origin: { thread: "github:vercel-labs/vboard:issue:7" } } });
   await github.run(synced());
   assert.deepEqual([...other.replies, ...github.replies, ...other.labels, ...github.labels], []);
+});
+
+test("a pi/<thread> branch from a fork or a deleted fork doesn't reach its thread", async () => {
+  for (const repo of ["attacker/vboard", null]) {
+    const h = harness({ repo });
+    await h.run(synced());
+    assert.equal(h.requests.length, 1);
+    assert.deepEqual([...h.threads, ...h.labels, ...h.replies], [], `head repo ${repo}`);
+  }
 });
