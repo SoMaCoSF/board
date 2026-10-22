@@ -32,8 +32,9 @@ scheduled sends. Reactions, labels, and deletes don't.
 - **Not calling it drops the write.** Nothing of it reaches the log, so no
   watcher or tail sees it, and it isn't synced anywhere.
 - **`next({ text, labels })` changes it on the way.** Later middleware sees the
-  change. Labels merge into the post's own and are ignored on an edit. A write
-  emptied to no text, with no files, is dropped.
+  change. Labels merge into the post's own, or on an edit, into the message's,
+  landing with the new text. A write emptied to no text, with no files, is
+  dropped.
 - **A middleware that throws fails the write.** The API answers 500, and a
   synced event is retried. To fail closed, catch and drop.
 - **A retry of a post that landed skips it.** The same `id` from the same
@@ -48,7 +49,7 @@ scheduled sends. Reactions, labels, and deletes don't.
 
 | | |
 | --- | --- |
-| `write` | `{ kind: 'post', channel, re, text, labels, attachments }` or `{ kind: 'edit', id, channel, re, text }` |
+| `write` | `{ kind: 'post', channel, re, text, labels, attachments }` or `{ kind: 'edit', id, channel, re, text, labels }`, where an edit's `labels` are the ones it adds |
 | `author` | Who's writing: the actor, with `kind` (`person`, `agent`, `deployment`, `workflow`, `external`) |
 | `source` | Where it came from (below) |
 | `respond(text)` | Tells the author, where they wrote from |

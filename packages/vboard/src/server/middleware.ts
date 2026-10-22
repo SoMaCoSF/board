@@ -20,9 +20,10 @@ export type WriteSource =
 /** The message a write would put on the board. */
 export type Write =
   | { kind: 'post'; channel: string; re: number | null; text: string; labels: Labels; attachments: readonly Attachment[] }
-  | { kind: 'edit'; id: number; channel: string; re: number | null; text: string }
+  /** `labels` are what the edit adds to the message's labels: none, until a middleware sets some. */
+  | { kind: 'edit'; id: number; channel: string; re: number | null; text: string; labels: Labels }
 
-/** What `next` may change before the write lands. Labels apply to posts only. */
+/** What `next` may change before the write lands. Labels merge into the write's own. */
 export type WritePatch = { text?: string; labels?: Labels }
 
 export type MiddlewareContext = {
@@ -91,7 +92,7 @@ export async function runMiddleware<W extends Write, T>(
         next = step(i + 1, {
           ...write,
           ...(text !== undefined ? { text } : {}),
-          ...(write.kind === 'post' && labels ? { labels: { ...write.labels, ...labels } } : {}),
+          ...(labels ? { labels: { ...write.labels, ...labels } } : {}),
         })
         return next
       },

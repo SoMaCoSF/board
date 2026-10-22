@@ -439,17 +439,17 @@ export async function writeEdit(ctx: WriteContext, input: EditInput): Promise<{ 
   return runMiddleware(
     chain,
     {
-      write: { kind: 'edit', id: message.id, channel: message.channel, re: message.re, text: input.text },
+      write: { kind: 'edit', id: message.id, channel: message.channel, re: message.re, text: input.text, labels: {} },
       author: input.identity.actor,
       source: sourceOf(input),
       board: middlewareClient(ctx),
       ...(input.respond ? { respond: input.respond } : {}),
     },
-    (write) => commitEdit(ctx, { ...input, text: write.text }, message),
+    (write) => commitEdit(ctx, { ...input, text: write.text }, message, write.labels),
   )
 }
 
-async function commitEdit(ctx: WriteContext, input: EditInput, message: Message): Promise<{ unknownMentions?: string[] }> {
+async function commitEdit(ctx: WriteContext, input: EditInput, message: Message, labels: Labels = {}): Promise<{ unknownMentions?: string[] }> {
   const { state: actors } = await ctx.session.state(actorsReducer)
   const seen = actorSeen(input.identity.actor, actors)
   const { text, found } = await withEmailMentions(ctx, input.text)
@@ -471,7 +471,10 @@ async function commitEdit(ctx: WriteContext, input: EditInput, message: Message)
       by: input.identity.author,
       from: input.from ?? null,
     },
-  })
+  }, ...(hasLabels(labels) ? [{
+    type: 'labels.changed' as const,
+    payload: { id: message.id, thread: message.thread, set: labels, unset: [], by: input.identity.author },
+  }] : []))
   await untilApplied(ctx, rows)
   // As on a post: which handles matched no one is only for a caller that reads the channel.
   return unknown.length && input.identity.principal.access.readable(message.channel) ? { unknownMentions: unknown } : {}
