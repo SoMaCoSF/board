@@ -163,6 +163,24 @@ describe('oidc()', () => {
     expect(me).toMatchObject({ status: 401, body: { error: { message: `token from ${OIDC_ISS} without sub` } } })
   })
 
+  it('names an actor no other sub can pass for', async () => {
+    const { fetch } = gitlab('all')
+    const me = async (sub: string, headers: Record<string, string> = {}) =>
+      (await caller(fetch, await oidcToken({ sub }), headers)('GET', '/me')).body
+    const agent = await me('build', { 'x-board-profile': 'pi' })
+    const lookalike = await me('build+pi')
+    expect(agent.actor).toBe('oidc:gitlab.test:build+pi')
+    expect(lookalike.actor).toBe('oidc:gitlab.test:build%2Bpi')
+    expect((await me('build%2Bpi')).actor).toBe('oidc:gitlab.test:build%252Bpi')
+    expect((await me('deploy] @[x\n')).actor).toBe('oidc:gitlab.test:deploy%5D%20@[x%0A')
+  })
+
+  it('refuses a sub too long for its actors to fit', async () => {
+    const sub = 'x'.repeat(250)
+    const refused = await caller(gitlab().fetch, await oidcToken({ sub }))('GET', '/me')
+    expect(refused).toMatchObject({ status: 401, body: { error: { message: `token from ${OIDC_ISS} with a sub too long for a principal ID` } } })
+  })
+
   it('trusts no issuer that access doesn’t name, and never fetches its keys', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
     // The test keys for OIDC_ISS are configured, but no rule names it.
