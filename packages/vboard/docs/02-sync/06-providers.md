@@ -209,8 +209,10 @@ export class ForumProvider extends ChatSyncProvider<ForumEvent> {
 ```
 
 `eventId(key, input)` supplies `dedupe`. The default covers messages, edits, and
-deletes; a provider that receives reactions must override it, since only the
-platform knows one reaction occurrence from the next.
+deletes. It tells one edit from the next by the message's `metadata.editedAt`, so
+an edit back to earlier text still lands; an adapter that emits edits sets it. A
+provider that receives reactions must override it, since only the platform knows
+one reaction occurrence from the next.
 
 The constructor also takes hooks for what differs between platforms, among them:
 `groupThread` (which board thread an external thread belongs to, like GitHub's

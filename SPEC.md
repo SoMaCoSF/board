@@ -1869,7 +1869,8 @@ copy/file receipts. Intake failures answer 500 so the sender can retry.
 The provider supplies stable occurrence identity in `dedupe`. Repeated delivery
 of the same occurrence must keep its ID, while a later identical action must
 have a different one. The Chat bridge's `eventId(key, input)` can be overridden
-for native delivery IDs; its default handles messages, edits, and deletes.
+for native delivery IDs; its default handles messages, edits, and deletes, and
+tells edits apart by the message's `metadata.editedAt`.
 Providers receiving reactions must supply their occurrence identity. Slack uses
 `event_ts`; Kapso uses the reaction message's `id`. There is no current-time
 fallback. Existing built-in inbox and receipt ID schemes are retained.
