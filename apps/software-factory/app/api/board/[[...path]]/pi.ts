@@ -1,5 +1,5 @@
 import type { Watcher } from "vboard";
-import { byAgent, byPi, byWatcher, taskMessage, type tellPi } from "./agent.ts";
+import { byAgent, byPi, byTeam, taskMessage, type tellPi } from "./agent.ts";
 import type { classifyThread } from "./classify";
 import { isPiKind, PI_KINDS, piTask, scheduled, scheduledThread } from "./kinds.ts";
 import { asksPi, isDraft, reviewStarts } from "./review.ts";
@@ -18,8 +18,8 @@ export function triage(options: { classify: typeof classifyThread }): Watcher {
       if (
         event.type !== "message.posted" ||
         !message ||
+        !byTeam(message.by) ||
         byPi(message.re ?? message.id, message.by) ||
-        byWatcher(message.by) ||
         byAgent(message.by) ||
         scheduledThread(message)
       ) {
@@ -76,8 +76,8 @@ export function pi(options: { tellPi: typeof tellPi }): Watcher {
       } else if (
         event.type === "message.posted" &&
         message.re !== null &&
-        (scheduled(message) || !byPi(message.re, message.by)) &&
-        !byWatcher(message.by)
+        byTeam(message.by) &&
+        (scheduled(message) || !byPi(message.re, message.by))
       ) {
         await options.tellPi({
           board,
@@ -117,9 +117,9 @@ export function reviewPi(options: { tellPi: typeof tellPi }): Watcher {
       } else if (
         event.type === "message.posted" &&
         message.re !== null &&
+        byTeam(message.by) &&
         (scheduled(message) || !byPi(message.re, message.by)) &&
         !message.author?.handle.endsWith("[bot]") &&
-        !byWatcher(message.by) &&
         // In a draft, a reminder Pi scheduled for itself still reaches it.
         ((scheduled(message) && byPi(message.re, message.by)) ||
           asksPi(message.re, message.text) ||

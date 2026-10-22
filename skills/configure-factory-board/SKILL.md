@@ -42,7 +42,8 @@ Replace the example IDs. Missing configuration grants no external project
 access. Omitted environments default to production; enable preview or development
 only when needed. A grant reads and posts in every channel and labels only in
 `factory/` channels, since a Factory post carries labels; it never reacts or
-syncs, and never labels `dev` threads, which drive Pi. Raw vboard clients can also edit/delete messages owned by their verified
+syncs, and never labels `dev` threads, which drive Pi. Its posts never wake Pi
+or triage, in `dev` either. Raw vboard clients can also edit/delete messages owned by their verified
 principal. The Factory tool exposes only scoped reads, posts and replies;
 session labels do not create separate ownership principals.
 

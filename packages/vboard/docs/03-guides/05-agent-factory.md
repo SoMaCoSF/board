@@ -31,6 +31,7 @@ There are two independent checks. Configure both on the board project.
 Omitting the variable trusts no external projects. Omitting `environments`
 defaults to production. Add preview or development only when intended.
 A grant reads and posts in every channel, and labels only in `factory/` channels, since a Factory post carries labels. It never reacts or syncs.
+Its posts never start Pi, in `dev` either: Pi and its triage take work only from people and Pi itself.
 Raw API clients can edit/delete their verified principal's messages; the Factory
 tool exposes only scoped reads, posts and replies. Sessions do not create separate
 ownership principals. Existing board-project identities retain their normal access. IDs above are placeholders; use actual immutable IDs.

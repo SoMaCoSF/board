@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { GITHUB_TOKEN, byAgent, byPi, byWatcher, piAvatar, piName, sourceLink, startOrSay, taskMessage } from "../app/api/board/[[...path]]/agent.ts";
+import { GITHUB_TOKEN, byAgent, byPi, byTeam, piAvatar, piName, sourceLink, startOrSay, taskMessage } from "../app/api/board/[[...path]]/agent.ts";
 
 // Pi posts as the factory's production deployment.
 process.env.VERCEL_PROJECT_ID = "prj_factory";
@@ -104,12 +104,32 @@ test("GITHUB_TOKEN: Pi never gets a cached GitHub token that dies before its ses
   }
 });
 
-test("byWatcher: the board's watchers' own notes, which wake neither Pi nor triage", () => {
-  assert.ok(byWatcher({ actor: "vboard:watch:crosspost" }));
-  assert.ok(byWatcher({ actor: "vboard:watch:security" }));
-  assert.ok(byWatcher({ actor: "vboard:watch:pi" }));
-  assert.ok(!byWatcher({ actor: "slack:user:U123" }));
-  assert.ok(!byWatcher({ actor: "vboard:schedule" }));
+test("byTeam: people and Pis wake Pi and triage; watchers, other deployments, and workflows don't", () => {
+  for (const principal of [
+    "vercel:user:abc123",
+    "slack:user:U123",
+    "github:user:40034115",
+    "vercel:project:prj_factory:production",
+  ]) {
+    assert.ok(byTeam({ principal }), principal);
+  }
+  for (const principal of [
+    "vboard:watch:crosspost",
+    "vboard:watch:pi",
+    "vboard:middleware",
+    "vercel:project:prj_other:production",
+    "vercel:project:prj_factory:preview",
+    "github:repo:1",
+    "oidc:gitlab.test:project_path%3Aacme/api",
+  ]) {
+    assert.ok(!byTeam({ principal }), principal);
+  }
+  delete process.env.VERCEL_PROJECT_ID;
+  try {
+    assert.ok(!byTeam({ principal: "vercel:project:undefined:production" }), "no project, no Pi");
+  } finally {
+    process.env.VERCEL_PROJECT_ID = "prj_factory";
+  }
 });
 
 test("byAgent: a coding agent's or Pi's message, which triage doesn't judge, and not a person's", () => {

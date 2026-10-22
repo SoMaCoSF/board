@@ -117,16 +117,19 @@ export const piAvatar = (thread: number) =>
  * are headers anyone who can write may send, so they only say which thread's Pi it is.
  */
 export const byPi = (thread: number, by: { principal: string; profile: string | null; session: string | null }) =>
-  !!process.env.VERCEL_PROJECT_ID &&
-  by.principal === `vercel:project:${process.env.VERCEL_PROJECT_ID}:production` &&
+  by.principal === piPrincipal() &&
   (by.profile === piName(thread) || by.profile === "pi") &&
   by.session === piSession(thread);
 
+const piPrincipal = () => process.env.VERCEL_PROJECT_ID && `vercel:project:${process.env.VERCEL_PROJECT_ID}:production`;
+
 /**
- * Whether a message is one of the board's watchers' own notes (a crosspost, `:security:`'s answer, or saying Pi
- * couldn't start), not a person's: it doesn't wake Pi or triage.
+ * Whether a message is the team's, which Pi and triage take work from: a person's (signed in, their coding agents
+ * included, or on Slack or GitHub) or a Pi's, by the principal the board verified, since anyone who can write sends a
+ * profile. A watcher's note or a trusted source's post (`trusted-sources.ts`) wakes neither.
  */
-export const byWatcher = (by: { actor: string }) => by.actor.startsWith("vboard:watch:");
+export const byTeam = (by: { principal: string }) =>
+  /^(vercel|slack|github):user:/.test(by.principal) || by.principal === piPrincipal();
 
 /**
  * Whether a message was written by an agent profile (someone's coding agent, like `julian/claude`, or a Pi), not

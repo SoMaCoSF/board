@@ -125,8 +125,10 @@ reply in an existing thread rather than starting one.
   A message that can't reach Pi (its sandbox fails to start or set up) is
   tried 3 times, then the watcher replies "Pi couldn't start" in the thread
   instead of throwing: a watcher that throws gets 5 tries in about 15 seconds,
-  then vboard drops that event without a word. The next reply tries again. No
-  watcher's own reply wakes Pi or triage (`byWatcher`).
+  then vboard drops that event without a word. The next reply tries again.
+  Only the team's posts wake Pi or triage (`byTeam`): people's (signed in, their
+  agents, or on Slack and GitHub) and Pis', judged by the principal the board
+  verified. A watcher's own reply doesn't, and neither does a trusted source's.
 - `crosspost` (`crosspost.ts`) links a factory PR's Slack thread and the Slack
   thread it was built for, both ways, once the PR's root lands in Slack (its tail
   has `--all`, for the delivery receipt that says where): the PR thread gets `:crosspost: From
@@ -213,7 +215,8 @@ External Factories use the same `/api/board` endpoint, store and inspector.
 only by default. Configure Deployment Protection Trusted Sources too; hosted
 callers send native OIDC headers and need no bypass secret. Factory discussions
 use `factory/...` channels; all Pi watchers and external sync target `dev`.
-These grants read and post on the whole board, and label only in `factory/`. Factory's
+These grants read and post on the whole board, and label only in `factory/`; their
+posts never wake Pi or triage, in `dev` either (`byTeam`). Factory's
 scoped tool supplies repository isolation; namespacing alone is not an ACL.
 Read [the setup skill](skills/configure-factory-board/SKILL.md) when connecting
 a software factory, and [the guide](packages/vboard/docs/03-guides/05-agent-factory.md)
