@@ -7,6 +7,11 @@ import { createClient } from '../src/client/index.ts'
 import { BOARD_URL, personToken, testBoard } from './harness.ts'
 import { createClient as createNodeClient, detectAgent } from '../src/client/node.ts'
 
+vi.mock('@vercel/oidc', async (original) => ({
+  ...(await original<typeof import('@vercel/oidc')>()),
+  getVercelToken: async () => 'vercel-cli-token',
+}))
+
 async function setup(userId = 'u_julian', handle = 'julian', profile: string | null = null) {
   const board = testBoard()
   const token = await personToken(userId)
@@ -126,14 +131,14 @@ describe('the audience a Node client mints for', () => {
   })
 
   // A board at EVIL whose discovery claims `audience`, recording every bearer it's sent.
-  function board(audience: string) {
+  function board(audience: string, ids: { team_id: string | null; project_id: string | null } = { team_id: 'team_victim', project_id: 'prj_victim' }) {
     const bearers: string[] = []
     const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init)
       const bearer = request.headers.get('authorization')
       if (bearer) bearers.push(bearer)
       if (request.method === 'GET' && request.url === EVIL)
-        return Response.json({ version: '0', url: audience, audience, team_id: 'team_victim', project_id: 'prj_victim', sync: [] })
+        return Response.json({ version: '0', url: audience, audience, ...ids, sync: [] })
       return Response.json({ channels: [] })
     }) as typeof globalThis.fetch
     return { fetch, bearers }
@@ -184,5 +189,33 @@ describe('the audience a Node client mints for', () => {
     const { fetch, bearers } = board(VICTIM)
     await expect(against(fetch).channels()).rejects.toMatchObject({ code: 'wrong_audience' })
     expect(bearers).toEqual([])
+  })
+
+  function vercelApi() {
+    const signed: string[] = []
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init)
+      signed.push(`${request.method} ${request.url}`)
+      return Response.json({ error: { code: 'forbidden' } }, { status: 403 })
+    })
+    return signed
+  }
+
+  it("asks Vercel for a token for the board's project with your login", async () => {
+    const signed = vercelApi()
+    await expect(against(board(EVIL).fetch).channels()).rejects.toMatchObject({ code: 'no_access' })
+    expect(signed).toEqual(['POST https://api.vercel.com/v1/projects/prj_victim/token?source=vboard&teamId=team_victim'])
+  })
+
+  it("refuses a board whose discovery names a project or team that isn't a Vercel ID", async () => {
+    const signed = vercelApi()
+    const codes: string[] = []
+    for (const ids of [
+      { project_id: '../../v1/projects/prj_target/pause?teamId=team_target#', team_id: null },
+      { project_id: 'prj_victim', team_id: 'team_victim&slug=other' },
+    ])
+      codes.push(await against(board(EVIL, ids).fetch).channels().then(() => 'ok', (error) => error.code))
+    expect(signed).toEqual([])
+    expect(codes).toEqual(['invalid_discovery', 'invalid_discovery'])
   })
 })
