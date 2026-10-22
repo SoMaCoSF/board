@@ -145,6 +145,10 @@ async function writeCache(audience: string, cached: Cached) {
   await writeFile(cacheFile(audience), JSON.stringify(cached), { mode: 0o600 })
 }
 
+const PROJECT_ID = /^prj_[A-Za-z0-9]+$/
+const OWNER_ID = /^(team_)?[A-Za-z0-9]+$/
+const isId = (id: unknown, pattern: RegExp) => id == null || (typeof id === 'string' && pattern.test(id))
+
 /**
  * A person's token: their Vercel CLI login mints a development token for the
  * board's project, exchanged so its audience is the board's URL. Cached on
@@ -164,6 +168,8 @@ async function personToken(audience: string, discovery: Discovery): Promise<Cach
   if (cached) return cached
   if (!discovery.project_id)
     throw new BoardError('no_project', `the board at ${discovery.url} doesn't know its Vercel project`, 0)
+  if (!isId(discovery.project_id, PROJECT_ID) || !isId(discovery.team_id, OWNER_ID))
+    throw new BoardError('invalid_discovery', `the board at ${audience} names a Vercel project or team that isn't a Vercel ID`, 0)
 
   let development: string
   let authToken: string | null = null
