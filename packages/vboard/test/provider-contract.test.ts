@@ -298,3 +298,39 @@ describe('who a post is from', () => {
     expect(provider.posts[1]!.body.as).toEqual({ name: 'claude via jb', avatar: 'https://vercel.com/api/www/avatar/c275ff?s=128' })
   })
 })
+
+describe('platform message IDs', () => {
+  class DeskProvider extends SyncProvider<Event> {
+    constructor() {
+      super({ platform: 'opaque', canStartThreads: false })
+      this.map('inbox', { channel: 'tickets', run: async ({ event, board }) => { await board.sync('tickets', event) } })
+    }
+    override async receive(key: string, request: Request, emit: Receive) {
+      const input = await request.json() as { id: string; kind: 'message' | 'edited'; thread: string; message: string; text: string }
+      const location = { channel: `${key}:${channel}`, thread: `${key}:${channel}:${input.thread}`, subthread: null }
+      await emit({ dedupe: input.id, raw: input, event: input.kind === 'message'
+        ? { kind: 'message', ...location, message: input.message, text: input.text, isRoot: true, context: null, author }
+        : { kind: 'edited', ...location, message: input.message, text: input.text, author },
+      })
+      return new Response('ok')
+    }
+    override async resolveChannel() { return channel }
+    override async resolveTarget(target: string) { return resolve(target) }
+    override async post(): Promise<never> { throw new Error('not posting') }
+    override event(context: Pick<SyncContext, 'id' | 'key' | 'event' | 'raw'>) {
+      return Schema.parse(envelope(this.platform, context.key, context.event, context.raw, context.id))
+    }
+  }
+
+  it("never edits one message for another whose thread and message IDs join to the same text", async () => {
+    const board = testBoard({ sync: { tickets: new DeskProvider() } })
+    const call = caller(board.fetch, await personToken())
+    const send = (input: object) => board.fetch(new Request(`${BOARD_URL}/webhooks/tickets`, { method: 'POST', body: JSON.stringify(input) }))
+    const read = async () => ((await call('GET', '/messages?channel=tickets')).body.messages as { text: string }[]).map((message) => message.text)
+    await send({ id: 'd1', kind: 'message', thread: 'a', message: 'b|c', text: 'original' })
+    await vi.waitFor(async () => expect(await read()).toEqual(['original']))
+    await send({ id: 'd2', kind: 'edited', thread: 'a|b', message: 'c', text: 'rewritten' })
+    await send({ id: 'd3', kind: 'message', thread: 'later', message: 'm', text: 'after' })
+    await vi.waitFor(async () => expect(await read()).toEqual(['original', 'after']))
+  })
+})

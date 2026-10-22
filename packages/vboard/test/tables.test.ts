@@ -264,6 +264,21 @@ function conformance(open: () => Promise<MessageTables>) {
     await tables.close()
   })
 
+  it('keep platform messages apart when their IDs split the same text differently', async () => {
+    const by = AUTHORS[0]
+    const pairs = [['desk:a', 'b|c'], ['desk:a|b', 'c'], ['desk:x\\', '|y'], ['desk:x', '\\|y'], ['desk:x\\|', 'y']]
+    const events = pairs.map(([thread, message], i) => ({
+      type: 'message.posted', id: `p${i}`, index: i + 1, createdAt: new Date(Date.UTC(2026, 9, 1, 0, 0, i)).toISOString(),
+      payload: { channel: 'dev', text: `from ${i}`, re: null, replyTo: null, thread: `p${i}`, labels: {}, noSync: false, mentions: [], by, origin: { channel: 'desk:x', thread, subthread: null, message, context: null }, from: 'desk' },
+    }) as unknown as BoardEvent)
+    const tables = await applied(events.slice(0, 1))
+    expect(await tables.messageOf('desk:a', 'b|c')).toBe(1)
+    expect(await tables.messageOf('desk:a|b', 'c')).toBeNull()
+    for (const event of events.slice(1)) await tables.apply(event)
+    for (const [i, [thread, message]] of pairs.entries()) expect(await tables.messageOf(thread!, message!)).toBe(i + 1)
+    await tables.close()
+  })
+
   it("find a person's roots since a time, for the echo check", async () => {
     const events = history(10, 300)
     const tables = await applied(events)
