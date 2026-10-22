@@ -108,7 +108,7 @@ export abstract class ChatSyncProvider<E extends ProviderEvent = ProviderEvent> 
     if (input.kind === 'deleted') return `deleted:${key}:${this.toNative(input.thread)}|${input.message}`
     const message = input.message
     const location = `${key}:${this.toNative(message.threadId)}|${message.id}`
-    return input.kind === 'message' ? `message:${location}` : `edited:${location}|${message.text}`
+    return input.kind === 'message' ? `message:${location}` : `edited:${location}|${message.metadata.editedAt?.getTime() ?? ''}|${message.text}`
   }
 
   protected author(author: ChatAuthor, raw: unknown) {
