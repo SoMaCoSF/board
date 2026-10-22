@@ -490,7 +490,7 @@ describe('schedules', () => {
     }
     const payload = { channel: 'ci', re: null, text: 'nightly', labels: {}, noSync: false, first: T0, every: null, until: null, times: null, as }
     const event = { index: 1, type: 'schedule.created', createdAt: T0, payload } as unknown as Parameters<typeof foldSchedules>[1]
-    const state = foldSchedules({ byId: {} }, event)
+    const state = foldSchedules({ byId: {}, takeover: null }, event)
     expect(structuredClone(state)).toEqual(state)
   })
 

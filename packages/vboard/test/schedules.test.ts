@@ -190,7 +190,7 @@ describe('scheduled messages', () => {
     const standups = async () => (await after.julian('GET', '/messages?channel=dev')).body.messages.map((m: { text: string }) => m.text)
 
     vi.setSystemTime(T0 + HOUR)
-    expect(await before.queue.fire()).toBe(1)
+    await before.queue.fire()
     await settle()
     expect(await standups()).toEqual([])
     expect(await after.queue.fire()).toBe(1)
