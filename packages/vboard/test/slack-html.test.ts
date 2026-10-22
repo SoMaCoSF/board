@@ -54,6 +54,19 @@ describe('GitHub HTML in Slack', () => {
   })
 })
 
+describe('Slack special mentions', () => {
+  it('reach Slack as written but ping no one, in posts, edits, and messages sent under an agent’s name', async () => {
+    const { provider, sent, posted } = slackWith()
+    const markdown = 'ping <!channel>, <!HERE> and <!subteam^S123|@eng>'
+    const inert = 'ping <\u2060!channel>, <\u2060!HERE> and <\u2060!subteam^S123|@eng>'
+    await provider.post(thread, 'thread', { markdown })
+    await provider.edit(thread, '1700000000.000300', { markdown })
+    await provider.post(thread, 'thread', { markdown, as: { name: 'pi', avatar: null } })
+    expect(sent).toEqual([{ markdown: inert }, { markdown: inert }])
+    expect(posted[0]!.markdown_text).toBe(inert)
+  })
+})
+
 describe('withoutHtml', () => {
   it('turns the HTML GitHub comments use into markdown', () => {
     expect(withoutHtml('a<!-- hidden\nnote -->b')).toBe('ab')

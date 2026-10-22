@@ -1033,6 +1033,27 @@ describe('sync', () => {
     expect(s.channelPosts.find((p) => p.channelId === 'slack:C1')!.text).toBe(JSON.stringify({ markdown: '**julian**: **ship it**' }))
   })
 
+  it("keeps a GitHub comment's Slack special mentions from pinging anyone in Slack", async () => {
+    const get = vi.fn(async () => ({ data: { number: 3, title: 'Deploy previews', html_url: 'https://github.com/basehub-ai/vboard/pull/3', state: 'open', user: { id: 42, login: 'julianbenegas' } } }))
+    const { board, s, webhook } = setup({ githubClient: { rest: { pulls: { get } } } })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    const body = 'look <!channel> <!here|here> <!everyone> <!subteam^S123|@eng>, `<!--` stays'
+    await webhook('github', {
+      type: 'message',
+      threadId: 'github:basehub-ai/vboard:3',
+      id: 'c9',
+      text: body,
+      user: '35613825',
+      name: 'mallory',
+      raw: { comment: { body, user: { avatar_url: 'https://avatars.githubusercontent.com/u/1' } } },
+    })
+    await vi.waitFor(() => expect(s.posts.some((p) => p.text.includes('look'))).toBe(true))
+    const { markdown } = JSON.parse(s.posts.find((p) => p.text.includes('look'))!.text) as { markdown: string }
+    expect(markdown).not.toMatch(/<!(?!--)/)
+    expect(markdown).toContain('look <\u2060!channel> <\u2060!here|here> <\u2060!everyone> <\u2060!subteam^S123|@\u2060eng>, `<!--` stays')
+    expect((await read(julian, 'prs'))[1]!.text).toBe(body)
+  })
+
   it('re-renders a copy when a label change changes its rendering, and only then', async () => {
     const { board, s } = setup({ slackRender: ({ message }) => `[${message.labels.state ?? '-'}] ${message.text}` })
     const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
