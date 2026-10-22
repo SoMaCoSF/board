@@ -42,6 +42,12 @@ A repeat stops at one of these, or runs until it's canceled:
 
 The first send, the stop, and the repeat reach at most a year out.
 
+A token keeps at most 100 schedules pending. A schedule in a channel where it
+has `manage` skips that check, so people and the board's own deployments
+aren't capped. Past it, scheduling answers 429 `too_many_schedules` until one
+is done or canceled. A principal ID can stand for many callers (a repo's
+workflows share one), and they share the 100.
+
 ## As whom
 
 A scheduled message posts as its creator, exactly as the board resolved them

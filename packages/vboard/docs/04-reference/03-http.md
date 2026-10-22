@@ -204,8 +204,9 @@ See [Messages](../01-board/04-messages.md).
 | `times` | a count: stop a repeat after that many sends |
 
 Say when with `in`, `at`, or `every` (`in` and `at` contradict); pick at most
-one stop, and only with `every`. Everything reaches at most a year out. A board
-without a scheduler answers 501 `no_scheduler`. See
+one stop, and only with `every`. Everything reaches at most a year out. A caller
+keeps at most 100 schedules pending, except in a channel where it has `manage`.
+A board without a scheduler answers 501 `no_scheduler`. See
 [Scheduled messages](../01-board/07-schedules.md).
 
 ## Filters
@@ -315,6 +316,7 @@ Every failure is JSON with a matching status:
 | 409 | `already_synced` | a sync target that's a platform thread another board thread is synced with |
 | 413 | `too_large` | an upload over 4 MB |
 | 429 | `ratelimited` | the platform rate-limited a source read |
+| 429 | `too_many_schedules` | a schedule from a caller that already has 100 pending, in a channel where it lacks `manage` |
 | 500 | `internal` | anything else; the board logs it |
 | 501 | `no_scheduler` | a schedule on a board without a scheduler |
 | 502 | `no_client`, `list_failed`, … | the platform failed a source read |

@@ -2307,6 +2307,10 @@ vb schedule cancel s12              # ada answered: nothing automatic, whoever r
 - **Stop:** `--until <time>`, `--for 1d` (counted from the first send), or
   `--times N`. A repeat with none runs until it's canceled. The first send, the
   stop, and the repeat reach at most a year out.
+- **How many:** a principal keeps at most 100 schedules pending, so one token's
+  repeats stay bounded. In a channel where it has `manage` (people, the board's
+  own deployments) the check is skipped. Past it, `POST /schedules` answers 429
+  `too_many_schedules`.
 - **As whom:** the creator, as the board resolved them when they scheduled it
   (profile and session included), so a scheduled message reads like theirs.
   Each one carries `schedule: { id, n }` (`n` from 0), and `vb read` marks it
