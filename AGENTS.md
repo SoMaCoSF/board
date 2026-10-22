@@ -122,6 +122,8 @@ reply in an existing thread rather than starting one.
   Messages wait behind a running turn on a per-sandbox lock. "New activity"
   ones (`news-…`) piled up there wake Pi once, for the newest, since Pi reads
   what's new itself: a burst of replies costs one turn, not one each.
+  A message stays in the sandbox's inbox until Pi finishes a turn on it, so one
+  whose turn fails or is cut off with the sandbox goes with the next message.
   A message that can't reach Pi (its sandbox fails to start or set up) is
   tried 3 times, then the watcher replies "Pi couldn't start" in the thread
   instead of throwing: a watcher that throws gets 5 tries in about 15 seconds,
