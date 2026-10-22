@@ -25,6 +25,8 @@ export const MAX_HOP_MS = 5 * 86_400_000
 export const MIN_EVERY_MS = 60_000
 /** How far out a schedule reaches: its first send, stop, and repeat. Keeps every time a real date. */
 export const MAX_AHEAD_MS = 366 * 86_400_000
+/** Pending schedules a principal keeps where it can't `manage`, so one token's repeats stay bounded. */
+export const MAX_PENDING = 100
 /** A timer that fires this early just waits again; any closer counts as on time. */
 const EARLY_MS = 1000
 
@@ -354,6 +356,12 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
         if (!target || target.deleted) throw notFound(`message not found: #${body.re}`, 'message_not_found')
         re = target.re ?? target.id
         channel = target.channel
+      }
+      if (!identity.principal.access.can('manage', channel!)) {
+        const { state } = await session.state(schedulesReducer)
+        const pending = Object.values(state.byId).filter((s) => s.next !== null && s.as.principal.id === identity.principal.id)
+        if (pending.length >= MAX_PENDING)
+          throw new HttpError(429, 'too_many_schedules', `this token already has ${MAX_PENDING} pending schedules, the most it may keep: cancel one first`)
       }
       const [row] = await session.append({
         type: 'schedule.created',
