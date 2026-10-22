@@ -241,8 +241,10 @@ talking to.
 ### Server verification
 
 - **Vercel tokens:**
-  - Verify with `jose` against the team issuer's JWKS
-    (`https://oidc.vercel.com/<team>`).
+  - Verify with `jose` against Vercel's JWKS
+    (`https://oidc.vercel.com/.well-known/jwks`), which signs every team
+    issuer's tokens (`https://oidc.vercel.com/<team>`). The board fetches
+    nothing per issuer, so a forged `iss` costs it no requests.
   - `aud` must be the board's URL.
   - The board knows its own project: `project_id` is compared to
     `VERCEL_PROJECT_ID`, or to `board({ project })` in local development.

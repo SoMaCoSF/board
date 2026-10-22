@@ -204,17 +204,28 @@ const GITHUB_ISSUER = 'https://token.actions.githubusercontent.com'
 const issuerMatches = (iss: string, accepted: string | RegExp) =>
   typeof accepted === 'string' ? iss === accepted : accepted.test(iss)
 
-const remoteKeys = new Map<string, JWTVerifyGetKey>()
+/** Vercel signs every team issuer's tokens with these, so a token's unverified `iss` never picks what the board fetches. */
+const VERCEL_KEYS = createRemoteJWKSet(new URL('https://oidc.vercel.com/.well-known/jwks'))
 
-async function keysFor(iss: string): Promise<JWTVerifyGetKey> {
-  const cached = remoteKeys.get(iss)
-  if (cached) return cached
-  const response = await fetch(`${iss.replace(/\/+$/, '')}/.well-known/openid-configuration`)
+const remoteKeys = new Map<string, Promise<JWTVerifyGetKey>>()
+
+function keysFor(iss: string): Promise<JWTVerifyGetKey> {
+  let keys = remoteKeys.get(iss)
+  if (!keys) {
+    keys = discoverKeys(iss)
+    remoteKeys.set(iss, keys)
+    keys.catch(() => remoteKeys.delete(iss))
+  }
+  return keys
+}
+
+async function discoverKeys(iss: string): Promise<JWTVerifyGetKey> {
+  const response = await fetch(`${iss.replace(/\/+$/, '')}/.well-known/openid-configuration`, {
+    signal: AbortSignal.timeout(5_000),
+  })
   if (!response.ok) throw unauthorized(`cannot load keys for issuer ${iss}`)
   const { jwks_uri } = (await response.json()) as { jwks_uri: string }
-  const keys = createRemoteJWKSet(new URL(jwks_uri))
-  remoteKeys.set(iss, keys)
-  return keys
+  return createRemoteJWKSet(new URL(jwks_uri))
 }
 
 /**
@@ -236,7 +247,7 @@ export function createVerifier(options: {
   access: readonly AccessRule[]
   auth?: AuthOptions
 }) {
-  const vercelIssuer = options.auth?.vercel ?? { issuer: VERCEL_ISSUER }
+  const vercelIssuer = options.auth?.vercel ?? { issuer: VERCEL_ISSUER, jwks: VERCEL_KEYS }
   const githubIssuer = options.auth?.github ?? { issuer: GITHUB_ISSUER }
   // The only issuers past Vercel's and GitHub's whose tokens are verified, or whose keys are fetched.
   const oidcIssuers = new Set(options.access.flatMap((rule) => (rule.issuer === 'oidc' ? [rule.url!] : [])))
