@@ -312,7 +312,7 @@ async function commitPost(
   const synced = await Promise.all(
     targets.map(async ({ target, kind, cause }) => ({
       type: 'thread.synced' as const,
-      id: await idempotentId('vboard', thread, 'sync', target),
+      id: await syncId(thread, target, kind),
       payload: { thread, target, kind, cause, by: identity.author },
     })),
   )
@@ -341,7 +341,12 @@ async function commitPost(
       },
     },
     ...synced,
-  )
+  ).catch(async (error: unknown) => {
+    // A2 refuses a batch that only partly exists: another thread claimed one of these platform threads since `unclaimed` looked.
+    if ((error as { code?: unknown }).code === 'PARTIAL_DUPLICATE_BATCH')
+      for (const target of targets) await unclaimed(ctx, target, thread, identity.principal.access)
+    throw error
+  })
   const posted = rows.find((row) => row.type === 'message.posted') as BoardEvent
   await untilApplied(ctx, rows)
   const message = foldMessages({ byId: {}, replies: {} }, posted).byId[posted.index]!
@@ -369,19 +374,30 @@ const readerFor = (ctx: WriteContext, access: Access, message: Message): Promise
 /**
  * Refuses an external thread another board thread is synced with: taking it
  * over would send its replies away from that thread, to a caller who may not
- * read it. A reader of that thread's channel learns which thread it is. It
- * reads the tables once they've applied the whole log, so a sync just made
- * counts.
+ * read it. It reads the tables once they've applied the whole log, so a sync
+ * just made counts; one made after it looks is `syncId`'s to refuse.
  */
-async function unclaimed(ctx: WriteContext, target: ResolvedTarget, thread: string, access: Access) {
+async function unclaimed(ctx: WriteContext, target: Pick<ResolvedTarget, 'target' | 'kind'>, thread: string, access: Access) {
   if (target.kind !== 'thread') return
   await ctx.reads.ensure()
   const owner = await ctx.reads.tables.threadOf(target.target)
-  if (owner === null || owner === thread) return
+  if (owner !== null && owner !== thread) throw await alreadySynced(ctx, target.target, owner, access)
+}
+
+/** A reader of the owner's channel learns which thread it is. */
+async function alreadySynced(ctx: WriteContext, target: string, owner: string, access: Access) {
   const synced = await ctx.reads.tables.syncOf(owner)
   const which = synced && access.readable(synced.channel) ? `#${synced.root}` : 'another thread'
-  throw new HttpError(409, 'already_synced', `${target.target} is already synced with ${which}`)
+  return new HttpError(409, 'already_synced', `${target} is already synced with ${which}`)
 }
+
+/**
+ * A sync's event ID. A platform thread's names only the platform thread, so the
+ * log holds one claim on it: a second board thread's append replays the first
+ * claim, or fails as a duplicate batch, instead of taking it over.
+ */
+const syncId = (thread: string, target: string, kind: 'channel' | 'thread') =>
+  kind === 'thread' ? idempotentId('vboard-claim', target) : idempotentId('vboard', thread, 'sync', target)
 
 /** `slack:C0123ABC:1727.1` → `slack:C0123ABC`; `github:o/r:12` → `github:o/r`. */
 export const channelOf = (externalThread: string) => {
@@ -553,12 +569,16 @@ export async function writeAttach(
   const resolved = await ctx.normalizeTarget(input.target)
   const { target, kind } = resolved
   if ((await ctx.reads.tables.syncOf(message.thread))?.targets.includes(target)) return { target, attached: false }
-  await unclaimed(ctx, resolved, message.thread, input.identity.principal.access)
-  // Applied before it answers, so replies from the platform thread find it at once.
-  await untilApplied(ctx, await ctx.session.append({
+  const { access } = input.identity.principal
+  await unclaimed(ctx, resolved, message.thread, access)
+  const rows = await ctx.session.append({
     type: 'thread.synced',
-    id: await idempotentId('vboard', message.thread, 'sync', target),
+    id: await syncId(message.thread, target, kind),
     payload: { thread: message.thread, target, kind, cause: 'request', by: input.identity.author },
-  }))
+  })
+  // Applied before it answers, so replies from the platform thread find it at once.
+  await untilApplied(ctx, rows)
+  const owner = (rows[0] as Extract<BoardEvent, { type: 'thread.synced' }>).payload.thread
+  if (owner !== message.thread) throw await alreadySynced(ctx, target, owner, access)
   return { target, attached: true }
 }

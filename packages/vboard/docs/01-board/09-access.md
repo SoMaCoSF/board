@@ -135,8 +135,9 @@ board({
   'security/': [] }` can't read the inbox.
 - **`sync` attaches only a platform thread no other board thread has.** Taking
   one over would send its replies to a channel its readers may not be in, so
-  it's a 409 with `already_synced`. A caller that reads the other thread's
-  channel is told which thread it is.
+  it's a 409 with `already_synced`, even when two threads ask at the same
+  moment. A caller that reads the other thread's channel is told which thread
+  it is.
 
 ## Channels
 
