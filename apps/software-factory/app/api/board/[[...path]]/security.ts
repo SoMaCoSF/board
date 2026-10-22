@@ -1,6 +1,6 @@
 import type { Watcher } from "vboard";
 import type { tellPi } from "./agent";
-import { prNumber, REPO } from "./github.ts";
+import { github, prNumber, REPO, type GitHubOptions } from "./github.ts";
 
 /** Long enough for deepsec at its maximum thinking on a PR's diff, inside the 45m each Pi turn gets (`SANDBOX_MS` in agent.ts). */
 const DEEPSEC_TIMEOUT = "30m";
@@ -8,9 +8,10 @@ const DEEPSEC_TIMEOUT = "30m";
 /**
  * A person's :security: reaction on a PR thread's root (from Slack) has Pi run deepsec on the
  * PR's diff and report back, reacting :secure: when it comes out clean. Anyone in the channel
- * can ask, the same rule as :shipit:. On a thread that isn't a PR, the watcher says so itself.
+ * can ask, the same rule as :shipit:. On a thread that isn't a PR, or a PR that isn't open, the
+ * watcher says so itself. Pi runs deepsec once per head: asking again before a new commit is a no-op.
  */
-export function security(options: { tellPi: typeof tellPi }): Watcher {
+export function security(options: GitHubOptions & { tellPi: typeof tellPi }): Watcher {
   return {
     // Not `--label pr`: a reaction on a non-PR thread gets an answer too.
     tail: "dev",
@@ -29,6 +30,12 @@ export function security(options: { tellPi: typeof tellPi }): Watcher {
         await board.reply(root.id, `\`:security:\` works on PR threads: react on a ${REPO} pull request's thread to have Pi run a deepsec review of its diff.`);
         return;
       }
+      const { state, head } = await (await github(options))(`/pulls/${number}`);
+      if (state !== "open") {
+        await board.reply(root.id, `\`:security:\` reviews open pull requests, and ${pr} is ${state}.`);
+        return;
+      }
+      if (typeof head?.sha !== "string" || !head.sha) throw new Error("GitHub did not return the PR's head SHA.");
       const requester = event.actor?.handle ?? event.payload.by.actor;
       // Named, not $(mktemp -d): each of Pi's commands runs in a new shell, so a variable wouldn't last.
       const dir = `/tmp/deepsec-${event.index}`;
@@ -36,11 +43,11 @@ export function security(options: { tellPi: typeof tellPi }): Watcher {
         board,
         task: "review",
         thread: root.id,
-        key: `security-${event.index}`,
+        key: `security-${head.sha}`,
         message: [
-          `${requester} (${event.payload.by.actor}) reacted with :security: to request a deepsec security review of ${pr} in board thread #${root.id}.`,
+          `${requester} (${event.payload.by.actor}) reacted with :security: to request a deepsec security review of ${pr} at ${head.sha} in board thread #${root.id}.`,
           `1. Check out the PR (gh pr checkout ${number} in your clone of ${REPO}), and git fetch origin so its base branch is current. Install Claude Code if it's missing (command -v claude || npm i -g @anthropic-ai/claude-code); deepsec uses it as its agent.`,
-          `2. Make a fresh worktree outside the clone and work there: git worktree remove --force ${dir} 2>/dev/null; rm -rf ${dir}; git worktree prune && git worktree add --detach ${dir} HEAD, and run the next step from ${dir}. The remove and prune clear a worktree an earlier run for this reaction left registered, which rm -rf alone doesn't, so git worktree add would refuse the path. deepsec keeps state in data/ and only fails on net-new findings, so a run in a reused checkout can come back clean with findings still there. This also keeps its files out of the clone.`,
+          `2. Make a fresh worktree outside the clone and work there: git worktree remove --force ${dir} 2>/dev/null; rm -rf ${dir}; git worktree prune && git worktree add --detach ${dir} ${head.sha}, and run the next step from ${dir}. The remove and prune clear a worktree an earlier run for this reaction left registered, which rm -rf alone doesn't, so git worktree add would refuse the path. deepsec keeps state in data/ and only fails on net-new findings, so a run in a reused checkout can come back clean with findings still there. This also keeps its files out of the clone.`,
           `3. In ${dir}, run: timeout ${DEEPSEC_TIMEOUT} env CLAUDE_CODE_EXECUTABLE=claude npx -y deepsec process --diff origin/<base>...HEAD --comment-out deepsec.md > deepsec.log 2>&1, where <base> is the PR's base branch (gh pr view ${number} --json baseRefName). The three dots diff from where the PR branched, so commits that landed on the base since aren't reviewed as its changes. Note its exit code.`,
           `4. Exit 0 (no new findings): reply that deepsec found nothing, attach ${dir}/deepsec.log, and react on the root with vb react ${root.id} secure.`,
           `   Exit 1 (findings): reply with a short line per finding (file, issue, severity), attach ${dir}/deepsec.md, and don't react :secure:.`,

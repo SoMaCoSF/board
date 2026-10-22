@@ -115,8 +115,11 @@ reply in an existing thread rather than starting one.
   `security` (`security.ts`) lets anyone add `:security:` to a PR's Slack root
   to have Pi run a deepsec review of its diff, in a fresh `git worktree` outside
   its clone (deepsec only fails on net-new findings, so reused state could look
-  clean). Pi reacts `:secure:` only when deepsec exits 0. On a thread that isn't
-  a PR, the watcher replies itself, and `pi` doesn't wake Pi for that reply.
+  clean). Pi reacts `:secure:` only when deepsec exits 0. The watcher reads the
+  PR from GitHub and keys the request by its head SHA, so deepsec runs once per
+  head: a repeat reaction does nothing until a new commit lands. On a thread
+  that isn't a PR, or a PR that isn't open, the watcher replies itself, and
+  `pi` doesn't wake Pi for that reply.
   Each message to Pi extends its sandbox session to at least 45m, so a long run
   late in a session isn't cut off.
   Messages wait behind a running turn on a per-sandbox lock. "New activity"
