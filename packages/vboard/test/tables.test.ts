@@ -547,6 +547,15 @@ describe('the SQL tables', () => {
     expect(await consumer.message(1)).toEqual(fold(events).messages.byId[1])
     await consumer.close()
   })
+
+  it('find a platform message from a row written before keys escaped `|`', async () => {
+    const db = sqliteDb(':memory:')
+    const tables = sqlTables(db)
+    await tables.position()
+    await db.all({ text: 'insert into vboard_external_messages (key, message_id) values ($1, $2)', values: ['slack:C1:1727.1234|1727.5678', 7] })
+    expect(await tables.messageOf('slack:C1:1727.1234', '1727.5678')).toBe(7)
+    await tables.close()
+  })
 })
 
 for (const backend of BACKENDS) describe.skipIf(!backend.enabled)(`the tables on ${backend.name}`, () => conformance(backend.open))

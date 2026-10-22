@@ -274,14 +274,16 @@ export type SyncState = {
   byExternalThread: Record<string, string>
   /** Board message → target → its copy there. Includes the copy it came from. */
   copies: Record<string, Record<string, ExternalCopy>>
-  /** `${external thread}|${platform message ID}` → board message. */
+  /** `externalMessageKey(external thread, platform message ID)` → board message. */
   byExternalMessage: Record<string, number>
 }
 
 /** `slack:C0123ABC:1727.1234` is a thread; `slack:C0123ABC` and `github:owner/repo` are channels. */
 export const isThreadTarget = (target: string) => target.slice(target.indexOf(':') + 1).includes(':')
 
-export const externalMessageKey = (thread: string, message: string) => `${thread}|${message}`
+const escapeKeyPart = (part: string) => part.replaceAll('\\', '\\\\').replaceAll('|', '\\|')
+/** Escaped so no two pairs share a key. A pair with no backslash or `|` keys as `thread|message`, as older tables hold it. */
+export const externalMessageKey = (thread: string, message: string) => `${escapeKeyPart(thread)}|${escapeKeyPart(message)}`
 
 const addTarget = (thread: SyncedThread, target: string) => {
   if (!thread.targets.includes(target)) thread.targets.push(target)
