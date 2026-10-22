@@ -82,6 +82,10 @@ The proxy acts as you, so it answers no one but its own page:
 - **Your board token never leaves the CLI process.** The page never sees it.
   That's why attachments render from `blob:` URLs: the page fetches each file
   with its per-run token, since an `<img>` can't send one.
+- **What people post doesn't make your browser fetch it.** Images in a
+  message show as links you click. Avatars load only over `https`, never from
+  `localhost` or an IP address, and the built-in agent avatars are drawn by the
+  page. The page loads no image over plain `http`.
 
 Stopping the command (Ctrl-C) closes the server and every open stream.
 
