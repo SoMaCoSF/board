@@ -378,4 +378,35 @@ describe('cli hooks', () => {
     expect((await vb(['hooks', 'status', 'pi'], at)).stdout).toBe('Pi  not installed\n')
     expect(await readFile(file, 'utf8')).toBe('export default () => {}\n')
   }, 30_000)
+
+  it("leaves another tool's hooks and Pi extension alone, even when they look like its own", async () => {
+    const home = await tmp('vboard-home-')
+    const at = { HOME: home, PI_CODING_AGENT_DIR: join(home, 'pi-agent') }
+    await mkdir(join(home, '.claude'))
+    const settings = join(home, '.claude', 'settings.json')
+    const theirs = { hooks: { Stop: [{ hooks: [{ type: 'command', command: 'reviewer hook stop --agent claude --notify' }] }] } }
+    await writeFile(settings, JSON.stringify(theirs))
+    await mkdir(join(home, '.cursor'))
+    const cursor = join(home, '.cursor', 'hooks.json')
+    const theirsFlat = { version: 1, hooks: { stop: [{ command: 'reviewer hook stop --agent cursor 2>/dev/null || true' }] } }
+    await writeFile(cursor, JSON.stringify(theirsFlat))
+    const extension = join(home, 'pi-agent', 'extensions', 'vboard.ts')
+    await mkdir(dirname(extension), { recursive: true })
+    const theirsPi = '// My own vboard helpers.\nconst COMMAND = "notify-send done"\nexport default () => {}\n'
+    await writeFile(extension, theirsPi)
+
+    expect((await vb(['hooks', 'status', 'claude', 'cursor', 'pi'], at)).stdout).toBe('Claude Code  not installed\nCursor       not installed\nPi           not installed\n')
+    expect((await vb(['hooks', 'uninstall', 'claude', 'cursor', 'pi'], at)).stdout).toBe('Claude Code  not installed\nCursor       not installed\nPi           not installed\n')
+    expect(JSON.parse(await readFile(settings, 'utf8'))).toEqual(theirs)
+    expect(JSON.parse(await readFile(cursor, 'utf8'))).toEqual(theirsFlat)
+    expect(await readFile(extension, 'utf8')).toBe(theirsPi)
+
+    // Installing next to them keeps them, and uninstalling takes back only what it added.
+    expect(await vb(['hooks', 'install', 'claude', 'cursor'], at)).toMatchObject({ code: 0, stderr: '' })
+    expect(JSON.parse(await readFile(settings, 'utf8')).hooks.Stop).toEqual([...theirs.hooks.Stop, { hooks: [expect.objectContaining({ command: expect.stringMatching(/ hook stop --agent claude 2>\/dev\/null \|\| true$/) })] }])
+    expect(JSON.parse(await readFile(cursor, 'utf8')).hooks.stop).toEqual([...theirsFlat.hooks.stop, expect.objectContaining({ command: expect.stringMatching(/ hook stop --agent cursor 2>\/dev\/null \|\| true$/) })])
+    expect((await vb(['hooks', 'uninstall', 'claude', 'cursor'], at)).stdout).toBe(`Claude Code  removed  ~/.claude/settings.json\nCursor       removed  ~/.cursor/hooks.json\n`)
+    expect(JSON.parse(await readFile(settings, 'utf8')).hooks).toEqual(theirs.hooks)
+    expect(JSON.parse(await readFile(cursor, 'utf8'))).toEqual(theirsFlat)
+  }, 30_000)
 })
