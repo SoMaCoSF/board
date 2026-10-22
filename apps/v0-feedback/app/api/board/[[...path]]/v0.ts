@@ -2,6 +2,7 @@ import { v0 } from "v0";
 import { generateText, Output } from "ai";
 import { z } from "zod";
 import type { BoardClient } from "vboard/client";
+import type { Reply } from "./replies";
 
 // A v0 chat per report, created with the deployment's Vercel OIDC token. The project's
 // git link gives each chat its own v0/vboard-<chatId> branch on vercel/v0, and
@@ -64,7 +65,7 @@ const Outcome = z.object({
 });
 
 /** Reads a finished reply and, once v0 is done, labels its report with what it did. */
-export async function readReply({ chatId, messageId }: { chatId: string; messageId: string }, board: BoardClient) {
+export async function readReply({ chatId, messageId }: Reply, board: BoardClient) {
   const [report] = (await board.messages({ channel: "feedback", label: { v0: chatId } })).messages;
   if (!report || report.labels.v0state === "done") return;
   const message = await v0.messages.get({ chatId, messageId });

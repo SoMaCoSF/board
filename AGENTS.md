@@ -226,7 +226,8 @@ here until it moves to `vercel/v0`: people post v0 feedback in Slack, and v0
 fixes the ones worth fixing and opens a draft PR on `vercel/v0`. The board
 route holds the whole config, `v0.ts` starts v0 chats, `app/api/v0-hook` hears
 back from v0, and the A2 scheduler route re-exports the board's `scheduler`
-(separate because the queue trigger makes its function private).
+(separate because the queue trigger makes its function private), which also
+delivers v0's replies.
 
 ```bash
 cd apps/v0-feedback
@@ -245,7 +246,10 @@ VBOARD_URL=https://vboard.playground-vercel.tools/api/board pnpm exec vb inspect
   decision model (`openai/gpt-6-luna-decisions`) for its `kind` and how likely
   it's worth fixing (`worth=0.00`–`1.00`). A bug or feature at 0.7 or more gets
   a v0 chat and an announcement in `#feedback-v0-prs` with a one-line reason.
-  `/api/v0-hook` reads v0's finished reply (with an LLM) and labels the report, writing through the board's in-process `client`; the
+  `/api/v0-hook` records v0's finished reply in an A2 side contract keyed by the
+  message (`replies.ts`), so a retried or replayed delivery lands once, and its
+  consumer reads the reply (with an LLM) and labels the report once, writing
+  through the board's in-process `client`; the
   `report` watcher (`when: 'enters'`) then replies once in the announcement's
   thread with the PR, a summary, and the likely owner, mentioned by email.
 - Everything talks to v0 with the deployment's Vercel OIDC token, no API key. The

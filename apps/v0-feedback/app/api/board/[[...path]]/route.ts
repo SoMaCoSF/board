@@ -5,7 +5,8 @@ import { connectSlackAdapter } from "@vercel/connect/chat";
 import { redisHttp } from "vboard/store-redis-http";
 import { vercelQueues } from "vboard/scheduler-vercel";
 import { experimental_decide as decide, generateText } from "ai";
-import { startV0 } from "./v0";
+import { readReply, startV0 } from "./v0";
+import { v0Replies } from "./replies";
 
 // The v0 feedback bot, on Vercel's Slack: people post v0 feedback in #feedback-v0-vboard.
 // Each new thread gets :ack:; the ones worth addressing get a v0 chat, a :v0:, and a
@@ -19,7 +20,9 @@ const slackCredentials = connectSlackAdapter("slack/vboard");
 const slackAdapter = createSlackAdapter(slackCredentials);
 const slackToken = slackCredentials.botToken;
 
-export const { GET, POST, scheduler, client } = board({
+const queues = vercelQueues({ topic: "vboard" });
+
+const feedback = board({
   store: env
     ? redisHttp({
         url: process.env.KV_REST_API_URL!,
@@ -29,7 +32,7 @@ export const { GET, POST, scheduler, client } = board({
         keyPrefix: env === "production" ? "vboard-2" : `vboard-2:${env}`,
       })
     : undefined,
-  scheduler: vercelQueues({ topic: "vboard" }),
+  scheduler: queues,
   sync: {
     slack: slack({
       adapter: slackAdapter,
@@ -50,6 +53,17 @@ export const { GET, POST, scheduler, client } = board({
     report: { tail: "feedback --label v0state=done", when: "enters", run: report },
   },
 });
+
+export const { GET, POST, client } = feedback;
+
+export const replies = v0Replies({
+  store: feedback.store.log,
+  scheduler: queues,
+  read: (reply) => readReply(reply, client("v0-hook")),
+});
+
+// The board's queue also delivers v0's replies.
+export const scheduler = queues.handler(...feedback.servers, replies.server);
 
 /** How sure triage must be that a report is worth fixing before it starts a v0 chat. */
 const WORTH = 0.7;
