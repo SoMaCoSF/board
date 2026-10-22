@@ -7,6 +7,9 @@ import { threadOfBranch } from "./owner.ts";
 export const CROSSPOST = "crosspost";
 export const CROSSPOST_ACTOR = `vboard:watch:${CROSSPOST}`;
 
+/** `text` as a markdown link's label: its backslashes, brackets, and tags stay text. */
+export const linkText = (text: string) => text.replace(/[\\[\]<]/g, "\\$&");
+
 /**
  * Links a factory PR's Slack thread and the Slack thread it was built for, both ways, once the
  * PR's root lands in Slack: the PR thread gets `:crosspost: From <who>'s thread`, and the source
@@ -32,8 +35,8 @@ export function crosspost(options: GitHubOptions = {}): Watcher {
       if (there?.platform !== "Slack") return;
       await board.label(root.id, { set: { crosspost: "yes" } });
       const who = source.author?.name ?? source.author?.handle;
-      const title = (/^PR #\d+: (.+)/.exec(root.text)?.[1] ?? pr.title ?? "").replace(/[[\]]/g, "\\$&");
-      await board.reply(root.id, `:crosspost: From [${who ? `${who}'s` : "its"} Slack thread](${there.url}) · board #${source.id}`);
+      const title = linkText(/^PR #\d+: (.+)/.exec(root.text)?.[1] ?? pr.title ?? "");
+      await board.reply(root.id, `:crosspost: From [${who ? `${linkText(who)}'s` : "its"} Slack thread](${there.url}) · board #${source.id}`);
       await board.reply(source.id, `:crosspost: [#${number} ${title}](${here.url})`);
     },
   };

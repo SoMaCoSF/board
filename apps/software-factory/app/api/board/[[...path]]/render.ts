@@ -1,5 +1,5 @@
 import type { slack } from "vboard/adapter-slack";
-import { CROSSPOST_ACTOR } from "./crosspost.ts";
+import { CROSSPOST_ACTOR, linkText } from "./crosspost.ts";
 
 type RenderInput = Parameters<NonNullable<Parameters<typeof slack>[0]["render"]>>[0];
 
@@ -25,7 +25,7 @@ export function renderForSlack({ message, author, mentionOf, label }: RenderInpu
   if (message.re !== null || !message.labels.pr || !pr || !emoji) {
     return `**${label}**: ${message.text}`;
   }
-  const text = `#${pr[1]} ${pr[2]}`.replace(/[[\]]/g, "\\$&");
+  const text = linkText(`#${pr[1]} ${pr[2]}`);
   const owner = message.labels.owner ? (mentionOf(message.labels.owner) ?? message.labels["owner.name"]) : undefined;
   return `${emoji} [${text}](${pr[3]}) · ${owner ? `for ${owner}` : (mentionOf(message.by.actor) ?? author?.name ?? label)}`;
 }
