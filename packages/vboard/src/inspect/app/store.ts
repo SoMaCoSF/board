@@ -1,5 +1,6 @@
 import type { ActorView, BoardEventView, ChannelView, Discovery, Me, MessageView } from '../../api/routes.ts'
 import { canonicalEmoji } from '../../contract/emoji.ts'
+import { own } from '../../contract/own.ts'
 import { actorKind } from '../../contract/schemas.ts'
 
 // The board, as this page knows it. Pure functions over plain state: the page
@@ -60,7 +61,7 @@ export const initialState: State = {
 export function confirms(message: MessageView, op: Op, me: string): boolean {
   switch (op.kind) {
     case 'react': {
-      const reacted = (message.reactions[canonicalEmoji(op.emoji)] ?? []).includes(me)
+      const reacted = (own(message.reactions, canonicalEmoji(op.emoji)) ?? []).includes(me)
       return op.remove ? !reacted : reacted || message.deleted
     }
     case 'edit':
@@ -71,7 +72,7 @@ export function confirms(message: MessageView, op: Op, me: string): boolean {
       return (
         message.deleted ||
         (Object.entries(op.set).every(([key, value]) => message.labels[key] === value) &&
-          op.unset.every((key) => !(key in message.labels)))
+          op.unset.every((key) => !Object.hasOwn(message.labels, key)))
       )
   }
 }
@@ -81,7 +82,7 @@ export function apply(message: MessageView, op: Op, me: string, now: string): Me
   switch (op.kind) {
     case 'react': {
       const emoji = canonicalEmoji(op.emoji)
-      const actors = (message.reactions[emoji] ?? []).filter((actor) => actor !== me)
+      const actors = (own(message.reactions, emoji) ?? []).filter((actor) => actor !== me)
       const reactions = { ...message.reactions, [emoji]: op.remove ? actors : [...actors, me] }
       if (reactions[emoji]!.length === 0) delete reactions[emoji]
       return { ...message, reactions }
@@ -143,7 +144,7 @@ export function applyEvent(state: State, event: BoardEventView): State {
     const post = landed(next, event.message)
     if (post) next = { ...next, pending: next.pending.filter((p) => p !== post) }
     const { channel, re } = event.message
-    const known = next.channels[channel]
+    const known = own(next.channels, channel)
     if (!known || known.lastIndex < event.index)
       next = {
         ...next,
@@ -237,9 +238,9 @@ export const filtering = (filter: Filter) => !!(filter.from || filter.text || fi
 
 function hasLabel(labels: Record<string, string>, filter: string): boolean {
   const at = filter.indexOf('=')
-  if (at === -1) return filter in labels
+  if (at === -1) return Object.hasOwn(labels, filter)
   const key = filter.slice(0, at)
-  return key in labels && filter.slice(at + 1).split('|').includes(labels[key]!)
+  return Object.hasOwn(labels, key) && filter.slice(at + 1).split('|').includes(labels[key]!)
 }
 
 /** The board's filter rules, for messages already here: labels match on the message or its thread's root. */

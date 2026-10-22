@@ -4,8 +4,6 @@ import { parseScope } from '../src/server/access.ts'
 import * as store from '../src/inspect/app/store.ts'
 import { caller, personToken, testBoard } from './harness.ts'
 
-// `constructor` and `__proto__` are valid names that Object.prototype also has.
-
 describe('names Object.prototype also has', () => {
   it('react as `constructor` and `__proto__` without stopping the board', async () => {
     const { fetch } = testBoard()

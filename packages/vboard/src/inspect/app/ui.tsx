@@ -210,7 +210,7 @@ export function LabelEditor(props: {
         <Suggest
           value={key}
           onChange={setKey}
-          items={[...props.known.keys()].filter((k) => !(k in props.labels))}
+          items={[...props.known.keys()].filter((k) => !Object.hasOwn(props.labels, k))}
           placeholder="key"
           autoFocus
           onEnter={() => valueRef.current?.querySelector('input')?.focus()}
