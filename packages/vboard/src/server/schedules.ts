@@ -15,7 +15,7 @@ import { actorsReducer, type ActorsState } from '../contract/reducers.ts'
 import { replaceMentions } from '../contract/mentions.ts'
 import { resolveMentions } from './actors.ts'
 import { badRequest, HttpError, notFound } from './errors.ts'
-import { authorizePost, deploymentIdentity, writePost, type Identity, type WriteContext } from './writes.ts'
+import { authorizePost, deploymentIdentity, emailMentions, writePost, type Identity, type WriteContext } from './writes.ts'
 import { DroppedError } from './middleware.ts'
 import { waitUntil } from './wait-until.ts'
 
@@ -343,6 +343,7 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
 
       // Mentions fail now, where the person scheduling sees it, not at send time.
       // A handle nobody has stays plain text, and they hear about it now too.
+      emailMentions(body.text, false)
       const { state: known } = await writes.session.state(actorsReducer)
       const withoutEmails = replaceMentions(body.text, (t) => (t.kind === 'actor' && t.actor.includes('@') ? t.actor : null))
       const { unknown } = resolveMentions(withoutEmails, known, identity.actor, false, identity.principal.access.readsAll)

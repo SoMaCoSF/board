@@ -303,6 +303,7 @@ Every failure is JSON with a matching status:
 | 400 | `invalid_scope` | an `x-board-scope` header the board can't parse, or one longer than 4000 characters; the message says what to write |
 | 400 | `ambiguous_mention` | an `@handle` matches several actors. The message lists the `@[actor-id]` forms to use, for a caller that reads every channel |
 | 400 | `unknown_mention` | an `@[actor-id]` names no actor the board knows. A plain `@handle` that matches no one isn't an error: it stays plain text, listed in the answer's `unknownMentions` for a caller that reads the channel |
+| 400 | `too_many_email_mentions` | a post, edit, or schedule mentions more than 10 people by email (`@[ada@vercel.com]`). Each one is a directory lookup on every synced platform |
 | 400 | `message_deleted` | editing, reacting to, or labeling a deleted message |
 | 400 | `no_blob_store` | an upload to a board with nowhere to keep files |
 | 400 | `platform_error` | a platform failed a source read |

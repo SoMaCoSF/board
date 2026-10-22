@@ -60,20 +60,34 @@ const middlewareClient = (ctx: WriteContext) => () => {
   return ctx.middlewareClient()
 }
 
+/** Each email is a directory lookup on every synced platform, so a write names only a few. */
+const EMAIL_MENTIONS_MAX = 10
+
+/**
+ * The emails a write looks up. More than `EMAIL_MENTIONS_MAX` fails the write;
+ * a lenient one looks up the first few, and the rest stay plain text.
+ */
+export function emailMentions(text: string, lenient: boolean): string[] {
+  const emails = extractMentions(text).flatMap((token) =>
+    token.kind === 'actor' && token.actor.includes('@') ? [token.actor] : [],
+  )
+  if (emails.length > EMAIL_MENTIONS_MAX && !lenient)
+    throw badRequest(`a message mentions at most ${EMAIL_MENTIONS_MAX} people by email, this one has ${emails.length}`, 'too_many_email_mentions')
+  return emails.slice(0, EMAIL_MENTIONS_MAX)
+}
+
 /**
  * `@[ada@vercel.com]`: each email a synced platform knows becomes that user's exact
  * mention, `@[slack:user:U0456]`, so it reads natively there; the rest stay plain text.
  */
-async function withEmailMentions(ctx: WriteContext, text: string): Promise<{ text: string; found: Actor[] }> {
-  const emails = extractMentions(text).flatMap((token) =>
-    token.kind === 'actor' && token.actor.includes('@') ? [token.actor] : [],
-  )
+async function withEmailMentions(ctx: WriteContext, text: string, lenient: boolean): Promise<{ text: string; found: Actor[] }> {
+  const emails = emailMentions(text, lenient)
   if (emails.length === 0) return { text, found: [] }
   const byEmail = new Map<string, Actor | null>()
   for (const email of emails) byEmail.set(email, (await ctx.findByEmail?.(email).catch(() => null)) ?? null)
   return {
     text: replaceMentions(text, (token) => {
-      if (token.kind !== 'actor' || !byEmail.has(token.actor)) return null
+      if (token.kind !== 'actor' || !token.actor.includes('@')) return null
       const actor = byEmail.get(token.actor)
       return actor ? `@[${actor.id}]` : token.actor
     }),
@@ -300,7 +314,7 @@ async function commitPost(
   }
 
   const seen = actorSeen(identity.actor, actors)
-  const { text, found } = await withEmailMentions(ctx, input.text)
+  const { text, found } = await withEmailMentions(ctx, input.text, input.lenientMentions ?? false)
   const named = found.map((actor) => actorSeen(actor, actors)).filter((event) => event !== null)
   const { mentions, unknown } = resolveMentions(
     text,
@@ -452,7 +466,7 @@ export async function writeEdit(ctx: WriteContext, input: EditInput): Promise<{ 
 async function commitEdit(ctx: WriteContext, input: EditInput, message: Message): Promise<{ unknownMentions?: string[] }> {
   const { state: actors } = await ctx.session.state(actorsReducer)
   const seen = actorSeen(input.identity.actor, actors)
-  const { text, found } = await withEmailMentions(ctx, input.text)
+  const { text, found } = await withEmailMentions(ctx, input.text, input.from != null)
   const named = found.map((actor) => actorSeen(actor, actors)).filter((event) => event !== null)
   const { mentions, unknown } = resolveMentions(
     text,
