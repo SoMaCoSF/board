@@ -12,7 +12,7 @@ import { createSlackAdapter } from '@chat-adapter/slack'
 import { connectSlackAdapter } from '@vercel/connect/chat'
 import { connectUserTokens, withUserTokens } from './users.ts'
 
-type SlackChannel = { id?: string; name?: string; is_member?: boolean; is_private?: boolean; is_im?: boolean; is_mpim?: boolean; is_ext_shared?: boolean }
+type SlackChannel = { id?: string; name?: string; is_member?: boolean; is_private?: boolean; is_im?: boolean; is_mpim?: boolean; is_ext_shared?: boolean; context_team_id?: string; shared_team_ids?: string[] }
 export type SlackClient = {
   conversations: {
     list(args: Record<string, unknown>): Promise<{
@@ -126,7 +126,19 @@ type SlackUser = {
   name?: string
   real_name?: string
   is_bot?: boolean
+  deleted?: boolean
+  is_restricted?: boolean
+  is_ultra_restricted?: boolean
+  team_id?: string
+  enterprise_user?: { teams?: string[] }
   profile?: { display_name?: string; real_name?: string; image_72?: string; image_48?: string }
+}
+
+/** Slack shows a public channel to every full member of a workspace it's in: not to guests, or to another organization's people. */
+const seesPublic = (person: SlackUser | undefined, channel: SlackChannel): boolean => {
+  if (!person || person.deleted || person.is_restricted || person.is_ultra_restricted) return false
+  const teams = [channel.context_team_id, ...(channel.shared_team_ids ?? [])]
+  return [person.team_id, ...(person.enterprise_user?.teams ?? [])].some((team) => team !== undefined && teams.includes(team))
 }
 
 type SlackFile = { name?: string; title?: string; permalink?: string }
@@ -515,11 +527,11 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
         return slackLinks(key, typeof raw?.text === 'string' ? raw.text : message.text, Array.isArray(raw?.attachments) ? raw.attachments : [], mrkdwn)
       },
       // A link Slack didn't unfurl, read with the app's token, but only from a public channel
-      // the app is already in. The token reads what the app can, not what the person who
-      // posted the link can, and every board reader would see the snapshot: private
-      // channels and DMs are left to Slack's unfurl, which checks the poster. Nor does it
-      // join a channel someone linked, which would announce the app there.
-      async fetchLink(link): Promise<FetchedLink> {
+      // the app is already in, and only for a poster Slack would show it to. The token reads
+      // what the app can, and every board reader would see the snapshot: private channels,
+      // DMs, and Slack Connect channels are left to Slack's unfurl, which checks the poster.
+      // Nor does it join a channel someone linked, which would announce the app there.
+      async fetchLink(link, poster): Promise<FetchedLink> {
         const [, channel, thread] = link.thread.split(':')
         const web = await client()
         if (!web?.conversations.replies || !channel || !thread) return { snapshot: null, unavailable: 'no Slack client to read it with' }
@@ -528,7 +540,11 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
           const info = (await web.conversations.info({ channel })).channel
           if (!info) return { snapshot: null, unavailable: 'channel_not_found' }
           if (info.is_private || info.is_im || info.is_mpim) return { snapshot: null, unavailable: 'private_channel' }
+          if (info.is_ext_shared) return { snapshot: null, unavailable: 'shared_channel' }
           if (!info.is_member) return { snapshot: null, unavailable: 'not_in_channel' }
+          const user = poster.startsWith('slack:user:') ? poster.slice('slack:user:'.length) : null
+          const person = user && web.users ? (await web.users.info({ user })).user : undefined
+          if (!seesPublic(person, info)) return { snapshot: null, unavailable: 'poster_not_member' }
           const { messages } = await web.conversations.replies({ channel, ts: thread, oldest: link.message, latest: link.message, inclusive: true, limit: 1 })
           found = messages?.find((m) => m.ts === link.message)
         } catch (error) {

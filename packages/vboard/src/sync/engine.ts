@@ -276,9 +276,9 @@ export function createSyncEngine(options: {
    * What a platform message's links point to. A linked message the board has
    * (it was synced) is that board message; otherwise it's what the platform sent
    * about it (Slack's unfurl), what an earlier version of this message had, or
-   * what the platform says when asked. A link nobody can read says why.
+   * what the platform says when `poster` asks. A link nobody can read says why.
    */
-  async function resolveLinks(platform: SyncProvider, links: ExternalLink[], previous: Link[] = []): Promise<Link[]> {
+  async function resolveLinks(platform: SyncProvider, poster: string, links: ExternalLink[], previous: Link[] = []): Promise<Link[]> {
     if (links.length === 0) return []
     const { session, writes } = bound()
     const { state: actors } = await session.state(actorsReducer)
@@ -304,7 +304,7 @@ export function createSyncEngine(options: {
         resolved.push(kept)
         continue
       }
-      const fetched = await platform.fetchLink(link).catch((error: unknown) => ({ snapshot: null, unavailable: describe(error) }))
+      const fetched = await platform.fetchLink(link, poster).catch((error: unknown) => ({ snapshot: null, unavailable: describe(error) }))
       resolved.push({ url: link.url, message: null, snapshot: fetched.snapshot, unavailable: fetched.snapshot ? null : (fetched.unavailable ?? 'unknown').slice(0, 300) })
     }
     // A snapshot is what a platform sent, cut to fit.
@@ -583,7 +583,7 @@ export function createSyncEngine(options: {
         if (existing !== undefined) return { root: rootId ?? existing, message: existing }
         const identity = externalIdentity(event.author)
         const { attachments, notes } = event.files?.length ? await importFiles(platform, event.files, attempt) : { attachments: [], notes: [] }
-        const links = await resolveLinks(platform, event.links ?? [])
+        const links = await resolveLinks(platform, event.author.id, event.links ?? [])
         const base = {
           ...source,
           ...(links.length ? { links } : {}),
@@ -629,7 +629,7 @@ export function createSyncEngine(options: {
           const stored = (await writes.reads.message(id)) ?? undefined
           const text = clampText(withNotes(overrides.text ?? event.text, stored ? notesIn(stored.text) : []), (stored?.attachments.length ?? 0) > 0)
           if (stored && !event.linksOnly && stored.text !== text) await writeEdit(writes, { ...source, identity, authorized: await authorized('post', id), text, from: key, asAuthor: false })
-          const links = stored ? await resolveLinks(platform, event.links ?? [], stored.links) : []
+          const links = stored ? await resolveLinks(platform, stored.by.principal, event.links ?? [], stored.links) : []
           if (stored && !sameLinks(links, stored.links)) await writeLinks(writes, { identity, authorized: await authorized('post', id), links, from: key })
         } else {
           if (platform.singleReaction) {

@@ -31,7 +31,7 @@ export type ChatTransport = Omit<ProviderOptions, 'uploadsFiles'> & {
   markdown?(message: ChatMessage): string
   /** Platform messages a message links to, located under sync key `key`. */
   links?(key: string, message: ChatMessage): ExternalLink[]
-  fetchLink?(link: ExternalLink): Promise<FetchedLink>
+  fetchLink?(link: ExternalLink, poster: string): Promise<FetchedLink>
   /** A channel or thread, read on demand without syncing it. */
   read?(target: string, options: { limit: number }): Promise<SourceRead>
   avatar?(message: ChatMessage): Promise<string | null>
@@ -193,8 +193,8 @@ export abstract class ChatSyncProvider<E extends ProviderEvent = ProviderEvent> 
     const root = await this.transport.fetchRoot?.(thread)
     return root ? { ...root, raw: root.raw ?? null } : null
   }
-  override async fetchLink(link: ExternalLink): Promise<FetchedLink> {
-    return this.transport.fetchLink ? this.transport.fetchLink(link) : super.fetchLink(link)
+  override async fetchLink(link: ExternalLink, poster: string): Promise<FetchedLink> {
+    return this.transport.fetchLink ? this.transport.fetchLink(link, poster) : super.fetchLink(link, poster)
   }
 
   override async read(target: string, options: { limit: number }): Promise<SourceRead> {

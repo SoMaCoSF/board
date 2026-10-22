@@ -124,8 +124,8 @@ export abstract class SyncProvider<E extends ProviderEvent = ProviderEvent> {
   async fetchFile(_file: ExternalFile): Promise<Uint8Array | null> { return null }
   /** The platform's own link to an event's message, or null when it has none. */
   async permalink(_event: E): Promise<string | null> { return null }
-  /** A linked message the platform didn't describe, read from the platform. */
-  async fetchLink(_link: ExternalLink): Promise<FetchedLink> { return { snapshot: null, unavailable: `${this.platform} can't read it` } }
+  /** A linked message the platform didn't describe, read from the platform if `poster` (who linked it, e.g. `slack:user:U0456`) could read it there. */
+  async fetchLink(_link: ExternalLink, _poster: string): Promise<FetchedLink> { return { snapshot: null, unavailable: `${this.platform} can't read it` } }
   /**
    * A channel or thread, read on demand for whoever asked: nothing is synced,
    * stored, or joined. Throws `UnreadableError` for what it won't read.

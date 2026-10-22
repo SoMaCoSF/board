@@ -8,10 +8,11 @@ import { BOARD_URL, caller, personToken, testBoard } from './harness.ts'
 /** The thread #321 was in: a Slack root's permalink and its ts. */
 const TS = '1791322095.443859'
 /** A public channel the app is in: the only kind it reads links from itself. */
-const joined = async ({ channel }: { channel: string }) => ({ channel: { id: channel, is_member: true } })
+const joined = async ({ channel }: { channel: string }) => ({ channel: { id: channel, is_member: true, context_team_id: 'T1' } })
+const members: SlackClient['users'] = { info: async ({ user }) => ({ user: { id: user, team_id: 'T1' } }) }
 const permalink = (channel: string, ts = TS) => `https://acme.slack.com/archives/${channel}/p${ts.replace('.', '')}`
 
-function setup(client?: Partial<SlackClient['conversations']>, users?: SlackClient['users']) {
+function setup(client?: Partial<SlackClient['conversations']>, users = members) {
   const web = client ? { conversations: { list: async () => ({ channels: [] }), info: async () => ({}), join: async () => ({}), ...client }, users } : undefined
   const s = fakePlatform('slack', web ? withSlackClient(web, false) : undefined)
   const board = testBoard({
@@ -111,7 +112,7 @@ describe('slack message links', () => {
 
   it('reads an unsynced message from Slack when no unfurl came', async () => {
     const replies = vi.fn(async () => ({ messages: [{ ts: TS, user: 'U_ADA', text: 'the root, in <#C9>' }] }))
-    const users = { info: vi.fn(async () => ({ user: { real_name: 'Ada Lovelace' } })) }
+    const users = { info: vi.fn(async ({ user }: { user: string }) => ({ user: { id: user, team_id: 'T1', real_name: 'Ada Lovelace' } })) }
     const { board, webhook } = setup({ replies, info: joined }, users)
     const julian = caller(board.fetch, await personToken())
     await webhook(linking('1791322999.000003', permalink('C9')))
@@ -188,7 +189,7 @@ describe('slack message links', () => {
       CEXT: { id: 'CEXT', is_member: true, is_ext_shared: true, context_team_id: 'T1', shared_team_ids: ['T1', 'T_OTHER'] },
     }
     const replies = vi.fn(async () => ({ messages: [{ ts: TS, user: 'U_ADA', text: 'layoffs friday' }] }))
-    const users = { info: vi.fn(async ({ user }: { user: string }) => ({ user: people[user] })) }
+    const users = { info: async ({ user }: { user: string }) => ({ user: people[user] }) }
     const { board, webhook } = setup({ replies, info: async ({ channel }) => ({ channel: channels[channel] }) }, users)
     const julian = caller(board.fetch, await personToken())
     const post = (id: string, user: string, channel: string) => webhook({ ...linking(id, permalink(channel)), user })
@@ -205,8 +206,7 @@ describe('slack message links', () => {
     const replies = vi.fn()
       .mockRejectedValueOnce(Object.assign(new Error('An API error occurred: ratelimited'), { data: { error: 'ratelimited' } }))
       .mockResolvedValue({ messages: [{ ts: TS, user: 'U_ADA', text: 'public root' }] })
-    const users = { info: async ({ user }: { user: string }) => ({ user: { id: user, team_id: 'T1' } }) }
-    const { board, webhook } = setup({ replies, info: async ({ channel }) => ({ channel: { id: channel, is_member: true, context_team_id: 'T1', is_private: channel === 'CPRIV' } }) }, users)
+    const { board, webhook } = setup({ replies, info: async ({ channel }) => ({ channel: { id: channel, is_member: true, context_team_id: 'T1', is_private: channel === 'CPRIV' } }) })
     const julian = caller(board.fetch, await personToken())
     const id = '1791322999.000015'
     const text = `see <${permalink('C9')}> and <${permalink('CPRIV')}>`
@@ -222,7 +222,7 @@ describe('slack message links', () => {
 
   it('keeps the links Slack did not unfurl when it unfurls the others', async () => {
     const replies = vi.fn(async () => ({ messages: [{ ts: TS, user: 'U_ADA', text: 'public root' }] }))
-    const { board, webhook } = setup({ replies, info: async ({ channel }) => ({ channel: { id: channel, is_member: true, is_private: channel === 'CPRIV' } }) })
+    const { board, webhook } = setup({ replies, info: async ({ channel }) => ({ channel: { id: channel, is_member: true, context_team_id: 'T1', is_private: channel === 'CPRIV' } }) })
     const julian = caller(board.fetch, await personToken())
     const id = '1791322999.000008'
     const text = `see <${permalink('C9')}> and <${permalink('CPRIV')}>`
