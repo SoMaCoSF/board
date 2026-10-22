@@ -120,6 +120,41 @@ describe('auth', () => {
     expect(await claude.text()).toContain('<path') // the mark, not a letter
   })
 
+  it("rejects avatars that would point readers' browsers at their own machine or network", async () => {
+    const token = await personToken()
+    const { fetch } = testBoard()
+    for (const avatar of [
+      'http://localhost:631/admin?op=x',
+      'http://127.0.0.1:8080/delete',
+      'https://localhost/x.png',
+      'https://app.localhost/x.png',
+      'https://127.0.0.1/x.png',
+      'https://2130706433/x.png',
+      'https://[::1]/x.png',
+      'https://[::ffff:127.0.0.1]/x.png',
+      'https://[fd00::1]/x.png',
+      'https://[fe80::1]/x.png',
+      'https://10.0.0.1/x.png',
+      'https://172.16.0.1/x.png',
+      'https://192.168.1.1/x.png',
+      'https://169.254.169.254/latest/meta-data',
+      'https://0.0.0.0/x.png',
+      'https://printer.local/x.png',
+    ]) {
+      const response = await caller(fetch, token, { 'x-board-avatar': avatar })('GET', '/me')
+      expect({ avatar, status: response.status }).toEqual({ avatar, status: 400 })
+    }
+    const ok = await caller(fetch, token, { 'x-board-avatar': 'https://172.32.0.1/x.png' })('GET', '/me')
+    expect(ok.body).toMatchObject({ avatar: 'https://172.32.0.1/x.png' })
+  })
+
+  it('takes local avatars on a board that is itself local', async () => {
+    const url = 'http://localhost:3000/api/board'
+    const { fetch } = testBoard({ url })
+    const me = caller(fetch, await personToken('u_julian', url), { 'x-board-avatar': 'http://localhost:8080/me.png' })
+    expect((await me('GET', '/me')).body).toMatchObject({ avatar: 'http://localhost:8080/me.png' })
+  })
+
   it('rejects other projects unless access lists them', async () => {
     const call = caller(testBoard().fetch, await deploymentToken())
     expect((await call('GET', '/me')).status).toBe(403)
