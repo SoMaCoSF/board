@@ -436,3 +436,15 @@ export const identityContract = contract({
 })
 
 export const IDENTITY_SESSION = 'identity'
+
+/**
+ * What each principal uploads, outside the board log: one session per
+ * principal per UTC day, `uploads:<principal>:<day>`.
+ */
+export const uploadsContract = contract({
+  name: 'vboard-uploads',
+  events: {
+    /** An upload charged against `quota`, the board's when it came in; the fold refuses one that doesn't fit. */
+    'upload.charged': z.object({ bytes: z.number().int().positive(), quota: z.number().int().positive() }),
+  },
+})

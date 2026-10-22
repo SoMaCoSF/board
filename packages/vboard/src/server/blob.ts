@@ -81,15 +81,17 @@ function attachmentId(): string {
 /**
  * Stores an upload under a fresh ID, with its metadata beside it. `uploadedBy`
  * is the principal that sent it, who can read it before any message carries it.
+ * `charge` runs once the file is one the board would store, before it does.
  */
 export async function writeUpload(
   blob: BlobStore | null,
-  input: { data: Uint8Array; name: string | null; type: string | null; uploadedBy?: string },
+  input: { data: Uint8Array; name: string | null; type: string | null; uploadedBy?: string; charge?: (bytes: number) => Promise<void> },
 ): Promise<AttachmentType> {
   if (!blob) throw noBlob()
   if (input.data.byteLength === 0) throw badRequest('the file is empty')
   if (input.data.byteLength > ATTACHMENT_BYTES_MAX)
     throw new HttpError(413, 'too_large', `attachments are at most ${ATTACHMENT_BYTES_MAX / 1024 / 1024} MB`)
+  await input.charge?.(input.data.byteLength)
   const attachment: AttachmentType = {
     id: attachmentId(),
     name: fileName(input.name),

@@ -47,6 +47,7 @@ import { createdBy, createSchedules, type Schedule } from './schedules.ts'
 import { defaultStore } from '../store/default.ts'
 import { TABLES_CONSUMER } from '../store/sql.ts'
 import type { BoardStore, MessageFilter } from '../store/types.ts'
+import { UPLOAD_QUOTA, uploadCharger } from './uploads.ts'
 import { createWatchers, ID, type Watcher } from './watch.ts'
 import {
   authorizeMessage,
@@ -109,6 +110,11 @@ export type BoardOptions = {
    * in tests, `.a2/attachments` in development, and no uploads in production.
    */
   blob?: BlobStore
+  /**
+   * Bytes each principal may upload a UTC day, attached or not; a file counts as
+   * at least 64 KB. Past it, uploads answer 429 until the next day. Defaults to 1 GB.
+   */
+  uploadQuota?: number
 }
 
 const boardServer = (options: BoardOptions) =>
@@ -262,6 +268,8 @@ export function board(options: BoardOptions = {}) {
   const host = typeof options.access === 'function' ? options.access : null
   if (host && options.auth) throw new Error('board: an access function replaces the built-in verifier, so drop `auth`')
   const blob = options.blob ?? defaultBlob()
+  const uploadQuota = options.uploadQuota ?? UPLOAD_QUOTA
+  if (!Number.isSafeInteger(uploadQuota) || uploadQuota <= 0) throw new Error('board: uploadQuota is a positive whole number of bytes')
   const store = options.store ?? defaultStore()
   // The same A2 store object for every server: A2 recognizes its own stores by identity.
   const log = store.log
@@ -274,6 +282,7 @@ export function board(options: BoardOptions = {}) {
       ? createWatchers({ watch: options.watch, store: log, scheduler: options.scheduler })
       : null
   const schedules = createSchedules({ store: log, scheduler: options.scheduler })
+  const chargeUpload = uploadCharger({ store: log, quota: uploadQuota })
   const projection = tablesConsumer(store.tables)
   // The tables, watchers, and sync each keep their own place in the board's log.
   const consumers = [projection, watchers?.boardConsumer, engine?.outbound].filter((consumer) => consumer !== undefined)
@@ -723,6 +732,7 @@ export function board(options: BoardOptions = {}) {
             name: decoded,
             type: request.headers.get('content-type'),
             uploadedBy: principal.id,
+            charge: (bytes) => chargeUpload(principal.id, bytes),
           })
           return json({ attachment }, 201)
         }
