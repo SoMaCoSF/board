@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { memory } from '../src/store/memory.ts'
 import { githubActions, vercelProject } from '../src/server/index.ts'
 import {
@@ -145,6 +145,41 @@ describe('auth', () => {
 
     const otherWorkflow = caller(fetch, await workflowToken({ workflow_ref: 'basehub-ai/www/.github/workflows/evil.yml@refs/heads/x' }))
     expect((await otherWorkflow('GET', '/me')).status).toBe(403)
+  })
+})
+
+describe("a token's audience, on a board without a url", () => {
+  afterEach(() => vi.unstubAllEnvs())
+
+  const ELSEWHERE = 'https://elsewhere.test/api/board'
+  const access = [vercelProject({ project: 'marketing', can: 'all' })]
+  // Another board's token, sent with that board's host, as a proxy that passes `Host` through forwards it.
+  const replay = async (fetch: (request: Request) => Promise<Response>) => {
+    const token = await deploymentToken('marketing', 'prj_marketing', 'production', { audience: ELSEWHERE })
+    return fetch(new Request(`${ELSEWHERE}/me`, { headers: { authorization: `Bearer ${token}` } }))
+  }
+
+  it("doesn't take it from the request off Vercel in production", async () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubEnv('VERCEL', '')
+    const response = await replay(testBoard({ url: undefined, access }).fetch)
+    expect(response.status).toBe(501)
+    expect(await response.json()).toMatchObject({ error: { code: 'no_url' } })
+  })
+
+  it('takes it from the request on Vercel, which routes by host', async () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubEnv('VERCEL', '1')
+    const { fetch } = testBoard({ url: undefined, access })
+    const token = await deploymentToken('marketing', 'prj_marketing', 'production', { audience: BOARD_URL })
+    const me = await caller(fetch, token)('GET', '/me')
+    expect(me.status).toBe(200)
+  })
+
+  it('is the url when there is one', async () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubEnv('VERCEL', '')
+    expect((await replay(testBoard({ access }).fetch)).status).toBe(401)
   })
 })
 
