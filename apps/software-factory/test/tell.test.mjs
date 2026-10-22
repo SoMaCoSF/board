@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
+import { once } from "node:events";
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,20 +10,26 @@ import { TELL } from "../app/api/board/[[...path]]/agent.ts";
 // TELL runs in a Linux sandbox; macOS doesn't ship flock (util-linux).
 const skip = spawnSync("flock", ["--version"]).error ? "needs flock" : false;
 
-// A sandbox home with a fake `pi` that records each turn it's asked to run.
+// A sandbox home with a fake `pi` that records each message it finishes a turn on, and can fail its next turn.
 function sandbox() {
   const home = mkdtempSync(join(tmpdir(), "tell-"));
   mkdirSync(join(home, "bin"));
   mkdirSync(join(home, ".pi"));
-  writeFileSync(join(home, "bin", "pi"), `#!/bin/bash\necho "$KEY" >> "$HOME/turns"\n`);
+  writeFileSync(
+    join(home, "bin", "pi"),
+    `#!/bin/bash\nif [ -e "$HOME/fail" ]; then rm "$HOME/fail"; exit 1; fi\necho "\${@: -1}" >> "$HOME/turns"\n`,
+  );
   chmodSync(join(home, "bin", "pi"), 0o755);
-  const tell = (key) =>
-    new Promise((resolve, reject) => {
-      const child = spawn("bash", ["-c", TELL], {
-        env: { HOME: home, PATH: `${home}/bin:${process.env.PATH}`, KEY: key, MODEL: "m", SESSION: "s", INSTRUCTIONS: "i", MESSAGE: "There's new activity." },
-      });
-      child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
+  // Each message's text is its key, so a turn names the message Pi got.
+  const start = (key) =>
+    spawn("bash", ["-c", TELL], {
+      env: { HOME: home, PATH: `${home}/bin:${process.env.PATH}`, KEY: key, MODEL: "m", SESSION: "s", INSTRUCTIONS: "i", MESSAGE: key },
     });
+  const tell = async (key) => {
+    const [code] = await once(start(key), "exit");
+    if (code !== 0) throw new Error(`exit ${code}`);
+  };
+  const failNext = () => writeFileSync(join(home, "fail"), "");
   const turns = () => (existsSync(join(home, "turns")) ? readFileSync(join(home, "turns"), "utf8").trim().split("\n") : []);
   // A turn that's still running: holds Pi's lock until released.
   const busy = async () => {
@@ -33,7 +40,7 @@ function sandbox() {
     while (!existsSync(ready)) await sleep(10);
     return () => new Promise((resolve) => { holder.on("exit", resolve); execFileSync("rm", [gate]); });
   };
-  return { tell, turns, busy };
+  return { start, tell, turns, busy, failNext };
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -71,4 +78,24 @@ test("a message is still delivered once: a retried watcher is a no-op", { skip }
   await tell("news-1");
   await tell("news-2");
   assert.deepEqual(turns(), ["news-1", "news-2"]);
+});
+
+test("a turn Pi doesn't finish is tried again with the next message", { skip }, async () => {
+  const { tell, turns, failNext } = sandbox();
+  failNext();
+  await tell("security-7").catch(() => {});
+  await tell("news-8");
+  assert.deepEqual(turns(), ["security-7", "news-8"]);
+});
+
+test("a message cut off while it waits behind a turn goes with the next one", { skip }, async () => {
+  const { start, tell, turns, busy } = sandbox();
+  const release = await busy();
+  const waiting = start("kind-bug");
+  await sleep(100);
+  waiting.kill("SIGKILL");
+  await once(waiting, "exit");
+  await release();
+  await tell("news-1");
+  assert.deepEqual(turns(), ["kind-bug", "news-1"]);
 });
