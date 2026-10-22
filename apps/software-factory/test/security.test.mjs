@@ -22,16 +22,26 @@ function event() {
   };
 }
 
-function harness() {
+const HEAD = "4f2c9e1a7b3d5f6e8a9b0c1d2e3f4a5b6c7d8e9f";
+
+function harness(pr = { state: "open", head: { sha: HEAD } }) {
   const notifications = [];
   const replies = [];
   const reactions = [];
-  const watcher = security({ tellPi: async input => { notifications.push(input); } });
+  const requests = [];
+  const watcher = security({
+    tellPi: async input => { notifications.push(input); },
+    token: async () => "test-token",
+    fetch: async url => {
+      requests.push(url);
+      return Response.json(pr);
+    },
+  });
   const board = {
     reply: async (id, text) => { replies.push({ id, text }); },
     react: async (id, emoji) => { reactions.push({ id, emoji }); },
   };
-  return { notifications, replies, reactions, watcher, run: (input = event()) => watcher.run({ event: input, board }) };
+  return { notifications, replies, reactions, requests, pr, watcher, run: (input = event()) => watcher.run({ event: input, board }) };
 }
 
 test(":security: on a PR root asks Pi for a deepsec review of the diff, for any Slack reactor", async () => {
@@ -46,9 +56,9 @@ test(":security: on a PR root asks Pi for a deepsec review of the diff, for any 
     const n = h.notifications[0];
     assert.equal(n.task, "review");
     assert.equal(n.thread, 59);
-    assert.equal(n.key, "security-88");
+    assert.equal(n.key, `security-${HEAD}`);
     assert.ok(n.message.includes(`(slack:user:${user}) reacted with :security:`));
-    assert.ok(n.message.includes("vercel-labs/vboard#53"));
+    assert.ok(n.message.includes(`vercel-labs/vboard#53 at ${HEAD}`));
     assert.ok(n.message.includes("gh pr checkout 53"));
     assert.ok(n.message.includes("vb react 59 secure"));
   }
@@ -110,8 +120,42 @@ test("a retried callback sends Pi the same deduplication key", async () => {
   const h = harness();
   await h.run();
   await h.run();
-  assert.deepEqual(h.notifications.map(n => n.key), ["security-88", "security-88"]);
+  assert.deepEqual(h.notifications.map(n => n.key), [`security-${HEAD}`, `security-${HEAD}`]);
 });
+
+test("removing and re-adding :security: on an unchanged PR sends Pi the same key, so deepsec runs once per head", async () => {
+  const h = harness();
+  for (const [index, user] of [[88, "U123"], [93, "U123"], [97, "U456"]]) {
+    const input = event();
+    input.index = index;
+    input.payload.by = { actor: `slack:user:${user}`, principal: `slack:user:${user}` };
+    await h.run(input);
+  }
+  assert.deepEqual(new Set(h.notifications.map(n => n.key)), new Set([`security-${HEAD}`]));
+  assert.ok(h.requests.every(url => url === "https://api.github.com/repos/vercel-labs/vboard/pulls/53"));
+});
+
+test("a new commit on the PR is a new head to review", async () => {
+  const h = harness();
+  await h.run();
+  h.pr.head.sha = "0123456789abcdef0123456789abcdef01234567";
+  await h.run();
+  assert.deepEqual(h.notifications.map(n => n.key), [`security-${HEAD}`, "security-0123456789abcdef0123456789abcdef01234567"]);
+});
+
+for (const [name, pr] of [
+  ["closed", { state: "closed", merged: false, head: { sha: HEAD } }],
+  ["merged", { state: "closed", merged: true, head: { sha: HEAD } }],
+]) {
+  test(`on a ${name} PR, replies that :security: reviews open PRs without waking Pi`, async () => {
+    const h = harness(pr);
+    await h.run();
+    assert.deepEqual(h.notifications, []);
+    assert.equal(h.replies.length, 1);
+    assert.equal(h.replies[0].id, 59);
+    assert.ok(h.replies[0].text.includes("open"));
+  });
+}
 
 test("a message late in a sandbox session extends it to a full turn, and an early one doesn't", () => {
   const now = Date.parse("2026-10-07T17:00:00Z");
@@ -131,7 +175,7 @@ test("runs deepsec in a worktree named for the event, and attaches its files by 
   await g.run(input);
   const m = g.notifications[0].message;
   // rm -rf alone leaves a worktree an earlier run left behind registered, and git worktree add refuses the path.
-  assert.ok(m.includes("git worktree remove --force /tmp/deepsec-91 2>/dev/null; rm -rf /tmp/deepsec-91; git worktree prune && git worktree add --detach /tmp/deepsec-91 HEAD"));
+  assert.ok(m.includes(`git worktree remove --force /tmp/deepsec-91 2>/dev/null; rm -rf /tmp/deepsec-91; git worktree prune && git worktree add --detach /tmp/deepsec-91 ${HEAD}`));
   // Its data/, deepsec.md and deepsec.log never land in the clone, so a later git add -A can't commit them.
   assert.ok(m.indexOf("git worktree add") < m.indexOf("npx -y deepsec process"));
   // Three dots: only the PR's own changes, not commits that landed on its base since it branched.
