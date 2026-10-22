@@ -1,4 +1,7 @@
 import { v0 } from "v0";
+import { generateText, Output } from "ai";
+import { z } from "zod";
+import type { BoardClient } from "vboard/client";
 
 // A v0 chat per report, created with the deployment's Vercel OIDC token. The project's
 // git link gives each chat its own v0/vboard-<chatId> branch on vercel/v0, and
@@ -49,4 +52,36 @@ async function watch(chatId: string) {
     .create({ name: `vboard ${chatId}`, events: ["message.finished"], url: url.toString(), chatId })
     .catch((error: unknown) => ({ error }));
   if (hook.error) console.warn("v0 webhook not registered", chatId, JSON.stringify(hook.error));
+}
+
+const Outcome = z.object({
+  state: z
+    .enum(["pr", "no-change", "working"])
+    .describe("pr: it opened a pull request. no-change: it finished and decided nothing was worth changing. working: it isn't done yet (stopped mid-task, about to continue, or failed partway)."),
+  pr: z.string().nullable().describe("The pull request URL from the gh output or the reply, or null"),
+  owner: z.string().nullable().describe("The email of the person it found knows this code best, or null"),
+  summary: z.string().describe("One short sentence on what it did, or why it changed nothing"),
+});
+
+/** Reads a finished reply and, once v0 is done, labels its report with what it did. */
+export async function readReply({ chatId, messageId }: { chatId: string; messageId: string }, board: BoardClient) {
+  const [report] = (await board.messages({ channel: "feedback", label: { v0: chatId } })).messages;
+  if (!report || report.labels.v0state === "done") return;
+  const message = await v0.messages.get({ chatId, messageId });
+  if (message.error) throw new Error(`v0 messages.get: ${JSON.stringify(message.error)}`);
+
+  // The whole reply, tool calls included: gh prints the pull request URL there.
+  const reply = JSON.stringify(message.data.content ?? "").slice(-30_000);
+  const { output } = await generateText({
+    model: "openai/gpt-6-luna",
+    output: Output.object({ schema: Outcome }),
+    system:
+      "You read the final message of a coding agent (v0) that was asked to fix a reported issue in the vercel/v0 repo, open a draft pull request with gh, and name who knows the changed code best. Say what happened.",
+    prompt: reply,
+  });
+  if (output.state === "working") return;
+  const pr = output.pr && /^https:\/\/github\.com\/vercel\/v0\/pull\/\d+$/.test(output.pr) ? output.pr : null;
+  await board.label(report.id, {
+    set: { v0state: "done", summary: output.summary.slice(0, 300), ...(pr ? { pr } : {}), ...(output.owner?.includes("@") ? { owner: output.owner } : {}) },
+  });
 }
