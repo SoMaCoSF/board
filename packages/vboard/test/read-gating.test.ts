@@ -301,6 +301,36 @@ describe('sync', () => {
     expect((await ci('GET', '/messages?channel=ci/')).body.messages.map((m: { text: string }) => m.text)).toEqual(['tap'])
   })
 
+  it('lets one of two threads claiming a platform thread at once have it', async () => {
+    const { s, webhook, julian, ci } = await mirrored()
+    const mine = (await julian('POST', '/messages', { channel: 'dev', text: 'mine' })).body.message.id
+    const tap = (await ci('POST', '/messages', { channel: 'ci/x', text: 'tap' })).body.message.id
+    const claims = await Promise.all([
+      julian('POST', `/messages/${mine}/sync`, { target: 'slack:C9:900.1' }),
+      ci('POST', `/messages/${tap}/sync`, { target: 'slack:C9:900.1' }),
+    ])
+    expect(claims.map((claim) => claim.status).sort()).toEqual([200, 409])
+    const [winner, loser] = claims[0]!.status === 200 ? [{ who: julian, id: mine }, { who: ci, id: tap }] : [{ who: ci, id: tap }, { who: julian, id: mine }]
+
+    await loser.who('POST', '/messages', { re: loser.id, text: 'the loser’s reply' })
+    await winner.who('POST', '/messages', { re: winner.id, text: 'the winner’s reply' })
+    await vi.waitFor(() => expect(s.posts.map((p) => p.text)).toContainEqual(expect.stringContaining('the winner’s reply')))
+    expect(s.posts.filter((p) => p.threadId === 'slack:C9:900.1').map((p) => p.text)).not.toContainEqual(expect.stringContaining('the loser’s reply'))
+
+    await webhook({ type: 'message', threadId: 'slack:C9:900.1', id: '901', text: 'from slack', user: 'U_ADA' })
+    await vi.waitFor(async () => expect((await winner.who('GET', `/messages/${winner.id}`)).body.replies.map((r: { text: string }) => r.text)).toContain('from slack'))
+  })
+
+  it('lets one of two posts syncing to a platform thread at once have it', async () => {
+    const { julian, ci } = await mirrored()
+    const posts = await Promise.all([
+      julian('POST', '/messages', { channel: 'dev', text: 'mine', sync: ['slack:C9:900.1'] }),
+      ci('POST', '/messages', { channel: 'ci/x', text: 'tap', sync: ['slack:C9:900.1'] }),
+    ])
+    expect(posts.map((post) => post.status).sort()).toEqual([201, 409])
+    expect(posts.find((post) => post.status === 409)!.body.error.code).toBe('already_synced')
+  })
+
   it('doesn’t tell a caller that reads one channel where other threads sync', async () => {
     const { julian, root, ci } = await mirrored()
     expect((await julian('POST', `/messages/${root.id}/sync`, { target: 'slack:C9:900.1' })).body).toMatchObject({ attached: true })
