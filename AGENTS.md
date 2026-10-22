@@ -107,8 +107,8 @@ reply in an existing thread rather than starting one.
   means it fixes a bug or does what a person clearly asked, with nothing to
   fix and no caveats or tradeoffs. Only that Pi's label counts. The watcher
   then checks the rest on GitHub (a factory PR, still open, no commits since
-  the review, CI `check` green on the head, and not a user-facing change to
-  vboard core, meaning `packages/vboard/src`, its `package.json`, or
+  the review, CI `check` green on the head, every changed file listed (GitHub
+  lists at most 3000), and not a user-facing change to vboard core, meaning `packages/vboard/src`, its `package.json`, or
   `tsdown.config.ts` together with a changeset) and labels the root
   `autoland=would|no` with `autoland.why`. A `would` root also wears
   `:stamp-hammer:`, added and removed as the verdict flips, so Slack shows it.

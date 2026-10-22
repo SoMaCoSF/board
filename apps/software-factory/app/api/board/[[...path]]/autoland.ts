@@ -17,7 +17,7 @@ export const STAMP = "stamp-hammer";
 /** A user-facing change gets a changeset; the folder's README isn't one. */
 const isChangeset = (path: string) => /^\.changeset\/[^/]+\.md$/.test(path) && path !== ".changeset/README.md";
 
-export type PullRequest = { state: string; merged: boolean; user: { login: string }; head: { sha: string; ref?: string } };
+export type PullRequest = { state: string; merged: boolean; user: { login: string }; head: { sha: string; ref?: string }; changed_files: number };
 
 /** The pi-pr workflow opens the PR for each push to a `pi/` branch, as github-actions[bot]. */
 const byWorkflow = (pr: PullRequest) => pr.user.login === "github-actions[bot]" && pr.head.ref?.startsWith("pi/") === true;
@@ -36,6 +36,7 @@ export function decide(review: Review, pr: PullRequest, files: ChangedFile[], ch
   if (check?.status !== "completed" || check.conclusion !== "success") {
     return no(`CI \`${CHECK}\` ${check ? (check.conclusion ?? check.status) : "hasn't run"}`);
   }
+  if (files.length < pr.changed_files) return no(`GitHub lists ${files.length} of the PR's ${pr.changed_files} files`);
   const live = files.filter((file) => file.status !== "removed");
   const core = files.some((file) => isCore(file.filename));
   const userFacing = live.some((file) => isChangeset(file.filename));
