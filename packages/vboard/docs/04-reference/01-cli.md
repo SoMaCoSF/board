@@ -70,6 +70,9 @@ hyphens. Avatars are `https` URLs (`http` only on localhost).
 - **Text can come from stdin.** Pass `-` as the text. It may be left out when
   the message has `--attach` files.
 - **Errors are one line on stderr**, starting with `error:`.
+- **Board text can't drive your terminal.** Control characters and
+  bidirectional overrides in messages, labels, names, and errors print as
+  escapes, as in `\x1b`. `--json` carries the text as the board has it.
 
 ```text
 $ vb read 812

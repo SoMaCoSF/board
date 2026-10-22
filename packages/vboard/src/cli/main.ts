@@ -13,7 +13,7 @@ import { normalizeEmoji } from '../contract/emoji.ts'
 import { ATTACHMENT_BYTES_MAX, type Attachment, AttachmentId } from '../contract/schemas.ts'
 import { startInspector } from '../inspect/server.ts'
 import { VERSION } from '../version.ts'
-import { actorName, formatAccess, formatEvent, formatSchedule, reactionNames, formatSourceRead, formatStuck, formatThreadSummaries, formatThreads, who } from './format.ts'
+import { actorName, forTerminal, formatAccess, formatEvent, formatSchedule, reactionNames, formatSourceRead, formatStuck, formatThreadSummaries, formatThreads, who } from './format.ts'
 import {
   AGENTS,
   allow,
@@ -173,6 +173,10 @@ function commandWord(args: string[]): string | undefined {
   return undefined
 }
 
+const out = (text: string) => process.stdout.write(`${forTerminal(text)}\n`)
+const err = (text: string) => process.stderr.write(`${forTerminal(text)}\n`)
+const printJson = (value: unknown) => process.stdout.write(`${JSON.stringify(value)}\n`)
+
 const parsed = (() => {
   const args = withMentions(process.argv.slice(2))
   const removed = REMOVED[commandWord(args) ?? '']
@@ -181,16 +185,13 @@ const parsed = (() => {
     return parseArgs({ args: markAttachmentId(args), allowPositionals: true, options: OPTIONS })
   } catch (error) {
     const unknown = (error as { code?: string }).code === 'ERR_PARSE_ARGS_UNKNOWN_OPTION' && /'([^']+)'/.exec((error as Error).message)?.[1]
-    process.stderr.write(`error: ${unknown ? `unknown option: ${unknown} (run \`vboard help\`; text starting with - goes after --, as in -- "${unknown}")` : (error as Error).message}\n`)
+    err(`error: ${unknown ? `unknown option: ${unknown} (run \`vboard help\`; text starting with - goes after --, as in -- "${unknown}")` : (error as Error).message}`)
     return null
   }
 })()
 // A misused flag runs nothing: the end of this file exits 2, once the error line is out.
 const { values: flags, positionals: marked } = parsed ?? { values: {} as NonNullable<typeof parsed>['values'], positionals: [] as string[] }
 const positionals = marked.map((arg) => (arg.startsWith(MARK) ? arg.slice(MARK.length) : arg))
-
-const out = (text: string) => process.stdout.write(`${text}\n`)
-const printJson = (value: unknown) => out(JSON.stringify(value))
 
 function messageId(value: string | undefined, what = 'message id'): number {
   const id = Number(value?.replace(/^#/, ''))
@@ -392,7 +393,7 @@ function warnUnknownMentions(handles: string[] | undefined) {
   const names = handles.map((handle) => `@${handle}`)
   const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
   const one = names.length === 1
-  process.stderr.write(`warning: ${list} ${one ? 'matches' : 'match'} no one on the board, so ${one ? 'it stays' : 'they stay'} plain text and ${one ? 'notifies' : 'notify'} no one\n`)
+  err(`warning: ${list} ${one ? 'matches' : 'match'} no one on the board, so ${one ? 'it stays' : 'they stay'} plain text and ${one ? 'notifies' : 'notify'} no one`)
 }
 
 function printMessage(message: MessageView) {
@@ -505,7 +506,7 @@ async function identity(args: string[]): Promise<number> {
       }
     }
   }
-  process.stderr.write('timed out\n')
+  err('timed out')
   return 124
 }
 
@@ -955,7 +956,7 @@ async function run(command: string | undefined, args: string[]): Promise<number>
         signal: controller.signal,
       })
       if (!event) {
-        if (!controller.signal.aborted) process.stderr.write('timed out\n')
+        if (!controller.signal.aborted) err('timed out')
         return 124
       }
       printEvent(event)
@@ -1030,7 +1031,7 @@ if (parsed === null) {
   run(command, args).then(
     (code) => exit(code),
     (error: unknown) => {
-      process.stderr.write(`error: ${(error as Error).message}\n`)
+      err(`error: ${(error as Error).message}`)
       exit(error instanceof UsageError ? 2 : 1)
     },
   )

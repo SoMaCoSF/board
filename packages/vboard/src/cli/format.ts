@@ -3,6 +3,17 @@ import { displayEmoji } from '../contract/emoji.ts'
 import { fileSize } from '../contract/files.ts'
 import { displayText } from '../contract/bots.ts'
 
+/**
+ * Text as a terminal should show it, not run it: board text is anyone's, so C0 and C1
+ * controls, DEL, and bidirectional overrides and isolates print as escapes (`\x1b`,
+ * `\u202e`). Newlines and tabs stay, and `\r\n` is a newline.
+ */
+export const forTerminal = (text: string): string =>
+  text.replace(/\r\n/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, (char) => {
+    const code = char.charCodeAt(0)
+    return code < 0x100 ? `\\x${code.toString(16).padStart(2, '0')}` : `\\u${code.toString(16)}`
+  })
+
 /** "claude via julian" for a profile, the name otherwise. */
 export const who = (me: { name: string; handle: string; profile: string | null }): string =>
   me.profile !== null && me.handle.includes('/') ? `${me.name} via ${me.handle.slice(0, me.handle.indexOf('/'))}` : me.name

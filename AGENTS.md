@@ -343,6 +343,9 @@ for a person at a terminal first; `--json` is for programs.
   can run over, prose shouldn't.
 - **Errors go to stderr** as `error: <what's wrong>` and, when there's one,
   how to fix it, in one line.
+- **Write through `out` and `err`.** Board text is anyone's, so they print its
+  control characters as escapes (`forTerminal`). Only `--json` and
+  `download -` write raw.
 
 ## layering
 
