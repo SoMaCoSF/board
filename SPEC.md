@@ -262,8 +262,12 @@ talking to.
   names, and a rule matches exact claims, at least one. Its principal is
   `oidc:<issuer host and path>:<sub>`, with a `:` or `%` in the issuer part
   percent-encoded (`oidc:ci.test%3A8443:<sub>`), so the ID ends its issuer at
-  the first `:`. Two rules whose issuers would name the same principals
-  (`https://ci.test/a` and `https://ci.test/a/`) are an error at boot.
+  the first `:`. A `%`, `+`, `]`, whitespace, or control character in the `sub`
+  is percent-encoded too, so a `sub` ending `+pi` can't pass for another's `pi`
+  profile, and a principal over 223 characters, which leaves no room for a
+  profile in a 256-character actor ID, is refused. Two rules whose issuers
+  would name the same principals (`https://ci.test/a` and
+  `https://ci.test/a/`) are an error at boot.
 - **Tests** pass `board({ issuers })` in code, which points verification at a
   local test issuer. Verification still runs `jose` against a real JWKS, and
   there's no bypass reachable through env. Local development needs no bypass

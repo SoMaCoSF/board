@@ -229,6 +229,9 @@ const issuerName = (iss: string) => {
   return `${url.host}${url.pathname.replace(/\/+$/, '')}`.replace(/[%:]/g, (char) => (char === '%' ? '%25' : '%3A'))
 }
 
+/** An actor ID's 256 characters, less a profile's `+` and up to 32 characters. */
+const MAX_PRINCIPAL_ID = 256 - 33
+
 export function createVerifier(options: {
   projectId: () => Promise<string | null>
   /** The board's team from config or the environment; the platform's token is the fallback. */
@@ -313,8 +316,10 @@ export function createVerifier(options: {
       const access = ruleFor('oidc', claims, { teamId: null, projectId: null }, iss)
       if (!access) throw notInAccess(`oidc({ issuer: '${iss}', claims, can })`)
       if (typeof claims.sub !== 'string' || claims.sub === '') throw unauthorized(`token from ${iss} without sub`)
+      const id = `oidc:${issuerName(iss)}:${claims.sub.replace(/[%+\]\s\p{Cc}]/gu, encodeURIComponent)}`
+      if (id.length > MAX_PRINCIPAL_ID) throw unauthorized(`token from ${iss} with a sub too long for a principal ID`)
       return {
-        id: `oidc:${issuerName(iss)}:${claims.sub}`,
+        id,
         kind: 'workflow',
         handle: claims.sub.slice(0, 128),
         access,

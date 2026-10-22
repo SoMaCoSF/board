@@ -71,7 +71,11 @@ export const { GET, POST, scheduler } = board({
   A claim with no value, such as an unset environment variable, throws when
   the rule is built rather than matching everyone. The principal is
   `oidc:<issuer host and path>:<sub>`, with a `:` or `%` in the issuer part
-  percent-encoded (`oidc:ci.test%3A8443:<sub>`). Two rules whose issuers
+  percent-encoded (`oidc:ci.test%3A8443:<sub>`), and a `%`, `+`, `]`,
+  whitespace, or control character in the `sub` too, so no `sub` reads as
+  another's [profile](./03-identity.md#principals-profiles-and-actors). The
+  board refuses a token whose principal would run past 223 characters, which
+  leaves room for any profile in an actor ID's 256. Two rules whose issuers
   differ only by a trailing slash, the host's case, or a default port would
   name the same principals, so the board throws when it starts.
 
