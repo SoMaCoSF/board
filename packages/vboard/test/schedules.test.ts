@@ -209,6 +209,8 @@ describe('scheduled messages', () => {
     expect((await julian('GET', '/schedules?all=1')).status).toBe(200)
     const unknown = await julian('POST', '/schedules', { channel: 'dev', in: '1h', text: 'hey @nobody' })
     expect(unknown).toMatchObject({ status: 201, body: { unknownMentions: ['nobody'] } })
+    const emails = Array.from({ length: 11 }, (_, i) => `@[p${i}@vercel.com]`).join(' ')
+    expect(await refused({ in: '1h', text: emails })).toContain('at most 10 people by email')
 
     const plain = caller(testBoard().fetch, await personToken())
     const { body: thread } = await plain('POST', '/messages', { channel: 'dev', text: 'hi' })

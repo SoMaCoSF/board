@@ -1087,6 +1087,24 @@ describe('sync', () => {
     )
   })
 
+  it('refuses a write that mentions more than 10 people by email, before looking any up', async () => {
+    const lookupByEmail = vi.fn(async () => { throw new Error('users_not_found') })
+    const conversations = { list: async () => ({ channels: [] }), info: async () => ({}), join: async () => ({}) }
+    const { board } = setup({ slackClient: { conversations, users: { info: async () => ({}), lookupByEmail } } })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    const emails = (n: number) => Array.from({ length: n }, (_, i) => `@[p${i}@vercel.com]`).join(' ')
+
+    const refused = await julian('POST', '/messages', { channel: 'firehose', text: emails(11) })
+    expect(refused).toMatchObject({ status: 400, body: { error: { code: 'too_many_email_mentions' } } })
+    expect(lookupByEmail).not.toHaveBeenCalled()
+
+    const { body } = await julian('POST', '/messages', { channel: 'firehose', text: emails(10) })
+    expect(lookupByEmail).toHaveBeenCalledTimes(10)
+    const edit = await julian('POST', `/messages/${body.message.id}/edit`, { text: emails(11) })
+    expect(edit).toMatchObject({ status: 400, body: { error: { code: 'too_many_email_mentions' } } })
+    expect(lookupByEmail).toHaveBeenCalledTimes(10)
+  })
+
   it('attaches an existing thread to a new target and backfills it', async () => {
     const { board, s } = setup()
     const julian = caller(board.fetch, await personToken())

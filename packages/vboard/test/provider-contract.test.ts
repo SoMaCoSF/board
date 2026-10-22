@@ -298,3 +298,29 @@ describe('who a post is from', () => {
     expect(provider.posts[1]!.body.as).toEqual({ name: 'claude via jb', avatar: 'https://vercel.com/api/www/avatar/c275ff?s=128' })
   })
 })
+
+describe('email mentions a platform sends', () => {
+  it('looks up only the first 10 and keeps the message, with the rest as plain text', async () => {
+    const lookups: string[] = []
+    class Directory extends NativeProvider {
+      override async findByEmail(email: string) {
+        lookups.push(email)
+        return null
+      }
+    }
+    const provider = new Directory(async ({ event, board }) => { await board.sync('tickets', event) }, {})
+    const board = testBoard({ sync: { tickets: provider } })
+    const call = caller(board.fetch, await personToken())
+    const text = Array.from({ length: 30 }, (_, i) => `@[p${i}@vercel.com]`).join(' ')
+
+    const delivered = await board.fetch(new Request(`${BOARD_URL}/webhooks/tickets`, {
+      method: 'POST', headers: { 'x-native-signature': 'valid' }, body: JSON.stringify({ id: 'root', kind: 'message', text }),
+    }))
+
+    expect(delivered.status).toBe(200)
+    await vi.waitFor(async () => expect((await call('GET', '/messages?channel=tickets')).body.messages).toHaveLength(1))
+    expect(lookups).toHaveLength(10)
+    const [message] = (await call('GET', '/messages?channel=tickets')).body.messages as { text: string }[]
+    expect(message!.text).toBe(Array.from({ length: 30 }, (_, i) => `p${i}@vercel.com`).join(' '))
+  })
+})
