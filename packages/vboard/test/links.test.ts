@@ -176,6 +176,50 @@ describe('slack message links', () => {
     expect(join).not.toHaveBeenCalled() // joining a channel someone linked would announce the app there
   })
 
+  it("never reads a link for a poster Slack wouldn't show it to: a guest, another organization's person, or a Slack Connect channel", async () => {
+    const people: Record<string, object> = {
+      U_GUEST: { id: 'U_GUEST', team_id: 'T1', is_restricted: true },
+      U_SOLO: { id: 'U_SOLO', team_id: 'T1', is_ultra_restricted: true },
+      U_EXT: { id: 'U_EXT', team_id: 'T_OTHER' },
+      U_JB: { id: 'U_JB', team_id: 'T1' },
+    }
+    const channels: Record<string, object> = {
+      C9: { id: 'C9', is_member: true, context_team_id: 'T1' },
+      CEXT: { id: 'CEXT', is_member: true, is_ext_shared: true, context_team_id: 'T1', shared_team_ids: ['T1', 'T_OTHER'] },
+    }
+    const replies = vi.fn(async () => ({ messages: [{ ts: TS, user: 'U_ADA', text: 'layoffs friday' }] }))
+    const users = { info: vi.fn(async ({ user }: { user: string }) => ({ user: people[user] })) }
+    const { board, webhook } = setup({ replies, info: async ({ channel }) => ({ channel: channels[channel] }) }, users)
+    const julian = caller(board.fetch, await personToken())
+    const post = (id: string, user: string, channel: string) => webhook({ ...linking(id, permalink(channel)), user })
+    await post('1791322999.000011', 'U_GUEST', 'C9')
+    await post('1791322999.000012', 'U_SOLO', 'C9')
+    await post('1791322999.000013', 'U_EXT', 'C9')
+    await post('1791322999.000014', 'U_JB', 'CEXT')
+    await vi.waitFor(async () => expect(await messages(julian)).toHaveLength(4))
+    expect((await messages(julian)).map((m) => m.links[0]?.unavailable)).toEqual(['poster_not_member', 'poster_not_member', 'poster_not_member', 'shared_channel'])
+    expect(replies).not.toHaveBeenCalled()
+  })
+
+  it('reads a link the unfurl left out as whoever wrote the message, not as Slack', async () => {
+    const replies = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('An API error occurred: ratelimited'), { data: { error: 'ratelimited' } }))
+      .mockResolvedValue({ messages: [{ ts: TS, user: 'U_ADA', text: 'public root' }] })
+    const users = { info: async ({ user }: { user: string }) => ({ user: { id: user, team_id: 'T1' } }) }
+    const { board, webhook } = setup({ replies, info: async ({ channel }) => ({ channel: { id: channel, is_member: true, context_team_id: 'T1', is_private: channel === 'CPRIV' } }) }, users)
+    const julian = caller(board.fetch, await personToken())
+    const id = '1791322999.000015'
+    const text = `see <${permalink('C9')}> and <${permalink('CPRIV')}>`
+    await webhook({ type: 'message', threadId: `slack:C1:${id}`, id, text, user: 'U_JB', raw: { ts: id, text } })
+    await vi.waitFor(async () => expect((await messages(julian))[0]?.links[0]?.unavailable).toBe('ratelimited'))
+    await webhook({ type: 'event_callback', event: {
+      type: 'message', subtype: 'message_changed', channel: 'C1',
+      message: { ts: id, user: 'U_JB', text, attachments: [{ is_msg_unfurl: true, channel_id: 'CPRIV', ts: TS, author_name: 'Ada', text: 'shown to the channel by Slack' }] },
+      previous_message: { ts: id, user: 'U_JB', text },
+    } })
+    await vi.waitFor(async () => expect((await messages(julian))[0]!.links.map((link) => link.snapshot?.text ?? link.unavailable)).toEqual(['public root', 'shown to the channel by Slack']))
+  })
+
   it('keeps the links Slack did not unfurl when it unfurls the others', async () => {
     const replies = vi.fn(async () => ({ messages: [{ ts: TS, user: 'U_ADA', text: 'public root' }] }))
     const { board, webhook } = setup({ replies, info: async ({ channel }) => ({ channel: { id: channel, is_member: true, is_private: channel === 'CPRIV' } }) })
