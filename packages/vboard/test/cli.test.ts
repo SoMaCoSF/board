@@ -261,6 +261,30 @@ describe('cli', () => {
     expect(await vb(['post', 'unknown-mentions', 'no mentions here'])).toMatchObject({ code: 0, stderr: '' })
   })
 
+  it('prints terminal controls from the board as escapes, in output and errors', async () => {
+    const text = 'ok\x1b]52;c;cHduZWQ=\x07 \x1b[2J\u009b31m\u202egnp.exe\r\nnext\rline\tend'
+    const posted = await vb(['post', 'terminal-controls', text, '--label', 'kind=\x1b[31mbug'])
+    expect(posted).toMatchObject({ code: 0, stderr: '' })
+    const id = posted.stdout.trim()
+    const controls = /[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/
+
+    const thread = await vb(['read', id])
+    expect(thread.stdout).not.toMatch(controls)
+    expect(thread.stdout).toContain('[kind=\\x1b[31mbug]')
+    expect(thread.stdout).toContain('      ok\\x1b]52;c;cHduZWQ=\\x07 \\x1b[2J\\x9b31m\\u202egnp.exe\n      next\\x0dline\tend\n')
+    expect((await vb(['read', 'terminal-controls'])).stdout).not.toMatch(controls)
+    expect(JSON.parse((await vb(['read', id, '--json'])).stdout).text).toBe(text)
+
+    const board = await serve(async () => Response.json({ error: { code: 'forbidden', message: 'no\x1b]0;owned\x07' } }, { status: 403 }))
+    try {
+      expect(await vb(['read', id], { VBOARD_URL: `${board.origin}/api/board` })).toEqual({
+        code: 1, stdout: '', stderr: 'error: no\\x1b]0;owned\\x07\n',
+      })
+    } finally {
+      await board.close()
+    }
+  })
+
   it('posts to a message ID as a reply in its thread, labels and all', async () => {
     const id = (await vb(['post', 'post-replies', 'export is broken'])).stdout.trim()
     const reply = await vb(['post', id, 'fixed in a1b2c3', '--label', 'step=fix', '--json'])
