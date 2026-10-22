@@ -54,6 +54,11 @@ describe('inspect', () => {
     expect(app.headers.get('content-type')).toContain('javascript')
   })
 
+  it('loads no images over plain http, so a message never reaches a server on your machine', async () => {
+    const csp = (await fetch(`${inspector.url}/`)).headers.get('content-security-policy')!
+    expect(csp.split('; ').find((directive) => directive.startsWith('img-src'))).toBe('img-src https: data: blob:')
+  })
+
   it('uploads attachments through the proxy, name and all, and serves them back', async () => {
     const ui = page()
     const file = await ui.upload({ data: new TextEncoder().encode('TypeError at login.tsx:42'), name: 'before fix.log', type: 'text/plain' })
