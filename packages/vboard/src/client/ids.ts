@@ -27,3 +27,10 @@ export const DERIVED_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{
  * only from that principal, so no one else can post with it first.
  */
 export const keyId = async (principal: string, derived: string) => `key:${principal}:${(await sha256(`vboard-key\u001f${derived}`)).slice(0, 32)}`
+
+/**
+ * Whether `id` is exactly the shape `keyId` makes for `principal`. A prefix check isn't enough:
+ * a principal's ID can be the start of another's (`oidc:gitlab.com:acme` and `oidc:gitlab.com:acme:ci`).
+ */
+export const isKeyIdOf = (id: string, principal: string) =>
+  id.startsWith(`key:${principal}:`) && /^[0-9a-f]{32}$/.test(id.slice(`key:${principal}:`.length))

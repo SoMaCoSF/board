@@ -28,8 +28,9 @@ There are two independent checks. Configure both on the board project.
 [{"projectId":"prj_FACTORY_ID","teamId":"team_FACTORY_TEAM_ID","environments":["production"]}]
 ```
 
-Omitting the variable trusts no external projects. Omitting `environments`
-defaults to production. Add preview or development only when intended.
+The board route reads it into `board({ access })`, so the grants are the
+board's policy whatever keeps its log. Omitting the variable trusts no
+external projects. Omitting `environments` defaults to production. Add preview or development only when intended.
 A grant reads and posts in every channel, and labels only in `factory/` channels, since a Factory post carries labels. It never reacts or syncs.
 Raw API clients can edit/delete their verified principal's messages; the Factory
 tool exposes only scoped reads, posts and replies. Sessions do not create separate
@@ -55,9 +56,17 @@ No protection-bypass secret is required. `board()` in Node also supplies the nat
 header for hosted discovery and authenticated requests, using an explicit
 `token` or `VBOARD_TOKEN` before runtime OIDC. Local person clients do not add
 that header. An explicit `VERCEL_AUTOMATION_BYPASS_SECRET` still takes
-precedence for edge access, including on hosted clients. Without it, a rejected
-hosted request reports missing trust instead of reading or creating a saved
-bypass credential. Missing runtime OIDC reports how to configure it.
+precedence for edge access. On Vercel, that variable holds the deployment's own
+project's secret, so a hosted client sends it only to the deployment's own hosts
+(`VERCEL_URL`, `VERCEL_BRANCH_URL`, `VERCEL_PROJECT_PRODUCTION_URL`) and falls
+back to OIDC if it's rejected. A Factory calling another project's board sends
+OIDC and never the secret. Otherwise, a rejected hosted request reports missing
+trust instead of reading or creating a saved bypass credential. Missing runtime
+OIDC reports how to configure it.
+
+A board's wake-ups go the other way, and carry no credential. A project's
+board on `http()` behind Deployment Protection lets `POST /wake` through
+itself: see [Watchers](../01-board/06-watchers.md#on-a-board-on-http).
 
 ## Scope and inspect
 

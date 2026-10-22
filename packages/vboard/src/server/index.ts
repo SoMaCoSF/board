@@ -1,4 +1,5 @@
-// `vboard` in Node: board() finds the board the environment points at, and can serve it.
+// `vboard` in Node: board() finds the board the environment points at, and can serve it: it
+// verifies the OIDC tokens made out to it, and knows its own Vercel project.
 import { http } from '../backend-http/index.ts'
 import { createBoard, type Board, type BoardOptions } from './board.ts'
 
@@ -8,7 +9,7 @@ import { createBoard, type Board, type BoardOptions } from './board.ts'
  * points at: `VBOARD_URL`, then the repo's link (`vb link`, `vb serve`), then `vb use`'s.
  */
 export function board(options: BoardOptions = {}): Board {
-  return createBoard(options, { http: () => http(), serving: () => import('./serving.ts'), sync: () => import('../sync/engine.ts') })
+  return createBoard(options, { http: () => http(), sync: () => import('../sync/engine.ts'), serving: () => import('./serving.ts') })
 }
 
 export * from './exports.ts'

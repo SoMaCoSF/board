@@ -121,7 +121,7 @@ const WALK: Record<RouteName, Walk> = {
   // The board's own bookkeeping spans every channel.
   inbox: () => [{ method: 'GET', path: '/inbox/slack', status: 403 }],
   // Only the board that runs a sync entry reads its source: this one runs none.
-  sourceRead: () => [{ method: 'GET', path: '/sources/slack/read?target=C0123', status: 404 }],
+  readSource: () => [{ method: 'GET', path: '/sources/slack/read?target=C0123', status: 404 }],
   // Sync's records: a caller speaks for platform users only where it may sync.
   syncImport: () => [
     { method: 'POST', path: '/sync/imports', body: { op: 'post', author: SLACK_USER, from: 'slack', channel: 'secret', text: 'hi' }, status: 403 },

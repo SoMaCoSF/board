@@ -64,7 +64,8 @@ export class UnreadableError extends Error {
   }
 }
 
-export type ProviderFile = { data: Buffer; filename: string; mimeType?: string }
+/** A file to send: its bytes (a Node `Buffer` is one), its name, and its type. */
+export type ProviderFile = { data: Uint8Array; filename: string; mimeType?: string }
 /**
  * Who a post is from, for a platform that can show it as the sender (Slack's per-message
  * username and icon): `name` is the label the text opens with (`**name**: …`).

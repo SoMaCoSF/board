@@ -15,8 +15,9 @@ await team.post('deploys', 'www@a1b2c3 is live')
 `board()` returns the handle on a board. Its methods act as the board's
 caller, and `fetch` serves it: a route exports `team.fetch` as `GET` and
 `POST` (see [Mounting](../01-board/01-mounting.md)). Every call goes through
-`board()`, which calls the backend's methods: the backend stores, and decides
-what the caller may do. Who the caller is depends on where the board lives:
+`board()`, which runs the middleware and calls the backend's methods: the
+backend stores, honoring what the caller may do. Who the caller is depends on
+where the board lives:
 
 | Backend | The handle acts as |
 | --- | --- |
@@ -28,8 +29,8 @@ what the caller may do. Who the caller is depends on where the board lives:
 
 | Build | Where | What it does |
 | --- | --- | --- |
-| `node` | Node 22.18+ | Finds the board, and credentials for it, and serves and syncs boards |
-| default | browsers, anything else | Finds nothing: pass `http(url)`, whose `fetch` sends the page's own session. It can't serve requests, watch, or sync |
+| `node` | Node 22.18+ | Finds the board, and credentials for it |
+| default | browsers, anything else | Finds none in the environment: pass `http(url)`, whose `fetch` sends the page's own session. The rest runs the same |
 
 In Node, `board()` with no backend is `http()` to the board the environment
 points at: `VBOARD_URL`, then the project link (`.vboard/config.json`), then
@@ -57,8 +58,9 @@ const team = board({
 })
 ```
 
-The board recognizes that session with its own `authenticate`: see
-[A host's own verifier](../01-board/09-access.md#a-hosts-own-verifier). Never
+The board recognizes that session with `board({ authenticate })`, the app's own
+verifier composed with `oidcTokens()`, and its route checks the `Origin` of
+writes: see [A host's own verifier](../01-board/09-access.md#a-hosts-own-verifier). Never
 hand a browser a token of the deployment's: it would act as the deployment for
 anyone who reads it.
 
@@ -95,8 +97,7 @@ fetch(request: Request): Promise<Response>
 ```
 
 The board's HTTP handler, on any backend: what a route exports as `GET` and
-`POST`, or what a runtime that takes one function calls. The default build
-answers 501 `not_served`: serving needs the `node` build.
+`POST`, or what a runtime that takes one function calls.
 
 ## Writing
 
@@ -244,9 +245,11 @@ typing(id: string, status?: string): Promise<string[]>
 ```
 
 Shows typing in the platform threads the message's thread is synced to, and
-returns the threads that took it. Only this board's own sync shows it, so a
-handle on a board that runs none returns `[]`. Slack shows `status` (up to 100
-characters) in place of "Typing…". Nothing goes in the log.
+returns the threads that took it. The board that keeps the log shows it through
+the sync it runs, so the CLI's handle shows it on the board it links; a handle
+on a board on `http()` also shows it through its own sync. It needs `post` where
+the thread is. Slack shows `status` (up to 100 characters) in place of
+"Typing…". Nothing goes in the log.
 
 ### schedule
 
@@ -335,7 +338,7 @@ that reply in it.
 channels(): Promise<ChannelView[]>  // { path, lastIndex, messages, threads }
 actors(): Promise<Actor[]>          // { id, kind, handle, name, avatar }
 me(): Promise<Me>                   // who this handle writes as
-discovery(): Promise<Discovery>     // unauthenticated: url, audience, team_id, project_id, version, sync
+discovery(): Promise<Discovery>     // no token needed: url, audience, team_id, project_id, version, sync
 ```
 
 `me()` returns `{ actor, principal, kind, handle, name, avatar, profile,
@@ -344,8 +347,8 @@ may do there, implications included: `{ '*': ['read', 'post', 'react', 'label',
 'sync', 'manage'] }` is everything. `channels()` and `actors()` show only what
 you can read; see [Access](../01-board/09-access.md).
 
-`discovery()` is the board's own, on `a2()`. Over `http()` it's the other
-board's, which `http()` reads for its handle.
+`discovery()` is the backend's: on `a2()`, the board's own, and over `http()`,
+the other board's, which `http()` reads for its handle.
 
 ### identity
 
@@ -369,14 +372,16 @@ readSource(key: string, target: string, opts?: { limit?: number }): Promise<Sour
 `inbox` returns the raw platform events a sync entry received, newest first:
 the board's own with `sync` in every channel, and what you pushed.
 `readSource` reads a platform channel, thread, or message permalink without
-syncing or storing it. Only the board that runs entry `key` answers it: on any
-other, the CLI's own included, it throws 404 `not_synced_here`. A request needs
-`manage` in every channel.
+syncing or storing it, with entry `key`'s app. The board that keeps the log
+reads it through the sync it runs, so the CLI reads the board it links; a handle
+on a board on `http()` reads its own sync's entries itself. A board that runs
+no entry `key` throws 404 `not_synced_here`. A request needs `manage` in every
+channel.
 
 ### Sync's records
 
 ```ts
-syncImport(body: SyncImportInput): Promise<{ message: string | null }>
+syncImport(body: SyncImportInput): Promise<{ message: string | null; dropped?: string[] }>
 syncReceipt(body: SyncReceiptInput): Promise<{ ok: true; attached?: boolean }>
 syncThread(thread: string): Promise<SyncThreadView>
 syncFind(query: { thread?: string; message?: string; account?: string; person?: string; code?: string; post?: string }): Promise<SyncFindView>
@@ -488,7 +493,8 @@ when there was no HTTP response.
 | `wrong_audience` | the board's discovery names another URL: use that one |
 | `no_project` | the board doesn't know its Vercel project, so the handle can't mint a token for it |
 | `not_logged_in` | no Vercel login to mint a token: run `vercel login` |
-| `no_access` | your Vercel account can't access the board's project |
+| `no_access` | your Vercel account can't access the board's project, or can't see the project the board's host belongs to |
+| `wrong_project` | the board's host is a deployment of a project other than the one its discovery names, so the handle mints no token for it |
 | `no_token` | GitHub Actions refused an OIDC token (`permissions: id-token: write`) |
 | `protected` | the board is behind Vercel Deployment Protection: set `VERCEL_AUTOMATION_BYPASS_SECRET` |
 | `ambiguous_agent` | several agent environments are detected: pick a `profile` |
@@ -522,7 +528,8 @@ export async function POST(request: Request) {
   `vboard:client:<profile>`. Every call goes through what a request's does,
   the middleware included, and its writes wake watchers and sync like anyone's.
 - **On `http()`, it's this deployment,** on the board it uses: `board()`
-  calls `http()`'s methods, which call that board, after its own middleware.
+  calls `http()`'s methods, which call that board, whose middleware sees its
+  writes.
 
 Sync callbacks get a client of their own, acting as the platform user who
 triggered the event. See [Mounting](../01-board/01-mounting.md),

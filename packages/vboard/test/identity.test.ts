@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { spawn } from 'node:child_process'
-import { mkdtempSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { serve } from './http.ts'
@@ -521,12 +521,12 @@ describe('signing in, and posting as yourself', () => {
 
 describe('vb identity', () => {
   const CLI = join(import.meta.dirname, '../src/cli/main.ts')
-  const run = (url: string, token: string, args: string[], onLine?: (line: string) => void) =>
+  const run = (url: string, token: string, args: string[], onLine?: (line: string) => void, env: Record<string, string> = {}) =>
     new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
       const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(CLAUDE|CODEX|GROK|PI_|AI_AGENT|VBOARD|VERCEL|ACTIONS_ID_TOKEN)/.test(key)))
       const home = mkdtempSync(join(tmpdir(), 'vboard-identity-'))
       const child = spawn(process.execPath, [CLI, ...args], {
-        env: { ...clean, VBOARD_URL: url, VBOARD_TOKEN: token, VBOARD_HANDLE: 'julian', HOME: home, XDG_CONFIG_HOME: home },
+        env: { ...clean, VBOARD_URL: url, VBOARD_TOKEN: token, VBOARD_HANDLE: 'julian', HOME: home, XDG_CONFIG_HOME: home, ...env },
       })
       let stdout = ''
       let stderr = ''
@@ -560,6 +560,38 @@ describe('vb identity', () => {
       expect((await run(url, token, ['identity'])).stdout).toMatch(/^@jb  slack:user:U_JULIAN  by code · \d{4}-\S+\nnot linked  github  \(vb identity link <key>\)\n$/)
       expect(await run(url, token, ['identity', 'unlink', '@jb'])).toMatchObject({ code: 0, stdout: 'unlinked slack:user:U_JULIAN\n' })
       expect((await run(url, token, ['identity', 'nope'])).code).toBe(2)
+    } finally {
+      server.close()
+    }
+  }, 20_000)
+
+  it("opens only an http(s) sign-in, whatever the board hands it", async () => {
+    // A board that answers its sign-in with a flag for the opener, or another scheme.
+    let signIn = ''
+    const server = await serve(async (request) => {
+      const path = new URL(request.url).pathname
+      if (path.endsWith('/identity')) return Response.json({ principal: 'vercel:user:u_julian', links: [], unlinked: ['slack'], cursor: '0' })
+      if (path.endsWith('/sync/codes')) return Response.json({ code: 'vb-AAAA-BBBB', expiresAt: new Date(Date.now() + 600_000).toISOString(), signIn })
+      return Response.json({ url: `${server.origin}/api/board`, audience: `${server.origin}/api/board`, sync: [{ key: 'slack', platform: 'slack' }] })
+    })
+    // What the opener would have been asked to open, on this platform.
+    const bin = mkdtempSync(join(tmpdir(), 'vboard-opener-'))
+    const opened = join(bin, 'opened')
+    for (const name of ['open', 'xdg-open']) {
+      writeFileSync(join(bin, name), `#!/bin/sh\nprintf '%s\\n' "$@" >> '${opened}'\n`)
+      chmodSync(join(bin, name), 0o755)
+    }
+    try {
+      const url = `${server.origin}/api/board`
+      for (const bad of ['-a Calculator', 'file:///etc/passwd', 'javascript:alert(1)']) {
+        signIn = bad
+        const linking = await run(url, 'token', ['identity', 'link', 'slack', '--no-wait'], undefined, { PATH: `${bin}:${process.env.PATH}` })
+        expect([linking.code, linking.stderr], bad).toEqual([1, `error: the board's sign-in isn't an http or https URL: ${JSON.stringify(bad)}\n`])
+      }
+      expect(existsSync(opened)).toBe(false)
+      signIn = `${url}/identity/sign-in?sync=slack&code=vb-AAAA-BBBB`
+      expect((await run(url, 'token', ['identity', 'link', 'slack', '--no-wait'], undefined, { PATH: `${bin}:${process.env.PATH}` })).code).toBe(0)
+      await vi.waitFor(() => expect(readFileSync(opened, 'utf8')).toBe(`${signIn}\n`))
     } finally {
       server.close()
     }

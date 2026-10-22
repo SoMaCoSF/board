@@ -10,6 +10,15 @@ export class HttpError extends Error {
   }
 }
 
+/** A request a host's own verifier rejected with `response`, which the board answers with as it is. */
+export class RejectedError extends HttpError {
+  readonly response: Response
+  constructor(response: Response) {
+    super(response.status, 'rejected', `rejected with ${response.status}`)
+    this.response = response
+  }
+}
+
 export const badRequest = (message: string, code = 'invalid_request') =>
   new HttpError(400, code, message)
 export const unauthorized = (message: string) =>
@@ -29,6 +38,7 @@ export const json = (body: unknown, status = 200, headers?: HeadersInit) =>
 
 /** Every failure becomes `{ error: { code, message } }` with a matching status. */
 export function toErrorResponse(error: unknown): Response {
+  if (error instanceof RejectedError) return error.response
   if (error instanceof HttpError)
     return json({ error: { code: error.code, message: error.message } }, error.status)
   if (error instanceof ZodError) {

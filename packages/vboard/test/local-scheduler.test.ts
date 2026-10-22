@@ -1,5 +1,5 @@
 import { contract } from 'experimental-a2'
-import { consumer, createServer } from 'experimental-a2/server'
+import { consumer, createServer, type DrainableServer } from 'experimental-a2/server'
 import { memory } from 'experimental-a2/store-memory'
 import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
@@ -39,5 +39,24 @@ describe('the local scheduler', () => {
     for (let i = 0; i < 3; i++) await session.schedule('later', { delay: '1s' }, { type: 'pong', payload: { n: 2 } })
     expect((await session.history()).filter((event) => event.type === 'pong')).toEqual([])
     await vi.waitFor(async () => expect((await session.history()).filter((event) => event.type === 'pong')).toHaveLength(1), { timeout: 4000 })
+  })
+
+  it('waits for a task further out than one timer can, instead of running it at once', async () => {
+    vi.useFakeTimers()
+    try {
+      const DAY = 86_400_000
+      const drained: string[] = []
+      const scheduler = localScheduler()
+      const server: DrainableServer = { contract: { name: 'far' }, drain: async (session) => (drained.push(session), { settled: true }) }
+      scheduler.handler(server)
+      // 30 days is past setTimeout's longest delay, 2^31 - 1 ms, which would fire in 1 ms.
+      await scheduler.schedule({ version: 1, kind: 'drain', contract: 'far', sessionId: 's', dueAt: Date.now() + 30 * DAY })
+      await vi.advanceTimersByTimeAsync(30 * DAY - 1)
+      expect(drained).toEqual([])
+      await vi.advanceTimersByTimeAsync(1)
+      expect(drained).toEqual(['s'])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

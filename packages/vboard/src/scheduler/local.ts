@@ -6,6 +6,9 @@ import {
   type SchedulerTask,
 } from 'experimental-a2/server'
 
+/** The longest delay a timer takes: past it, `setTimeout` fires at once. */
+const MAX_DELAY = 2 ** 31 - 1
+
 /**
  * A scheduler in this process, for development and `vb serve`: each task runs at its time on a
  * timer, so consumers, retries, and scheduled messages work with nothing else running. Tasks
@@ -30,13 +33,19 @@ export function localScheduler(): A2Scheduler {
       const key = task.kind === 'drain' ? `drain\u001f${task.contract}\u001f${task.sessionId}\u001f${task.dueAt}` : task.id
       if (pending.has(key)) return
       pending.add(key)
-      const timer = setTimeout(() => {
-        pending.delete(key)
-        // A failed drain is A2's to retry on the next write; here it's only said.
-        run(task).catch((error) => console.error('[vboard] a scheduled task failed:', error))
-      }, Math.max(0, task.dueAt - Date.now()))
-      // A pending timer doesn't keep the process alive: a dev server's own socket does that.
-      timer.unref?.()
+      // A task more than a timer's longest delay out (about 24.8 days) waits that long, then again.
+      const arm = () => {
+        const wait = task.dueAt - Date.now()
+        const timer = setTimeout(() => {
+          if (wait > MAX_DELAY) return arm()
+          pending.delete(key)
+          // A failed drain is A2's to retry on the next write; here it's only said.
+          run(task).catch((error) => console.error('[vboard] a scheduled task failed:', error))
+        }, Math.min(Math.max(0, wait), MAX_DELAY))
+        // A pending timer doesn't keep the process alive: a dev server's own socket does that.
+        timer.unref?.()
+      }
+      arm()
     },
     handler(...mounted) {
       servers = mounted

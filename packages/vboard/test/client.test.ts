@@ -139,7 +139,7 @@ describe('board() with no backend', () => {
     expect((await here.as(null).me()).actor).toBe('vercel:user:u_julian')
   })
 
-  it('outside Node, needs the URL, sends what its fetch sends, and serves nothing', async () => {
+  it('outside Node, needs the URL, sends what its fetch sends, and serves only what its backend answers', async () => {
     const team = testBoard()
     // A page's own session, as the board recognizes it: here, a token its fetch adds.
     const fetch = bearer((input, init) => team.fetch(new Request(input, init)), await personToken())
@@ -147,12 +147,12 @@ describe('board() with no backend', () => {
     const page = defaultBoard({ backend: defaultHttp(BOARD_URL, { fetch }) })
     expect((await page.as('page').post('dev', 'from a browser')).by.actor).toBe('vercel:user:u_julian+page')
     expect((await page.discovery()).url).toBe(BOARD_URL)
+    // It serves what its backend answers a request: http() answers only wake-ups and webhooks.
     const served = await page.fetch(new Request(`${BOARD_URL}/me`, { headers: { authorization: `Bearer ${await personToken()}` } }))
-    expect([served.status, (await served.json()).error.code]).toEqual([501, 'not_served'])
-    expect(() => defaultBoard({ backend: defaultHttp(BOARD_URL), watch: { fix: { tail: 'dev', run: () => {} } } })).toThrow(
-      'watch fix: watchers run on a server: this build of vboard has none',
-    )
-    expect(() => defaultBoard({ backend: defaultHttp(BOARD_URL), sync: { slack: {} as never } })).toThrow("board: this build of vboard can't sync")
+    expect([served.status, (await served.json()).error.code]).toEqual([404, 'not_found'])
+    // Watchers and sync run here as they do in Node: a tail is checked the same way.
+    expect(() => defaultBoard({ backend: defaultHttp(BOARD_URL), watch: { fix: { tail: 'dev --after 3', run: () => {} } } })).toThrow("watch fix: --after isn't a filter")
+    expect(() => defaultBoard({ backend: defaultHttp(BOARD_URL), watch: { fix: { tail: 'dev', run: () => {} } }, sync: { slack: {} as never } })).not.toThrow()
   })
 })
 
@@ -228,6 +228,31 @@ describe('the audience a handle mints a token for, in Node', () => {
     })
     expect(asked).toEqual([])
     expect(bearers).toEqual([])
+  })
+
+  it("never follows a board's discovery to another board, nor takes its credentials there", async () => {
+    // A board that says another keeps its log, where this person has a token cached.
+    await mkdir(join(config, 'vboard', 'tokens'), { recursive: true })
+    await writeFile(
+      join(config, 'vboard', 'tokens', `${createHash('sha256').update(VICTIM).digest('hex').slice(0, 32)}.json`),
+      JSON.stringify({ token: 'cached-person-token-for-victim', expiresAt: Date.now() + 12 * 3600_000, handle: 'julian', name: 'Julian', avatar: null }),
+    )
+    const asked = actions()
+    const urls: string[] = []
+    const bearers: string[] = []
+    const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init)
+      urls.push(request.url)
+      const bearer = request.headers.get('authorization')
+      if (bearer) bearers.push(bearer)
+      if (request.method === 'GET' && request.url === EVIL)
+        return Response.json({ version: '0', url: EVIL, audience: EVIL, team_id: 'team_victim', project_id: 'prj_victim', sync: [], remote: VICTIM })
+      return Response.json({ channels: [] })
+    }) as typeof globalThis.fetch
+    await against(fetch).channels()
+    expect(urls.every((url) => url.startsWith(EVIL))).toBe(true)
+    expect(asked).toEqual([EVIL])
+    expect(bearers).toEqual([`Bearer token-for-${EVIL}`])
   })
 
   it("never sends a person's cached token for another board to the one it talks to", async () => {

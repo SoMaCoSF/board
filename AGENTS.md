@@ -169,8 +169,9 @@ reply in an existing thread rather than starting one.
   that links its PR when the change is visible (a captioned video, for a flow),
   never test-run logs: the tests
   are in the PR, and a bug fix's PR body names the test that reproduces it. Its
-  `vb` is pinned (`VBOARD` in `agent.ts`): bump it with each release Pi should
-  use, since setup upgrades sandboxes to exactly that. So is `gh` (`GH`), which
+  `vb` is pinned (`VBOARD` in `agent.ts`) to the vboard the factory was built
+  with, so each release reaches Pi when the factory deploys, with no bump; setup
+  upgrades sandboxes to exactly that. `gh` is pinned too (`GH`), which
   new sandboxes download without asking GitHub's API, whose unauthenticated rate
   limit sandboxes share.
 - Pi's sandbox also gets the factory's own skills and extensions, from
@@ -258,6 +259,42 @@ VBOARD_URL=https://vboard.playground-vercel.tools/api/board pnpm exec vb inspect
   through with the automation bypass (`VERCEL_AUTOMATION_BYPASS_SECRET`), and
   `/api/v0-hook` also checks `V0_HOOK_KEY`. Tagging the owner in Slack needs the
   Connect Slack app's `users:read.email` scope; without it the email shows as text.
+
+## pong (`apps/pong`)
+
+A project's board on the factory's: `board({ backend: http(VBOARD_URL) })`
+keeps no log, and the factory's board keeps it. Its one watcher, `ping`, tails
+`pings`, which nothing syncs and no factory watcher reads, and replies `pong
+from <sha>` to each new thread as this project. Its page (`app/page.tsx`)
+pings from a browser through server actions that use the same handle
+(`lib/board.ts`) and shows the round trip; the deployment itself answers only
+wake-ups and webhooks.
+
+- It's `vercel-internal-playground/vboard-example-pong`, Git-connected to this
+  repo with root `apps/pong`. Its board is `VBOARD_URL`, falling back to the
+  factory's production board; a Preview `VBOARD_URL` scoped to a branch points
+  that branch's previews at the factory's preview of it
+  (`https://vboard-factory-git-<branch>.playground-vercel.tools/api/board`).
+- It registers its watcher on the factory's board lazily, on its first use
+  (a page load or a ping): `basePath` tells it its URL before any request, so
+  on Vercel that's the deployment's own (`VERCEL_URL`, or the production
+  domain). `POST /api/board/watchers` on it registers too, and a wake-up
+  that shows the factory holds an older set registers again.
+- The factory trusts it through `VBOARD_TRUSTED_SOURCES`
+  (`{ "projectId", "teamId", "environments" }`, which grants `read` and `post`
+  everywhere), per environment: Preview lists pong's previews, Production its
+  production.
+- Deployment Protection, both ways, through Trusted Sources alone. Its writes
+  and pulls reach the factory through the factory's Trusted Sources (pong's
+  project is listed), with the deployment's OIDC token. The factory's wake-ups
+  carry no credential, so they reach pong only where pong lets `POST /wake`
+  through: its deployments are all behind Vercel Authentication, so its
+  wake-ups answer 401 and it answers only when something wakes it by hand or
+  it pulls. One that doesn't get there is logged as `couldn't wake <url>: <status>`, and again
+  when the factory starts backing off (a minute, doubling to an hour) until
+  pong answers one, pulls, or registers (a new deployment registers on its
+  first use, a page load say).
+  `vercel curl /api/board/wake --deployment <url> -- -X POST` wakes it by hand.
 
 ## the docs (`packages/vboard/docs`)
 
@@ -349,14 +386,26 @@ for a person at a terminal first; `--json` is for programs.
 
 API → `board()` → CLI. The CLI makes no HTTP calls of its own; everything goes
 through a handle from `board()`, and `board()` only ever calls the backend's
-methods: the backend stores and decides, and nothing reaches around them. A
-board on `http()` answers only wake-ups and webhooks, so a repo links the
-team's board itself. Request schemas live in `src/api/routes.ts` and are
-shared by the server and the handle. Nothing on the way to a handle over
-`http()` imports Node: credentials go in `http(url, { fetch })`, whose Node
-default (`vb`'s) lives in the `node` builds of `vboard` and
-`vboard/backend-http`, and serving requests and sync load from there when
-they're used (`test/browser.test.ts` checks).
+methods, and nothing reaches around them. The policy is `board()`'s, in one
+place on every backend: it routes and validates each request, verifies its
+caller (`authenticate`, `oidcTokens()` from `vboard/access` by default),
+applies `access`, runs the `middleware`, and calls the backend with the caller
+it verified (`{ identity, origin }`), which the backend trusts because only
+`board()` makes one. Nothing with side effects runs for a request before
+`access` allows it. `a2()` is the log and its engine (`store`, `scheduler`,
+`blob`); what it does outside requests asks `board()`'s policy through the
+binding (`accessNow`), and what it writes for someone (a schedule's send) goes
+through the binding's handle, so the middleware sees every write once. A board
+on `http()` with no `access` answers only wake-ups and webhooks, so a repo
+links the team's board itself; with one, it's a gateway, whose callers act on
+the team's board as its project, labeled with their handle and narrowed to
+their access. Request
+schemas live in `src/api/routes.ts` and are shared by the server and the
+handle. Nothing on the way to a handle over `http()` imports Node: credentials
+go in `http(url, { fetch })`, whose Node default (`vb`'s) lives in the `node`
+builds of `vboard` and `vboard/backend-http`. Watchers and sync run in either
+build: the engine loads when it's first used, and it and `SyncProvider` import
+nothing from Node; the Chat SDK adapters do (`test/browser.test.ts` checks).
 
 ## invariants
 

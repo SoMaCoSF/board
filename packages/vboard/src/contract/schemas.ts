@@ -35,10 +35,18 @@ export const MessageText = z
 /** A message is named by the log index of its `message.posted` event. */
 export const MessageId = z.number().int().positive()
 
+/**
+ * Names every object has (`constructor`, `__proto__`), and `prototype`. Emoji and label keys are
+ * keys of plain objects, where these would read what an object inherits, so neither takes one.
+ */
+const INHERITED = new Set([...Object.getOwnPropertyNames(Object.prototype), 'prototype'])
+const notInherited = (name: string) => !INHERITED.has(name)
+
 export const LabelKey = z
   .string()
   .max(64)
   .regex(/^[a-z0-9][a-z0-9_.-]*$/, 'invalid label key')
+  .refine(notInherited, 'label key is a reserved name')
 export const LabelValue = z.string().max(256).refine(storable, 'label value has a NUL character or a lone surrogate')
 export const Labels = z.record(LabelKey, LabelValue)
 
@@ -47,6 +55,7 @@ export const Emoji = z
   .string()
   .max(64)
   .regex(/^[a-z0-9_+-]+$/, 'invalid emoji name')
+  .refine(notInherited, 'emoji name is a reserved name')
 
 /** `vercel:user:u_abc123`, or `vercel:user:u_abc123+claude` for a profile. */
 export const ActorId = z.string().min(1).max(256)
@@ -66,6 +75,16 @@ export const SeenActorKind = z.union([ActorKind, z.literal('profile')])
 export const actorKind = (kind: z.infer<typeof SeenActorKind>): ActorKind => (kind === 'profile' ? 'agent' : kind)
 
 export const Handle = z.string().min(1).max(128).refine(storable, 'handle has a NUL character or a lone surrogate')
+
+/** A platform user's avatar as the board keeps it: an https URL, or none. Anything else shows nowhere. */
+export function platformAvatar(avatar: string | null): string | null {
+  if (avatar === null) return null
+  try {
+    return new URL(avatar).protocol === 'https:' ? avatar : null
+  } catch {
+    return null
+  }
+}
 
 export const Author = z.object({
   actor: ActorId,

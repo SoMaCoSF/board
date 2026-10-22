@@ -1,6 +1,6 @@
-import { idempotentId } from 'experimental-a2'
 import { canonicalEmoji } from '../contract/emoji.ts'
 import type { BoardClient } from '../client/client.ts'
+import { derivedId } from '../client/ids.ts'
 import { externalMessageKey, isThreadTarget, type Actor, type ExternalCopy } from '../contract/reducers.ts'
 import type { ExternalAuthor, ExternalEvent, ExternalFile, ExternalLink, Origin } from '../contract/contract.ts'
 import { fileSize, typeOf } from '../contract/files.ts'
@@ -8,10 +8,10 @@ import { ATTACHMENT_BYTES_MAX, ATTACHMENTS_PER_MESSAGE_MAX, MESSAGE_TEXT_MAX, to
 import type { BoardEventView, InboxItem, LinkedAccount, LinkView, MessageView, SyncThreadView } from '../api/routes.ts'
 import type { Method, Protocol } from '../api/protocol.ts'
 import { afterRetry } from '../server/attempts.ts'
-import type { Backend, Caller, InboxDelivery } from '../server/backend.ts'
+import type { Caller, InboxDelivery, ProtocolMethods } from '../server/backend.ts'
 import { badRequest, HttpError, notFound } from '../server/errors.ts'
-import { channelOf, type SyncTarget, type WriteOrigin } from '../server/writes.ts'
-import { DroppedError, type Write, type WriteSource } from '../server/middleware.ts'
+import { channelOf, type SyncTarget } from '../server/writes.ts'
+import { DroppedError, type WriteSource } from '../server/middleware.ts'
 import { waitUntil } from '../server/wait-until.ts'
 import type { SyncProvider } from './provider.ts'
 import { replaceMentions } from '../contract/mentions.ts'
@@ -23,20 +23,18 @@ import { displayText } from '../contract/bots.ts'
 /** An event as sync gets it: a board event's view, with the message as it was before for a label change. */
 export type SyncEvent = BoardEventView & { before?: MessageView }
 
-/** What sync runs on: the board's backend, its middleware, and in-process clients through it. */
+/** Where a platform event's writes come from, for the middleware, and how to answer there: a reply in its own platform thread. */
+type EventSource = { via: Extract<WriteSource, { kind: 'sync' }>; respond: (text: string) => Promise<void> }
+
+/** What sync runs on: the board's backend's methods, its imports through board()'s middleware, and in-process clients through board(). */
 export type SyncHost = {
-  backend: Backend
-  /**
-   * Runs board()'s middleware on an import's post or edit, then `commit`s what it passed on.
-   * Throws `DroppedError` when it drops the write.
-   */
-  screen<W extends Write, T>(write: W, context: { author: Actor; source: WriteSource; respond: (text: string) => Promise<void> }, commit: (write: W) => Promise<T>): Promise<T>
+  backend: ProtocolMethods
   /**
    * A client through board() for a sync callback, as the platform user `author` its event came from on
    * entry `key`: its writes are imports as them, on any backend, and its reads are sync's. Its posts get
    * IDs derived from `trigger`.
    */
-  client(platform: { author: ExternalAuthor; key: string; origin: WriteOrigin }, trigger: string): BoardClient
+  client(platform: { author: ExternalAuthor; key: string } & EventSource, trigger: string): BoardClient
 }
 
 /** The actors sync renders with: who each is, and the person a linked account belongs to. */
@@ -118,8 +116,6 @@ const storableJson = <T>(value: T): T => {
   return value
 }
 
-const actorOf = (author: ExternalAuthor): Actor => ({ id: author.id, kind: 'external', handle: author.handle, name: author.name, avatar: author.avatar })
-
 /** A platform error's code (`not_in_channel`) when it has one, else its message. */
 const describe = (error: unknown): string => {
   const code = (error as { data?: { error?: unknown } } | null)?.data?.error
@@ -156,6 +152,8 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
     return platform
   }
   const keyOf = (target: string) => target.slice(0, target.indexOf(':'))
+  /** A target of this sync's own: another sync on the board (its own, or one elsewhere) delivers the rest. */
+  const ours = (target: string) => entries[keyOf(target)] !== undefined
   const native = (external: string) => external.slice(external.indexOf(':') + 1)
 
   // --- lookups --------------------------------------------------------------------
@@ -349,19 +347,21 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
   // --- inbound: inbox → board -------------------------------------------------------
 
   /**
-   * What a platform message's links point to. A linked message the board has
-   * (it was synced) is that board message; otherwise it's what the platform sent
-   * about it (Slack's unfurl), what an earlier version of this message had, or
-   * what the platform says when asked. A link nobody can read says why.
+   * What a platform message's links point to, for a message in board channel `channel`. A linked
+   * message the board has (it was synced) in that same channel is that board message; otherwise
+   * it's what the platform sent about it (Slack's unfurl, which the platform checked against who
+   * posted the link), what an earlier version of this message had, or what the platform says when
+   * asked. A board copy in another channel is never one: sync reads every channel, and the link's
+   * readers may not read that one. A link nobody can read says why.
    */
-  async function resolveLinks(platform: SyncProvider, links: ExternalLink[], previous: ImportLink[] = []): Promise<ImportLink[]> {
+  async function resolveLinks(platform: SyncProvider, links: ExternalLink[], channel: string, previous: ImportLink[] = []): Promise<ImportLink[]> {
     if (links.length === 0) return []
     const resolved: ImportLink[] = []
     for (const link of links) {
       if (resolved.some((done) => done.url === link.url)) continue
       const id = (await find({ thread: link.thread, message: link.message })).message
       const copy = id === null ? null : await messageOf(id)
-      if (copy && !copy.deleted) {
+      if (copy && !copy.deleted && copy.channel === channel) {
         resolved.push({ url: link.url, message: copy.id, unavailable: null, snapshot: {
           author: copy.author?.name ?? copy.by.actor,
           text: copy.text, createdAt: copy.createdAt,
@@ -373,7 +373,8 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
         resolved.push({ url: link.url, message: null, snapshot: link.snapshot, unavailable: null })
         continue
       }
-      const kept = previous.find((earlier) => earlier.url === link.url && earlier.snapshot)
+      // What the platform said before, never a board copy's, which may be gone or another channel's.
+      const kept = previous.find((earlier) => earlier.url === link.url && earlier.snapshot && earlier.message === null)
       if (kept) {
         resolved.push(kept)
         continue
@@ -458,7 +459,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
       if (code && (await claimCode(key, event, code))) return
     }
     const author: ExternalAuthor = 'author' in event ? event.author : { id: `${platform.platform}:system`, handle: platform.platform, name: platform.platform, avatar: null, isBot: true }
-    const board = host().client({ author, key, origin: originOf(key, event) }, meta.id)
+    const board = host().client({ author, key, ...originOf(key, event) }, meta.id)
     let applied: Promise<SyncResult> | undefined
     let active = true
     const context: SyncContext = {
@@ -504,7 +505,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
    * Where a platform event's writes come from, for the middleware, and how it answers
    * there: a reply in the event's own platform thread.
    */
-  function originOf(key: string, event: ExternalEvent): Required<Pick<WriteOrigin, 'via' | 'respond'>> {
+  function originOf(key: string, event: ExternalEvent): EventSource {
     const platform = platformOf(key)
     const thread = ('subthread' in event ? event.subthread : null) ?? event.thread
     return {
@@ -602,10 +603,15 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
     const threadKey = (await find({ thread: event.thread })).thread ?? undefined
     const synced = threadKey ? await syncOf(threadKey) : null
     const rootId = synced?.root
-    const writeId = (n: number) => idempotentId('vboard-inbound', meta.id, String(n))
-    // The middleware sees each post and edit first, and `respond` answers in the platform thread.
-    const screen = <W extends Write, T>(author: ExternalAuthor, write: W, commit: (write: W) => Promise<T>) =>
-      host().screen(write, { author: actorOf(author), source: source.via as WriteSource, respond: source.respond }, commit)
+    // A2's `idempotentId`, byte for byte: logs already hold these IDs, and a retry must find its own.
+    const writeId = (n: number) => derivedId('vboard-inbound', meta.id, String(n))
+    // board()'s middleware sees each post and edit, and what it responds to one it drops is said in the platform thread.
+    const from = { key, channel: source.via.channel, thread: source.via.thread }
+    const screened = async (answer: Protocol['syncImport']['output']) => {
+      if (!answer.dropped) return answer.message
+      for (const text of answer.dropped) await source.respond(text)
+      throw new DroppedError(answer.dropped)
+    }
     type Post = {
       author: ExternalAuthor
       channel?: string
@@ -623,22 +629,17 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
     const post = async ({ attachments = [], ...input }: Post): Promise<{ id: string; re: string | null }> => {
       const where = input.channel ?? synced?.channel ?? channel
       const caller: Caller = input.re === undefined ? { ...me, origin: { ...me.origin, config: await configTargets(where) } } : me
-      return screen(
-        input.author,
-        { kind: 'post' as const, channel: where, re: input.re ?? null, text: input.text, labels: input.labels ?? {}, attachments },
-        async (write) => {
-          const { message } = await call('syncImport', {
-            op: 'post',
-            from: key,
-            ...input,
-            origin: input.origin ?? null,
-            text: write.text,
-            labels: write.labels,
-            ...(attachments.length ? { attachments: attachments.map((file) => file.id) } : {}),
-          }, NEVER, caller)
-          return { id: message!, re: input.re ?? null }
-        },
+      const message = await screened(
+        await call('syncImport', {
+          op: 'post',
+          from: key,
+          source: from,
+          ...input,
+          origin: input.origin ?? null,
+          ...(attachments.length ? { attachments: attachments.map((file) => file.id) } : {}),
+        }, NEVER, caller),
       )
+      return { id: message!, re: input.re ?? null }
     }
     const result = (message: { id: string; re: string | null }): SyncResult => ({ root: message.re ?? message.id, message: message.id })
     const labels = (defaults: Record<string, string> = {}) => {
@@ -669,7 +670,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
         const existing = (await find({ thread: event.subthread ?? event.thread, message: event.message })).message
         if (existing !== null) return { root: rootId ?? existing, message: existing }
         const { attachments, notes } = event.files?.length ? await importFiles(platform, event.files, meta.attempt) : { attachments: [], notes: [] }
-        const links = await resolveLinks(platform, event.links ?? [])
+        const links = await resolveLinks(platform, event.links ?? [], synced?.channel ?? channel)
         const base = {
           ...(links.length ? { links } : {}),
           author: event.author,
@@ -710,11 +711,8 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
         else if (event.kind === 'edited') {
           const stored = await messageOf(id)
           const text = clampText(withNotes(overrides.text ?? event.text, stored ? notesIn(stored.text) : []), (stored?.attachments.length ?? 0) > 0)
-          if (stored && !event.linksOnly && stored.text !== text)
-            await screen(author, { kind: 'edit' as const, id, channel: stored.channel, re: stored.re, text }, (write) =>
-              call('syncImport', { op: 'edit', author, from: key, origin, text: write.text }),
-            )
-          const links = stored ? await resolveLinks(platform, event.links ?? [], stored.links) : []
+          if (stored && !event.linksOnly && stored.text !== text) await screened(await call('syncImport', { op: 'edit', author, from: key, origin, text, source: from }))
+          const links = stored ? await resolveLinks(platform, event.links ?? [], stored.channel, stored.links) : []
           if (stored && !sameLinks(links, stored.links)) await call('syncImport', { op: 'links', author, from: key, origin, links })
         } else {
           if (platform.singleReaction) {
@@ -841,7 +839,8 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
     const actor = actors.byId[message.by.actor]
     let name = actor?.name ?? message.by.actor
     if (message.by.profile && actor?.handle.includes('/')) name = `${actor.name} via ${actor.handle.split('/')[0]}`
-    if (message.from) name = `${name} (${platformOf(message.from).platform})`
+    // `from` is the key of the sync that imported it, which may be another board's: its author is a user of that platform.
+    if (message.from) name = `${name} (${entries[message.from]?.platform ?? message.by.actor.slice(0, message.by.actor.indexOf(':'))})`
     const platform = platformOf(key)
     const body = platform.render(immutable({
       message: { ...structuredClone(message), text: displayText(message.text, message.by.actor) },
@@ -935,7 +934,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
     return Promise.all(message.attachments.map(async (a) => {
       const { data } = await call('attachment', { id: a.id })
       const bytes = data instanceof Uint8Array ? data : new Uint8Array(await new Response(data).arrayBuffer())
-      return { data: Buffer.from(bytes), filename: a.name, mimeType: a.type }
+      return { data: bytes, filename: a.name, mimeType: a.type }
     }))
   }
 
@@ -992,6 +991,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
 
   async function deliverThread(event: Extract<SyncEvent, { type: 'thread.synced' }>, attempt: number) {
     const { thread, target } = event.payload
+    if (!ours(target)) return
     // Joining: only messages written after the join are delivered.
     if ((event.payload.kind ?? (isThreadTarget(target) ? 'thread' : 'channel')) === 'thread') return
     const synced = await syncOf(thread)
@@ -1063,17 +1063,20 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
     message.origin?.thread === target || (message.from !== null && keyOf(target) === message.from)
 
   async function deliverPost(event: Extract<SyncEvent, { type: 'message.posted' }>, attempt: number) {
-    const { message } = event
-    if (!message) return
-    if (message.re === null) return configure(message)
+    if (!event.message) return
+    if (event.message.re === null) return configure(event.message)
     if (event.payload.noSync) return
     const synced = await syncOf(event.payload.thread)
     if (!synced || synced.targets.length === 0) return
+    // As it is now, not as it was posted: a delivery can go out late (a backlog, a retry), and what
+    // its author has since edited goes as edited, and what they deleted doesn't go at all.
+    const message = await messageOf(event.message.id)
+    if (!message || message.deleted) return
     const actors = await actorsNow()
     const failures: Failure[] = []
     for (const target of synced.targets) {
       const externalThread = synced.external[target]
-      if (!externalThread) continue // the root isn't there yet; its thread.synced delivery backfills
+      if (!ours(target) || !externalThread) continue // the root isn't there yet; its thread.synced delivery backfills
       if (cameFrom(message, target)) continue
       try {
         const copy = (await copiesOf([message.id]))[message.id]?.[target] ?? (await postReply(message, target, externalThread, actors))
@@ -1089,10 +1092,13 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
   async function deliverChange(event: Extract<SyncEvent, { type: 'message.edited' | 'message.deleted' | 'reaction.added' | 'reaction.removed' }>) {
     const copies = (await copiesOf([event.payload.id]))[event.payload.id] ?? {}
     if (Object.keys(copies).length === 0) return
-    const message = event.message
+    // An edit renders the message as it is now, so one that goes out late sends nothing its author
+    // has since changed or deleted: their later edit or delete is on its way too.
+    const message = event.type === 'message.edited' ? await messageOf(event.payload.id) : event.message
+    if (event.type === 'message.edited' && (!message || message.deleted)) return
     const actors = await actorsNow()
     for (const [target, copy] of Object.entries(copies)) {
-      if (event.payload.from !== null && keyOf(target) === event.payload.from) continue
+      if (!ours(target) || (event.payload.from !== null && keyOf(target) === event.payload.from)) continue
       try {
         const platform = platformOf(keyOf(target))
         const thread = native(copy.thread)
@@ -1137,6 +1143,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
     const message = { ...current, labels: after.labels }
     const previous = { ...current, labels: event.before?.labels ?? {} }
     for (const [target, copy] of Object.entries(copies)) {
+      if (!ours(target)) continue
       try {
         const body = renderFor(target, message, actors, copy.files === null)
         if (body.markdown === renderFor(target, previous, actors, copy.files === null).markdown) continue
@@ -1176,7 +1183,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
   async function typing(messages: readonly MessageView[], status?: string): Promise<string[]> {
     const synced = messages[0] ? await syncOf(messages[0].thread) : null
     if (!synced) return []
-    const externals = [...new Set(Object.values(synced.external))]
+    const externals = [...new Set(Object.values(synced.external))].filter(ours)
     const done = await Promise.all(
       externals.map(async (external) => {
         const key = keyOf(external)

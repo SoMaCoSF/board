@@ -9,6 +9,7 @@ import {
   Labels,
   MESSAGE_TEXT_MAX,
   MessageText,
+  platformAvatar,
   storable,
 } from '../contract/schemas.ts'
 import { ExternalAuthor, ExternalEvent, ExternalTarget, Link as LinkSchema, LINKS_PER_MESSAGE_MAX, Origin } from '../contract/contract.ts'
@@ -219,10 +220,22 @@ const ImportOrigin = z.object({ thread: ExternalTarget, message: z.string().min(
 const ImportLink = LinkSchema.extend({ message: Ref.nullable() })
 
 /**
+ * A platform user, as sync names them to the board. Their avatar shows wherever they do, so one
+ * that isn't an https URL is dropped, never refused: the write lands without it.
+ */
+const PlatformUser = ExternalAuthor.extend({ avatar: z.string().nullable().transform(platformAvatar) })
+
+/**
  * Who wrote it on the platform, and the sync key it came through: null for a write a sync callback
  * makes as that user, which syncs out to every platform like one written on the board.
  */
-const Imported = { author: ExternalAuthor, from: SyncKey.nullable() }
+const Imported = { author: PlatformUser, from: SyncKey.nullable() }
+
+/**
+ * Where the platform event an import comes from is: its sync entry, platform channel, and thread.
+ * The middleware is told, and answers there when it drops the write.
+ */
+const ImportSource = z.object({ key: SyncKey, channel: ExternalTarget, thread: ExternalTarget })
 
 /** The message a change is about: by its platform IDs (`origin`), or by its board ID (`message`), one or the other. */
 const Changed = { origin: ImportOrigin.optional(), message: Ref.optional() }
@@ -238,6 +251,7 @@ export const SyncImportBody = z.discriminatedUnion('op', [
     ...Imported,
     /** Where it is on the platform. Null for a write a sync callback makes itself. */
     origin: Origin.nullable().default(null),
+    source: ImportSource.optional(),
     channel: ChannelPath.optional(),
     re: Ref.optional(),
     text: z.string().max(MESSAGE_TEXT_MAX).default(''),
@@ -247,13 +261,13 @@ export const SyncImportBody = z.discriminatedUnion('op', [
     links: z.array(ImportLink).max(LINKS_PER_MESSAGE_MAX).optional(),
     id: z.string().min(1).max(200).refine(storable, 'id has a NUL character or a lone surrogate').optional(),
   }),
-  z.object({ op: z.literal('edit'), ...Imported, ...Changed, text: MessageText }),
+  z.object({ op: z.literal('edit'), ...Imported, ...Changed, text: MessageText, source: ImportSource.optional() }),
   z.object({ op: z.literal('delete'), ...Imported, ...Changed }),
   z.object({ op: z.literal('react'), ...Imported, ...Changed, emoji: Emoji, remove: z.boolean().optional() }),
   z.object({ op: z.literal('labels'), ...Imported, ...Changed, set: Labels.optional(), unset: z.array(LabelKey).optional() }),
   z.object({ op: z.literal('links'), ...Imported, ...Changed, links: z.array(ImportLink).max(LINKS_PER_MESSAGE_MAX) }),
   /** A platform user the board should know, for a mention of them: `@[ada@vercel.com]` found on Slack. */
-  z.object({ op: z.literal('seen'), author: ExternalAuthor }),
+  z.object({ op: z.literal('seen'), author: PlatformUser }),
 ])
 
 const PlatformFiles = z.array(z.string().min(1).max(300)).max(ATTACHMENTS_PER_MESSAGE_MAX).nullable()
@@ -312,7 +326,7 @@ export const SyncCodeBody = z.object({ sync: SyncKey })
  */
 export const SyncAccountBody = z.object({
   sync: SyncKey,
-  account: ExternalAuthor,
+  account: PlatformUser,
   code: z.string().min(1).max(64),
   message: z.string().max(1024).optional(),
   /** `consent` when the code came through the account's own sign-in, so the board posts as them. */
@@ -384,7 +398,7 @@ export type PersonView = { id: string; handle: string; name: string; avatar: str
  */
 export type ActorView = Pick<Actor, 'kind' | 'handle' | 'name' | 'avatar'> & { person?: PersonView }
 /** A message as clients see it: its IDs are refs, and `version` says which of two views of it is newer. */
-export type MessageView = Omit<Message, 'id' | 're' | 'replyTo' | 'links' | 'schedule' | 'blind' | 'version'> & {
+export type MessageView = Omit<Message, 'id' | 're' | 'replyTo' | 'links' | 'schedule' | 'version'> & {
   id: string
   /** The thread's root, or null for a root. */
   re: string | null
@@ -582,6 +596,7 @@ export type InboxEntry = {
 
 /** The route table: method, path, and the schemas that validate input. */
 export const routes = {
+  /** Where the board is, its project, and the sync entries it links accounts on. No token. */
   discovery: { method: 'GET', path: '/' },
   me: { method: 'GET', path: '/me' },
   channels: { method: 'GET', path: '/channels' },
@@ -597,7 +612,7 @@ export const routes = {
   label: { method: 'POST', path: '/messages/:id/labels', body: LabelBody },
   /** Attaches the thread to a sync target, recording a `thread` receipt: needs `sync` where the thread is. */
   sync: { method: 'POST', path: '/messages/:id/sync', body: SyncBody },
-  /** Ephemeral: shows typing in the thread's synced platform threads, and writes nothing to the log. */
+  /** Ephemeral: shows typing in the thread's synced platform threads, and writes nothing to the log. Needs `post` where the thread is. */
   typing: { method: 'POST', path: '/messages/:id/typing', body: TypingBody },
   /** Posts a message later, as the caller: needs a scheduler. */
   schedule: { method: 'POST', path: '/schedules', body: ScheduleBody },
@@ -632,8 +647,8 @@ export const routes = {
   syncAccount: { method: 'POST', path: '/sync/accounts', body: SyncAccountBody },
   /** Unlinks a platform account. */
   syncUnlink: { method: 'POST', path: '/sync/accounts/unlink', body: SyncUnlinkBody },
-  /** Reads a platform channel or thread on demand, without syncing or storing it. Full access only. */
-  sourceRead: { method: 'GET', path: '/sources/:key/read', query: SourceReadQuery },
+  /** Reads a platform channel or thread on demand, where that sync runs, without syncing or storing it. Full access only. */
+  readSource: { method: 'GET', path: '/sources/:key/read', query: SourceReadQuery },
   webhook: { method: 'POST', path: '/webhooks/:key' },
   events: { method: 'GET', path: '/events', query: EventsQuery },
   avatar: { method: 'GET', path: '/avatars/:name' },

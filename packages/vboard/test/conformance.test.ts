@@ -2,14 +2,18 @@ import { describe, expect, it } from 'vitest'
 import { board } from '../src/server/index.ts'
 import { http } from '../src/backend-http/index.ts'
 import { conformance } from '../src/conformance/index.ts'
-import { bearer, BOARD_URL, personToken, testBoard } from './harness.ts'
+import { vercelProject } from '../src/access/index.ts'
+import { bearer, BOARD_URL, caller, deploymentToken, personToken, testBoard } from './harness.ts'
 import { fakeQueue } from './queue.ts'
 
 type Fetch = (request: Request) => Promise<Response>
 
 /** A handle on the board behind `fetch`, as `vb conformance` checks it. */
-const clientOf = async (fetch: Fetch) =>
-  board({ backend: http(BOARD_URL, { fetch: bearer((input, init) => fetch(new Request(input, init)), await personToken()) }) }).as(null)
+const clientOf = async (fetch: Fetch) => clientAs(fetch, () => personToken())
+
+/** A handle on the board behind `fetch`, with the token `token` gives. */
+const clientAs = async (fetch: Fetch, token: () => Promise<string>) =>
+  board({ backend: http(BOARD_URL, { fetch: bearer((input, init) => fetch(new Request(input, init)), token) }) }).as(null)
 
 /** A board in front of `fetch` that rewrites what it answers, or what it's asked. */
 function broken(fetch: Fetch, change: { request?: (url: URL) => void; body?: (text: string) => string }): Fetch {
@@ -39,6 +43,32 @@ describe('the conformance kit', () => {
     const report = await conformance(team)
     expect(report.checks.filter((check) => check.status !== 'passed')).toEqual([])
     expect((await team.me()).actor).toBe('vboard:client')
+  })
+
+  it("leaves a token's registration as it was: one with watchers or a sync is skipped, and an empty one keeps its URL", async () => {
+    const board = testBoard({ scheduler: fakeQueue().scheduler, access: [vercelProject({ project: 'prj_v0', can: 'all' })] })
+    const v0 = caller(board.fetch, await deploymentToken('v0', 'prj_v0', 'production'))
+    const asV0 = await clientAs(board.fetch, () => deploymentToken('v0', 'prj_v0', 'production'))
+    const registered = async () => (await v0('GET', '/watchers')).body.watchers.map(({ hash: _hash, ...rest }: { hash: string }) => rest)
+    const skipped = (report: Awaited<ReturnType<typeof conformance>>) =>
+      report.checks.filter((check) => check.group === 'watchers' || check.group === 'sync').map((check) => check.status)
+    for (const registration of [
+      // A project's board on http() that syncs Slack and has no watchers of its own.
+      { url: 'https://v0.test/api/board', watch: {}, sync: [{ key: 'slack', platform: 'slack', signIn: false }] },
+      { url: 'https://v0.test/api/board', watch: { fix: { tail: 'feedback', when: 'matches' } }, sync: [] },
+    ]) {
+      expect((await v0('POST', '/watchers', registration)).status).toBe(200)
+      const before = await registered()
+      const report = await conformance(asV0)
+      expect(skipped(report)).toEqual(['skipped', 'skipped'])
+      expect(await registered()).toEqual(before)
+    }
+    // One with nothing in it is checked, and keeps where it's woken.
+    const empty = { owner: 'vercel:project:prj_v0:production', url: 'https://v0.test/api/board', watch: {}, sync: [] }
+    expect((await v0('POST', '/watchers', { url: empty.url, watch: {} })).status).toBe(200)
+    const report = await conformance(asV0)
+    expect(skipped(report)).toEqual(['passed', 'passed'])
+    expect(await registered()).toEqual([empty])
   })
 
   it('fails a board that answers only part of the protocol', async () => {

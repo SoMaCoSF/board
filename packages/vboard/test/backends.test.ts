@@ -2,10 +2,10 @@ import { describe, expect, it, vi } from 'vitest'
 import { connect } from '../src/client/node.ts'
 import { memory } from '../src/store/memory.ts'
 import { board, HttpError, type Backend, type Caller } from '../src/server/index.ts'
-import { vercelProject } from '../src/access/index.ts'
+import { oidc, vercelProject, oidcTokens } from '../src/access/index.ts'
 import { a2 } from '../src/backend-a2/index.ts'
 import { http } from '../src/backend-http/index.ts'
-import { bearer, BOARD_URL, caller, deploymentToken, personToken, PROJECT_ID, signedInHome, TEAM_ID, testAuth, testBoard } from './harness.ts'
+import { bearer, BOARD_URL, caller, deploymentToken, OIDC_ISS, oidcToken, personToken, PROJECT_ID, signedInHome, TEAM_ID, testAuth, testBoard } from './harness.ts'
 
 /** Where v0's board is mounted: a board on the team's board, over http(). */
 const V0_URL = 'https://v0.test/api/board'
@@ -24,9 +24,6 @@ function team(options: Parameters<typeof http>[1] = {}) {
   const project = board({
     backend: http(BOARD_URL, { fetch: bearer(route, () => deploymentToken('v0', 'prj_v0', 'production')), ...options }),
     url: V0_URL,
-    // v0's own people sign in to it, as to any board.
-    project: { id: PROJECT_ID, teamId: TEAM_ID },
-    auth: testAuth,
   })
   return { remote, project, seen }
 }
@@ -58,16 +55,15 @@ describe('board() and its backend', () => {
     expect(() => board({ backend, url: BOARD_URL })).toThrow('a2: this backend already serves a board')
   })
 
-  it('serves the protocol on a backend of your own, calling each method with the verified caller and its parsed input', async () => {
+  it('serves the protocol on a backend of your own, calling each method with the caller it verified and its parsed input', async () => {
     const calls: { method: string; caller: Caller; input: unknown }[] = []
     const record = (method: string) => async (caller: Caller, input: unknown) => {
       calls.push({ method, caller, input })
       return { messages: [], cursor: '0' }
     }
     const mine = {
-      remote: null,
-      issuers: [],
-      routes: [{ method: 'GET', path: '/health', auth: false, handle: async () => Response.json({ ok: true }) }],
+      routes: [{ method: 'GET', path: '/health', handle: async () => Response.json({ ok: true }) }],
+      keeps: true,
       bind: () => {},
       messages: record('messages'),
       async post(caller: Caller, input: { channel?: string; text: string }) {
@@ -76,8 +72,9 @@ describe('board() and its backend', () => {
         return { message: { id: 'm1', channel: input.channel, text: input.text } }
       },
     } as unknown as Backend
-    const { fetch } = board({ backend: mine, url: BOARD_URL, project: { id: PROJECT_ID, teamId: TEAM_ID }, auth: testAuth })
-    const julian = await julianOn(fetch)
+    const { fetch } = board({ backend: mine, project: { id: PROJECT_ID, teamId: TEAM_ID }, authenticate: oidcTokens(testAuth), url: BOARD_URL })
+    const token = await personToken()
+    const julian = caller(fetch, token, { 'x-board-handle': 'julian', 'x-board-profile': 'claude', 'x-board-scope': 'dev/=read' })
 
     expect(await julian('GET', '/messages?channel=dev&label=state=open|draft&limit=5')).toEqual({ status: 200, body: { messages: [], cursor: '0' } })
     expect(await julian('POST', '/messages', { channel: 'dev', text: 'hello' })).toMatchObject({ status: 201, body: { message: { id: 'm1' } } })
@@ -85,13 +82,17 @@ describe('board() and its backend', () => {
       ['messages', { channel: 'dev', label: [['state', ['open', 'draft']]], limit: 5 }],
       ['post', { channel: 'dev', text: 'hello' }],
     ])
+    // Who the request is, as board() verified it: its principal, with what access lets it do, narrowed by its scope.
     expect(calls[0]!.caller).toMatchObject({
-      identity: { principal: { id: 'vercel:user:u_julian', kind: 'person' }, actor: { id: 'vercel:user:u_julian', handle: 'julian' } },
+      identity: {
+        principal: { id: 'vercel:user:u_julian', kind: 'person', scope: 'dev/=read' },
+        author: { actor: 'vercel:user:u_julian+claude', principal: 'vercel:user:u_julian', profile: 'claude', session: null },
+        actor: { id: 'vercel:user:u_julian+claude', kind: 'agent', handle: 'julian/claude', name: 'claude' },
+      },
       origin: { via: { kind: 'api' } },
     })
-    // Who's calling, and nothing about what it may do: that's the backend's to decide.
     const { caller: first } = calls[0]!
-    expect('identity' in first && 'access' in first.identity.principal).toBe(false)
+    expect('identity' in first && first.identity.principal.access.summary()).toEqual({ 'dev/': ['read'] })
 
     // What it throws, it answers; what doesn't validate never reaches it.
     expect(await julian('POST', '/messages', { channel: 'missing', text: 'hi' })).toEqual({
@@ -105,8 +106,9 @@ describe('board() and its backend', () => {
     expect((await julian('GET', '/channels')).status).toBe(404)
     expect((await julian('POST', '/wake', {})).status).toBe(404)
     expect(await (await fetch(new Request(`${BOARD_URL}/health`))).json()).toEqual({ ok: true })
-    // And nothing reaches it without a token.
-    expect((await fetch(new Request(`${BOARD_URL}/messages`))).status).toBe(401)
+    // A request board() can't verify never reaches it, and neither does a claim that doesn't parse.
+    expect((await fetch(new Request(`${BOARD_URL}/messages`, { headers: { cookie: 'session=abc' } }))).status).toBe(401)
+    expect((await caller(fetch, token, { 'x-board-profile': 'not a profile' })('GET', '/messages')).status).toBe(400)
     expect(calls).toHaveLength(3)
 
     // Your own code is `{ self }`: the backend decides who that is.
@@ -125,7 +127,7 @@ describe('board() and its backend', () => {
         throw new HttpError(403, 'forbidden', 'messages on this board stay')
       },
     }
-    const { fetch } = board({ backend, url: BOARD_URL, project: { id: PROJECT_ID, teamId: TEAM_ID }, auth: testAuth })
+    const { fetch } = board({ backend, project: { id: PROJECT_ID, teamId: TEAM_ID }, authenticate: oidcTokens(testAuth), url: BOARD_URL })
     const julian = await julianOn(fetch)
     const id = (await julian('POST', '/messages', { channel: 'dev', text: 'kept' })).body.message.id
     expect(await julian('POST', `/messages/${id}/delete`, {})).toEqual({ status: 403, body: { error: { code: 'forbidden', message: 'messages on this board stay' } } })
@@ -193,11 +195,26 @@ describe('a board on http()', () => {
         },
       },
     })
-    expect((await marketing('POST', '/messages', { channel: 'deploys', text: 'fine', id: 'key:vercel:project:prj_marketing:production:abc' })).status).toBe(201)
+    const own = 'key:vercel:project:prj_marketing:production:0123456789abcdef0123456789abcdef'
+    expect((await marketing('POST', '/messages', { channel: 'deploys', text: 'fine', id: own })).status).toBe(201)
     // v0's own post still lands, its ID under its own principal.
     expect((await project.as('deploys').post('deploys', { text: 'a1b2c3 is live', id: 'd1' })).id).toEqual(expect.any(String))
     // Even one it names as someone else's key.
-    expect((await project.post('deploys', { text: 'still mine', id: `key:vercel:project:prj_marketing:production:abc` })).text).toBe('still mine')
+    expect((await project.post('deploys', { text: 'still mine', id: own })).text).toBe('still mine')
+  })
+
+  it("keeps a principal's keyed IDs from one whose ID is a colon-prefix of it", async () => {
+    // OIDC subjects carry colons, so one principal's ID can be the start of another's.
+    const remote = testBoard({ access: [oidc({ issuer: OIDC_ISS, claims: { project_path: 'acme/api' }, can: 'all' })] })
+    const acme = caller(remote.fetch, await oidcToken({ sub: 'acme' }))
+    expect((await acme('GET', '/me')).body.principal).toBe('oidc:gitlab.test:acme')
+    const theirs = 'key:oidc:gitlab.test:acme:ci:0123456789abcdef0123456789abcdef'
+    expect(await acme('POST', '/messages', { channel: 'deploys', text: 'mine now', id: theirs })).toMatchObject({
+      status: 400,
+      body: { error: { message: "id: key:… IDs derive from a client's key, and this token's are key:oidc:gitlab.test:acme:…" } },
+    })
+    const ci = caller(remote.fetch, await oidcToken({ sub: 'acme:ci' }))
+    expect((await ci('POST', '/messages', { channel: 'deploys', text: 'mine', id: theirs })).status).toBe(201)
   })
 
   it('checks its watchers the way a2() does, and their IDs as profiles', () => {

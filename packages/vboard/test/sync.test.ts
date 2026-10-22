@@ -11,10 +11,12 @@ import { memory } from 'experimental-a2/store-memory'
 import { boardContract } from '../src/contract/contract.ts'
 import { github } from '../src/sync/github.ts'
 import type { MountOptions } from './harness.ts'
-import { BOARD_URL, caller, personToken, testBoard } from './harness.ts'
+import { BOARD_URL, caller, deploymentToken, personToken, testBoard } from './harness.ts'
+import { vercelProject } from '../src/access/index.ts'
 import { memory as boardMemory } from '../src/store/memory.ts'
 import type { MessageTables } from '../src/store/types.ts'
 import { VERCEL_BUILDING } from './vercel-fixtures.ts'
+import { fakeQueue } from './queue.ts'
 
 type SlackChannels = Parameters<typeof slack>[0]['channels']
 
@@ -426,6 +428,37 @@ describe('sync', () => {
     await vi.waitFor(() => expect(s.edits).toHaveLength(2))
     expect(s.edits[1]!.text).toContain('📎 repro.log')
     warn.mockRestore()
+    error.mockRestore()
+  })
+
+  it('delivers a reply, and an edit, as the message is when it goes out: never text its author took back', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { board, s } = setup()
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    const root = (await julian('POST', '/messages', { channel: 'firehose', text: 'incident' })).body.message
+    await vi.waitFor(() => expect(s.channelPosts).toHaveLength(1))
+    // Slack is down for a while, so the thread's deliveries back up behind the first.
+    const post = s.adapter.postMessage.bind(s.adapter)
+    let down = true
+    s.adapter.postMessage = async (threadId, message) => {
+      if (down) throw Object.assign(new Error('service_unavailable'), { data: { error: 'service_unavailable' } })
+      return post(threadId, message)
+    }
+    await julian('POST', '/messages', { re: root.id, text: 'looking' })
+    const edited = (await julian('POST', '/messages', { re: root.id, text: 'the password is hunter2' })).body.message
+    await julian('POST', `/messages/${edited.id}/edit`, { text: 'the password is in the vault' })
+    const deleted = (await julian('POST', '/messages', { re: root.id, text: 'and the key is swordfish' })).body.message
+    await julian('POST', `/messages/${deleted.id}/delete`, {})
+    down = false
+    await vi.waitFor(async () => {
+      await board.skipHold(board.servers[0]!, 'board')
+      await board.servers[0]!.drain('board')
+      expect(s.posts.map((p) => p.text)).toHaveLength(2)
+    })
+    const sent = JSON.stringify([s.posts, s.edits, s.deletes])
+    expect(sent).not.toContain('hunter2')
+    expect(sent).not.toContain('swordfish')
+    expect(s.posts.map((p) => JSON.parse(p.text).markdown)).toEqual(['**julian**: looking', '**julian**: the password is in the vault'])
     error.mockRestore()
   })
 
@@ -1100,6 +1133,98 @@ describe('sync', () => {
     expect(s.posts[0]!.text).toContain('db restored')
     const again = await julian('POST', `/messages/${body.message.id}/sync`, { target: 'slack:C9' })
     expect(again.body.attached).toBe(false)
+  })
+
+  it('asks the backend whether a caller may sync a thread before it looks a target up on Slack', async () => {
+    const list = vi.fn(async () => ({ channels: [{ id: 'C9', name: 'leak', is_member: true }] }))
+    const slackClient = { conversations: { list, info: async () => ({}), join: async () => ({}) }, users: { info: async () => ({}) } }
+    const s = fakePlatform('slack', withSlackClient(slackClient, false))
+    const board = testBoard({
+      access: [vercelProject({ project: 'prj_marketing', can: { feedback: ['read', 'post'] } })],
+      sync: { slack: slack({ adapter: s.adapter, client: async () => slackClient as never, channels: { C1: 'firehose' } }) },
+    })
+    const front = caller(board.fetch, await deploymentToken())
+    const { body } = await front('POST', '/messages', { channel: 'feedback', text: 'checkout is slow' })
+    const denied = await front('POST', `/messages/${body.message.id}/sync`, { target: 'slack:#leak' })
+    expect(denied).toMatchObject({ status: 403, body: { error: { message: "this token can't sync in feedback" } } })
+    expect(list).not.toHaveBeenCalled()
+    // Julian may, so his target goes to Slack to resolve.
+    const julian = caller(board.fetch, await personToken())
+    expect((await julian('POST', `/messages/${body.message.id}/sync`, { target: 'slack:#leak' })).body).toEqual({ target: 'slack:C9', attached: true })
+    expect(list).toHaveBeenCalled()
+  })
+
+  it("does nothing on Slack, and writes nothing, for a request before the backend lets it do what it asks", async () => {
+    const lookupByEmail = vi.fn(async () => ({ user: { id: 'U_ADA', name: 'ada', profile: { display_name: 'ada', real_name: 'Ada' } } }))
+    const conversations = {
+      list: vi.fn(async () => ({ channels: [{ id: 'C9', name: 'general', is_member: false, is_private: false }] })),
+      info: vi.fn(async () => ({ channel: { id: 'C9', is_member: false, is_private: false } })),
+      join: vi.fn(async () => ({ ok: true })),
+    }
+    const slackClient = { conversations, users: { info: async () => ({}), lookupByEmail } }
+    const s = fakePlatform('slack', withSlackClient(slackClient, false))
+    const board = testBoard({
+      access: [vercelProject({ project: 'prj_marketing', can: { feedback: ['read', 'post'] } })],
+      sync: { slack: slack({ adapter: s.adapter, client: async () => slackClient as never, channels: { C1: 'firehose' } }) },
+    })
+    const anyone = caller(board.fetch, 'not-a-token')
+    const front = caller(board.fetch, await deploymentToken())
+    const julian = caller(board.fetch, await personToken())
+    // Its first post resolves the channels the board maps, once.
+    const root = (await julian('POST', '/messages', { channel: 'firehose', text: 'ours' })).body.message
+    const calls = () => [conversations.list, conversations.info, conversations.join, lookupByEmail].reduce((n, fn) => n + fn.mock.calls.length, 0)
+    const before = calls()
+    const text = 'cc @[ada@vercel.com]'
+    const attempts = [
+      // No one: a 401 before anything else.
+      [anyone, 'POST', '/messages', { channel: 'firehose', text, sync: ['slack:#general'] }, 401],
+      [anyone, 'POST', `/messages/${root.id}/edit`, { text }, 401],
+      [anyone, 'POST', '/schedules', { channel: 'firehose', text, in: '1h' }, 401],
+      [anyone, 'GET', '/inbox/slack?channel=%23general', undefined, 401],
+      // Someone who may post only in feedback.
+      [front, 'POST', '/messages', { channel: 'firehose', text, sync: ['slack:#general'] }, 403],
+      [front, 'POST', '/messages', { re: root.id, text }, 404],
+      [front, 'POST', '/messages', { channel: 'feedback', text: 'checkout is slow', sync: ['slack:#general'] }, 403],
+      [front, 'POST', `/messages/${root.id}/edit`, { text }, 404],
+      [front, 'POST', '/schedules', { channel: 'firehose', text, in: '1h' }, 403],
+      [front, 'GET', '/inbox/slack?channel=%23general', undefined, 403],
+    ] as const
+    for (const [who, method, path, body, status] of attempts) expect((await who(method, path, body)).status, `${method} ${path} ${JSON.stringify(body)}`).toBe(status)
+    expect(calls()).toBe(before)
+    // Nothing on the board learned who Ada is.
+    expect(((await julian('GET', '/actors')).body.actors as { id: string }[]).map((actor) => actor.id)).not.toContain('slack:user:U_ADA')
+    // An upload's body isn't read for no one.
+    let pulled = false
+    const file = new ReadableStream({ pull: (controller) => ((pulled = true), controller.enqueue(new Uint8Array(8)), controller.close()) }, { highWaterMark: 0 })
+    const upload = await board.fetch(new Request(`${BOARD_URL}/attachments`, { method: 'POST', body: file, duplex: 'half', headers: { 'content-type': 'image/png' } } as RequestInit))
+    expect([upload.status, pulled]).toEqual([401, false])
+    // Julian may: his post goes to Slack to resolve, and mentions Ada.
+    const posted = await julian('POST', '/messages', { channel: 'firehose', text, sync: ['slack:#general'] })
+    expect(posted.body.message).toMatchObject({ text: 'cc @[slack:user:U_ADA]', mentions: ['slack:user:U_ADA'] })
+    expect(conversations.join).toHaveBeenCalledWith({ channel: 'C9' })
+  })
+
+  it("answers a caller that can't read where it posts with what it sent, never who its emails are", async () => {
+    const lookupByEmail = vi.fn(async () => ({ user: { id: 'U_ADA', name: 'ada', profile: { display_name: 'ada', real_name: 'Ada' } } }))
+    const slackClient = { conversations: { list: async () => ({ channels: [] }), info: async () => ({}), join: async () => ({}) }, users: { info: async () => ({}), lookupByEmail } }
+    const s = fakePlatform('slack', withSlackClient(slackClient, false))
+    const board = testBoard({
+      access: [vercelProject({ project: 'prj_marketing', can: { feedback: ['post'] } })],
+      sync: { slack: slack({ adapter: s.adapter, client: async () => slackClient as never, channels: { C1: 'firehose' } }) },
+      scheduler: fakeQueue().scheduler,
+    })
+    const front = caller(board.fetch, await deploymentToken())
+    const julian = caller(board.fetch, await personToken())
+    const text = 'checkout is slow, cc @[ada@vercel.com]'
+    const posted = (await front('POST', '/messages', { channel: 'feedback', text, id: 'checkout-1' })).body.message
+    expect([posted.text, posted.mentions]).toEqual([text, []])
+    expect(JSON.stringify((await front('GET', '/posts/checkout-1')).body)).not.toContain('U_ADA')
+    const scheduled = (await front('POST', '/schedules', { channel: 'feedback', text, in: '1h' })).body.schedule
+    expect(scheduled.text).toBe(text)
+    expect(JSON.stringify((await front('GET', '/schedules')).body)).not.toContain('U_ADA')
+    expect(JSON.stringify((await front('POST', `/schedules/${scheduled.id}/cancel`, {})).body)).not.toContain('U_ADA')
+    // The post still mentions Ada, for those who read feedback.
+    expect((await julian('GET', '/messages?channel=feedback')).body.messages[0]).toMatchObject({ text: 'checkout is slow, cc @[slack:user:U_ADA]', mentions: ['slack:user:U_ADA'] })
   })
 
   it('skips a Slack channel name that does not resolve, and syncs the rest', async () => {

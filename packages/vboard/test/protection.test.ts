@@ -25,6 +25,8 @@ const { BOARD_URL, personToken, testBoard } = await import('./harness.ts')
 
 const HOST = new URL(BOARD_URL).host
 const SECRET = 'automation-bypass-secret'
+// The hosts Vercel says a deployment answers on.
+const OWN_HOSTS = ['VERCEL_URL', 'VERCEL_BRANCH_URL', 'VERCEL_PROJECT_PRODUCTION_URL'] as const
 
 /**
  * A board behind Vercel Authentication (a 302 to vercel.com/sso-api without the
@@ -81,6 +83,7 @@ describe('a board behind Vercel Deployment Protection, without VERCEL_AUTOMATION
     vi.stubEnv('XDG_CONFIG_HOME', config)
     vi.stubEnv('VERCEL_AUTOMATION_BYPASS_SECRET', '')
     vi.stubEnv('VERCEL', '')
+    for (const own of OWN_HOSTS) vi.stubEnv(own, '')
     vi.stubEnv('VBOARD_TOKEN', '')
     runtimeToken.mockReset().mockResolvedValue('runtime-token')
     login.token = 'vercel-cli-token'
@@ -166,9 +169,11 @@ describe('a board behind Vercel Deployment Protection, without VERCEL_AUTOMATION
     expect(api).toEqual([])
   })
 
-  it('still sends VERCEL_AUTOMATION_BYPASS_SECRET when hosted callers set it', async () => {
+  it.each(OWN_HOSTS)('still sends hosted VERCEL_AUTOMATION_BYPASS_SECRET to its own host, from %s', async (own) => {
     vi.stubEnv('VERCEL', '1')
     vi.stubEnv('VERCEL_AUTOMATION_BYPASS_SECRET', SECRET)
+    // Hosts compare without case.
+    vi.stubEnv(own, HOST.toUpperCase())
     runtimeToken.mockRejectedValue(new Error('runtime OIDC is unavailable'))
     const { fetch, api, sent } = protectedBoard()
     const client = handle({ url: BOARD_URL, token: await personToken(), handle: 'jb', fetch })
@@ -177,6 +182,61 @@ describe('a board behind Vercel Deployment Protection, without VERCEL_AUTOMATION
     expect(sent.every((header) => header === SECRET)).toBe(true)
     expect(api).toEqual([])
     expect(runtimeToken).not.toHaveBeenCalled()
+  })
+
+  it('never sends hosted VERCEL_AUTOMATION_BYPASS_SECRET to a host that is not its own', async () => {
+    // Vercel sets it to the deployment's own project's secret: another project's board would
+    // get a key to this one's protection, and it wouldn't open the board's anyway.
+    vi.stubEnv('VERCEL', '1')
+    vi.stubEnv('VERCEL_AUTOMATION_BYPASS_SECRET', 'the-callers-own-secret')
+    vi.stubEnv('VERCEL_URL', 'caller-abc123.vercel.app')
+    vi.stubEnv('VERCEL_BRANCH_URL', 'caller-git-main.vercel.app')
+    vi.stubEnv('VERCEL_PROJECT_PRODUCTION_URL', 'caller.example')
+    const token = await personToken()
+    const board = testBoard()
+    const sent: Headers[] = []
+    const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init)
+      sent.push(new Headers(request.headers))
+      if (!request.headers.has('x-vercel-trusted-oidc-idp-token'))
+        return new Response('Protected by Vercel Authentication', {
+          status: 302,
+          headers: { location: `https://vercel.com/sso-api?url=${encodeURIComponent(request.url)}` },
+        })
+      request.headers.delete('x-vercel-trusted-oidc-idp-token')
+      return board.fetch(request)
+    }) as typeof globalThis.fetch
+    const client = handle({ url: BOARD_URL, token, handle: 'jb', fetch })
+    expect((await client.discovery()).url).toBe(BOARD_URL)
+    const root = await client.post('dev', 'from another project')
+    await client.thread(root.id)
+    expect(sent.map((headers) => headers.get('x-vercel-protection-bypass'))).toEqual([null, null, null])
+    expect(sent.map((headers) => headers.get('x-vercel-trusted-oidc-idp-token'))).toEqual([token, token, token])
+  })
+
+  it('falls back to OIDC when its own host rejects hosted VERCEL_AUTOMATION_BYPASS_SECRET', async () => {
+    vi.stubEnv('VERCEL', '1')
+    vi.stubEnv('VERCEL_AUTOMATION_BYPASS_SECRET', 'a-stale-secret')
+    vi.stubEnv('VERCEL_URL', HOST)
+    const board = testBoard()
+    const tried: string[] = []
+    const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init)
+      const trusted = request.headers.get('x-vercel-trusted-oidc-idp-token')
+      tried.push(request.headers.has('x-vercel-protection-bypass') ? 'bypass' : trusted ? 'oidc' : 'none')
+      if (!trusted)
+        return new Response('Protected by Vercel Authentication', {
+          status: 302,
+          headers: { location: `https://vercel.com/sso-api?url=${encodeURIComponent(request.url)}` },
+        })
+      request.headers.delete('x-vercel-trusted-oidc-idp-token')
+      return board.fetch(request)
+    }) as typeof globalThis.fetch
+    const client = handle({ url: BOARD_URL, token: await personToken(), handle: 'jb', fetch })
+    expect((await client.discovery()).url).toBe(BOARD_URL)
+    await client.post('dev', 'past a stale secret')
+    // Once rejected, the secret isn't sent again.
+    expect(tried).toEqual(['bypass', 'oidc', 'oidc'])
   })
 
   it('keeps local person credentials out of the Trusted Sources header', async () => {

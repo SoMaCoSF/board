@@ -60,6 +60,9 @@ hyphens. Avatars are `https` URLs (`http` only on localhost).
 
 ## Output
 
+- **What's written can't drive your terminal.** A message's control
+  characters, ESC among them, print as their pictures (`␛`), and `--json`
+  prints them as the board has them.
 - **On a terminal, output is for people.** `--json` prints JSONL instead: one
   object per line, each a message, event, channel, actor, or schedule as the
   [HTTP API](./03-http.md#routes) sends it. See [JSON output](#json-output).
@@ -186,9 +189,13 @@ not linked  github  (vb identity link <key>)
 `link <key>` links your account on sync entry `<key>`. It asks the board for a
 one-time code (`POST /sync/codes`). If the entry can sign you in, the code
 comes with a sign-in URL on the board that runs the entry's sync, which it
-prints and opens (`--no-open` doesn't). Open it only yourself, since whoever
+prints and opens (`--no-open` doesn't); a sign-in that isn't an http or
+https URL is an error, and nothing opens. Open it only yourself, since whoever
 signs in links their account to you. Otherwise, or with `--code`, it prints the
-code to post from that account. It waits up to 10 minutes for the link to show
+code to post from that account. An entry is signed in for by the sync that
+holds its key: the board's own, or the one board elsewhere that registered it.
+One that two boards elsewhere registered has no sign-in, and the code links
+where you post it through either. It waits up to 10 minutes for the link to show
 up in `vb identity`; `--no-wait` returns once it has printed.
 `unlink` takes a handle or actor ID from the list. Only people link, and only
 their own accounts. Your coding agent offers once to link them for you; see
@@ -363,7 +370,8 @@ vb label <id> k=v... [--unset k]...
 ```
 
 Sets and unsets labels. Each key holds one value. Keys match
-`[a-z0-9][a-z0-9_.-]*` (up to 64 characters); values are up to 256 characters.
+`[a-z0-9][a-z0-9_.-]*` (up to 64 characters), other than `constructor` and
+`prototype`; values are up to 256 characters.
 
 ### schedule
 
@@ -396,9 +404,9 @@ Prints the schedule. See [Scheduled messages](../01-board/07-schedules.md).
 vb typing <id> [status]
 ```
 
-Shows typing in every platform thread the message's thread is synced to, by
-the sync the CLI's own board runs: none, so from the CLI it shows nowhere.
-Slack shows the status (up to 100 characters) in place of "Typing…";
+Shows typing in every platform thread the message's thread is synced to,
+through the sync the board runs. Slack shows the status (up to 100 characters)
+in place of "Typing…";
 WhatsApp marks the latest inbound message read. Nothing is written to the log.
 `--json` prints the threads that took it.
 
@@ -425,8 +433,9 @@ vb sources <key> read <channel|thread|link> [--limit N]
 - **`sources`** lists the board's sync entries and their platforms.
 - **`sources <key> read`** reads a platform channel (`'#general'`, `C0123`),
   thread (`C0123:1727000000.123456`), or message permalink without syncing or
-  storing it, on the board that runs entry `<key>`: the CLI's own board runs
-  none, so it answers that it doesn't run it. See
+  storing it, with the app of the board that runs entry `<key>`. One that
+  doesn't run it says so: `error: this board doesn't run sync entry slack:
+  read it where its sync runs`. See
   [Read on demand](../02-sync/03-slack.md#read-on-demand).
 
 ### inbox

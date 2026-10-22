@@ -30,6 +30,17 @@ export function createReads(tables: MessageTables, session: BoardSession, projec
    * that adds them, or on a quiet board, nothing else may have yet.
    */
   let catching: Promise<unknown> | null = null
+  /**
+   * The reader of views whose links point to the board messages `linked`, looked up only for a
+   * reader that can't read every channel. A linked message is older than the one linking it, so
+   * the tables have it.
+   */
+  async function readerOf(access: Access, linked: readonly number[]): Promise<Reader> {
+    if (access.readsAll) return { access, channelOf: () => undefined }
+    const ids = [...new Set(linked)].filter((id) => id > 0)
+    const found = ids.length === 0 ? new Map<number, Message>() : await tables.messagesAt(ids, await tables.position())
+    return { access, channelOf: (id) => found.get(id)?.channel }
+  }
   function catchUp(): void {
     if (catching) return
     catching = session.consume(projection).catch(() => {
@@ -67,18 +78,9 @@ export function createReads(tables: MessageTables, session: BoardSession, projec
       await ensure(undefined, signal)
       return tables.byEventId(eventId)
     },
-    /**
-     * The reader of views of `messages`: what a link shows depends on where the
-     * message it points to lives, looked up only for a reader that can't read
-     * every channel. A linked message is older than the one linking it, so the
-     * tables have it.
-     */
-    async reader(access: Access, messages: Iterable<Message>): Promise<Reader> {
-      if (access.readsAll) return { access, channelOf: () => undefined }
-      const ids = [...new Set([...messages].flatMap((message) => linkedIds(message.links)))]
-      const found = ids.length === 0 ? new Map<number, Message>() : await tables.messagesAt(ids, await tables.position())
-      return { access, channelOf: (id) => found.get(id)?.channel }
-    },
+    /** The reader of views of `messages`: what a link shows depends on where the message it points to lives. */
+    reader: (access: Access, messages: Iterable<Message>): Promise<Reader> => readerOf(access, [...messages].flatMap((message) => linkedIds(message.links))),
+    readerOf,
     async messages(filter: MessageFilter, page: Page) {
       catchUp()
       // A reader of no channel: nothing to look for.

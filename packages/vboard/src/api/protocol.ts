@@ -4,6 +4,7 @@ import type { Attachment } from '../contract/schemas.ts'
 import type {
   AckBody,
   ChannelView,
+  Discovery,
   EditBody,
   EventsPage,
   EventsQuery,
@@ -30,6 +31,8 @@ import type {
   ScheduleBody,
   SchedulesQuery,
   ScheduleView,
+  SourceRead,
+  SourceReadQuery,
   ThreadsPage,
   SyncAccountBody,
   SyncCodeBody,
@@ -45,6 +48,7 @@ import type {
   SyncUnlinkBody,
   ThreadsQuery,
   ThreadView,
+  TypingBody,
 } from './routes.ts'
 
 type Input<S extends z.ZodType> = NonNullable<z.output<S>>
@@ -57,6 +61,8 @@ type Nothing = Record<string, never>
  * board() serves each at its route in `routes` and calls the backend's method of the same name.
  */
 export type Protocol = {
+  /** Where the board is and what it syncs, for a client to mint a token from: it needs none itself. */
+  discovery: { input: Nothing; output: Discovery }
   me: { input: Nothing; output: Me }
   channels: { input: Nothing; output: { channels: ChannelView[]; cursor: string } }
   actors: { input: Nothing; output: { actors: (Actor & { person?: PersonView })[]; cursor: string } }
@@ -82,14 +88,23 @@ export type Protocol = {
   ack: { input: Id & Input<typeof AckBody>; output: { ok: true } }
   /** Long-polls with `wait`. board() serves SSE from it, so a backend has one way to read events. */
   events: { input: Input<typeof EventsQuery>; output: EventsPage }
+  /** Typing in the platform threads the message's thread is synced to: needs `post` there. Answers the threads that took it. */
+  typing: { input: Id & Input<typeof TypingBody>; output: { targets: string[] } }
+  /** A platform channel or thread, read with sync entry `key`'s app where that sync runs: needs `manage` everywhere. */
+  readSource: { input: Key & Input<typeof SourceReadQuery>; output: SourceRead }
 
   // Sync's records, which sync in board() keeps through these wherever the board lives. Each needs `sync`.
-  /** A platform's write as its platform author, idempotent per platform event. */
-  syncImport: { input: Input<typeof SyncImportBody>; output: { message: string | null } }
+  /**
+   * A platform's write as its platform author, idempotent per platform event. `dropped`: the
+   * middleware kept a post or an edit off the board, and what it responded, for sync to tell the
+   * author on the platform.
+   */
+  syncImport: { input: Input<typeof SyncImportBody>; output: { message: string | null; dropped?: string[] } }
   /** A delivery, its files, a failure, or a thread's new target. `attached` is false for a target the thread had. */
   syncReceipt: { input: Input<typeof SyncReceiptBody>; output: { ok: true; attached?: boolean } }
   syncThread: { input: { thread: string }; output: SyncThreadView }
   syncFind: { input: Input<typeof SyncFindQuery>; output: SyncFindView }
+  /** Messages' copies on platforms that the caller's sync recorded, by target: another sync's never show. */
   syncCopies: { input: Input<typeof SyncCopiesQuery>; output: SyncCopiesView }
   syncRoots: { input: Input<typeof SyncRootsQuery>; output: { roots: MessageView[] } }
   /** Platform events into the caller's inbox, deduplicated by their platform IDs. */

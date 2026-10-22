@@ -85,7 +85,7 @@ most once a minute, while the other channels sync.
   `users:read.email`). See [mentions](../01-board/03-identity.md).
 - **Other bots' messages,** from Sentry or Vercel alerts, sync like anyone's. Only
   the board's own posts are skipped.
-- **Typing:** `team.typing('812', 'running tests…')`, on the board that runs the sync, sets the thread's status in Slack,
+- **Typing:** `team.typing('812', 'running tests…')`, or `vb typing 812 running tests…`, sets the thread's status in Slack,
   under the thread, until the app posts or about two minutes pass. The status is
   at most 100 characters; without one, Slack shows "Typing…".
 
@@ -138,8 +138,10 @@ the file's own name.
 A Slack permalink in a message becomes one of the message's links; its text stays
 as written. `vb read` and `vb inspect` quote each one under the message.
 
-- A link to a message the board has (it was synced, either way) is that board
-  message, `#812`, with a snapshot of it.
+- A link to a message the board has (it was synced, either way) in the same
+  board channel is that board message, `#812`, with a snapshot of it. One in
+  another channel isn't: the link's readers may not read that channel, so its
+  snapshot comes from Slack, as below.
 - Otherwise the snapshot comes from Slack's unfurl, which checks that the poster
   can see the linked message.
 - With no unfurl yet, the board reads the message itself, but only from a public
@@ -156,9 +158,9 @@ linked, not copied.
 
 The board that runs a Slack entry can read a channel it doesn't sync, for
 research or a reference, without syncing it. Only that board has the app to
-read with, so ask it: its own code, through its handle, or a request to its
-`GET /sources/slack/read?target=…`. A board that doesn't run the entry, the
-CLI's own included, answers 404 `not_synced_here`.
+read with, so ask it: its own code, through its handle, `vb sources slack read`
+on the board you link, or a request to its `GET /sources/slack/read?target=…`.
+A board that doesn't run the entry answers 404 `not_synced_here`.
 
 ```ts
 // in the route that mounts the board with `sync: { slack }`:

@@ -23,6 +23,13 @@ export const retryDelay = (attempts: number) => Math.min(30_000, 1000 * 2 ** (at
 export const SWEEP_MS = 60_000
 /** The sweep that covers `at`: the next minute at least a second after it, since a timer may land up to a second early. */
 export const sweepFor = (at: number) => Math.ceil((at + 1000) / SWEEP_MS) * SWEEP_MS
+/** The longest a registrant whose wake-ups don't get there waits for the next one. */
+export const WAKE_BACKOFF_MAX_MS = 60 * 60_000
+/**
+ * After `failures` wake-ups in a row that didn't get there, how long until the next: a minute,
+ * doubling to an hour. Until then a match only queues.
+ */
+export const wakeBackoff = (failures: number) => Math.min(WAKE_BACKOFF_MAX_MS, SWEEP_MS * 2 ** (failures - 1))
 
 /** The queue a registrant's sync pulls: every event it delivers. Watcher IDs start with a letter, so none is this. */
 export const SYNC_QUEUE = '@sync'
@@ -48,6 +55,8 @@ export type QueueState = {
   pending: Record<string, Pending>
   /** The sweeps set and not yet run, by when they run. */
   sweeps: number[]
+  /** Wake-ups in a row that didn't get there, and when the next may go. Null once its board answers, pulls, or registers. */
+  unreachable: { failures: number; until: number } | null
 }
 
 const queueKey = (queue: string, thread: string) => `${queue}\u001f${thread}`
@@ -115,6 +124,12 @@ function foldQueue(state: QueueState, event: ContractEvent<WatchEvents>): QueueS
     case 'watch.skipped':
       remove(state, event.payload.matched)
       return state
+    case 'watch.unreachable':
+      state.unreachable = { failures: event.payload.failures, until: event.payload.until }
+      return state
+    case 'watch.reachable':
+      state.unreachable = null
+      return state
     default:
       return state
   }
@@ -122,8 +137,8 @@ function foldQueue(state: QueueState, event: ContractEvent<WatchEvents>): QueueS
 
 export const queueReducer = reducer({
   contract: watchContract,
-  name: 'vboard.watch-queue.v3',
-  initialState: { queues: {}, pending: {}, sweeps: [] } as QueueState,
+  name: 'vboard.watch-queue.v4',
+  initialState: { queues: {}, pending: {}, sweeps: [], unreachable: null } as QueueState,
 }).fold(foldQueue)
 
 type WatchInput = { type: string; id?: string; payload: unknown }
@@ -191,7 +206,8 @@ async function lease(
   options: { limit: number; now: number; timers: boolean; queues: (queue: string) => boolean; visible: (event: unknown, queue: string) => boolean },
 ): Promise<Leased[]> {
   const { state } = await session.state(queueReducer)
-  const events: WatchInput[] = []
+  // A pull says its board is up: its next match wakes it, whatever wake-ups said before.
+  const events: WatchInput[] = state.unreachable ? [{ type: 'watch.reachable', payload: { by: 'pull' } }] : []
   const offered: { head: Pending; lease: string; attempt: number }[] = []
   for (const ids of Object.values(state.queues)) {
     if (offered.length >= options.limit) break

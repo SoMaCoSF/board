@@ -1,4 +1,5 @@
 import type { BoardEvent } from '../contract/contract.ts'
+import { setOwn } from '../contract/own.ts'
 import { externalMessageKey, type ExternalCopy, type Message, type SyncedThread } from '../contract/reducers.ts'
 import { concernedMessageId, project, projectSync, syncReads, type Before, type Change, type SyncChange } from './project.ts'
 import type { MessageFilter, MessageTables, Page, ThreadSummary } from './types.ts'
@@ -650,7 +651,7 @@ export function redisTables(send: RedisCall, prefix: string, options: { scanBudg
         const flat = rows[i] ?? []
         if (flat.length === 0) return
         const copies: Record<string, ExternalCopy> = {}
-        for (let at = 0; at < flat.length; at += 2) copies[flat[at]!] = JSON.parse(flat[at + 1]!) as ExternalCopy
+        for (let at = 0; at < flat.length; at += 2) setOwn(copies, flat[at]!, JSON.parse(flat[at + 1]!) as ExternalCopy)
         out.set(id, copies)
       })
       return out

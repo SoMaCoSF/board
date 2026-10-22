@@ -1,4 +1,4 @@
-// What a board needs to serve requests, loaded the first time it serves one: token verification,
-// and the board's own Vercel project, from the environment and `.vercel/project.json`.
-export { createVerifier, hostPrincipal } from './auth.ts'
+// What a board's policy finds in Node's environment, loaded the first time a board serves: the
+// OIDC tokens made out to it, and its own Vercel project.
+export { oidcTokens } from './tokens.ts'
 export { discoveryIdentity, ownProjectId, ownTeamId } from './identity.ts'

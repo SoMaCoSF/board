@@ -98,6 +98,43 @@ describe('slack message links', () => {
     expect(linker!.links).toEqual([{ url: permalink('C1'), message: target!.id, unavailable: null, snapshot: expect.objectContaining({ author: 'Ada', text: 'export is broken' }) }])
   })
 
+  it("snapshots a board copy only in the linking message's own channel: another's comes from Slack's unfurl", async () => {
+    // C9 is private and synced to security; the link is posted in C1, synced to firehose.
+    const info = async ({ channel }: { channel: string }) => ({ channel: { id: channel, is_member: true, is_private: channel === 'C9' } })
+    const web = { conversations: { list: async () => ({ channels: [] }), info, join: async () => ({}), replies: vi.fn() } }
+    const s = fakePlatform('slack', withSlackClient(web, false))
+    const board = testBoard({ sync: { slack: slack({ adapter: s.adapter, client: async () => web as SlackClient, channels: { C1: 'firehose', C9: 'security' } }) } })
+    const webhook = (body: unknown) =>
+      board.fetch(new Request(`${BOARD_URL}/webhooks/slack`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }))
+    const julian = caller(board.fetch, await personToken())
+    await webhook({ type: 'message', threadId: `slack:C9:${TS}`, id: TS, text: 'the key is hunter2', user: 'U_ADA', name: 'Ada' })
+    await webhook({ type: 'message', threadId: 'slack:C1:1791322000.000001', id: '1791322000.000001', text: 'export is broken', user: 'U_ADA', name: 'Ada' })
+    const id = '1791322999.000005'
+    await webhook(linking(id, permalink('C9')))
+    await vi.waitFor(async () => expect(await messages(julian)).toHaveLength(2))
+    const linker = async () => (await messages(julian)).find((message) => message.text.includes(permalink('C9')))!
+    // Nothing of security's message, and no pointer to it: Slack read nothing either, since C9 is private.
+    expect((await linker()).links).toEqual([{ url: permalink('C9'), message: null, snapshot: null, unavailable: 'private_channel' }])
+    expect(web.conversations.replies).not.toHaveBeenCalled()
+    // Slack's unfurl, which it checked against who posted the link, comes a moment later as a links-only edit.
+    const text = `see <${permalink('C9')}>`
+    await webhook({ type: 'event_callback', event: {
+      type: 'message', subtype: 'message_changed', channel: 'C1',
+      message: { type: 'message', ts: id, user: 'U_JB', text, attachments: [{ is_msg_unfurl: true, channel_id: 'C9', ts: TS, author_name: 'Ada', text: 'what Slack shows the channel' }] },
+      previous_message: { type: 'message', ts: id, user: 'U_JB', text },
+    } })
+    await vi.waitFor(async () => expect((await linker()).links).toEqual([{ url: permalink('C9'), message: null, unavailable: null, snapshot: expect.objectContaining({ author: 'Ada', text: 'what Slack shows the channel' }) }]))
+    expect(JSON.stringify(await messages(julian))).not.toContain('hunter2')
+    // A link to firehose's own message is still that board message.
+    const same = permalink('C1', '1791322000.000001')
+    await webhook(linking('1791322999.000006', same))
+    await vi.waitFor(async () => expect(await messages(julian)).toHaveLength(3))
+    const [root] = await messages(julian)
+    expect((await messages(julian)).find((message) => message.text.includes(same))!.links).toEqual([
+      { url: same, message: root!.id, unavailable: null, snapshot: expect.objectContaining({ author: 'Ada', text: 'export is broken' }) },
+    ])
+  })
+
   it("snapshots an unsynced message from Slack's unfurl, without asking Slack", async () => {
     const replies = vi.fn()
     const { board, webhook } = setup({ replies })

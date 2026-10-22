@@ -47,6 +47,18 @@ const publicLookup: LookupFunction = (hostname, options, callback) => {
 /** A response body is read only as far as an error message needs. */
 const ERROR_BYTES = 4096
 
+/** Statuses a `Response` has no body with. */
+const NULL_BODY = new Set([204, 205, 304])
+
+/**
+ * A wake-up's answer as a `Response`, whatever status the other end chose: one with no body has
+ * none, and one a `Response` can't have (outside 200 to 599) is a 502.
+ */
+function responseOf(status: number | undefined, body: Uint8Array<ArrayBuffer>): Response {
+  if (status === undefined || !Number.isInteger(status) || status < 200 || status > 599) return new Response(null, { status: 502 })
+  return new Response(NULL_BODY.has(status) ? null : body, { status })
+}
+
 /** POSTs to a public `https` URL: the default `Post`. */
 export async function publicPost(url: string, init: { headers: Record<string, string>; body: string; signal: AbortSignal }): Promise<Response> {
   const target = new URL(url)
@@ -64,9 +76,14 @@ export async function publicPost(url: string, init: { headers: Record<string, st
           if (size < ERROR_BYTES) chunks.push(chunk)
           size += chunk.length
         })
-        response.on('end', () =>
-          resolve(new Response(Buffer.concat(chunks).subarray(0, ERROR_BYTES), { status: response.statusCode ?? 502 })),
-        )
+        // Nothing here may throw: it would escape the promise from a listener and take down the process.
+        response.on('end', () => {
+          try {
+            resolve(responseOf(response.statusCode, Buffer.concat(chunks).subarray(0, ERROR_BYTES)))
+          } catch (error) {
+            reject(error)
+          }
+        })
         response.on('error', reject)
       },
     )

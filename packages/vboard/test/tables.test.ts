@@ -41,11 +41,14 @@ const SEEN = [
   { actor: 'vercel:user:u_ada+claude', kind: 'agent', handle: 'ada/claude', name: 'Claude', avatar: null },
   { actor: 'vercel:user:u_bo', kind: 'person', handle: 'bo', name: 'Bo', avatar: null },
   { actor: 'slack:user:U1', kind: 'person', handle: 'sam', name: 'Sam', avatar: null },
+  // Names every object has are handles, channels, and older logs' emoji and label keys like any other.
+  { actor: 'slack:user:U2', kind: 'external', handle: '__proto__', name: 'Proto', avatar: null },
+  { actor: 'slack:user:U3', kind: 'external', handle: 'constructor', name: 'Con', avatar: null },
 ] as const
-const CHANNELS = ['dev', 'dev/sub', 'dev_x', 'ops']
+const CHANNELS = ['dev', 'dev/sub', 'dev_x', 'ops', 'constructor']
 const WORDS = ['PR', '#1', 'fix', 'Bug', 'deploy', 'ÉCLAIR', 'naïve', '100%', 'a_b', 'shipit']
 const FILES = ['f_one', 'f_two', 'f_three', 'f_four']
-const LABELS = [{ kind: 'bug' }, { kind: 'feature' }, { pr: '1' }, { pr: '2' }, { 'tag.x': 'y' }]
+const LABELS: Record<string, string>[] = [{ kind: 'bug' }, { kind: 'feature' }, { pr: '1' }, { pr: '2' }, { 'tag.x': 'y' }, { constructor: 'x' }]
 
 /** A random board history: every event type the messages fold handles, and some it ignores. */
 function history(seed: number, length: number): BoardEvent[] {
@@ -97,9 +100,9 @@ function history(seed: number, length: number): BoardEvent[] {
       const kind = r.pick(['edit', 'delete', 'react', 'unreact', 'labels', 'linked', 'synced', 'synced', 'files', 'failed', 'attach', 'attach'] as const)
       if (kind === 'edit') push('message.edited', { ...base, text: text(), mentions: mentions() })
       else if (kind === 'delete') push('message.deleted', base)
-      else if (kind === 'react') push('reaction.added', { ...base, emoji: r.pick(['eyes', '+1', 'thumbs_up']) })
-      else if (kind === 'unreact') push('reaction.removed', { ...base, emoji: r.pick(['eyes', 'thumbs_up']) })
-      else if (kind === 'labels') push('labels.changed', { id: target.id, thread: target.thread, by: author, set: labels(), unset: r.chance(0.5) ? [r.pick(['kind', 'pr', 'tag.x'])] : [] })
+      else if (kind === 'react') push('reaction.added', { ...base, emoji: r.pick(['eyes', '+1', 'thumbs_up', 'constructor', '__proto__']) })
+      else if (kind === 'unreact') push('reaction.removed', { ...base, emoji: r.pick(['eyes', 'thumbs_up', 'constructor', '__proto__']) })
+      else if (kind === 'labels') push('labels.changed', { id: target.id, thread: target.thread, by: author, set: labels(), unset: r.chance(0.5) ? [r.pick(['kind', 'pr', 'tag.x', 'constructor'])] : [] })
       else if (kind === 'linked') push('message.linked', { ...base, links: [{ url: 'https://example.com', message: null, snapshot: null, unavailable: null }] })
       else if (kind === 'failed') push('message.sync_failed', { id: target.id, thread: target.thread, target: 'slack:C1', error: 'not_in_channel' })
       else if (kind === 'synced') {
@@ -155,6 +158,7 @@ const FILTERS: ParsedFilters[] = [
   { channel: 'dev' },
   { channel: 'dev/' },
   { channel: 'dev_x' },
+  { channel: 'constructor' },
   { by: 'ada' },
   { by: 'ada/claude' },
   { by: 'sam' },
@@ -170,6 +174,7 @@ const FILTERS: ParsedFilters[] = [
   { label: [['kind', ['bug']]] },
   { label: [['kind', ['bug', 'feature']], ['pr', null]] },
   { label: [['tag.x', ['y']]], channel: 'dev/' },
+  { label: [['constructor', null]] },
   { by: 'ada', label: [['pr', ['1']]], text: 'fix' },
 ]
 

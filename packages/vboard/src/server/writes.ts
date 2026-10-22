@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import { idempotentId } from 'experimental-a2'
 import type { BoardEvent, Link, Origin } from '../contract/contract.ts'
 import { actorsReducer, foldMessages, isThreadTarget, type Actor, type ActorsState, type Message } from '../contract/reducers.ts'
@@ -17,8 +16,8 @@ import type { WriteSource } from './middleware.ts'
 
 export { syncTarget, withEmailMentions, type SyncTarget }
 
-/** Who a write is attributed to, with what its principal may do, as the backend worked it out. */
-export type Identity = { principal: Granted; author: Author; actor: Actor }
+import type { Identity } from './backend.ts'
+export type { Identity }
 
 /** A piece of the board's own deployment, writing as `actor` with full access. */
 export function deploymentIdentity(actor: string, handle: string): Identity {
@@ -54,6 +53,17 @@ export type WriteOrigin = {
    * it. Only board() sets it, in-process; sync records them later for a root that came another way.
    */
   config?: SyncTarget[]
+}
+
+/**
+ * The `actor.seen` a write carries, or null: who its author is, as the board's record of them
+ * says, unless the board knows that already. A platform user's record is board-wide, so a write
+ * whose identity doesn't keep it (`records: false`) leaves it as it is. A host's principal and its
+ * profiles are recorded as the host's, which sync never writes as.
+ */
+function seenFor(identity: Identity, actors: ActorsState) {
+  if (identity.records === false) return null
+  return actorSeen(identity.actor, actors, identity.principal.facts?.issuer === 'host')
 }
 
 /** The actors a write can mention: the ones the board knows, plus the ones an email named. */
@@ -184,6 +194,8 @@ export type PostInput = WriteOrigin & {
   links?: Link[]
   /** The schedule send that posts it. */
   schedule?: { id: number; n: number }
+  /** The principal of the sync elsewhere that imports it, whose copy its `origin` is. */
+  importedBy?: string | undefined
 }
 
 /**
@@ -199,7 +211,7 @@ export async function writePost(ctx: WriteContext, input: PostInput): Promise<Po
   let re: number | null = null
   let replyTo: number | null = null
   let thread: string
-  const id = input.id ?? (input.re === undefined ? randomUUID() : undefined)
+  const id = input.id ?? (input.re === undefined ? crypto.randomUUID() : undefined)
   if (input.re !== undefined) {
     // The message authorizePost looked up: a reply lands in its thread, never where the request said.
     const target = input.proofs.re
@@ -247,8 +259,15 @@ export async function landedFor(ctx: WriteContext, identity: Identity, landed: M
   if (!landed.blind) return null
   const [event] = await ctx.session.history({ gte: landed.id, lte: landed.id })
   const posted = foldMessages({ byId: {}, replies: {} }, event as BoardEvent).byId[landed.id]!
-  return { ...view(posted, actors, await readerFor(ctx, access, posted)), mentions: [] }
+  return { ...view(posted, actors, await readerFor(ctx, access, posted)), text: blindText(posted.text, identity.actor.id), mentions: [] }
 }
+
+/**
+ * A message's text for its writer where it can't read: each exact mention but of itself shows as
+ * `@…`. The board may have turned an email it wrote into an actor ID, and who that is, `/actors`
+ * doesn't show it either.
+ */
+export const blindText = (text: string, own: string) => replaceMentions(text, (token) => (token.kind === 'actor' && token.actor !== own ? '@…' : null))
 
 const sameAuthor = (a: Author, b: Author) =>
   a.actor === b.actor && a.principal === b.principal && a.profile === b.profile && a.session === b.session
@@ -273,7 +292,7 @@ async function commitPost(
     }
   }
 
-  const seen = actorSeen(identity.actor, actors)
+  const seen = seenFor(identity, actors)
   // Emails sync knows are mentions by now: board() resolved them. The rest are plain text.
   const { text, found } = await withEmailMentions(input.text)
   const named = found.map((actor) => actorSeen(actor, actors)).filter((event) => event !== null)
@@ -313,6 +332,7 @@ async function commitPost(
         ...(input.links?.length ? { links: input.links } : {}),
         ...(input.schedule ? { schedule: input.schedule } : {}),
         ...(identity.principal.access.readable(channel!) ? {} : { blind: true as const }),
+        ...(input.importedBy !== undefined ? { importedBy: input.importedBy } : {}),
       },
     },
     ...synced,
@@ -414,7 +434,7 @@ export async function writeEdit(ctx: WriteContext, input: EditInput): Promise<{ 
 
 async function commitEdit(ctx: WriteContext, input: EditInput, message: Message): Promise<{ unknownMentions?: string[] }> {
   const { state: actors } = await ctx.session.state(actorsReducer)
-  const seen = actorSeen(input.identity.actor, actors)
+  const seen = seenFor(input.identity, actors)
   const { text, found } = await withEmailMentions(input.text)
   const named = found.map((actor) => actorSeen(actor, actors)).filter((event) => event !== null)
   const { mentions, unknown } = resolveMentions(
@@ -474,7 +494,7 @@ export async function writeReaction(
   const message = spent(input.authorized, 'react')
   if (message.deleted) throw badRequest('message was deleted', 'message_deleted')
   const { state: actors } = await ctx.session.state(actorsReducer)
-  const seen = actorSeen(input.identity.actor, actors)
+  const seen = seenFor(input.identity, actors)
   await untilApplied(ctx, await ctx.session.append(...(seen ? [seen] : []), {
     type: input.remove ? 'reaction.removed' : 'reaction.added',
     payload: {
@@ -494,7 +514,7 @@ export async function writeLabels(
   const message = spent(input.authorized, 'label')
   if (message.deleted) throw badRequest('message was deleted', 'message_deleted')
   const { state: actors } = await ctx.session.state(actorsReducer)
-  const seen = actorSeen(input.identity.actor, actors)
+  const seen = seenFor(input.identity, actors)
   await untilApplied(ctx, await ctx.session.append(...(seen ? [seen] : []), {
     type: 'labels.changed',
     payload: {

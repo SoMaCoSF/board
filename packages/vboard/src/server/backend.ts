@@ -1,42 +1,50 @@
 import type { Protocol } from '../api/protocol.ts'
-import type { BoardClient, ProfileOption } from '../client/client.ts'
+import type { MessageView, SourceRead } from '../api/routes.ts'
+import type { ProfileOption } from '../client/client.ts'
 import type { ExternalEvent } from '../contract/contract.ts'
 import type { Actor } from '../contract/reducers.ts'
 import type { Author } from '../contract/schemas.ts'
-import type { Principal } from './auth.ts'
+import type { Access } from './access.ts'
+import type { Granted, Known } from './auth.ts'
+import type { Board } from './board.ts'
 import type { WatcherContext } from './watch.ts'
 import type { WriteOrigin } from './writes.ts'
 
 /**
- * Who a request is: the principal board() verified (its scope included, which only narrows), the
- * author record its writes carry, and the actor it writes as. What it may do is the backend's call.
+ * Who a verified caller is: its principal, with what board()'s `access` lets it do now (its scope
+ * included, which only narrows), the author record its writes carry, and the actor it writes as.
+ * `records: false`: its writes leave the board's record of its actor (name, avatar) as it is, for
+ * a platform user a sync that can't sync everywhere writes as.
  */
-export type CallerIdentity = { principal: Principal; author: Author; actor: Actor }
+export type Identity = { principal: Granted; author: Author; actor: Actor; records?: false }
 
-/** Who's calling a backend's method. Every method honors what the caller may do. */
-export type Caller =
+/**
+ * A caller board() verified, and what its policy lets it do: a request's, or for work a backend does
+ * outside requests, the one it does it for (a schedule's creator, at its send). A backend trusts it
+ * as it is: only board() makes one, in process.
+ */
+export type VerifiedCaller = { identity: Identity; origin: WriteOrigin }
+
+/** This deployment's own code, as it calls the backend through board(). */
+export type SelfCaller = {
   /**
-   * A request board() verified, or a write a backend makes in-process for someone it trusts:
-   * the principal and the actor it writes as. A backend decides what it may do from the principal.
+   * A handle (`via: client`, with the profile from `as(profile)`, or null for the board's own), a
+   * watcher, the middleware's handle (`via: middleware`), or sync (`via: engine`). Each backend
+   * decides who that is on its board: `vboard:client` and `vboard:client:<profile>` on a2(), the
+   * token's holder with that profile elsewhere.
    */
-  | { identity: CallerIdentity; origin: WriteOrigin }
+  self: string | null
   /**
-   * This deployment's own code, writing as `self`: a handle (`via: client`, with the profile from
-   * `as(profile)`, or null for the board's own), a watcher, the middleware's handle
-   * (`via: middleware`), or sync (`via: engine`). Each backend decides who that is on its board:
-   * `vboard:client` and `vboard:client:<profile>` on a2(), the token's holder with that profile
-   * elsewhere.
+   * What `as(profile)` asked for, its avatar included, or null for yourself. Absent on the
+   * handle itself, whose caller is whoever the environment picks: a backend elsewhere sends
+   * the profile `VBOARD_AS` or the agent it runs in names.
    */
-  | {
-      self: string | null
-      /**
-       * What `as(profile)` asked for, its avatar included, or null for yourself. Absent on the
-       * handle itself, whose caller is whoever the environment picks: a backend elsewhere sends
-       * the profile `VBOARD_AS` or the agent it runs in names.
-       */
-      profile?: ProfileOption
-      origin: WriteOrigin
-    }
+  profile?: ProfileOption
+  origin: WriteOrigin
+}
+
+/** Who's calling a backend's method: one board() verified, or this deployment's own code. Every method honors what it may do. */
+export type Caller = VerifiedCaller | SelfCaller
 
 /** One method per protocol route: the caller, the parsed input, and the request's signal. */
 export type ProtocolMethods = {
@@ -46,10 +54,9 @@ export type ProtocolMethods = {
 /** A route of a backend's own, beside the protocol: http()'s wake-ups. */
 export type BackendRoute = {
   method: 'GET' | 'POST'
-  /** Under the board's mount, with `:param` segments, e.g. `/wake`. */
+  /** Under the board's mount, with `:param` segments, e.g. `/wake`. One at a protocol route's path takes its place. */
   path: string
-  /** Whether board() verifies the caller first. A wake-up carries no board token. */
-  auth: boolean
+  /** `caller` is this deployment's own code, or null for a request, which board() doesn't verify for it: the route checks what it needs. */
   handle(request: Request, context: { caller: Caller | null; param: string | null }): Promise<Response>
 }
 
@@ -88,36 +95,51 @@ export type BoardBinding = {
   pull(): Promise<number>
   /** board()'s sync entries: what its sync imports through, and what discovery lists. */
   sync: readonly SyncEntry[]
-  /** The board's own Vercel project and team, as board() knows them: a backend's rules name them as `self`. */
+  /**
+   * Reads a platform channel or thread with sync entry `key`'s app, which only board() has: what
+   * `readSource` answers. 404 `not_synced_here` for an entry it doesn't run.
+   */
+  readSource(key: string, target: string, limit: number): Promise<SourceRead>
+  /**
+   * Shows typing in the platform threads a board thread (`messages`, its root first) is synced to,
+   * through board()'s sync: what `typing` answers. Answers the threads that took it.
+   */
+  typing(messages: readonly MessageView[], status: string | undefined): Promise<string[]>
+  /**
+   * What a principal the backend stored may do now, under board()'s `access`: a schedule's creator
+   * at each send, a registrant at each event and pull. Null once it may do nothing.
+   */
+  accessNow(principal: Known): Promise<Access | null>
+  /** The board's own Vercel project and team, as board() knows them: what discovery names, for clients to mint tokens with. */
   project(): Promise<{ id: string | null; teamId: string | null }>
   /**
-   * An in-process client through the board, as `caller`: every write goes through what a request's
-   * does, the middleware included. Its posts get IDs derived from `trigger`.
+   * A handle through board(), as `caller`: what a backend writes for someone outside a request
+   * goes through it, so board()'s middleware sees it, a schedule's send as its creator, say. A
+   * verified caller's posts keep the IDs they're given.
    */
-  client(caller: Caller, trigger: string | null): BoardClient
+  handle(caller: Caller): Board
   /** The board's own URL, where a board elsewhere can wake it, once it's known. */
   url(): string | null
 }
 
 /**
- * Where a board lives. board() serves the protocol over HTTP: it routes, validates, verifies
- * tokens, applies the access rules, runs the middleware and sync, and calls these. A backend
- * stores and answers.
+ * Where a board lives. board() serves the protocol over HTTP: it routes, validates, verifies each
+ * caller, applies `access`, runs the middleware, watchers, and sync, and calls these with the caller
+ * it verified. A backend stores and answers, honoring what each caller may do.
  */
 export interface Backend extends ProtocolMethods {
-  /**
-   * OIDC issuers past Vercel's and GitHub's whose tokens board() verifies, so the backend can say
-   * what they may do: a2() names its `oidc()` rules'.
-   */
-  readonly issuers: readonly string[]
-  /**
-   * Routes of its own, beside the protocol: one at a protocol route's path, or at `/` (discovery),
-   * takes its place.
-   */
+  /** Routes of its own, beside the protocol: one at a protocol route's path takes its place. */
   readonly routes: readonly BackendRoute[]
   /**
+   * Whether the board lives here. One that keeps it (`a2()`) lets in, when board()'s `access` is left
+   * out, its people and the board's own deployments; one that uses another board (`http()`) serves no
+   * requests then but wake-ups and webhooks, and with an `access`, serves its callers as that board's
+   * project.
+   */
+  readonly keeps: boolean
+  /**
    * board() calls it once, when it's created, before any request: what background work needs
-   * from the board (its rules, its subscriptions, an in-process client). It does no I/O.
+   * from the board (its subscriptions, its sync, its policy, a handle through it). It does no I/O.
    */
   bind(board: BoardBinding): void
 }

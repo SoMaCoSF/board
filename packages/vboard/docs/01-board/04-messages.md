@@ -167,7 +167,8 @@ with it first: over HTTP it goes as `key:<principal>:…`, which the board takes
 only from that principal. Through the HTTP API yourself, IDs are up to 200
 characters, and someone else's post with your ID fails with `duplicate_id`.
 UUIDv8s are the board's own, for the writes it makes itself, so the API refuses
-them, and so are `key:` IDs under another principal.
+them, and `key:` IDs under another principal, and `sync:` IDs, which are
+sync's imports'.
 
 ## Keeping a message on the board
 

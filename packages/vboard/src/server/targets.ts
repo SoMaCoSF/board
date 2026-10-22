@@ -8,6 +8,9 @@ export type SyncTarget = { target: string; kind: 'channel' | 'thread' }
 export const syncTarget = (target: string | SyncTarget): SyncTarget =>
   typeof target === 'string' ? { target, kind: isThreadTarget(target) ? 'thread' : 'channel' } : target
 
+/** Whether `text` mentions anyone by email, `@[ada@vercel.com]`, which sync looks up. */
+export const mentionsEmails = (text: string) => extractMentions(text).some((token) => token.kind === 'actor' && token.actor.includes('@'))
+
 /**
  * `@[ada@vercel.com]`: each email `find` knows (a synced platform's user) becomes that user's
  * exact mention, `@[slack:user:U0456]`, so it reads natively there; the rest stay plain text.

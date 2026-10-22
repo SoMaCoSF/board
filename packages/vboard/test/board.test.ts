@@ -436,3 +436,24 @@ describe('writes', () => {
     }).toEqual({ react: 1, label: 1, reply: 1, edit: 1, root: 0 })
   })
 })
+
+describe('its URL', () => {
+  it("learns its mount from requests, and none that only makes the path look longer moves it", async () => {
+    vi.stubEnv('VERCEL_ENV', 'preview')
+    vi.stubEnv('VERCEL_URL', 'board-abc.vercel.app')
+    try {
+      const board = testBoard({ url: undefined })
+      const at = (path: string, token?: string) =>
+        board.fetch(new Request(`https://board-abc.vercel.app${path}`, token ? { headers: { authorization: `Bearer ${token}` } } : {}))
+      // No one's request first: the handler is mounted at /api/board, so this one's path only looks deeper.
+      expect((await at('/api/board/x/messages/1')).status).toBe(401)
+      await at('/api/board/me', await personToken('u_julian', 'https://board-abc.vercel.app/api/board'))
+      expect(board.url).toBe('https://board-abc.vercel.app/api/board')
+      // Nor after: wherever it says the mount is, it stays where requests show it is.
+      expect((await at('/api/board/elsewhere/deeper/messages/1')).status).toBe(401)
+      expect(board.url).toBe('https://board-abc.vercel.app/api/board')
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+})

@@ -216,6 +216,11 @@ describe('x-board-scope', () => {
     expect(() => parseScope('dev/*=read')).toThrow('write dev/ for dev and its subtree')
     expect(() => parseScope('dev/=read;dev/=post')).toThrow('x-board-scope lists dev/ twice')
   })
+
+  it('reads a channel named like something every object has as any other', () => {
+    expect(parseScope('constructor=read;tostring/=post')).toEqual({ constructor: ['read'], 'tostring/': ['post'] })
+    expect(() => parseScope('constructor=read;constructor=post')).toThrow('x-board-scope lists constructor twice')
+  })
 })
 
 describe('authorize', () => {

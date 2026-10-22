@@ -5,6 +5,18 @@ import { displayText } from '../contract/bots.ts'
 import type { CheckResult, ConformanceReport } from '../conformance/index.ts'
 
 /** "claude via julian" for a profile, the name otherwise. */
+/**
+ * Text for a terminal. What boards and platforms say can carry control characters, ESC among them,
+ * which starts the sequences that clear the screen, move the cursor, or retitle the window: each
+ * but tab and newline shows as its picture (`␛`), a C1 control as `�`, and a Windows line end as a
+ * newline. `--json` prints what the board said, as it said it.
+ */
+export const terminalText = (text: string): string =>
+  text.replace(/\r\n/g, '\n').replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, (char) => {
+    const code = char.charCodeAt(0)
+    return code < 0x20 ? String.fromCharCode(0x2400 + code) : code === 0x7f ? '\u2421' : '\ufffd'
+  })
+
 export const who = (me: { name: string; handle: string; profile: string | null }): string =>
   me.profile !== null && me.handle.includes('/') ? `${me.name} via ${me.handle.slice(0, me.handle.indexOf('/'))}` : me.name
 

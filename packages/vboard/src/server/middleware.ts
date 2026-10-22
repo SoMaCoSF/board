@@ -31,8 +31,8 @@ export type MiddlewareContext = {
   author: Readonly<Actor>
   source: Readonly<WriteSource>
   /**
-   * Tells whoever wrote it, where they wrote it from: a reply in their platform
-   * thread for sync, the error message the API answers with otherwise.
+   * What to tell whoever wrote it when the write is dropped, where they wrote it from: a reply in
+   * their platform thread for sync, the error the API answers with otherwise.
    */
   respond(text: string): Promise<void>
   /** The board, acting as `vboard:middleware`. Its writes skip the middleware. */
@@ -48,8 +48,11 @@ export type Middleware = (context: MiddlewareContext) => unknown
 
 /** A write the middleware didn't let through: the API answers 422 with what it responded. */
 export class DroppedError extends HttpError {
-  constructor(message: string) {
-    super(422, 'dropped', message)
+  /** What the middleware responded, in order: none when it dropped the write without a word. */
+  readonly responses: readonly string[]
+  constructor(responses: readonly string[]) {
+    super(422, 'dropped', responses.join('\n') || 'the board dropped this message')
+    this.responses = responses
   }
 }
 
@@ -63,7 +66,7 @@ export const MIDDLEWARE_ACTOR = 'vboard:middleware'
  */
 export async function runMiddleware<W extends Write, T>(
   middleware: readonly Middleware[],
-  input: { write: W; author: Actor; source: WriteSource; board: () => Board; respond?: (text: string) => Promise<void> },
+  input: { write: W; author: Actor; source: WriteSource; board: () => Board },
   commit: (write: W) => Promise<T>,
 ): Promise<T> {
   const responses: string[] = []
@@ -83,7 +86,6 @@ export async function runMiddleware<W extends Write, T>(
       board: input.board(),
       respond: async (text) => {
         responses.push(text)
-        await input.respond?.(text)
       },
       next: (patch = {}) => {
         if (next) throw new Error('next() was already called')
@@ -100,6 +102,6 @@ export async function runMiddleware<W extends Write, T>(
     if (next) await next
   }
   await step(0, input.write)
-  if (!committed) throw new DroppedError(responses.join('\n') || 'the board dropped this message')
+  if (!committed) throw new DroppedError(responses)
   return (committed as { value: T }).value
 }

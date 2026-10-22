@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fakePlatform } from './sync-fixtures.ts'
 import { slack } from '../src/sync/slack.ts'
 import type { Middleware, WriteSource } from '../src/server/index.ts'
-import { BOARD_URL, caller, personToken, testBoard } from './harness.ts'
+import { BOARD_URL, caller, deploymentToken, personToken, testBoard } from './harness.ts'
+import { vercelProject } from '../src/access/index.ts'
 import { fakeQueue } from './queue.ts'
 import { memory } from '../src/store/memory.ts'
 
@@ -31,6 +32,55 @@ describe('middleware', () => {
 
     expect((await julian('POST', '/messages', { channel: 'dev', text: 'export is broken' })).status).toBe(201)
     expect(await texts(julian, 'dev')).toEqual(['export is broken'])
+  })
+
+  it('sees only writes their caller may make: a refused one never reaches it', async () => {
+    // One that quarantines what it sees: it writes, so it must never run for a write the board would refuse.
+    const seen: string[] = []
+    const quarantine: Middleware = async ({ write, next }) => {
+      seen.push(write.text)
+      await next()
+    }
+    const board = testBoard({ middleware: [quarantine], access: [vercelProject({ project: 'prj_marketing', can: { feedback: ['read'] } })] })
+    const julian = await person(board)
+    const reader = caller(board.fetch, await deploymentToken())
+    const { id } = (await julian('POST', '/messages', { channel: 'feedback', text: 'checkout is slow' })).body.message
+    const { id: dev } = (await julian('POST', '/messages', { channel: 'dev', text: 'private' })).body.message
+    seen.length = 0
+    const author = { id: 'slack:user:U_EVE', handle: 'eve', name: 'Eve', avatar: null, isBot: false }
+    for (const [method, path, body, status] of [
+      ['POST', '/messages', { channel: 'feedback', text: 'from a reader' }, 403],
+      ['POST', '/messages', { re: id, text: 'a reply from a reader' }, 403],
+      ['POST', '/messages', { re: dev, text: 'into a thread it cannot read' }, 404],
+      ['POST', `/messages/${id}/edit`, { text: "someone else's" }, 403],
+      ['POST', '/sync/imports', { op: 'post', author, from: 'slack', channel: 'feedback', text: 'an import' }, 403],
+    ] as const)
+      expect((await reader(method, path, body)).status, `${method} ${path}`).toBe(status)
+    expect((await caller(board.fetch, 'not-a-token')('POST', '/messages', { channel: 'feedback', text: 'no one' })).status).toBe(401)
+    expect(seen).toEqual([])
+  })
+
+  it("answers an edit of its principal's message it can't read as one that isn't there, before it runs", async () => {
+    const seen: string[] = []
+    const noEdits: Middleware = async ({ write, respond, next }) => {
+      if (write.kind !== 'edit') return next()
+      seen.push(write.text)
+      await respond('no edits')
+    }
+    const board = testBoard({ middleware: [noEdits] })
+    // Julian wrote it where he reads; the same principal narrowed to posting there didn't, so it isn't its to change.
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    const plan = (await julian('POST', '/messages', { channel: 'secret', text: 'the plan' })).body.message
+    const writeOnly = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian', 'x-board-scope': 'secret=post' })
+    const there = await writeOnly('POST', `/messages/${plan.id}/edit`, { text: 'changed' })
+    const absent = await writeOnly('POST', '/messages/999/edit', { text: 'changed' })
+    expect([there.status, there.body.error.code]).toEqual([404, 'message_not_found'])
+    expect([absent.status, absent.body.error.code]).toEqual([404, 'message_not_found'])
+    expect(seen).toEqual([])
+    // One it wrote without reading is its own: the middleware sees its edit.
+    const blind = (await writeOnly('POST', '/messages', { channel: 'secret', text: 'from the sandbox' })).body.message
+    expect((await writeOnly('POST', `/messages/${blind.id}/edit`, { text: 'changed' })).status).toBe(422)
+    expect(seen).toEqual(['changed'])
   })
 
   it('drops an edit, keeping the text the message had', async () => {

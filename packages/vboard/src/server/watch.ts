@@ -8,7 +8,7 @@ import { FULL_ACCESS, type Access } from './access.ts'
 import { compileFilter, eventView, foldEvent, loadBefore, OWN_CODE, view as messageView } from './feed.ts'
 import { compileWatcher, type Compiled } from './watch-spec.ts'
 import type { BoardReads } from './reads.ts'
-import { arm, due, hasWork, queueReducer, SWEEP_MS, type QueueSession } from './registered.ts'
+import { arm, due, hasWork, queueReducer, wakeBackoff, type QueueSession } from './registered.ts'
 import type { Registration, RegistryState, StoredPrincipal } from './registry.ts'
 import { A2_TRIES, afterRetry } from './attempts.ts'
 
@@ -88,6 +88,9 @@ const describe = (error: unknown) => ((error instanceof Error ? error.message : 
 
 type Match = { id: string; payload: { thread: string; event: unknown } }
 
+/** Whether a wake-up got there: an answer, or still running when the wait ran out. If not, why: its status, or the error. */
+export type Woken = { reached: true } | { reached: false; why: string }
+
 /**
  * One match, on its thread's lane: `run`, retried by A2 while it fails, then
  * given up on (recorded as `watch.failed`) so the thread's next event runs.
@@ -149,7 +152,7 @@ export function createWatchers(options: {
     /** What a registrant may do now, under the rules as they are: null once it may do nothing. */
     accessNow: (principal: StoredPrincipal) => Promise<Access | null>
     /** Tells a registrant's board it has something to pull, and says whether that got there. Never throws. */
-    wake: (registration: Registration) => Promise<boolean>
+    wake: (registration: Registration & { url: string }) => Promise<Woken>
   }
 }) {
   const watchers = Object.entries(options.watch).map(([id, watcher]) => {
@@ -183,7 +186,8 @@ export function createWatchers(options: {
    * Wakes a registrant's board when it has something to pull: a new match, a wait after an error
    * that's over, or a sweep that finds a lease ran out. A registrant's wake-ups go one at a time,
    * and only when there's something to pull: its board pulls until nothing's left, so a burst of
-   * matches wakes it once.
+   * matches wakes it once. One that doesn't get there waits a minute for the next, doubling to an
+   * hour while they keep failing, until its board answers one, pulls, or registers.
    */
   const waker = consumer({
     contract: watchContract,
@@ -205,8 +209,24 @@ export function createWatchers(options: {
       const registration = (await registered.state()).byOwner[key.slice(1)]
       // One without a URL pulls on its own.
       if (!registration || registration.url === null) return
-      // One that didn't get it hears again from a sweep, a minute or so on.
-      if (!(await registered.wake(registration)) && options.scheduler) await arm(queue, state, Date.now() + SWEEP_MS)
+      const { url } = registration
+      // Its last wake-up didn't get there: the sweep set then wakes it, and until then a match only queues.
+      const now = Date.now()
+      if (state.unreachable && state.unreachable.until > now) return
+      const woken = await registered.wake({ ...registration, url })
+      if (woken.reached) {
+        if (state.unreachable) await queue.append({ type: 'watch.reachable', payload: { by: 'wake' } })
+        return
+      }
+      const failures = (state.unreachable?.failures ?? 0) + 1
+      const until = now + wakeBackoff(failures)
+      // The first failure, and the one that starts the back-off: not every try.
+      if (failures === 1) console.error(`[vboard] couldn't wake ${url}: ${woken.why}`)
+      if (failures === 2)
+        console.error(`[vboard] couldn't wake ${url} again (${woken.why}): trying less often, up to once an hour, until it answers, pulls, or registers`)
+      // It hears again from a sweep then. The timer goes first: a wait recorded without one would last until the next match.
+      if (options.scheduler) await arm(queue, state, until)
+      await queue.append({ type: 'watch.unreachable', payload: { failures, until, why: woken.why.slice(0, 200) || 'unknown error' } })
     } catch (error) {
       // Ten failures would dead-letter this lane, and the registrant would never be woken again.
       // The queue keeps every match, so the next match or sweep wakes it for this one too.

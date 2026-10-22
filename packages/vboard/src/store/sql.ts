@@ -1,4 +1,5 @@
 import type { BoardEvent } from '../contract/contract.ts'
+import { setOwn } from '../contract/own.ts'
 import { externalMessageKey, type ExternalCopy, type Message, type SyncedThread } from '../contract/reducers.ts'
 import { concernedMessageId, project, projectSync, syncReads, type Before, type Change, type SyncChange } from './project.ts'
 import type { MessageFilter, MessageTables, Page, ThreadSummary } from './types.ts'
@@ -512,7 +513,7 @@ where v.message_id in (${p.list([...new Set(ids)])})
       })
       for (const found of rows) {
         const copies = out.get(Number(found.message_id)) ?? {}
-        copies[String(found.target)] = JSON.parse(String(found.data)) as ExternalCopy
+        setOwn(copies, String(found.target), JSON.parse(String(found.data)) as ExternalCopy)
         out.set(Number(found.message_id), copies)
       }
       return out

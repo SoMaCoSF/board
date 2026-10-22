@@ -2,13 +2,11 @@
 // that board, and credentials for it, the way `vb` does.
 import { boardUrl, connect, environmentProfile } from '../client/node.ts'
 import { createHttp, type Environment, type HttpBackend, type HttpOptions } from '../server/backend-http.ts'
-import { compileWatcher } from '../server/watch-spec.ts'
 
 const environment: Environment = {
   url: boardUrl,
   fetch: (url) => connect(url).fetch,
   profile: environmentProfile,
-  checkWatcher: (id, spec) => void compileWatcher(id, spec),
 }
 
 /**

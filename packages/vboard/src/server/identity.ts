@@ -47,12 +47,12 @@ export async function ownTeamId(configured?: { teamId?: string }): Promise<strin
  * mislead the response it's attached to.
  */
 export async function discoveryIdentity(
-  request: Request,
+  headers: Headers | null,
   configured?: { id: string; teamId?: string },
 ): Promise<ProjectIdentity> {
   const projectId = await ownProjectId(configured)
   if (configured?.teamId) return { projectId, teamId: configured.teamId }
-  const header = request.headers.get('x-vercel-oidc-token')
+  const header = headers?.get('x-vercel-oidc-token')
   if (header) {
     try {
       const claims = decodeJwt(header)

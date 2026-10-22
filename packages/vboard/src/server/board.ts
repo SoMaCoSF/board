@@ -2,39 +2,31 @@ import type { BoardEventView } from '../api/routes.ts'
 import { BoardError, createBoardClient, type BoardClient, type PostOptions, type ProfileOption, type ReplyOptions } from '../client/client.ts'
 import { derivedId } from '../client/ids.ts'
 import type { SyncProvider } from '../sync/provider.ts'
-import { SYNC, type Backend, type BoardBinding, type Caller, type Subscription, type SyncEntry } from './backend.ts'
-import type { Authenticate, AuthOptions } from './auth.ts'
+import { SYNC, type Backend, type BoardBinding, type Caller, type SelfCaller, type Subscription, type SyncEntry } from './backend.ts'
 import type { Middleware } from './middleware.ts'
+import { createPolicy, type Policy, type PolicyOptions, type Serving } from './policy.ts'
 import { createServe, type PlatformCaller, type Serve } from './serve.ts'
 import type { Watcher } from './watch.ts'
 
-/** `board()`'s options: where the board lives, who may use it, and what runs here. */
-export type BoardOptions = {
+/**
+ * `board()`'s options: where the board lives, who may use it and what its writes go through, and
+ * what runs here. The backend keeps or reaches the log; the policy is the board's.
+ */
+export type BoardOptions = PolicyOptions & {
   /**
    * Where the board lives: `a2({ … })` from `vboard/backend-a2` keeps it here, `http(url)` from
    * `vboard/backend-http` uses another, or your own. By default, `http()`: in Node, the board the
    * environment points at (`VBOARD_URL`, the repo's link, or `vb use`'s).
    */
   backend?: Backend
+  /**
+   * Runs on every post and edit before it reaches the backend, whatever it came from: requests (a
+   * board on `http()` using this one included), watchers, schedules, the handle, and sync's imports.
+   * Each calls `next()` to pass the write on; one that doesn't drops it.
+   */
+  middleware?: readonly Middleware[]
   /** Tails the board runs for you, keyed by an id you choose: `{ triage: { tail: 'firehose', run } }`. */
   watch?: Record<string, Watcher>
-  /** The board's public URL, which every token's audience must equal. Inferred from requests otherwise. */
-  url?: string
-  /** The mount path, e.g. `/api/board`. Inferred from requests otherwise. */
-  basePath?: string
-  /**
-   * A host's own verifier, for a host serving many teams' boards: `(request) => ({ id, kind, handle })`,
-   * who the request is in the board's ID scheme. It replaces the built-in one, so no token's audience
-   * or the board's own project counts then. To reject, return or throw a `Response`. What a principal
-   * may do is the backend's: `a2({ access })`'s function.
-   */
-  authenticate?: Authenticate
-  /** The board's Vercel project. Defaults to `VERCEL_PROJECT_ID` or `.vercel/project.json`. */
-  project?: { id: string; teamId?: string }
-  /** Test issuers. Production uses Vercel's and GitHub's. */
-  auth?: AuthOptions
-  /** SSE streams close after this long, before the platform's limit; clients reconnect. */
-  streamMaxMs?: number
   /**
    * Two-way sync, keyed by a name you choose: `{ slack: slack({...}), github: github({...}) }`. It
    * runs here, wherever the board lives: webhooks land at `<board>/webhooks/<key>`, and what the
@@ -42,12 +34,12 @@ export type BoardOptions = {
    * deployment `sync` in those channels.
    */
   sync?: Record<string, SyncProvider>
-  /**
-   * Runs on every post and edit before it reaches the backend, whatever it came from: the API,
-   * sync, watchers, schedules, the handle. Each calls `next()` to pass the write on; one that
-   * doesn't drops it.
-   */
-  middleware?: readonly Middleware[]
+  /** The board's public URL, which every token's audience must equal. Inferred from requests otherwise. */
+  url?: string
+  /** The mount path, e.g. `/api/board`. Inferred from requests otherwise: the shallowest one they show. */
+  basePath?: string
+  /** SSE streams close after this long, before the platform's limit; clients reconnect. */
+  streamMaxMs?: number
 }
 
 /**
@@ -69,17 +61,14 @@ export type Board = BoardClient & {
   as(profile: ProfileOption): Board
 }
 
-/** What a board needs to serve requests: token verification, and its own Vercel project. */
-export type Serving = typeof import('./serving.ts')
-
-/** What a build of vboard gives board(): Node's finds boards in the environment, serves, and syncs. */
+/** What a build of vboard gives board(): Node's finds boards, tokens, and the board's project in the environment. */
 export type Runtime = {
   /** The backend for a board() given none: `http()`, to the board the environment points at. */
   http(): Backend
-  /** Loads what serving requests needs. Null where it can't serve. */
+  /** Loads the sync engine, only for a board that syncs. */
+  sync: () => Promise<typeof import('../sync/engine.ts')>
+  /** Loads what the policy finds in the environment, the first time a board serves: null where nothing does, so pass `authenticate` and `project`. */
   serving: (() => Promise<Serving>) | null
-  /** Loads the sync engine, for a board that syncs. Null where sync can't run. */
-  sync: (() => Promise<typeof import('../sync/engine.ts')>) | null
 }
 
 /** What the board's pipeline shares with its handle. */
@@ -87,16 +76,16 @@ export type BoardContext = {
   options: BoardOptions
   backend: Backend
   runtime: Runtime
+  /** Who may use the board, and what each may do. */
+  policy: Policy
   /** The mount path, as the last request that reached a route had it. */
   state: { learned: string | null }
   ownUrl(): string | null
   /** An in-process client through the board, as `caller`: its posts are idempotent per trigger. */
   clientAs(caller: Caller | PlatformCaller, trigger: string | null): BoardClient
-  /** The handle, acting as `caller`: a watcher's, or the middleware's. */
-  handleOf(caller: Extract<Caller, { self: string | null }>, trigger: string | null): Board
+  /** The handle, acting as `caller`: a watcher's, the middleware's, or a schedule's creator's. */
+  handleOf(caller: Caller, trigger: string | null): Board
 }
-
-const NO_SYNC = "board: this build of vboard can't sync: import it where the `node` condition applies"
 
 /** How long a handle's live events wait for the next, in seconds, before asking again. */
 const EVENTS_WAIT_S = 25
@@ -108,11 +97,10 @@ const EVENTS_WAIT_S = 25
  * at module scope, or one per tenant for a host.
  */
 export function createBoard(options: BoardOptions, runtime: Runtime): Board {
-  if (options.authenticate && options.auth) throw new Error('board: authenticate replaces the built-in verifier, so drop `auth`')
   const backend = options.backend ?? runtime.http()
+  const policy = createPolicy(options, backend.keeps, runtime.serving)
   const watch = options.watch ?? {}
   const entries = options.sync ?? {}
-  if (Object.keys(entries).length > 0 && !runtime.sync) throw new Error(NO_SYNC)
   const state: BoardContext['state'] = { learned: null }
   /** Under the configured mount, so the router accepts the paths an in-process client builds. */
   const inProcess = `http://in-process.board${(options.basePath ?? '').replace(/\/+$/, '')}`
@@ -157,10 +145,12 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
 
   /**
    * A handle through board(), as `caller`: a post's `id` is its own, derived under who it writes as,
-   * so a retry posts once and no request can take it first.
+   * so a retry posts once and no request can take it first. A verified caller's are a backend's,
+   * derived already (a schedule's send's), so they go as they are.
    */
-  function handleOf(caller: Extract<Caller, { self: string | null }>, trigger: string | null): Board {
+  function handleOf(caller: Caller, trigger: string | null): Board {
     const client = clientAs(caller, trigger)
+    if ('identity' in caller) return handle({ ...client, events: (query, opts) => events(client, query, opts) }, () => ownUrl() ?? inProcess)
     const via = caller.origin.via?.kind ?? 'client'
     const id = (given: string) => derivedId(`vboard-${via === 'watcher' ? 'watch' : via}`, caller.self ?? '', given)
     const owned = async <T extends PostOptions | ReplyOptions>(input: string | T): Promise<string | T> =>
@@ -182,7 +172,7 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
     )
   }
 
-  const profileCaller = (profile: ProfileOption): Extract<Caller, { self: string | null }> => {
+  const profileCaller = (profile: ProfileOption): SelfCaller => {
     const name = profile === null ? null : typeof profile === 'string' ? profile : profile.name
     return { self: name, profile, origin: { via: { kind: 'client', name } } }
   }
@@ -191,7 +181,7 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
     return handleOf(profileCaller(profile), null)
   }
 
-  const context: BoardContext = { options, backend, runtime, state, ownUrl, clientAs, handleOf }
+  const context: BoardContext = { options, backend, runtime, policy, state, ownUrl, clientAs, handleOf }
 
   const subscriptions: Record<string, Subscription> = Object.fromEntries(
     Object.entries(watch).map(([id, watcher]) => [id, { kind: 'tail', tail: watcher.tail, when: watcher.when ?? 'matches' }]),
@@ -205,8 +195,11 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
     receive: async (key, item, meta) => (await server()).receive(key, item, meta),
     pull: async () => (ownEntries.length > 0 ? (await server()).pull() : 0),
     sync: ownEntries,
-    project: async () => (await server()).project(),
-    client: clientAs,
+    readSource: async (key, target, limit) => (await server()).readSource(key, target, limit),
+    typing: async (messages, status) => (await server()).typing(messages, status),
+    accessNow: (principal) => policy.accessNow(principal),
+    project: () => policy.project(),
+    handle: (caller) => handleOf(caller, null),
     url: ownUrl,
   }
   backend.bind(binding)

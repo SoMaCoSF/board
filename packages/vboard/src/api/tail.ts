@@ -1,4 +1,3 @@
-import { parseArgs } from 'node:util'
 import { z } from 'zod'
 import { Filters } from './routes.ts'
 
@@ -52,16 +51,47 @@ export function words(expression: string): string[] {
 /** A watcher's tail takes the filters and `--all`, which shows receipts as it does in `vb tail`. */
 const TAIL_FLAGS = { ...FILTER_FLAGS, all: { type: 'boolean' } } as const
 
-/** Parses filter flags, with errors that read like the CLI's. */
-function parseFilterFlags(args: string[]) {
-  try {
-    return parseArgs({ args, options: TAIL_FLAGS, allowPositionals: true, strict: true })
-  } catch (error) {
-    const { code, message } = error as { code?: string; message: string }
-    const flag = /'(-[^' ]+)/.exec(message)?.[1]
-    if (code === 'ERR_PARSE_ARGS_UNKNOWN_OPTION' && flag) throw new Error(`${flag} isn't a filter`)
-    throw new Error(message.split('. ')[0]!)
+type TailValues = { re?: string; by?: string; mentions?: string; label?: string[]; from?: string; text?: string; all?: boolean }
+
+/**
+ * Parses filter flags as the CLI's parser does (Node's `parseArgs`, strict), written out so a tail
+ * parses wherever board() runs, a browser included.
+ */
+function parseFilterFlags(args: string[]): { values: TailValues; positionals: string[] } {
+  const values: Record<string, string | string[] | boolean> = {}
+  const positionals: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (arg === '--') {
+      positionals.push(...args.slice(i + 1))
+      break
+    }
+    if (!arg.startsWith('-') || arg === '-') {
+      positionals.push(arg)
+      continue
+    }
+    const eq = arg.indexOf('=')
+    const name = arg.startsWith('--') ? arg.slice(2, eq === -1 ? undefined : eq) : null
+    const spec = name !== null && Object.hasOwn(TAIL_FLAGS, name) ? TAIL_FLAGS[name as keyof typeof TAIL_FLAGS] : null
+    if (!spec) throw new Error(`${name !== null ? `--${name}` : arg.slice(0, 2)} isn't a filter`)
+    if (spec.type === 'boolean') {
+      if (eq !== -1) throw new Error(`--${name} takes no value`)
+      values[name!] = true
+      continue
+    }
+    let value: string
+    if (eq !== -1) value = arg.slice(eq + 1)
+    else {
+      const next = args[i + 1]
+      // A value that looks like a flag is a forgotten one: `--text=-1` says it's meant.
+      if (next === undefined || (next.length > 1 && next.startsWith('-'))) throw new Error(`--${name} needs a value`)
+      value = next
+      i++
+    }
+    if ('multiple' in spec) values[name!] = [...((values[name!] as string[] | undefined) ?? []), value]
+    else values[name!] = value
   }
+  return { values: values as TailValues, positionals }
 }
 
 /** A `vb tail` expression, `firehose --label status=needs-agent`, as filters. */

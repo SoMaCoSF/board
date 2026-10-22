@@ -16,7 +16,7 @@ import { ATTACHMENT_BYTES_MAX, type Attachment, AttachmentId } from '../contract
 import { startInspector } from '../inspect/server.ts'
 import { VERSION } from '../version.ts'
 import { conformance } from '../conformance/index.ts'
-import { actorName, formatAccess, formatConformance, formatEvent, formatSchedule, reactionNames, formatSourceRead, formatThreadSummaries, formatThreads, who } from './format.ts'
+import { actorName, formatAccess, formatConformance, formatEvent, formatSchedule, reactionNames, formatSourceRead, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
 import {
   AGENTS,
   allow,
@@ -184,7 +184,7 @@ const parsed = (() => {
     return parseArgs({ args: markAttachmentId(args), allowPositionals: true, options: OPTIONS })
   } catch (error) {
     const unknown = (error as { code?: string }).code === 'ERR_PARSE_ARGS_UNKNOWN_OPTION' && /'([^']+)'/.exec((error as Error).message)?.[1]
-    process.stderr.write(`error: ${unknown ? `unknown option: ${unknown} (run \`vboard help\`; text starting with - goes after --, as in -- "${unknown}")` : (error as Error).message}\n`)
+    process.stderr.write(terminalText(`error: ${unknown ? `unknown option: ${unknown} (run \`vboard help\`; text starting with - goes after --, as in -- "${unknown}")` : (error as Error).message}`) + '\n')
     return null
   }
 })()
@@ -192,8 +192,9 @@ const parsed = (() => {
 const { values: flags, positionals: marked } = parsed ?? { values: {} as NonNullable<typeof parsed>['values'], positionals: [] as string[] }
 const positionals = marked.map((arg) => (arg.startsWith(MARK) ? arg.slice(MARK.length) : arg))
 
-const out = (text: string) => process.stdout.write(`${text}\n`)
-const printJson = (value: unknown) => out(JSON.stringify(value))
+// What a person reads can't drive their terminal; what a program reads is byte for byte what the board said.
+const out = (text: string) => process.stdout.write(`${terminalText(text)}\n`)
+const printJson = (value: unknown) => process.stdout.write(`${JSON.stringify(value)}\n`)
 
 /** A message's ID as you'd write it: `#812` or `812`. It's passed to the board as it is. */
 function messageId(value: string | undefined, what = 'message id'): string {
@@ -405,7 +406,7 @@ function warnUnknownMentions(handles: string[] | undefined) {
   const names = handles.map((handle) => `@${handle}`)
   const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
   const one = names.length === 1
-  process.stderr.write(`warning: ${list} ${one ? 'matches' : 'match'} no one on the board, so ${one ? 'it stays' : 'they stay'} plain text and ${one ? 'notifies' : 'notify'} no one\n`)
+  process.stderr.write(terminalText(`warning: ${list} ${one ? 'matches' : 'match'} no one on the board, so ${one ? 'it stays' : 'they stay'} plain text and ${one ? 'notifies' : 'notify'} no one`) + '\n')
 }
 
 function printMessage(message: MessageView) {
@@ -419,9 +420,22 @@ function printEvent(event: BoardEventView) {
 }
 
 /** Best-effort: the URL is printed either way. */
+/** `url`, when it's an http or https URL as `new URL` reads it: the only kind the CLI opens, so a board can't hand the opener a flag or another scheme. */
+function browsable(url: string): string | null {
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.href : null
+  } catch {
+    return null
+  }
+}
+
+/** Opens an http(s) URL in the browser, as one argument to the opener: no shell reads it, Windows' included. */
 function openBrowser(url: string) {
+  const at = browsable(url)
+  if (at === null) return
   const [command, ...args] =
-    process.platform === 'darwin' ? ['open', url] : process.platform === 'win32' ? ['cmd', '/c', 'start', '', url] : ['xdg-open', url]
+    process.platform === 'darwin' ? ['open', at] : process.platform === 'win32' ? ['rundll32', 'url.dll,FileProtocolHandler', at] : ['xdg-open', at]
   const child = spawn(command!, args, { detached: true, stdio: 'ignore' })
   child.on('error', () => {})
   child.unref()
@@ -486,6 +500,8 @@ async function identity(args: string[]): Promise<number> {
   const platform = (await board.discovery().catch(() => null))?.sync.find((entry) => entry.key === target)?.platform ?? target
   const { code, expiresAt, signIn } = await board.syncCode(target)
   const consent = signIn !== undefined && !flags.code
+  // The board says where its sign-in is, and the CLI opens it: only a web page.
+  if (consent && browsable(signIn) === null) throw new Error(`the board's sign-in isn't an http or https URL: ${JSON.stringify(signIn)}`)
   if (flags.json) printJson({ sync: target, platform, code, expiresAt, ...(signIn !== undefined ? { signIn } : {}) })
   const until = Date.now() + LINK_WAIT_MS
   const sleep = () => new Promise((resolve) => setTimeout(resolve, 2000))
@@ -1021,7 +1037,8 @@ if (parsed === null) {
   run(command, args).then(
     (code) => exit(code),
     (error: unknown) => {
-      process.stderr.write(`error: ${(error as Error).message}\n`)
+      // A board's error says what the board said: it can't drive the terminal either.
+      process.stderr.write(`${terminalText(`error: ${(error as Error).message}`)}\n`)
       exit(error instanceof UsageError ? 2 : 1)
     },
   )

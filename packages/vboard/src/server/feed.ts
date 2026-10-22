@@ -14,6 +14,7 @@ import {
   type Message,
   type MessagesState,
 } from '../contract/reducers.ts'
+import { own } from '../contract/own.ts'
 import { concernedMessageId } from '../store/project.ts'
 import type { MessageFilter } from '../store/types.ts'
 import type { BoardSession } from './a2.ts'
@@ -28,13 +29,13 @@ const HIDDEN = new Set(['actor.seen', 'message.synced', 'message.files_synced'])
 
 /** The person a linked platform actor is, as views show it. */
 export function personView(actors: ActorsState, actor: string): PersonView | undefined {
-  const link = actors.links[actor]
-  const person = link ? actors.byId[link.to] : undefined
+  const link = own(actors.links, actor)
+  const person = link ? own(actors.byId, link.to) : undefined
   return link ? { id: link.to, handle: person?.handle ?? link.to, name: person?.name ?? link.to, avatar: person?.avatar ?? null } : undefined
 }
 
 export function actorView(actors: ActorsState, id: string): ActorView | null {
-  const author = actors.byId[id]
+  const author = own(actors.byId, id)
   if (!author) return null
   const person = personView(actors, id)
   return { kind: author.kind, handle: author.handle, name: author.name, avatar: author.avatar, ...(person ? { person } : {}) }
@@ -68,6 +69,32 @@ export function readableLinks(links: Link[], reader: Reader): LinkView[] {
   })
 }
 
+/** The links in an event view: its payload's, its message's, and the message before a label change. */
+const viewLinks = (view: BoardEventView): LinkView[][] => {
+  const { payload, message, before } = view as { payload?: { links?: LinkView[] }; message?: MessageView; before?: MessageView }
+  return [payload?.links, message?.links, before?.links].filter((links) => links !== undefined)
+}
+
+/** The board messages an event view's links point to, for a reader of them. */
+export const viewLinkedIds = (view: BoardEventView): number[] =>
+  viewLinks(view).flatMap((links) => links.flatMap((link) => (link.message === null ? [] : [indexOf(link.message) ?? 0])))
+
+/**
+ * An event view made for one reader, as `reader` sees it: a link to a message it can't read shows
+ * nothing of it. A watcher's match is made when its event lands and pulled later, by whatever its
+ * registrant may read then.
+ */
+export function viewedBy(view: BoardEventView, reader: Reader): BoardEventView {
+  if (reader.access.readsAll) return view
+  const shown = structuredClone(view) as BoardEventView & { payload?: { links?: LinkView[] }; message?: MessageView; before?: MessageView }
+  // A ref that names nothing here (0) has no channel, so it hides too.
+  const reread = (links: LinkView[]) => readableLinks(links.map((link) => ({ ...link, message: link.message === null ? null : (indexOf(link.message) ?? 0) })), reader)
+  if (shown.payload?.links) shown.payload.links = reread(shown.payload.links)
+  if (shown.message) shown.message.links = reread(shown.message.links)
+  if (shown.before) shown.before.links = reread(shown.before.links)
+  return shown
+}
+
 /** A message's or a cursor's ID as clients see it. On this board it's the log index, in decimal. */
 export const ref = (index: number): string => String(index)
 
@@ -76,9 +103,10 @@ export const indexOf = (value: string): number | null => (/^(0|[1-9]\d{0,15})$/.
 
 /** A message as `reader` sees it. Every view names its reader, so none shows a link's snapshot by default. */
 export function view(message: Message, actors: ActorsState, reader: Reader): MessageView {
-  const { blind: _blind, version, schedule, ...shown } = message
+  const { blind, version, schedule, ...shown } = message
   return {
     ...shown,
+    ...(blind ? { blind } : {}),
     id: ref(message.id),
     re: message.re === null ? null : ref(message.re),
     replyTo: message.replyTo === null ? null : ref(message.replyTo),
@@ -97,7 +125,7 @@ export function view(message: Message, actors: ActorsState, reader: Reader): Mes
 const hasLinks = (actors: ActorsState, id: string) => Object.values(actors.links).some((link) => link.to === id)
 
 const actorSet = (value: string, actors: ActorsState): Set<string> =>
-  actors.byId[value] || actors.links[value] || hasLinks(actors, value) ? new Set([value]) : new Set(actors.byHandle[value.toLowerCase()] ?? [])
+  own(actors.byId, value) || own(actors.links, value) || hasLinks(actors, value) ? new Set([value]) : new Set(own(actors.byHandle, value.toLowerCase()) ?? [])
 
 /**
  * Who a `--by` or `--mentions` value covers. A person (`julian`, or one of their
@@ -110,8 +138,8 @@ export function whoIs(value: string, actors: ActorsState): { actors: Set<string>
   const out = new Set(ids)
   const principals = new Set<string>()
   for (const id of ids) {
-    const kind = actors.byId[id]?.kind
-    const person = actors.links[id] ? personOf(actors, id) : kind === 'person' || hasLinks(actors, id) ? id : null
+    const kind = own(actors.byId, id)?.kind
+    const person = own(actors.links, id) ? personOf(actors, id) : kind === 'person' || hasLinks(actors, id) ? id : null
     if (person === null) continue
     principals.add(person)
     out.add(person)
@@ -129,7 +157,7 @@ export { hasCriteria }
 type LabelFilter = readonly [string, readonly string[] | null]
 
 const hasLabel = (labels: Record<string, string>, [key, values]: LabelFilter) =>
-  key in labels && (values === null || values.includes(labels[key]!))
+  Object.hasOwn(labels, key) && (values === null || values.includes(labels[key]!))
 
 /**
  * Compiles filters once; handles resolve against the actors known at that
@@ -265,7 +293,7 @@ export function foldEvent(messages: MessagesState, actors: ActorsState, event: B
 /** An event as subscribers receive it, with its message as it is afterwards. */
 export function eventView(event: BoardEvent, after: Message | undefined, actors: ActorsState, reader: Reader): BoardEventView {
   const by = (event.payload as { by?: { actor?: string } }).by?.actor
-  const actor = by ? actors.byId[by] : undefined
+  const actor = by ? own(actors.byId, by) : undefined
   const { links } = event.payload as { links?: Link[] }
   // `type` and `payload` come from the same event, so they still match; TypeScript
   // can't follow that through a union, and this is the one place views are made.

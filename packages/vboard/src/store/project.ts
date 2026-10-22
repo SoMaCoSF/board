@@ -1,4 +1,5 @@
 import type { BoardEvent } from '../contract/contract.ts'
+import { own, setOwn } from '../contract/own.ts'
 import { foldMessages, foldSync, type ExternalCopy, type Message, type SyncedThread, type SyncState } from '../contract/reducers.ts'
 
 /** The message an event concerns, if any. */
@@ -95,11 +96,11 @@ export function projectSync(before: SyncBefore, event: BoardEvent): SyncChange {
   if (!['message.posted', 'thread.synced', 'message.synced', 'message.files_synced'].includes(event.type)) return change
   const key = (event.payload as { thread: string }).thread
   const state: SyncState = { threads: {}, byExternalThread: {}, copies: {}, byExternalMessage: {} }
-  if (before.thread) state.threads[key] = structuredClone(before.thread)
+  if (before.thread) setOwn(state.threads, key, structuredClone(before.thread))
   const reads = syncReads(event)
   if (reads.copy && before.copy) state.copies[reads.copy[0]] = { [reads.copy[1]]: structuredClone(before.copy) }
   foldSync(state, event)
-  const thread = state.threads[key]
+  const thread = own(state.threads, key)
   if (thread && JSON.stringify(thread) !== JSON.stringify(before.thread)) change.thread = { key, data: thread }
   for (const [external, owner] of Object.entries(state.byExternalThread)) change.externalThreads.push([external, owner])
   for (const [message, targets] of Object.entries(state.copies))

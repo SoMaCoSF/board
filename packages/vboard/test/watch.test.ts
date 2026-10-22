@@ -38,6 +38,17 @@ describe('tail expressions', () => {
     expect(() => parseTail('firehose --after 3')).toThrow("--after isn't a filter")
     expect(() => parseTail('firehose prs')).toThrow('expected one channel, got: firehose prs')
     expect(() => parseTail('--text "open')).toThrow('unterminated "')
+    expect(() => parseTail('-x')).toThrow("-x isn't a filter")
+    expect(() => parseTail('--toString')).toThrow("--toString isn't a filter")
+    expect(() => parseTail('dev --re')).toThrow('--re needs a value')
+    expect(() => parseTail('dev --text --label pr')).toThrow('--text needs a value')
+    expect(() => parseWatchTail('dev --all=yes')).toThrow('--all takes no value')
+  })
+
+  it('take values as the CLI takes them', () => {
+    expect(parseTail('--label a --label=b dev --text=-1 --re 1 --re 2')).toEqual({ channel: 'dev', label: [['a', null], ['b', null]], text: '-1', re: '2' })
+    expect(parseTail('--text - dev')).toEqual({ channel: 'dev', text: '-' })
+    expect(parseTail('-- --label')).toEqual({ channel: '--label' })
   })
 })
 

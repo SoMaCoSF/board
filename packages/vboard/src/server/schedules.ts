@@ -16,7 +16,7 @@ import { replaceMentions } from '../contract/mentions.ts'
 import { resolveMentions } from './actors.ts'
 import { badRequest, HttpError, notFound } from './errors.ts'
 import { authorizePost, deploymentIdentity, type Identity, type WriteContext, type WriteOrigin } from './writes.ts'
-import { BoardError, type BoardClient } from '../client/client.ts'
+import { DroppedError } from './middleware.ts'
 import { indexOf, ref } from './feed.ts'
 import { waitUntil } from './wait-until.ts'
 
@@ -166,6 +166,13 @@ const SYSTEM = deploymentIdentity('vboard:schedule', 'schedule')
 /** The board's `accessNow`: a stored creator's access under the rules as they are now, or null. */
 type AccessNow = (principal: Known) => Promise<Access | null>
 
+/** A send, as the board posts it for its creator: a post's input, with `re` as a ref. Throws `DroppedError` when the middleware drops it. */
+type Send = (
+  identity: Identity,
+  origin: WriteOrigin,
+  input: { channel?: string; re?: string; id: string; text: string; labels: Labels; noSync: boolean; attachments?: string[] },
+) => Promise<{ id: string }>
+
 /** A refusal (a 403, or a 404 for a thread the creator can no longer read) as null; anything else still throws. */
 const refused = (error: unknown): null => {
   if (error instanceof HttpError && (error.status === 403 || error.status === 404)) return null
@@ -179,8 +186,8 @@ const refused = (error: unknown): null => {
 export function createSchedules(options: { store?: A2Store | undefined; scheduler?: A2Scheduler | undefined }) {
   let writes: WriteContext | null = null
   let accessNow: AccessNow | null = null
-  /** A client through the board as `identity`, so a send goes through what every post does: its middleware too. */
-  let clientAs: ((identity: Identity, origin: WriteOrigin) => BoardClient) | null = null
+  /** Posts as `identity`, through what every post does: the middleware too. */
+  let send: Send | null = null
 
   /** Arms send `n`, due at `at`: the whole way, or one hop toward it. */
   async function arm(ctx: ConsumerContext<ScheduleEvents>, name: string, id: number, n: number, at: number) {
@@ -189,7 +196,7 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
   }
 
   async function due(ctx: ConsumerContext<ScheduleEvents, 'schedule.due'>) {
-    if (!writes || !accessNow || !clientAs) throw new Error('schedules used before the board bound them')
+    if (!writes || !accessNow || !send) throw new Error('schedules used before the board bound them')
     const { id, n, at } = ctx.event.payload
     const { state } = await ctx.session.state(schedulesReducer)
     const schedule = state.byId[id]
@@ -218,8 +225,8 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
     }
     // A retry after the post landed gets the same event ID, so the board hands back the message it already posted.
     // The send is marked as the schedule's, and a handle that's ambiguous since it was checked stays plain text.
-    const board = clientAs({ ...schedule.as, principal: { ...schedule.as.principal, access } }, { via: { kind: 'schedule', id }, schedule: { id, n } })
-    const options = {
+    const input = {
+      ...(schedule.re === null ? { channel: schedule.channel } : { re: ref(schedule.re) }),
       id: await idempotentId('vboard-schedule', String(id), String(n)),
       text: schedule.text,
       labels: schedule.labels,
@@ -228,10 +235,10 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
     }
     let posted: number
     try {
-      const sent = schedule.re === null ? await board.post(schedule.channel, options) : await board.reply(ref(schedule.re), options)
+      const sent = await send({ ...schedule.as, principal: { ...schedule.as.principal, access } }, { via: { kind: 'schedule', id }, schedule: { id, n } }, input)
       posted = indexOf(sent.id)!
     } catch (error) {
-      if (!(error instanceof BoardError && error.code === 'dropped')) throw error
+      if (!(error instanceof DroppedError)) throw error
       // Its text never changes, so the middleware would drop every send after this one too.
       console.info(`[vboard] the middleware dropped schedule s${id}: ${error.message}`)
       await ctx.session.append('ended', { type: 'schedule.canceled', payload: { id, by: SYSTEM.author, reason: 'dropped' } })
@@ -243,9 +250,9 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
   }
 
   /**
-   * Arms each schedule's next send, from the first schedule on: a queue delivers a timer to the
-   * deployment that armed it, so one an earlier deployment armed may never reach this one. The
-   * deployment that gets there first sends, and `due` makes the other's a no-op.
+   * Arms each schedule's next send, as the schedule stands now, from the first schedule on: a queue
+   * delivers a timer to the deployment that armed it, so one an earlier deployment armed may never
+   * reach this one. The deployment that gets there first sends, and `due` makes the other's a no-op.
    */
   const arming = consumer({
     contract: schedulesContract,
@@ -255,7 +262,8 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
     backfill: true,
   }).run(async (ctx) => {
     if (!options.scheduler) return
-    const { state } = await ctx.session.state(schedulesReducer)
+    // Latest, not through `schedule.created`: one that has sent since waits on a later send.
+    const { state } = await ctx.session.state(schedulesReducer, { through: 'latest' })
     const schedule = state.byId[ctx.event.index]
     if (!schedule || schedule.next === null) return
     await arm(ctx, 'first', schedule.id, schedule.sent, schedule.next)
@@ -312,10 +320,10 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
     server,
     session,
     catchUp,
-    bind: (binding: { writes: WriteContext; accessNow: AccessNow; clientAs: (identity: Identity, origin: WriteOrigin) => BoardClient }) => {
+    bind: (binding: { writes: WriteContext; accessNow: AccessNow; send: Send }) => {
       writes = binding.writes
       accessNow = binding.accessNow
-      clientAs = binding.clientAs
+      send = binding.send
     },
     list,
     /** The pending schedules that reply in the thread rooted at `root`. */

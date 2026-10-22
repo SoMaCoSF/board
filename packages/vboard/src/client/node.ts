@@ -141,8 +141,8 @@ async function writeCache(audience: string, cached: Cached) {
 
 /**
  * A person's token: their Vercel CLI login mints a development token for the
- * board's project, exchanged so its audience is the board's URL. Cached on
- * disk for its 12-hour life.
+ * project the board's host is a deployment of, exchanged so its audience is the
+ * board's URL. Cached on disk for its 12-hour life.
  */
 async function personToken(audience: string, discovery: Discovery): Promise<Cached> {
   const cached = await readCache(audience)
@@ -159,14 +159,13 @@ async function personToken(audience: string, discovery: Discovery): Promise<Cach
   if (!discovery.project_id)
     throw new BoardError('no_project', `the board at ${discovery.url} doesn't know its Vercel project`, 0)
 
+  const authToken = await getVercelToken().catch(() => null)
+  const project = await boardProject(audience, discovery, authToken)
   let development: string
-  let authToken: string | null = null
   try {
-    authToken = await getVercelToken()
+    if (!authToken) throw new Error('no Vercel CLI credentials file')
     const response = await fetch(
-      `https://api.vercel.com/v1/projects/${discovery.project_id}/token?source=vboard${
-        discovery.team_id ? `&teamId=${discovery.team_id}` : ''
-      }`,
+      `https://api.vercel.com/v1/projects/${project.id}/token?source=vboard${project.team ? `&teamId=${project.team}` : ''}`,
       { method: 'POST', headers: { authorization: `Bearer ${authToken}` } },
     )
     if (response.status === 403 || response.status === 404)
@@ -179,7 +178,7 @@ async function personToken(audience: string, discovery: Discovery): Promise<Cach
     development = ((await response.json()) as { token: string }).token
   } catch (error) {
     if (error instanceof BoardError) throw error
-    development = await tokenFromVercelCli(discovery)
+    development = await tokenFromVercelCli(project)
   }
 
   const token = await exchangeVercelOidcToken({ token: development, audience })
@@ -189,10 +188,39 @@ async function personToken(audience: string, discovery: Discovery): Promise<Cach
   return fresh
 }
 
+/**
+ * The project to mint a person's token for: the one Vercel, asked with your own
+ * login, says the board's host is a deployment of (its deployment URL, a branch
+ * alias, or a domain), found as `vercel curl` finds it. Discovery names a project
+ * too, but any board can name any project you can access, and a token for one it
+ * isn't could be replayed where that project is trusted, so the two must agree.
+ * Vercel knows no loopback host: a board there runs on your machine (`next dev`).
+ */
+async function boardProject(url: string, discovery: Discovery, authToken: string | null): Promise<{ id: string; team: string | null }> {
+  const { host, hostname } = new URL(url)
+  if (LOOPBACK.has(hostname)) return { id: discovery.project_id!, team: discovery.team_id }
+  const api: VercelApi = authToken
+    ? async (method, path) => {
+        const response = await fetch(`https://api.vercel.com${path}`, { method, headers: { authorization: `Bearer ${authToken}` } })
+        return response.ok ? await response.json() : null
+      }
+    : vercelCliApi
+  const found = await findProject(api, host)
+  if (!found)
+    throw new BoardError('no_access', `your Vercel login can't see the project ${host} belongs to: run \`vercel login\` or ask for access to it`, 0)
+  if (found.projectId !== discovery.project_id)
+    throw new BoardError(
+      'wrong_project',
+      `the board at ${url} says its project is ${discovery.project_id}, but it's a deployment of ${found.projectId}, so vb won't sign in to it`,
+      0,
+    )
+  return { id: found.projectId, team: found.ownerId.startsWith('team_') ? found.ownerId : null }
+}
+
 /** When credentials live in the keychain, the Vercel CLI mints the token itself. */
-async function tokenFromVercelCli(discovery: Discovery): Promise<string> {
-  const args = ['project', 'token', discovery.project_id!, '--format=json']
-  if (discovery.team_id) args.push('--scope', discovery.team_id)
+async function tokenFromVercelCli(project: { id: string; team: string | null }): Promise<string> {
+  const args = ['project', 'token', project.id, '--format=json']
+  if (project.team) args.push('--scope', project.team)
   try {
     const { stdout } = await promisify(execFile)('vercel', args, { timeout: 30_000 })
     return (JSON.parse(stdout) as { token: string }).token
@@ -360,31 +388,51 @@ class Wall extends Error {
   }
 }
 
+/**
+ * This deployment's Vercel OIDC token, with `url` as its audience: what a hosted client sends a
+ * board, for Deployment Protection's Trusted Sources. Its `cause` says why it couldn't.
+ */
 async function hostedToken(url: string): Promise<string> {
   try {
     return await getVercelOidcToken({ audience: url })
-  } catch {
-    throw new BoardError('no_token', `cannot obtain Vercel OIDC credentials for ${url}: enable OIDC on the calling project or supply token / VBOARD_TOKEN; configure Deployment Protection Trusted Sources for its project and environment`, 0)
+  } catch (cause) {
+    throw Object.assign(
+      new BoardError('no_token', `cannot obtain Vercel OIDC credentials for ${url}: enable OIDC on the calling project or supply token / VBOARD_TOKEN; configure Deployment Protection Trusted Sources for its project and environment`, 0),
+      { cause },
+    )
   }
 }
+
+/** A host this deployment answers on, as Vercel's system variables name them (bare hosts). */
+const ownHost = (host: string) =>
+  [process.env.VERCEL_URL, process.env.VERCEL_BRANCH_URL, process.env.VERCEL_PROJECT_PRODUCTION_URL]
+    .some((own) => !!own && own.toLowerCase() === host.toLowerCase())
 
 /** Explicit bypass wins; otherwise hosted calls use OIDC and local people use their saved bypass. */
 function guarded(url: string, doFetch: typeof fetch, suppliedToken?: Resolvable<string>): typeof fetch {
   const host = new URL(url).host
   let secret: Promise<string | null> | undefined
   let looked: Promise<{ secret: string; created: boolean }> | undefined
+  // On Vercel, a rejected VERCEL_AUTOMATION_BYPASS_SECRET isn't sent again: OIDC follows.
+  let envRejected = false
   return async (input, init = {}) => {
     const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined))
     init = { ...init, headers }
-    // An explicit bypass secret still wins, hosted or not: it's what hosted callers
-    // and `vercel env pull` setups used before Trusted Sources.
+    // An explicit bypass secret still wins: it's what `vercel env pull` setups used before
+    // Trusted Sources. On Vercel it's a system variable, the deployment's own project's secret,
+    // so it never leaves its own hosts: another project's board gets OIDC, not a key to this one.
     const fromEnv = process.env.VERCEL_AUTOMATION_BYPASS_SECRET
-    if (fromEnv)
-      return through(doFetch, input, init, fromEnv).catch((error) => {
-        throw error instanceof Wall
-          ? new BoardError('protected', `${url} is behind Vercel Deployment Protection and rejected VERCEL_AUTOMATION_BYPASS_SECRET; check it against ${WHERE}`, error.status)
-          : error
-      })
+    if (fromEnv && !envRejected && (process.env.VERCEL !== '1' || ownHost(host))) {
+      try {
+        return await through(doFetch, input, init, fromEnv)
+      } catch (error) {
+        if (!(error instanceof Wall)) throw error
+        // Hosted, try the board's trust in this project instead.
+        if (process.env.VERCEL !== '1')
+          throw new BoardError('protected', `${url} is behind Vercel Deployment Protection and rejected VERCEL_AUTOMATION_BYPASS_SECRET; check it against ${WHERE}`, error.status)
+        envRejected = true
+      }
+    }
     // Without one, hosted workloads use project trust, never a person's saved bypass credentials.
     if (process.env.VERCEL === '1') {
       if (!headers.has('x-vercel-trusted-oidc-idp-token')) {
@@ -570,6 +618,9 @@ const vercelCliApi: VercelApi = async (method, path) => {
   if (method === 'PATCH') args.push('--input', '-')
   try {
     const run = promisify(execFile)('vercel', args, { timeout: 30_000 })
+    // A `vercel` that exits before it reads its input closes the pipe: its exit is the answer, and the
+    // EPIPE, unhandled, would take the process down.
+    run.child.stdin?.on('error', () => {})
     run.child.stdin?.end(method === 'PATCH' ? '{}' : '')
     return JSON.parse((await run).stdout)
   } catch (error) {

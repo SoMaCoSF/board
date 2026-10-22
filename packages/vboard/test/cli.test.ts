@@ -36,6 +36,19 @@ describe('cli', () => {
     expect(await readFile(join(root, '.gitignore'), 'utf8')).toBe('node_modules\n.vboard/\n')
   }, 20_000)
 
+  it("shows a message's control characters as pictures, so they never drive the terminal, and keeps them as they are in --json", async () => {
+    // A retitle, a screen clear, and a carriage return that would write over the line.
+    const text = 'look \u001b]0;pwned\u0007\u001b[2Jhere\r\nand\rthere \u009b31m'
+    const { id } = JSON.parse((await vb(['post', 'terminal', '--json', '--', text])).stdout)
+    for (const read of [await vb(['read', 'terminal']), await vb(['read', id])]) {
+      expect(read.code).toBe(0)
+      expect(read.stdout).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/)
+      expect(read.stdout).toContain('look ␛]0;pwned␇␛[2Jhere')
+    }
+    expect((await vb(['read', id])).stdout).toContain('and␍there \ufffd31m')
+    expect(JSON.parse((await vb(['read', id, '--json'])).stdout.trim().split('\n')[0]!).text).toBe(text)
+  })
+
   it('links a directory without Git in place', async () => {
     const root = await tmp('vboard-link-')
     // Unlinked, with no saved board: it says how to get one.

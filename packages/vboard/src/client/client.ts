@@ -370,7 +370,7 @@ export function createBoardClient(options: ClientOptions) {
     // where it lands: the board trusts the caller to speak for platform users there.
 
     /** A platform's write, as its platform author: idempotent per platform event for a post, found from its origin otherwise. */
-    syncImport: (body: SyncImportInput) => call<{ message: string | null }>('POST', '/sync/imports', { body }),
+    syncImport: (body: SyncImportInput) => call<{ message: string | null; dropped?: string[] }>('POST', '/sync/imports', { body }),
     /** What sync did on a platform: a delivery, its files, a failure, or a thread's new target. */
     syncReceipt: (body: SyncReceiptInput) => call<{ ok: true; attached?: boolean }>('POST', '/sync/receipts', { body }),
     /** A board thread's sync, by its key. */

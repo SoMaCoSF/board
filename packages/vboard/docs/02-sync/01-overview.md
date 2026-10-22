@@ -181,7 +181,7 @@ export const GET = team.fetch, POST = team.fetch
   Receipts land on the other board.
 - **The other board must let this deployment `sync`** in the channels it syncs,
   and read them: `vercelProject({ project: 'prj_support', can: { support: 'all' } })`
-  in its `a2({ access })`. See [what `sync` grants](../04-reference/03-http.md#what-sync-grants).
+  in its `board({ access })`. See [what `sync` grants](../04-reference/03-http.md#what-sync-grants).
 
 A [callback](./02-callbacks.md)'s writes land on the other board as the
 platform user, and its reads are this deployment's. This board registers its
@@ -191,6 +191,19 @@ board's sync redeems it when it comes in from Slack, and an entry that signs
 people in does it here, at the sign-in the code's `signIn` names. Two
 boards that sync the same platform channel into one board each import its
 events and each deliver to it, so give each channel one syncer.
+
+**A key is one sync's.** Its platform locations (`slack:C0123ABC:1727.1`) name
+the platform threads and messages that sync imports and delivers, so:
+
+- **The other board's own sync keeps its keys.** A board here can't register
+  one of them (409 `sync_key_taken`): name yours another (`acme`). That board's
+  sync signs people in for them.
+- **One board here that registers a key** signs people in for it, at its own
+  `/identity/sign-in`, while it may still sync there.
+- **Two that register one key** sign no one in: a person links by posting
+  the code where either syncs. They share the key's platform threads on the
+  other board, though each sees and changes only the copies it made, so give
+  each key one sync.
 
 ## Set up webhooks
 
@@ -243,16 +256,16 @@ channel's inbox.
 ## Typing
 
 ```ts
-// in the route that mounts the board with its `sync`:
+// anywhere with a handle on the board, the CLI included (`vb typing 812 running tests…`):
 await team.typing('812', 'running tests…')
 ```
 
 Shows typing in every platform thread the board thread is synced to, through
-the sync this board runs: only a board that runs it shows any, so `vb typing`,
-whose own board runs none, shows nowhere. Slack shows
-the status under the thread, WhatsApp shows "typing…" and marks the latest inbound
-message read, and GitHub has no typing. Nothing is written to the log. It needs
-`post` and `read` in the thread's channel.
+the sync the board that keeps the log runs beside it, so `vb typing` on the
+board you link shows it there. A board on `http()` also shows it through its
+own sync. Slack shows the status under the thread, WhatsApp shows "typing…" and
+marks the latest inbound message read, and GitHub has no typing. Nothing is
+written to the log. It needs `post` and `read` in the thread's channel.
 
 ## Debug it
 

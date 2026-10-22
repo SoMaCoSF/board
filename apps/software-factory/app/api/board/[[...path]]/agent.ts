@@ -255,8 +255,25 @@ cd ~ && exec flock ~/.pi/lock bash -c '
 export const piPreview = (thread: string) => `vboard-factory-git-pi-${thread}.playground-vercel.tools`;
 
 /**
+ * The board routes Pi's `vb` calls, as an RE2 regex: discovery, and reading and writing messages, schedules and
+ * attachments. Not `/webhooks/*`, which skip board auth and accept any OIDC token for this project, so the board's
+ * token there would let the sandbox forge Slack and GitHub events. Not the full-access routes (stuck events, inboxes,
+ * raw source reads), identity linking, or anything else on the host, like the docs site.
+ */
+const VB_ROUTES = `^${new URL(BOARD).pathname}(/(${[
+  "me",
+  "channels",
+  "actors",
+  "threads",
+  "events",
+  "messages(/[0-9]+(/(edit|delete|reactions|labels|sync|typing))?)?",
+  "schedules(/s?[0-9]+/cancel)?",
+  "attachments(/[A-Za-z0-9_-]+)?",
+].join("|")}))?/?$`;
+
+/**
  * Real credentials on the way out: the deployment's OIDC token, and the factory GitHub App's.
- * On the board, the policy also sets who Pi is, so nothing in the sandbox can post as anyone else.
+ * On the board's routes, the policy also sets who Pi is, so nothing in the sandbox can post as anyone else.
  */
 export function policy(
   thread: string,
@@ -273,6 +290,7 @@ export function policy(
       ],
       [new URL(BOARD).host]: [
         {
+          match: { path: { regex: VB_ROUTES } },
           transform: [
             {
               headers: {
