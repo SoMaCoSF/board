@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import remarkGfm from "remark-gfm";
+import remarkParse from "remark-parse";
+import { unified } from "unified";
+import { visit } from "unist-util-visit";
 import { crosspost } from "../app/api/board/[[...path]]/crosspost.ts";
 
 const root = (labels = { pr: "vercel-labs/vboard#105", state: "open" }) => ({
@@ -71,4 +75,22 @@ test("skips posts, replies, GitHub receipts, crossposted roots, other branches, 
   const github = harness({ source: { ...slackSource, origin: { thread: "github:vercel-labs/vboard:issue:7" } } });
   await github.run(synced());
   assert.deepEqual([...other.replies, ...github.replies, ...other.labels, ...github.labels], []);
+});
+
+function linksAndHtml(markdown) {
+  const found = [];
+  visit(unified().use(remarkParse).use(remarkGfm).parse(markdown), ["link", "html"], (node) => {
+    found.push(node.type === "link" ? node.url : node.value);
+  });
+  return found;
+}
+
+test("a PR's title and a source's author can't add links or HTML to the crosspost", async () => {
+  const title = String.raw`Fix \](https://evil.example/login) <a href="https://evil.example">x</a> [x`;
+  const author = { handle: "eve", name: String.raw`Eve\](https://evil.example) [x` };
+  const h = harness({ source: { ...slackSource, author } });
+  await h.run(synced({ ...root(), text: `PR #105: ${title}\nhttps://github.com/vercel-labs/vboard/pull/105` }));
+  const [fromSource, fromPr] = h.replies;
+  assert.deepEqual(linksAndHtml(fromSource.text), ["https://vercel.slack.com/archives/C0C6MNT9LLC/p1791404203820609"]);
+  assert.deepEqual(linksAndHtml(fromPr.text), ["https://vercel.slack.com/archives/C0C6MNT9LLC/p1791405000000100"]);
 });

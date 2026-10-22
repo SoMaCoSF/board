@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import remarkGfm from "remark-gfm";
+import remarkParse from "remark-parse";
+import { unified } from "unified";
+import { visit } from "unist-util-visit";
 import { renderForSlack } from "../app/api/board/[[...path]]/render.ts";
 
 const input = (message, extra = {}) => ({
@@ -26,6 +30,15 @@ test("a PR root is one line: its state's emoji and a link", () => {
     const labels = { pr: "vercel-labs/vboard#68", state };
     assert.ok(renderForSlack(input({ labels })).startsWith(`${emoji} [#68 `));
   }
+});
+
+test("a PR's title can't add links or HTML to its root", () => {
+  const text = String.raw`PR #68: Fix \](https://evil.example/login) <a href="https://evil.example">x</a> [x` + "\nhttps://github.com/vercel-labs/vboard/pull/68";
+  const found = [];
+  visit(unified().use(remarkParse).use(remarkGfm).parse(renderForSlack(input({ text }))), ["link", "html"], (node) => {
+    found.push(node.type === "link" ? node.url : node.value);
+  });
+  assert.deepEqual(found, ["https://github.com/vercel-labs/vboard/pull/68"]);
 });
 
 test("a PR root labeled with its owner says whose it is", () => {
