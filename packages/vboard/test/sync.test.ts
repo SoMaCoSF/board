@@ -338,6 +338,25 @@ describe('sync', () => {
     expect(s.posts).toHaveLength(0) // nothing echoes back to Slack
   })
 
+  it('applies an edit back to earlier text, and a retried edit once', async () => {
+    const { board, webhook } = setup()
+    const julian = caller(board.fetch, await personToken())
+    await webhook('slack', { type: 'message', threadId: 'slack:C1:600.1', id: '600.1', text: 'A', user: 'U1' })
+    await vi.waitFor(async () => expect(await read(julian, 'firehose')).toHaveLength(1))
+    const edit = (text: string, second: number) =>
+      webhook('slack', { type: 'edit', threadId: 'slack:C1:600.1', id: '600.1', text, user: 'U1', editedAt: `2026-10-22T10:00:0${second}Z` })
+    const edits = async () =>
+      ((await julian('GET', '/events?channel=firehose&after=0')).body.events as { type: string; payload: { text: string } }[])
+        .filter((e) => e.type === 'message.edited').map((e) => e.payload.text)
+
+    await edit('B', 1)
+    await edit('C', 2)
+    await edit('B', 3)
+    await edit('C', 2)
+    await edit('D', 4)
+    await vi.waitFor(async () => expect(await edits()).toEqual(['B', 'C', 'B', 'D']))
+  })
+
   it('retries a file Slack fails to hand over, then notes it if it keeps failing', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})

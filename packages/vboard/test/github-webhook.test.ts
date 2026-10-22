@@ -67,3 +67,16 @@ it("ignores edits to the board's own comments, which it already has", async () =
   const [edited] = await send('issue_comment', { action: 'edited', comment: theirs, issue, repository, sender: vercel })
   expect(edited?.event).toMatchObject({ kind: 'edited', message: '77', text: 'from the board' })
 })
+
+it('gives each edit its own delivery key, so an edit back to earlier text is not a retry', async () => {
+  const send = setup()
+  const edit = async (body: string, updated: string) => {
+    const [received] = await send('issue_comment', { action: 'edited', comment: comment(body, updated), issue, repository, sender: vercel })
+    return received!.dedupe
+  }
+  const first = await edit('Ready', '2026-10-07T19:53:10Z')
+  await edit('Failed', '2026-10-07T19:54:10Z')
+  const back = await edit('Ready', '2026-10-07T19:55:10Z')
+  expect(back).not.toBe(first)
+  expect(await edit('Ready', '2026-10-07T19:55:10Z')).toBe(back)
+})
