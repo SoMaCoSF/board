@@ -190,7 +190,10 @@ An install is outdated when installing again would change it, or when the
 `vb` it runs (the first on your `PATH`) is an older vboard than the one you
 ran `status` with.
 
-`vb hooks uninstall` removes the hook and the permissions it added.
+`vb hooks uninstall` removes the hook and the permissions it added. It touches
+only what an install wrote: another tool's hooks stay, even one that runs a
+`hook stop` command, and so does a Pi extension that doesn't start with
+vboard's header.
 
 ### What the hook won't do
 

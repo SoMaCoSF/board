@@ -35,7 +35,13 @@ type Config = { version?: number; hooks?: Record<string, Entries>; permissions?:
   unknown
 >
 
-const ours = (entry: { command?: string }) => / hook stop --agent /.test(entry.command ?? '')
+/**
+ * Whether a hook is one an install wrote: `vb`, a pinned npx, or node running
+ * vboard's script, then `hook stop` (with `--channel`, before 0.11), unable to
+ * fail a turn. Anything else is another tool's, whatever it runs.
+ */
+const ours = (entry: { command?: string }) =>
+  /^(?:vb|npx -y vboard@\S+|.+\/vboard\/.+) hook stop --agent \S+(?: --channel \S+)? 2>\/dev\/null \|\| true$/.test(entry.command ?? '')
 
 function readConfig(path: string): Config {
   try {
@@ -61,6 +67,9 @@ function without(entries: Entries, shape: Shape): Entries {
     .filter((group) => group.hooks.length > 0)
 }
 
+/** How our Pi extension starts: a file without it is someone else's. */
+const PI_BANNER = '// Added by `vb hooks install pi`'
+
 /** The line of our Pi extension that holds the command it runs: how status finds it. */
 const PI_COMMAND = /^const COMMAND = (".*")$/m
 
@@ -72,7 +81,7 @@ const PI_COMMAND = /^const COMMAND = (".*")$/m
  * same session as `PI_SESSION_ID`, so the agent's `vb reply` or `vb post` counts for it.
  */
 export function piExtension(command: string): string {
-  return `// Added by \`vb hooks install pi\`: reminds Pi, once per turn, to update the team's board (vboard).
+  return `${PI_BANNER}: reminds Pi, once per turn, to update the team's board (vboard).
 // \`vb hooks uninstall pi\` removes it; reinstalling replaces this file.
 import { spawn } from 'node:child_process'
 
@@ -126,7 +135,7 @@ export function installHook(agent: HookAgent, cli: string, flags = ''): boolean 
       current = readFileSync(spec.file(), 'utf8')
     } catch {}
     if (current === source) return false
-    if (current !== null && !current.startsWith('// Added by `vb hooks install pi`'))
+    if (current !== null && !current.startsWith(PI_BANNER))
       throw new Error(`${spec.file()} isn't vboard's: move it, then install again`)
     mkdirSync(dirname(spec.file()), { recursive: true })
     writeFileSync(`${spec.file()}.vboard-tmp`, source)
@@ -163,7 +172,8 @@ export function installedHook(agent: HookAgent): string | null {
   const spec = AGENTS[agent]
   if (spec.shape === 'extension') {
     try {
-      const line = PI_COMMAND.exec(readFileSync(spec.file(), 'utf8'))
+      const source = readFileSync(spec.file(), 'utf8')
+      const line = source.startsWith(PI_BANNER) ? PI_COMMAND.exec(source) : null
       return line ? (JSON.parse(line[1]!) as string) : null
     } catch {
       return null
