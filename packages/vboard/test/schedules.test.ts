@@ -2,7 +2,8 @@ import { createServer } from 'experimental-a2/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SCHEDULES_SESSION, schedulesContract } from '../src/contract/contract.ts'
 import { memory } from '../src/store/memory.ts'
-import { caller, personToken, testBoard } from './harness.ts'
+import { githubActions } from '../src/server/index.ts'
+import { caller, personToken, testBoard, workflowToken } from './harness.ts'
 import { fakeQueue } from './queue.ts'
 
 const MINUTE = 60_000
@@ -214,5 +215,24 @@ describe('scheduled messages', () => {
     const { body: thread } = await plain('POST', '/messages', { channel: 'dev', text: 'hi' })
     const noScheduler = await plain('POST', '/schedules', { re: thread.message.id, text: 'later', in: '1h' })
     expect(noScheduler).toMatchObject({ status: 501, body: { error: { code: 'no_scheduler' } } })
+  })
+
+  it('cap how many a caller without manage keeps pending', async () => {
+    const board = testBoard({
+      scheduler: fakeQueue().scheduler,
+      access: [githubActions({ repository: 'basehub-ai/www', can: { dev: ['read', 'post', 'manage'], ci: ['read', 'post'] } })],
+    })
+    const ci = caller(board.fetch, await workflowToken())
+    const person = caller(board.fetch, await personToken())
+    const schedule = (channel: string) => ci('POST', '/schedules', { channel, text: 'still green?', every: '1m' })
+
+    const made = []
+    for (let i = 0; i < 100; i++) made.push((await schedule('ci')).body.schedule.id)
+    expect(await schedule('ci')).toMatchObject({ status: 429, body: { error: { code: 'too_many_schedules' } } })
+    await ci('POST', `/schedules/${made[0]}/cancel`, {})
+    expect((await schedule('ci')).status).toBe(201)
+
+    expect((await schedule('dev')).status).toBe(201)
+    expect((await person('POST', '/schedules', { channel: 'ci', text: 'mine', every: '1m' })).status).toBe(201)
   })
 })
