@@ -109,7 +109,8 @@ test("PR-labeled Factory discussions stay off dev automation and external sync",
     ...options,
     sync: {
       slack: slack({ adapter: slackPlatform.adapter, channels: { C1: "dev" } }),
-      github: github({ adapter: githubPlatform.adapter, repos: { "vercel-labs/board": { pulls: "dev", issues: "dev" } } }),
+      // As the factory has it: what's written on the board reaches GitHub.
+      github: github({ adapter: githubPlatform.adapter, deliver: (message) => message.from === null, repos: { "vercel-labs/board": { pulls: "dev", issues: "dev" } } }),
     },
     watch: Object.fromEntries(Object.entries(watchers).map(([name, watcher]) => [name, {
       ...watcher, run: ({ event }) => { watched.push([name, event.message?.channel]); },

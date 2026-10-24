@@ -56,10 +56,13 @@ to skip it.
    with its link, labeled `pr=acme/www#123` and `state=open` (or `state=draft`).
    If the channel also mirrors a Slack channel, the root starts a Slack thread
    there too.
-2. **Comments, Slack replies, and board replies** all reach each other.
+2. **Comments** reach the board and the PR's Slack thread. Board and Slack
+   replies stay off GitHub unless you say otherwise: see
+   [What reaches GitHub](#what-reaches-github).
 3. **Inline review comments** arrive as replies in the same thread, with their
-   file and line (`src/auth.ts:42`). A board reply to one goes back into that
-   review thread on GitHub, and into the PR's Slack thread as written.
+   file and line (`src/auth.ts:42`). With `deliver`, a board reply to one goes
+   back into that review thread on GitHub, and into the PR's Slack thread as
+   written.
 4. **Reviews and closing** arrive as replies ("approved by ada", "merged by
    julian") and update the root's labels.
 
@@ -71,6 +74,24 @@ vb reply 820 "good catch, fixed in a1b2c3"
 Drafts are mirrored right away; filter by `state=open` to see only ready PRs.
 Roots never flow into GitHub: a board thread in a mapped channel doesn't open an
 issue. Resolving review conversations isn't synced.
+
+## What reaches GitHub
+
+Nothing, by default. GitHub comes in, and what's said on the board or in Slack
+stays there, since a repo can be public, or become public later. `deliver` says
+which of the board's messages GitHub gets, as comments, edits, and reactions:
+
+```ts
+github({
+  adapter: 'github/acme',
+  repos: { 'acme/www': 'dev' },
+  deliver: (message) => message.from === null, // what's written on the board; Slack's replies stay in Slack
+})
+```
+
+A message never goes back where it came from, so `() => true` posts the
+board's and Slack's both. Slack and WhatsApp deliver everything unless their
+`deliver` says otherwise.
 
 ## Events
 

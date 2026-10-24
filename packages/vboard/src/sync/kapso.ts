@@ -1,4 +1,5 @@
 import { ChatSyncProvider, type ChatInput } from './chat-provider.ts'
+import type { MessageView } from '../api/routes.ts'
 import type { Adapter, Message as ChatMessage } from 'chat'
 import { markdownOf } from './chat.ts'
 import { z } from 'zod'
@@ -20,6 +21,8 @@ type MarkRead = (input: { phoneNumberId: string; messageId: string; typingIndica
 export type KapsoHandler = SyncHandler<WhatsAppEvent>
 export type KapsoOptions = {
   adapter: Adapter
+  /** Which of the board's messages WhatsApp gets: every one unless this says otherwise. */
+  deliver?: (message: Readonly<MessageView>) => boolean
   render?: (input: RenderInput) => string
   markRead: MarkRead
   numbers: Record<string, EventMapping<WhatsAppEvent>>
@@ -42,6 +45,7 @@ export class KapsoProvider extends ChatSyncProvider<WhatsAppEvent> {
     const fileIds = (raw: unknown) => ((raw as Sent)?.responses ?? []).flatMap((response) => response.messages?.[0]?.id ?? [])
     super({
       fileIds,
+      ...(options.deliver ? { deliver: options.deliver } : {}),
       render: options.render,
       platform: 'whatsapp',
       adapter: options.adapter,

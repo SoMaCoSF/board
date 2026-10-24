@@ -54,6 +54,9 @@ const factory = board({
     }),
     github: github({
       adapter: CONNECTOR,
+      // What's written on the board reaches GitHub (Pi answering an issue's thread, crosspost's note on a
+      // PR); what's said in Slack stays in Slack and on the board.
+      deliver: (message) => message.from === null,
       repos: {
         [REPO]: {
           // Inline review threads and "closed by …" replies stay on GitHub and the board,

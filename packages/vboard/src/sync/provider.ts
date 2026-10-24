@@ -81,6 +81,11 @@ export type ProviderOptions = {
   render?: (input: RenderInput) => string
   /** People's own tokens, to post as them and to link accounts by signing in. */
   users?: UserTokens | null
+  /**
+   * Which of the board's messages the platform gets: posts, edits, deletes, and reactions. Every
+   * one by default; what came from the platform itself never goes back.
+   */
+  deliver?: (message: Readonly<MessageView>) => boolean
 }
 
 export const ReceivedEvent = z.object({ event: ExternalEvent, raw: z.unknown(), dedupe: z.string().min(1) })
@@ -104,6 +109,11 @@ export abstract class SyncProvider<E extends ProviderEvent = ProviderEvent> {
     this.canStartThreads = options.canStartThreads ?? false
     this.singleReaction = options.singleReaction ?? false
     this.uploadsFiles = options.uploadsFiles ?? false
+  }
+
+  /** Whether the platform gets `message`, as `deliver` says. */
+  delivers(message: Readonly<MessageView>): boolean {
+    return this.options.deliver ? this.options.deliver(message) : true
   }
 
   abstract receive(key: string, request: Request, emit: Receive): Promise<Response>

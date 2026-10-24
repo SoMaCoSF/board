@@ -1022,6 +1022,8 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
     const copies = await copiesOf([root.id, ...replies.map((reply) => reply.id)])
     let externalThread = synced.external[target]
     if (!externalThread) {
+      // A platform that doesn't get the root gets no thread of it.
+      if (!delivers(target, root)) return
       try {
         const platform = platformOf(keyOf(target))
         const body = renderFor(target, root, actors)
@@ -1067,7 +1069,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
     }
     const failures: Failure[] = []
     for (const reply of replies) {
-      if (reply.deleted || reply.noSync || cameFrom(reply, target)) continue
+      if (reply.deleted || reply.noSync || cameFrom(reply, target) || !delivers(target, reply)) continue
       try {
         const copy = copies[reply.id]?.[target] ?? (await postReply(reply, target, externalThread, actors))
         await deliverFiles(reply, target, copy, actors)
@@ -1081,6 +1083,8 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
   /** Never deliver a message back to the platform it came from. */
   const cameFrom = (message: MessageView, target: string) =>
     message.origin?.thread === target || (message.from !== null && keyOf(target) === message.from)
+  /** Whether a target's platform gets the message at all: GitHub's, by default, gets none. */
+  const delivers = (target: string, message: Readonly<MessageView>) => platformOf(keyOf(target)).delivers(message)
 
   async function deliverPost(event: Extract<SyncEvent, { type: 'message.posted' }>, attempt: number) {
     if (!event.message) return
@@ -1097,7 +1101,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
     for (const target of synced.targets) {
       const externalThread = synced.external[target]
       if (!ours(target) || !externalThread) continue // the root isn't there yet; its thread.synced delivery backfills
-      if (cameFrom(message, target)) continue
+      if (cameFrom(message, target) || !delivers(target, message)) continue
       try {
         const copy = (await copiesOf([message.id]))[message.id]?.[target] ?? (await postReply(message, target, externalThread, actors))
         await deliverFiles(message, target, copy, actors)
@@ -1119,6 +1123,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
     const actors = await actorsNow()
     for (const [target, copy] of Object.entries(copies)) {
       if (!ours(target) || (event.payload.from !== null && keyOf(target) === event.payload.from)) continue
+      if (message && !delivers(target, message)) continue
       try {
         const platform = platformOf(keyOf(target))
         const thread = native(copy.thread)
@@ -1163,7 +1168,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
     const message = { ...current, labels: after.labels }
     const previous = { ...current, labels: event.before?.labels ?? {} }
     for (const [target, copy] of Object.entries(copies)) {
-      if (!ours(target)) continue
+      if (!ours(target) || !delivers(target, message)) continue
       try {
         const body = renderFor(target, message, actors, copy.files === null)
         if (body.markdown === renderFor(target, previous, actors, copy.files === null).markdown) continue

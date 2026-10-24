@@ -86,7 +86,7 @@ function setup(options: { users?: UserTokens; owners?: Record<string, string>; g
         channels: { C1: 'firehose' },
         render: options.slackRender,
       }),
-      github: github({ adapter: options.githubUsers ? withUserTokens(g.adapter, options.githubUsers) : g.adapter, repos: { 'basehub-ai/vboard': 'prs' } }),
+      github: github({ adapter: options.githubUsers ? withUserTokens(g.adapter, options.githubUsers) : g.adapter, repos: { 'basehub-ai/vboard': 'prs' }, ...(options.githubUsers ? { deliver: (message) => message.from === null } : {}) }),
     },
     ...('url' in options ? { url: options.url } : {}),
   })

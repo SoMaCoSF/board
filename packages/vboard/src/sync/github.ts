@@ -1,5 +1,6 @@
 import { ChatSyncProvider } from './chat-provider.ts'
 import type { Adapter, Message as ChatMessage } from 'chat'
+import type { MessageView } from '../api/routes.ts'
 import type { ExternalAuthor, ExternalEvent } from '../contract/contract.ts'
 import { markdownOf } from './chat.ts'
 import { z } from 'zod'
@@ -227,6 +228,12 @@ export type GitHubOptions = {
   botUserId?: number
   render?: (input: RenderInput) => string
   repos: Record<string, GitHubRepo>
+  /**
+   * Which of the board's messages GitHub gets, as comments, edits, and reactions. None by default:
+   * GitHub comes in, and what's said on the board or in Slack stays there, since a repo can be public,
+   * or become public later. `(message) => message.from === null` posts what was written on the board.
+   */
+  deliver?: (message: Readonly<MessageView>) => boolean
 }
 
 /** `owner/repo:12`, `owner/repo:issue:3`, or `owner/repo:12:rc:345` (a review comment thread). */
@@ -307,6 +314,7 @@ export class GitHubProvider extends ChatSyncProvider<GitHubEvent> {
     }
     super({
       render: options.render,
+      deliver: options.deliver ?? (() => false),
       platform: 'github',
       adapter: options.adapter,
       canStartThreads: false,

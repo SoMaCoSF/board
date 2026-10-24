@@ -1,4 +1,5 @@
 import { ChatSyncProvider, type ChatInput } from './chat-provider.ts'
+import type { MessageView } from '../api/routes.ts'
 import type { Adapter, Message as ChatMessage } from 'chat'
 import { markdownOf } from './chat.ts'
 import { z } from 'zod'
@@ -273,6 +274,8 @@ export type SlackOptions = {
    * Or your own Chat SDK adapter, wrapped in `withUserTokens` to post as people.
    */
   adapter: Adapter | string
+  /** Which of the board's messages Slack gets: every one unless this says otherwise. */
+  deliver?: (message: Readonly<MessageView>) => boolean
   render?: (input: RenderInput) => string
   /** Not needed with a connector. */
   client?: () => Promise<SlackClient>
@@ -460,6 +463,7 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
         const { teamId: _team, enterpriseId: _enterprise, isEnterpriseInstall: _install, ...rest } = file.fetchMetadata
         return { ...file, fetchMetadata: rest }
       },
+      ...(options.deliver ? { deliver: options.deliver } : {}),
       render: options.render,
       platform: 'slack',
       adapter: options.adapter,

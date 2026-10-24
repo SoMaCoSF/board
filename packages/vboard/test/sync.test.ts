@@ -29,6 +29,8 @@ function setup(
     asyncToken?: boolean
     githubClient?: unknown
     repos?: Parameters<typeof github>[0]['repos']
+    githubDeliver?: Parameters<typeof github>[0]['deliver']
+    slackDeliver?: Parameters<typeof slack>[0]['deliver']
     watch?: MountOptions['watch']
     basePath?: string
     store?: MountOptions['store']
@@ -41,10 +43,11 @@ function setup(
       slack: slack({
         adapter: s.adapter,
         render: options.slackRender,
+        ...(options.slackDeliver ? { deliver: options.slackDeliver } : {}),
         ...(options.slackClient ? { client: async () => options.slackClient as import('../src/sync/slack.ts').SlackClient } : {}),
         channels: { C1: 'firehose', C2: 'prs', ...(options.alerts ? { C3: options.alerts } : {}), ...options.channels },
       }),
-      github: github({ adapter: g.adapter, repos: options.repos ?? { 'basehub-ai/vboard': 'prs' } }),
+      github: github({ adapter: g.adapter, repos: options.repos ?? { 'basehub-ai/vboard': 'prs' }, ...(options.githubDeliver ? { deliver: options.githubDeliver } : {}) }),
     },
     ...(options.watch ? { watch: options.watch } : {}),
     ...(options.basePath !== undefined ? { basePath: options.basePath } : {}),
@@ -244,7 +247,7 @@ describe('sync', () => {
 
   it('uploads attachments to Slack after the text, and notes them on GitHub, which takes no uploads', async () => {
     const files = { delete: vi.fn(async () => ({ ok: true })) }
-    const { board, s, g, webhook } = setup({ slackClient: { conversations: { list: async () => ({ channels: [] }), info: async () => ({}), join: async () => ({}) }, files } })
+    const { board, s, g, webhook } = setup({ githubDeliver: () => true, slackClient: { conversations: { list: async () => ({ channels: [] }), info: async () => ({}), join: async () => ({}) }, files } })
     const token = await personToken()
     const julian = caller(board.fetch, token)
     const upload = async (name: string) => {
@@ -724,6 +727,38 @@ describe('sync', () => {
     expect(g.posts).toHaveLength(0)
   })
 
+  it.each([
+    { name: 'by default', deliver: undefined, github: [] },
+    { name: "with deliver for the board's own", deliver: (message: { from: string | null }) => message.from === null, github: ['from the board'] },
+  ])("keeps Slack's replies in a PR's thread off GitHub, and the board's $name", async ({ deliver, github: onGitHub }) => {
+    const { board, s, g, webhook } = setup({ githubClient: { rest: { pulls: { get: vi.fn() } } }, ...(deliver ? { githubDeliver: deliver } : {}) })
+    const julian = caller(board.fetch, await personToken())
+    const pr = { number: 43, title: 'Spike', html_url: 'https://github.com/basehub-ai/vboard/pull/43', draft: false, merged: false }
+    await webhook('github', { action: 'opened', repository: { full_name: 'basehub-ai/vboard' }, sender: { id: 42, login: 'julianbenegas' }, pull_request: pr }, { 'x-github-event': 'pull_request', 'x-github-delivery': 'inbound-opened' })
+    await vi.waitFor(() => expect(s.channelPosts).toHaveLength(1))
+    const [root] = await read(julian, 'prs')
+    await webhook('slack', { type: 'message', threadId: `slack:C2:${s.channelPosts[0]!.id}`, id: '1727000001.000100', text: 'from slack', user: 'U_ADA' })
+    await julian('POST', '/messages', { re: root!.id, text: 'from the board' })
+    await vi.waitFor(async () => expect((await julian('GET', `/messages/${root!.id}`)).body.replies.map((m: { text: string }) => m.text).sort()).toEqual(['from slack', 'from the board']))
+    // Slack gets the board's reply either way.
+    await vi.waitFor(() => expect(s.posts.map((post) => post.text)).toEqual([expect.stringContaining('from the board')]))
+    const posted = () => expect(g.posts.map((post) => post.text)).toEqual(onGitHub.map((text) => expect.stringContaining(text)))
+    // What GitHub should get arrives; what it shouldn't has had the time it would have taken.
+    if (onGitHub.length) await vi.waitFor(posted)
+    else await new Promise((resolve) => setTimeout(resolve, 200)).then(posted)
+  })
+
+  it("posts to Slack only the board's messages its deliver lets through", async () => {
+    const { board, s, webhook } = setup({ slackDeliver: (message) => !message.text.includes('internal') })
+    const julian = caller(board.fetch, await personToken())
+    await webhook('slack', { type: 'message', threadId: 'slack:C1:1727000000.000100', id: '1727000000.000100', text: 'deploy failed', user: 'U_ADA' })
+    await vi.waitFor(async () => expect(await read(julian, 'firehose')).toHaveLength(1))
+    const [root] = await read(julian, 'firehose')
+    await julian('POST', '/messages', { re: root!.id, text: 'internal: the key leaked' })
+    await julian('POST', '/messages', { re: root!.id, text: 'rolled back' })
+    await vi.waitFor(() => expect(s.posts.map((post) => post.text)).toEqual([expect.stringContaining('rolled back')]))
+  })
+
   it('keeps a draft PR a draft when it is closed and reopened', async () => {
     const { board, webhook } = setup({ githubClient: { rest: { pulls: { get: vi.fn() } } } })
     const julian = caller(board.fetch, await personToken())
@@ -749,7 +784,7 @@ describe('sync', () => {
       listForIssue: vi.fn(async () => ({ data: [{ id: 9, content: 'rocket', user: { id: 42 } }, { id: 10, content: 'rocket', user: { id: 1 } }] })),
       deleteForIssue: vi.fn(async () => ({})),
     }
-    const { board, g, webhook } = setup({ githubClient: { rest: { pulls: { get: vi.fn() }, issues: { get: vi.fn() }, reactions } } })
+    const { board, g, webhook } = setup({ githubDeliver: () => true, githubClient: { rest: { pulls: { get: vi.fn() }, issues: { get: vi.fn() }, reactions } } })
     Object.assign(g.adapter, { botUserId: '1', emojiToGitHubReaction: (emoji: string) => ({ rocket: 'rocket', eyes: 'eyes' })[emoji] ?? '+1' })
     const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
     const item = { number: 41, title: 'Ship it', html_url: 'https://github.com/basehub-ai/vboard/pull/41' }

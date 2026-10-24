@@ -120,7 +120,9 @@ reply in an existing thread rather than starting one.
   previews' `vboard-factory-3:preview`: A2 0.22 refuses a prefix 0.21 wrote, so
   the log started empty there and `vboard-factory-2` is never read.
   Slack channel `C0C8XN8SQRG` (#development-messageboard), GitHub
-  PRs, and GitHub issues all mirror `dev`. Connect uses `slack/vboard-factory`,
+  PRs, and GitHub issues all mirror `dev`, except that GitHub gets only what's
+  written on the board (`deliver`): Slack's replies stay in Slack and on the
+  board. Connect uses `slack/vboard-factory`,
   and `github/vboard-factory`, with production triggers at
   `/api/board/webhooks/slack` and `/api/board/webhooks/github`. The GitHub
   app's bot (its login and commit
