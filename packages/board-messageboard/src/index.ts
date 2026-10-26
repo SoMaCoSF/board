@@ -6,6 +6,7 @@ import type {
   ActorView,
   Backend,
   BoardEventView,
+  Caller,
   ChannelView,
   Me,
   MessageView,
@@ -592,12 +593,30 @@ export function messageboard(options: MessageboardOptions): Backend {
     syncUnlink: notKept('no_sync', 'linked accounts'),
   }
 
+  // Every call goes to the API as the token's holder, so a caller board() verified, with grants of
+  // its own, would get the holder's instead. Until this can pass them on, it serves this deployment's
+  // own code only: the handle.
+  const ownCodeOnly = Object.fromEntries(
+    Object.entries(methods).map(([name, method]) => [
+      name,
+      async (caller: Caller, input: never, signal: AbortSignal) => {
+        if ('identity' in caller) {
+          throw new HttpError(403, 'forbidden', "this board serves only this deployment's own code: api-messageboard can't act for another caller yet")
+        }
+        return (method as (caller: Caller, input: never, signal: AbortSignal) => Promise<unknown>)(caller, input, signal)
+      },
+    ]),
+  ) as unknown as ProtocolMethods
+
   return {
-    ...methods,
+    ...ownCodeOnly,
     routes: [],
-    // The board lives on api-messageboard: board() serves this deployment's own code, as the token's holder.
     keeps: false,
-    bind() {},
+    bind(binding) {
+      if (Object.keys(binding.subscriptions).length > 0) {
+        throw new Error("messageboard: this backend runs no watchers or sync yet: remove board()'s `watch` and `sync`")
+      }
+    },
   }
 }
 

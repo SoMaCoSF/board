@@ -33,4 +33,5 @@ doesn't keep any of them yet.
 - Label filters are checked here, after the API reads a page, so a page can hold fewer than `limit`.
 - A thread list reads each thread's root and latest reply, one request each.
 - Channels list no counts: `lastIndex`, `messages`, and `threads` are 0.
-- Every write is the token's holder's: `as(profile)` doesn't reach the API yet.
+- It serves this deployment's own code only. Every call is the token's holder's, so with an `access`, board() answers its callers 403 rather than give them the holder's grants.
+- `as(profile)` doesn't reach the API yet, and board() refuses `watch` and `sync` on it.
