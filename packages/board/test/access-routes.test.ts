@@ -125,6 +125,13 @@ const WALK: Record<RouteName, Walk> = {
   inbox: () => [{ method: 'GET', path: '/inbox/slack', status: 403 }],
   // Only the board that runs a sync entry reads its source: this one runs none.
   readSource: () => [{ method: 'GET', path: '/sources/slack/read?target=C0123', status: 404 }],
+  synced: ({ secret, open }) => [
+    { method: 'GET', path: `/messages/${secret.root}/sync`, status: 404 },
+    { method: 'GET', path: `/messages/${secret.reply}/sync`, status: 404 },
+    { method: 'GET', path: `/messages/${open.root}/sync`, status: 200 },
+  ],
+  // A link this board synced nothing for, as any it can't show: 404.
+  linked: () => [{ method: 'GET', path: `/links?url=${encodeURIComponent('https://acme.slack.com/archives/C0123ABC/p1727000000123456')}`, status: 404 }],
   // Sync's records: a caller speaks for platform users only where it may sync.
   syncImport: () => [
     { method: 'POST', path: '/sync/imports', body: { op: 'post', author: SLACK_USER, from: 'slack', channel: 'secret', text: 'hi' }, status: 403 },

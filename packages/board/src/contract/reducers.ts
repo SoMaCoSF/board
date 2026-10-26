@@ -329,6 +329,8 @@ export function foldSync(state: SyncState, event: BoardEvent): SyncState {
       const precise = origin.subthread ?? origin.thread
       setOwn((state.copies[event.index] ??= {}), origin.thread, { thread: precise, message: origin.message, ...(payload.importedBy ? { by: payload.importedBy } : {}) })
       state.byExternalMessage[externalMessageKey(precise, origin.message)] = event.index
+      // A sub-thread's message is its thread's too: a link to it may name only the thread (a GitHub review comment's does).
+      if (precise !== origin.thread) state.byExternalMessage[externalMessageKey(origin.thread, origin.message)] = event.index
       return state
     }
     case 'thread.synced': {
@@ -354,6 +356,9 @@ export function foldSync(state: SyncState, event: BoardEvent): SyncState {
       setOwn((state.copies[id] ??= {}), target, { ...external, ...(syncedBy ? { by: syncedBy } : {}) })
       state.byExternalMessage[externalMessageKey(external.thread, external.message)] = id
       const thread = own(state.threads, event.payload.thread)
+      // A copy posted into a sub-thread (a reply in a GitHub review thread) is its thread's too, as one that came in is.
+      const main = thread ? own(thread.external, target) : undefined
+      if (main && main !== external.thread) state.byExternalMessage[externalMessageKey(main, external.message)] = id
       if (thread && thread.root === id && ((thread.kinds && own(thread.kinds, target)) ?? (isThreadTarget(target) ? 'thread' : 'channel')) === 'channel') {
         setOwn(thread.external, target, external.thread)
         setOwn(state.byExternalThread, external.thread, event.payload.thread)

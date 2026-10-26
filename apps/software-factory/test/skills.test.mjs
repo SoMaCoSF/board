@@ -81,6 +81,8 @@ test("policy: Pi's credentials and identity reach every board route vb calls, an
     "react",
     "label",
     "sync",
+    "synced",
+    "linked",
     "typing",
     "schedule",
     "schedules",

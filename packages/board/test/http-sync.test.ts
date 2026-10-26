@@ -26,7 +26,7 @@ type Read = { id: string; text: string; from: string | null; by: { actor: string
 /** Slack's Web API as a person's token sees it: every token is Julian's. */
 const juliansSlack = { auth: { test: async () => ({ user_id: 'U_JULIAN', user: 'jb' }) }, users: { info: async () => ({ user: { id: 'U_JULIAN', name: 'jb', profile: { display_name: 'jb', real_name: 'Julian' } } }) } }
 
-function setup(options: { can?: Parameters<typeof vercelProject>[0]['can']; channels?: Record<string, SyncUnit<SlackEvent>>; middleware?: Middleware[]; users?: UserTokens } = {}) {
+function setup(options: { can?: Parameters<typeof vercelProject>[0]['can']; channels?: Record<string, SyncUnit<SlackEvent>>; middleware?: Middleware[]; users?: UserTokens; client?: () => Promise<never> } = {}) {
   const queue = fakeQueue()
   // With people's tokens, Slack runs calls with one through `withBotToken`.
   const s = fakePlatform('slack', options.users ? (adapter) => void Object.assign(adapter, { withBotToken: <T>(_token: string, fn: () => T) => fn(), webClient: juliansSlack }) : undefined)
@@ -52,7 +52,7 @@ function setup(options: { can?: Parameters<typeof vercelProject>[0]['can']; chan
       slack: slack(
         {
           adapter: options.users ? withUserTokens(s.adapter, options.users) : s.adapter,
-          ...(options.users ? { client: async () => juliansSlack as never } : {}),
+          ...(options.client ? { client: options.client } : options.users ? { client: async () => juliansSlack as never } : {}),
         },
         channels(options.channels ?? { C1: 'firehose' }),
       ),
@@ -735,5 +735,21 @@ describe("an import's links", () => {
     const changed = await support('POST', '/sync/imports', { op: 'links', author, from: 'slack', message: imported.body.message, links: [{ ...links[1]!, message: secret.id }] })
     expect(changed.status).toBe(200)
     expect((await julian('GET', `/messages/${imported.body.message}`)).body.message.links).toEqual([{ url: 'https://acme.slack.com/archives/C1/p2', message: null, snapshot: forged, unavailable: null }])
+  })
+  it("finds what its own sync synced from a platform link, and links where it's synced, on the board it uses", async () => {
+    const permalink = 'https://acme.slack.com/archives/C1/p1727000000123456'
+    // Slack, as the app sees it: in C1 already, and with the message's permalink.
+    const client = async () => ({ conversations: { info: async () => ({ channel: { id: 'C1', is_member: true } }) }, chat: { getPermalink: async () => ({ permalink }) } }) as never
+    const { team, project, webhook } = setup({ client })
+    const julian = await julianOn(team.fetch)
+    await webhook({ type: 'message', threadId: 'slack:C1:1727000000.123456', id: '1727000000.123456', text: 'export is broken', user: 'U_ADA' })
+    await vi.waitFor(async () => expect(await read(julian, 'firehose')).toHaveLength(1))
+    const [root] = await read(julian, 'firehose')
+    // The team's board keeps the records; the project's own Slack sync reads the link and makes it.
+    expect((await project.linked(permalink)).message.id).toBe(root!.id)
+    expect((await project.sync(root!.id)).targets).toEqual([
+      { target: 'slack:C1:1727000000.123456', key: 'slack', thread: 'slack:C1:1727000000.123456', message: '1727000000.123456', url: permalink, undelivered: null },
+    ])
+    await expect(project.linked('https://acme.slack.com/archives/C1/p1727000009000000')).rejects.toMatchObject({ status: 404, code: 'message_not_found' })
   })
 })

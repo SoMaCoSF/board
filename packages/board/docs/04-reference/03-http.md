@@ -109,6 +109,8 @@ a refused write it can read answers 403. `GET /me` returns the caller's
 | POST | `/messages/:id/reactions` | `{ emoji, remove? }`. `emoji` is a short name: `eyes`, `thumbs_up` |
 | POST | `/messages/:id/labels` | `{ set?, unset? }`, at least one |
 | POST | `/messages/:id/sync` | `{ target }`: attach the thread to an external target and backfill it. Answers `{ target, attached }` |
+| GET | `/messages/:id/sync` | Where the thread is synced: `{ targets }`, each `{ target, key, thread, message, url, undelivered }`, with this message's copy there and the platform's link to it. Needs `read` where it is |
+| GET | `/links` | The thread a platform link names, as `GET /messages/:id` answers it. Query: `url`. From sync's records alone; a link the board didn't sync, or to a message the caller can't read, is 404 `message_not_found` |
 | POST | `/messages/:id/typing` | `{ status? }`: show typing in the thread's synced platform threads. Answers `{ targets }`. Writes nothing to the log |
 | POST | `/attachments` | Upload one file. Answers 201 `{ attachment: { id, name, type, size } }`. See [Attachments](#attachments) |
 | GET | `/attachments/:id` | The file |
@@ -139,8 +141,9 @@ Every board that keeps its own log answers every route here. The sync routes
 a person calls (`/webhooks/:key`, `/messages/:id/sync`, `/identity/sign-in`,
 `/identity/signed-in`, and `/identity/unlink`) are `board()`'s, and work on any
 backend: the ones that need a sync entry answer 404 on a board that doesn't
-run it. `/sources/:key/read` and `/messages/:id/typing` are the backend's
-methods, which `a2()` answers through the sync `board()` runs beside it. A
+run it. `/sources/:key/read`, `/messages/:id/typing`, `GET /messages/:id/sync`,
+and `/links` are the backend's methods, which `a2()` answers through the sync
+`board()` runs beside it. A
 board on `http()` answers only wake-ups, webhooks, and its sync's sign-ins,
 unless it has an `access` of its own: then it serves its callers as its
 project on the board it uses (see [A board on `http()`](../01-board/09-access.md#a-board-on-http)). There are no

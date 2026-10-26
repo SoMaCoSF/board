@@ -2731,6 +2731,12 @@ The external channels are `github:owner/repo:pulls` and
 | An issue | `github:owner/repo:issue:45` |
 | An inline review thread, grouped under its PR | `github:owner/repo:123:rc:<commentId>` |
 
+A review thread isn't a sync target, since its comments come in under its PR:
+`resolveTarget` refuses `…:123:rc:…` and names the PR. Sync records a message in
+a review thread under the PR's thread too, an import and a delivered copy alike,
+so `locate` reads `#discussion_r<id>`, which names only the comment, as that
+comment in the PR's thread.
+
 **Events.** Chat SDK's adapter handles new comments. The sync adapter handles
 comment edits and deletes (`message.edited`, `message.deleted`) and the rest of
 the GitHub App's webhooks:

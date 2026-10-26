@@ -16,6 +16,7 @@ import type {
   InboxPushBody,
   InboxQuery,
   LinkedAccount,
+  LinkedQuery,
   LabelBody,
   MatchesQuery,
   MatchView,
@@ -46,6 +47,7 @@ import type {
   SyncRootsQuery,
   SyncThreadView,
   SyncUnlinkBody,
+  SyncedView,
   ThreadsQuery,
   ThreadView,
   TypingBody,
@@ -98,6 +100,13 @@ export type Protocol = {
   typing: { input: Id & Input<typeof TypingBody>; output: { targets: string[] } }
   /** A platform channel or thread, read with sync entry `key`'s app where that sync runs: needs `manage` everywhere. */
   readSource: { input: Key & Input<typeof SourceReadQuery>; output: SourceRead }
+  /** Where a message's thread is synced, and its copy on each target, from sync's records: needs `read` where it is. */
+  synced: { input: Id; output: SyncedView }
+  /**
+   * The thread of the board message a platform link names, from sync's records: the platform is
+   * never asked. 404 `message_not_found` for a link the board didn't sync, or one the caller can't read.
+   */
+  linked: { input: Input<typeof LinkedQuery>; output: ThreadView }
 
   // Sync's records, which sync in board() keeps through these wherever the board lives. Each needs `sync`.
   /**

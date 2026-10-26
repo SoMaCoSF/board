@@ -491,6 +491,22 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
         const raw = message.raw as { text?: unknown; attachments?: SlackAttachment[] } | null
         return slackLinks(key, typeof raw?.text === 'string' ? raw.text : message.text, Array.isArray(raw?.attachments) ? raw.attachments : [], mrkdwn)
       },
+      // A permalink names its channel and ts, and a reply's thread in `thread_ts`.
+      locate(url) {
+        const found = permalinkOf(url.trim())
+        return found ? { thread: `${found.channel}:${found.thread}`, message: found.ts } : null
+      },
+      // Slack's own link, with the workspace's host and a reply's `thread_ts`.
+      async url(thread, message) {
+        const [channel] = thread.split(':')
+        const web = await client()
+        if (!web?.chat?.getPermalink || !channel) return null
+        try {
+          return (await web.chat.getPermalink({ channel, message_ts: message })).permalink ?? null
+        } catch {
+          return null
+        }
+      },
       // A link Slack didn't unfurl, read with the app's token, but only from a public channel
       // the app is already in. The token reads what the app can, not what the person who
       // posted the link can, and every board reader would see the snapshot: private

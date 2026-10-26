@@ -152,6 +152,28 @@ vb sync 812 slack:#incidents                                   # escalate an exi
 vb sync 812 github:acme/www:123                                # join PR #123's conversation
 ```
 
+`vb sync 812` with no target says where the thread is: each target, and the
+platform's link to #812's copy there. `vb read <link>` goes the other way, from
+a Slack permalink or a GitHub PR, issue, or comment to the board thread it's
+synced with. Both answer from sync's records, never from the platform, and only
+for messages you can read: a link to anything else is `no message on this board
+for that link`. A handle has them as `board.sync(id)` and `board.linked(url)`.
+
+```text
+$ vb sync 812
+slack   C0C8XN8SQRG  https://vercel.slack.com/archives/C0C8XN8SQRG/p1792780353701549
+
+$ vb read https://vercel.slack.com/archives/C0C8XN8SQRG/p1792780353701549
+#812  ada · 2h
+      checkout is down
+```
+
+The links come from each provider: its `locate(url)` reads a link as the
+platform's own IDs, and `url(thread, message)` makes one. A board with several
+entries of one platform (two Slack workspaces, or a project's Slack sync
+registered beside the team's) looks the IDs up under each of them, since any
+may have synced it. See [Providers](./06-providers.md#links).
+
 `--no-sync` keeps a message on the board: a root with it starts no threads in
 mirrored channels, and a reply with it isn't delivered. `--sync` and `--no-sync`
 together are a usage error. A handle's `post` takes `sync: [...]` and

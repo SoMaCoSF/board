@@ -755,6 +755,65 @@ function build(options: A2Options & { store: BoardStore }, binding: BoardBinding
       if (!principal.access.everywhere('manage')) throw forbidden("this token can't read a source: it needs manage in every channel")
       return binding.readSource(key, target, limit ?? 50)
     },
+    async synced(caller, { id }, signal) {
+      const { principal } = await identityOf(caller)
+      const message = await reads.message(messageAt(id), signal)
+      if (!message || !principal.access.readable(message.channel)) throw notFound(`message not found: #${id}`, 'message_not_found')
+      await reads.ensure(undefined, signal)
+      const { tables } = store
+      const [thread, copies] = await Promise.all([tables.syncOf(message.thread), tables.copiesOf([message.id])])
+      const mine = copies.get(message.id) ?? {}
+      const targets = await Promise.all(
+        (thread?.targets ?? []).map(async (target) => {
+          const key = target.slice(0, target.indexOf(':'))
+          const external = (thread && Object.hasOwn(thread.external, target) ? thread.external[target] : undefined) ?? null
+          // A message that came from a platform thread is recorded by that thread, not by the channel it's in.
+          const copy = (Object.hasOwn(mine, target) ? mine[target] : external !== null && Object.hasOwn(mine, external) ? mine[external] : undefined) ?? null
+          return {
+            target,
+            key,
+            thread: copy?.thread ?? external,
+            message: copy?.message ?? null,
+            url: copy ? await binding.linkOf(key, copy.thread, copy.message) : null,
+            undelivered: Object.hasOwn(message.undelivered, target) ? message.undelivered[target]! : null,
+          }
+        }),
+      )
+      return { targets }
+    },
+    async linked(caller, { url }, signal) {
+      // The platform is never asked: a link no entry here knows, one to nothing the board synced, and
+      // one to a message the caller can't read are the same 404, so none says what's out of sight.
+      const missing = () => notFound('no message on this board for that link', 'message_not_found')
+      const read = binding.locate(url)
+      if (read.length === 0) throw missing()
+      await reads.ensure(undefined, signal)
+      const { tables } = store
+      // Any sync of that platform may have synced it, each under its own key: this board's, and those registered here.
+      const registered = Object.values((await registry.state()).byOwner).flatMap((registration) => registration.sync)
+      const keysOf = (platform: string) => new Set([...binding.sync, ...registered].filter((entry) => entry.platform === platform).map((entry) => entry.key))
+      const first = async (): Promise<number | null> => {
+        for (const { platform, thread, message } of read)
+          for (const key of keysOf(platform)) {
+            let found: number | null
+            if (message !== null) found = await tables.messageOf(`${key}:${thread}`, message)
+            else {
+              const at = await tables.threadOf(`${key}:${thread}`)
+              found = at === null ? null : ((await tables.syncOf(at))?.root ?? null)
+            }
+            if (found) return found
+          }
+        return null
+      }
+      const id = await first()
+      if (id === null) throw missing()
+      try {
+        return await methods.message(caller, { id: ref(id) }, signal)
+      } catch (error) {
+        if (error instanceof HttpError && error.status === 404) throw missing()
+        throw error
+      }
+    },
 
     // Sync's records. A caller with `sync` in a channel speaks for platform users there.
 

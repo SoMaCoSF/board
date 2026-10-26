@@ -16,7 +16,7 @@ import { DIRECT_UPLOAD_BYTES_MAX, type Attachment, AttachmentId } from '../contr
 import { startInspector } from '../inspect/server.ts'
 import { VERSION } from '../version.ts'
 import { conformance } from '../conformance/index.ts'
-import { actorName, formatAccess, formatConformance, formatEvent, formatSchedule, reactionNames, formatSourceRead, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
+import { actorName, formatAccess, formatConformance, formatEvent, formatSchedule, reactionNames, formatSourceRead, formatSynced, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
 import {
   AGENTS,
   allow,
@@ -56,6 +56,7 @@ usage: board <command> [options]      (also installed as \`vb\`)
   read [channel] [filters] [--limit N]     the latest threads, one each: root, replies, latest reply
                                            (no channel: every channel)
   read <id>                                one thread, every message (filters: the root and the replies that match)
+  read <link>                              the thread a Slack or GitHub link names, if the board synced it
 
   post <channel|id> ["<text>"] [--label k=v]... [--attach <file>]... [--sync <target>]... [--no-sync] [--id <key>]
                                            a new thread in a channel, or with an id, a reply in its thread
@@ -72,6 +73,7 @@ usage: board <command> [options]      (also installed as \`vb\`)
   label <id> k=v... [--unset k]...
   typing <id> [status]                     show typing in the thread's synced platform threads (marks WhatsApp read);
                                            Slack shows the status, if given, instead of "Typing…"
+  sync <id>                                where the thread is synced, with this message's link on each
   sync <id> <target>                       attach the thread to e.g. slack:#incidents, backfilling it
   inbox <key> [channel] [--limit N]        raw platform events, for debugging sync
   sources                                  the board's sources (its sync entries: slack, github, …)
@@ -613,8 +615,10 @@ async function run(command: string | undefined, args: string[]): Promise<number>
     case 'read': {
       const target = args[0]
       const board = client()
-      if (target && isMessageRef(target)) {
-        const thread = await board.thread(messageId(target))
+      // A platform's link to a message (a Slack permalink, a GitHub comment) reads the board's thread it synced.
+      const link = target !== undefined && /^https?:\/\//i.test(target)
+      if (target && (link || isMessageRef(target))) {
+        const thread = link ? await board.linked(target) : await board.thread(messageId(target))
         // With filters, the root and only the replies that match them.
         const narrowed = Object.keys(filters()).length > 0
         const replies = narrowed
@@ -891,7 +895,12 @@ async function run(command: string | undefined, args: string[]): Promise<number>
 
     case 'sync': {
       const id = messageId(args[0])
-      if (!args[1]) throw new UsageError('usage: board sync <id> <target>   (e.g. slack:#incidents)')
+      if (!args[1]) {
+        const { targets } = await client().sync(id)
+        if (flags.json) return targets.forEach(printJson), 0
+        out(targets.length ? formatSynced(targets) : 'not synced anywhere')
+        return 0
+      }
       const result = await client().sync(id, args[1])
       if (flags.json) printJson(result)
       else out(result.attached ? `synced with ${result.target}` : `already synced with ${result.target}`)

@@ -101,6 +101,15 @@ export type BoardBinding = {
    */
   readSource(key: string, target: string, limit: number): Promise<SourceRead>
   /**
+   * The message a platform link names, as each platform this board syncs reads it: the platform,
+   * and its own thread and message IDs, the message null for a link to a thread. Any entry of that
+   * platform may have synced it, so a lookup tries each. Empty when no entry here reads it. It asks
+   * no platform anything.
+   */
+  locate(url: string): { platform: string; thread: string; message: string | null }[]
+  /** The platform's link to a copy sync recorded, by entry `key` here: null when none runs it, or its platform has none. */
+  linkOf(key: string, thread: string, message: string): Promise<string | null>
+  /**
    * Shows typing in the platform threads a board thread (`messages`, its root first) is synced to,
    * through board()'s sync: what `typing` answers. Answers the threads that took it.
    */

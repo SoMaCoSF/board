@@ -127,7 +127,8 @@ sync: {
 as a prefix: `desk:support:t_812`. A `subthread` extends its `thread`'s ID
 (`desk:support:t_812:r_3` in `desk:support:t_812`), so `groupThread` returns a
 prefix of the ID it's given: the board refuses an import whose subthread isn't
-in its thread. Targets handed to `post`, `resolveTarget`, and the
+in its thread. A subthread's messages are found by their thread too, so a
+platform message ID is unique within its thread, as GitHub's comment IDs are. Targets handed to `post`, `resolveTarget`, and the
 optional methods are native, without it: `support:t_812`. The board records each
 target's `kind` from `resolveTarget`, so it never parses your ID syntax, and a
 channel target on a provider whose `canStartThreads` is false is refused.
@@ -170,9 +171,38 @@ Each has a default that does nothing, or says the platform can't:
 | `read(target, { limit })` | A source read on the board that runs the entry: `readSource(key, target)`, `GET /sources/:key/read` |
 | `mention(actor)` | A board mention in the platform's native form |
 | `findByEmail(email)` | `@[ada@acme.com]` mentions |
+| `locate(url)`, `url(thread, message)` | Links both ways: `vb read <link>` and `vb sync <id>`. See [Links](#links) |
 
 `render(input)` builds the outgoing body when `deliver` gets no renderer;
 override it in a subclass.
+
+## Links
+
+Two methods let the board go between its messages and the platform's links to
+them. Both use the platform's own thread and message IDs, without the sync key:
+
+```ts
+// in your provider, beside post():
+override locate(url: string) {
+  // https://tickets.example.com/t/42#c7 → thread t/42, message c7
+  const found = /^https:\/\/tickets\.example\.com\/(t\/\d+)(?:#(c\d+))?$/.exec(url)
+  return found ? { thread: found[1]!, message: found[2] ?? null } : null
+}
+override async url(thread: string, message: string) {
+  return `https://tickets.example.com/${thread}#${message}`
+}
+```
+
+- **`locate(url)`** reads a link as the platform's thread and message, or
+  `message: null` for a link to a thread itself, and null for a link that
+  isn't the platform's. It asks the platform nothing: the board looks the IDs
+  up in what it synced. `vb read <link>` and `board.linked(url)` use it.
+- **`url(thread, message)`** is the platform's link to one of its messages, or
+  null. `vb sync <id>` and `board.sync(id)` show it for each copy.
+
+A provider without them still syncs: its links just don't resolve, and its
+copies show their IDs. Slack reads permalinks and asks `chat.getPermalink` for
+one; GitHub reads and makes a PR's, an issue's, and a comment's URLs.
 
 ## Through Chat SDK
 

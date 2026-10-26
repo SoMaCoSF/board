@@ -95,7 +95,8 @@ $ vb read 812
 | Command | One line per |
 | --- | --- |
 | `read <channel>`, `read [filters]` | thread: `{ message, replies, last }`, the root, its reply count, and its latest reply or `null` |
-| `read <id>` | message: `{ id, channel, text, re, labels, reactions, by, author, createdAt, … }`, where `re` is the root's ID or `null` for a root |
+| `read <id>`, `read <link>` | message: `{ id, channel, text, re, labels, reactions, by, author, createdAt, … }`, where `re` is the root's ID or `null` for a root |
+| `sync <id>` | target: `{ target, key, thread, message, url, undelivered }`, the message's copy there and the platform's link to it |
 | `tail`, `wait` | event: `{ cursor, type, createdAt, payload, message, actor }` |
 | `post`, `reply` | the new message |
 
@@ -288,6 +289,7 @@ linked account, whose it is (`→ @jb`).
 ```text
 vb read [channel] [filters] [--after <id>] [--limit N]
 vb read <id>
+vb read <link>
 ```
 
 - **`read <channel>`** prints one summary per thread, like a Slack channel:
@@ -299,6 +301,11 @@ vb read <id>
 - **`read <id>`** prints one whole thread: the root and every reply, plus the
   thread's pending schedules. Any message in the thread works. With filters,
   it prints the root and only the replies that match: `vb read 812 --by ada`.
+- **`read <link>`** reads the thread a platform link names: a Slack permalink,
+  a GitHub PR, issue, or comment. The board answers from what its sync
+  recorded and never asks the platform, so a link it didn't sync, or one in a
+  channel you can't read, is the same error, exit 1:
+  `error: no message on this board for that link`.
 - **A channel that doesn't exist** is an error, exit 1:
   `error: no channel <name>: board channels lists them`.
 - `--limit` is 50 by default, at most 500. `--after <id>` reads forward from a
@@ -456,13 +463,26 @@ WhatsApp marks the latest inbound message read. Nothing is written to the log.
 ### sync
 
 ```text
+vb sync <id>
 vb sync <id> <target>
 ```
 
-Attaches the message's thread to an external target and backfills it in
-order. A channel target (`slack:#incidents`) starts a thread there; a thread
-target (`github:owner/repo:12`) joins it. Attaching twice prints `already
-synced with …`. See [Sync](../02-sync/01-overview.md).
+With no target, it prints where the message's thread is synced: a row a
+target, with its sync key, where it is, and the platform's link to this
+message's copy there, or why it didn't reach it. A thread on no platform
+prints `not synced anywhere`.
+
+```text
+$ vb sync 812
+slack   C0C8XN8SQRG     https://vercel.slack.com/archives/C0C8XN8SQRG/p1792780353701549
+github  vercel/v0:4021  https://github.com/vercel/v0/pull/4021#issuecomment-3301
+```
+
+With a target, it attaches the thread there and backfills it in order. A
+channel target (`slack:#incidents`) starts a thread there; a thread target
+(`github:owner/repo:12`) joins it. Either way the thread stays synced both
+ways. Attaching twice prints `already synced with …`. See
+[Sync](../02-sync/01-overview.md).
 
 ### sources
 
@@ -515,7 +535,7 @@ watchers
   passed   matches a registered tail, hands the match to a pull, and takes its ack
 
 sync
-  passed   keeps sync's records: an import as a platform author, its lookups by platform ID, and a receipt
+  passed   keeps sync's records: an import as a platform author, its lookups by platform ID, a receipt, and where it's synced
 
 18 passed
 ```

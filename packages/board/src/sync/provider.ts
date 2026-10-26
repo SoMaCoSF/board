@@ -117,6 +117,14 @@ export abstract class SyncProvider<E extends ProviderEvent = ProviderEvent> {
   /** A linked message the platform didn't describe, read from the platform. */
   async fetchLink(_link: ExternalLink): Promise<FetchedLink> { return { snapshot: null, unavailable: `${this.platform} can't read it` } }
   /**
+   * The message a URL of this platform's names, by its own thread and message IDs, or null for a
+   * URL that isn't one. `message` is null for a link to a thread itself. It asks the platform
+   * nothing: the board answers from what it synced (`vb read <url>`).
+   */
+  locate(_url: string): { thread: string; message: string | null } | null { return null }
+  /** The platform's URL for one of its messages, by its own IDs, or null when it has none (`vb sync <id>`). */
+  async url(_thread: string, _message: string): Promise<string | null> { return null }
+  /**
    * A channel or thread, read on demand for whoever asked: nothing is synced,
    * stored, or joined. Throws `UnreadableError` for what it won't read.
    */

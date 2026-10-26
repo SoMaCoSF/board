@@ -333,6 +333,42 @@ export function createHttp(url: string | undefined, options: HttpOptions, enviro
       if ('self' in caller && bound().sync.some((entry) => entry.key === input.key)) return bound().readSource(input.key, input.target, input.limit ?? 50)
       return remoteCall('readSource', caller, input, signal) as Promise<Protocol['readSource']['output']>
     },
+    // The board it uses has the records; this board's own sync links what it synced there.
+    async synced(caller, input, signal) {
+      const { targets } = (await remoteCall('synced', caller, input, signal)) as Protocol['synced']['output']
+      return {
+        targets: await Promise.all(
+          targets.map(async (row) => ({
+            ...row,
+            url: row.url ?? (row.thread !== null && row.message !== null ? await bound().linkOf(row.key, row.thread, row.message) : null),
+          })),
+        ),
+      }
+    },
+    // A link to what this board's own sync synced is found in its records there, as this deployment;
+    // any other is the board it uses' to find. Either way the caller reads it as itself.
+    async linked(caller, input, signal) {
+      const missing = () => new HttpError(404, 'message_not_found', 'no message on this board for that link')
+      // Each of this board's own entries of the link's platform, under its own key there; then the
+      // board it uses, whose own sync may have synced it.
+      const first = async (): Promise<string | null> => {
+        for (const { platform, thread, message } of bound().locate(input.url))
+          for (const entry of bound().sync.filter((candidate) => candidate.platform === platform)) {
+            const at = await own.syncFind({ thread: `${entry.key}:${thread}`, ...(message !== null ? { message } : {}) }, { signal }).catch(rethrow)
+            const found = message !== null ? at.message : at.thread === null ? null : (await own.syncThread(at.thread).catch(rethrow)).root
+            if (found !== null) return found
+          }
+        return null
+      }
+      const id = await first()
+      if (id === null) return remoteCall('linked', caller, input, signal) as Promise<Protocol['linked']['output']>
+      try {
+        return (await methods.message(caller, { id }, signal)) as Protocol['linked']['output']
+      } catch (error) {
+        if (error instanceof HttpError && error.status === 404) throw missing()
+        throw error
+      }
+    },
     // Typing shows where the board it uses syncs the thread, and where this board's own sync does.
     async typing(caller, input, signal) {
       const { targets } = (await remoteCall('typing', caller, input, signal)) as Protocol['typing']['output']

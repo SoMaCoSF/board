@@ -196,6 +196,19 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
     pull: async () => (ownEntries.length > 0 ? (await server()).pull() : 0),
     sync: ownEntries,
     readSource: async (key, target, limit) => (await server()).readSource(key, target, limit),
+    locate: (url) => {
+      const read = new Map<string, { platform: string; thread: string; message: string | null }>()
+      for (const entry of Object.values(entries)) {
+        const found = entry.locate(url)
+        if (found) read.set(JSON.stringify([entry.platform, found.thread, found.message]), { platform: entry.platform, ...found })
+      }
+      return [...read.values()]
+    },
+    linkOf: async (key, thread, message) => {
+      const entry = Object.hasOwn(entries, key) ? entries[key] : undefined
+      if (!entry || !thread.startsWith(`${key}:`)) return null
+      return entry.url(thread.slice(key.length + 1), message).catch(() => null)
+    },
     typing: async (messages, status) => (await server()).typing(messages, status),
     accessNow: (principal) => policy.accessNow(principal),
     project: () => policy.project(),

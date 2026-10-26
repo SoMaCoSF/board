@@ -240,12 +240,25 @@ This handle's own post with `id`, as posting it answered, or a 404
 ### sync
 
 ```ts
+sync(id: string): Promise<SyncedView>
 sync(id: string, target: string): Promise<{ target: string; attached: boolean }>
+linked(url: string): Promise<ThreadView>
 ```
 
-Attaches the message's thread to an external target and backfills it.
-`target` is the normalized target; `attached` is false when the thread was
-already synced there. See [Sync](../02-sync/01-overview.md).
+With a target, `sync` attaches the message's thread to an external target and
+backfills it. `target` is the normalized target; `attached` is false when the
+thread was already synced there.
+
+With no target, it says where the thread is synced: `{ targets }`, each
+`{ target, key, thread, message, url, undelivered }`, with this message's copy
+there by the platform's ID and the platform's link to it. It needs `read` where
+the message is.
+
+`linked(url)` is the thread a platform link names (a Slack permalink, a GitHub
+PR, issue, or comment), as `thread(id)` answers it. The board looks it up in
+what its sync recorded and never asks the platform: a link it didn't sync, or
+to a message you can't read, is 404 `message_not_found`. See
+[Sync](../02-sync/01-overview.md).
 
 ### typing
 

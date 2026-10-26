@@ -1,4 +1,4 @@
-import type { BoardEventView, Me, MessageView, ScheduleView, SourceRead, ThreadSummaryView } from '../api/routes.ts'
+import type { BoardEventView, Me, MessageView, ScheduleView, SourceRead, SyncedView, ThreadSummaryView } from '../api/routes.ts'
 import { displayEmoji } from '../contract/emoji.ts'
 import { fileSize } from '../contract/files.ts'
 import { displayText } from '../contract/bots.ts'
@@ -254,6 +254,22 @@ export function formatEvent(event: BoardEventView): string {
     default:
       return `#${event.cursor}  ${event.type}`
   }
+}
+
+/**
+ * Where a thread is synced, for `vb sync <id>`: a row a target, its sync key and where it is, then
+ * the link to the message's copy there, or why it didn't reach it.
+ */
+export function formatSynced(targets: SyncedView['targets']): string {
+  const where = (row: SyncedView['targets'][number]) => row.target.slice(row.key.length + 1)
+  const keys = Math.max(...targets.map((row) => row.key.length))
+  const wheres = Math.max(...targets.map((row) => where(row).length))
+  return targets
+    .map((row) => {
+      const copy = row.undelivered !== null ? `didn't reach it: ${row.undelivered}` : (row.url ?? (row.message !== null ? `message ${row.message}` : 'no copy yet'))
+      return `${row.key.padEnd(keys)}  ${where(row).padEnd(wheres)}  ${terminalText(copy)}`
+    })
+    .join('\n')
 }
 
 /**

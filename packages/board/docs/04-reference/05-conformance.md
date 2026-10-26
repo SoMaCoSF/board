@@ -56,7 +56,7 @@ Then the rest, a group each in the report:
 | `schedules` | schedules a reply a day out, lists it, and cancels it |
 | `attachments` | uploads a file, posts it, and downloads it |
 | `watchers` | registers a tail, pulls the match for a post, and acks it. Skipped when the token already has watchers or a sync registered there, since registering replaces them |
-| `sync` | imports a message as a platform user of its own (`conformance:user:<id>`), finds it by its platform IDs, imports it again to the same message, refuses a second root from the same platform thread, records a receipt and reads the copy back, and deletes it. Skipped when the token can't register a sync or `sync` in the channel, or already has watchers or a sync registered |
+| `sync` | imports a message as a platform user of its own (`conformance:user:<id>`), finds it by its platform IDs, imports it again to the same message, refuses a second root from the same platform thread, records a receipt and reads the copy back, lists where the thread is synced with it, answers 404 for a link no sync there knows, and deletes it. Skipped when the token can't register a sync or `sync` in the channel, or already has watchers or a sync registered |
 
 Every board answers all of them: see
 [the whole protocol](./03-http.md#the-whole-protocol). A board may keep no

@@ -306,7 +306,7 @@ const CHECKS: Check[] = [
   },
   {
     group: 'sync',
-    name: "keeps sync's records: an import as a platform author, its lookups by platform ID, and a receipt",
+    name: "keeps sync's records: an import as a platform author, its lookups by platform ID, a receipt, and where it's synced",
     run: async (ctx) => {
       // A platform of its own, so nothing reaches a real one: `conformance:<run>`.
       const key = 'conformance'
@@ -361,6 +361,10 @@ const CHECKS: Check[] = [
         await ctx.board.syncReceipt({ kind: 'thread', message: id!, target: external.thread, targetKind: 'thread', cause: 'request' })
         await ctx.board.syncReceipt({ kind: 'message', message: id!, target: external.thread, external })
         same(JSON.stringify((await ctx.board.syncCopies([id!]))[id!]?.[external.thread]), JSON.stringify(external), 'the copy its receipt recorded')
+        // Readers see where it's synced from the same records, and a link no sync here knows names nothing.
+        const { targets } = await ctx.board.sync(id!)
+        check(targets.some((row) => row.target === external.thread && row.message === external.message), `where the thread is synced should show the copy its receipt recorded, got ${show(targets)}`)
+        await rejects(ctx.board.linked(`https://conformance.invalid/${ctx.labels.conformance}`), 404, 'message_not_found', 'a link no sync here knows')
       } finally {
         // Its author is the platform user: only an import can take it down.
         await ctx.board.syncImport({ op: 'delete', author, from: key, origin }).catch(() => {})

@@ -207,6 +207,9 @@ export const SourceReadQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional(),
 })
 
+/** A platform's link to a message or thread, such as a Slack permalink or a GitHub comment's URL. */
+export const LinkedQuery = z.object({ url: z.string().url().max(4000) })
+
 export const IdentityUnlinkBody = z.object({ actor: z.string().min(1).max(256) })
 
 /** A sync entry's key: `slack`, `github`. */
@@ -550,6 +553,26 @@ export type InboxItem = {
 
 export type ChannelView = Channel
 export type MessagesPage = { messages: MessageView[]; cursor: string }
+/**
+ * Where a message's thread is synced: each target, the platform thread it is there, and this
+ * message's copy, with the platform's link to it when the sync that knows the platform runs here.
+ */
+export type SyncedView = {
+  targets: {
+    /** As the thread's sync records it: `slack:C0123ABC`, `github:acme/www:12`. */
+    target: string
+    /** The sync entry it belongs to: `slack`. */
+    key: string
+    /** The platform thread this message's copy is in, or the one the target is, once it has one. */
+    thread: string | null
+    /** This message's copy there, by the platform's ID: null when it has none. */
+    message: string | null
+    url: string | null
+    /** Why the message didn't reach it, when it didn't. */
+    undelivered: string | null
+  }[]
+}
+
 export type ThreadView = {
   message: MessageView
   replies: MessageView[]
@@ -621,6 +644,10 @@ export const routes = {
   label: { method: 'POST', path: '/messages/:id/labels', body: LabelBody },
   /** Attaches the thread to a sync target, recording a `thread` receipt: needs `sync` where the thread is. */
   sync: { method: 'POST', path: '/messages/:id/sync', body: SyncBody },
+  /** Where the message's thread is synced, and its copy on each target: needs `read` where it is. */
+  synced: { method: 'GET', path: '/messages/:id/sync' },
+  /** The board message a platform link names, from what the board synced: 404 `message_not_found` for one it didn't, or that the caller can't read. */
+  linked: { method: 'GET', path: '/links', query: LinkedQuery },
   /** Ephemeral: shows typing in the thread's synced platform threads, and writes nothing to the log. Needs `post` where the thread is. */
   typing: { method: 'POST', path: '/messages/:id/typing', body: TypingBody },
   /** Posts a message later, as the caller: needs a scheduler. */

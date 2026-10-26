@@ -106,6 +106,7 @@ const kit = {
     replies: async () => ({ messages: [], has_more: false }),
   },
   users: { info: async ({ user }: { user: string }) => ({ user: { id: user, real_name: user === 'U_ADA' ? 'Ada Lovelace' : 'Julian' } }) },
+  chat: { getPermalink: async ({ channel, message_ts }: { channel: string; message_ts: string }) => ({ permalink: `https://acme.slack.com/archives/${channel}/p${message_ts.replace('.', '')}` }) },
 }
 
 describe('the CLI on a board that runs a sync', () => {
@@ -157,5 +158,31 @@ describe('the CLI on a board that runs a sync', () => {
       code: 1,
       stderr: "error: this board doesn't run sync entry slack: read it where its sync runs\n",
     })
+  }, 20_000)
+
+  it("reads the thread a Slack link names, and says where a thread is synced, with each copy's link", async () => {
+    await synced.fetch(
+      new Request(`${url}/webhooks/slack`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'message', threadId: 'slack:C1:1727000000.123456', id: '1727000000.123456', text: 'checkout is down', user: 'U_ADA' }),
+      }),
+    )
+    const julian = caller(synced.fetch, await personToken('u_julian', url))
+    let root = ''
+    await vi.waitFor(async () => {
+      root = (await julian('GET', '/messages?channel=firehose&text=checkout')).body.messages[0]?.id
+      expect(root).toBeTruthy()
+    })
+    const read = await on(['read', 'https://acme.slack.com/archives/C1/p1727000000123456'])
+    expect(read).toMatchObject({ code: 0, stderr: '' })
+    expect(read.stdout).toContain(`#${root}  U_ADA`)
+    expect(read.stdout).toContain('checkout is down')
+    expect(await on(['sync', root])).toEqual({
+      code: 0,
+      stdout: 'slack  C1:1727000000.123456  https://acme.slack.com/archives/C1/p1727000000123456\n',
+      stderr: '',
+    })
+    expect(await on(['read', 'https://acme.slack.com/archives/C1/p1727000009000000'])).toEqual({ code: 1, stdout: '', stderr: 'error: no message on this board for that link\n' })
   }, 20_000)
 })

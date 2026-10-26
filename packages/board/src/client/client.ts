@@ -19,6 +19,7 @@ import type {
   SyncReceiptInput,
   SyncThreadView,
   SourceRead,
+  SyncedView,
   Me,
   MatchView,
   MessagesPage,
@@ -363,9 +364,22 @@ export function createBoardClient(options: ClientOptions) {
      */
     typing: async (id: string, status?: string) =>
       (await call<TypingResult>('POST', `/messages/${path(id)}/typing`, { body: status ? { status } : {} })).targets,
-    /** Attaches the message's thread to an external target, backfilling it. Attaching twice is a no-op. */
-    sync: (id: string, target: string) =>
-      call<{ target: string; attached: boolean }>('POST', `/messages/${path(id)}/sync`, { body: { target } }),
+    /**
+     * With a target, attaches the message's thread to it, backfilling it: attaching twice is a no-op.
+     * Without one, where the thread is synced, and this message's copy on each target, with its link.
+     */
+    sync: ((id: string, target?: string) =>
+      target === undefined
+        ? call<SyncedView>('GET', `/messages/${path(id)}/sync`)
+        : call<{ target: string; attached: boolean }>('POST', `/messages/${path(id)}/sync`, { body: { target } })) as {
+      (id: string): Promise<SyncedView>
+      (id: string, target: string): Promise<{ target: string; attached: boolean }>
+    },
+    /**
+     * The thread of the board message a platform link names (a Slack permalink, a GitHub comment's
+     * URL), from what the board synced: the platform is never asked. 404 for one it didn't sync.
+     */
+    linked: (url: string) => call<ThreadView>('GET', `/links${queryString({ url })}`),
     /** Raw platform events for a sync entry, newest first. */
     inbox: async (key: string, opts: { channel?: string; limit?: number } = {}) =>
       (await call<{ events: InboxEntry[] }>('GET', `/inbox/${key}${queryString(opts)}`)).events,

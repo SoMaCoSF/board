@@ -33,6 +33,10 @@ export type ChatTransport = Omit<ProviderOptions, 'uploadsFiles'> & {
   /** Platform messages a message links to, located under sync key `key`. */
   links?(key: string, message: ChatMessage): ExternalLink[]
   fetchLink?(link: ExternalLink): Promise<FetchedLink>
+  /** The message a URL of the platform's names, by its own IDs: `SyncProvider.locate`. */
+  locate?(url: string): { thread: string; message: string | null } | null
+  /** The platform's URL for a message, by its own IDs: `SyncProvider.url`. */
+  url?(thread: string, message: string): Promise<string | null>
   /** A channel or thread, read on demand without syncing it. */
   read?(target: string, options: { limit: number }): Promise<SourceRead>
   avatar?(message: ChatMessage): Promise<string | null>
@@ -91,7 +95,7 @@ export abstract class ChatSyncProvider<E extends ProviderEvent = ProviderEvent> 
     return `${this.transport.adapter.name}:${this.transport.toChatId?.(id) ?? id}`
   }
 
-  protected locate(key: string, chatThread: string) {
+  protected locationOf(key: string, chatThread: string) {
     const native = this.toNative(chatThread)
     const precise = `${key}:${native}`
     const thread = `${key}:${this.transport.groupThread?.(native) ?? native}`
@@ -125,13 +129,13 @@ export abstract class ChatSyncProvider<E extends ProviderEvent = ProviderEvent> 
   protected async normalize(key: string, input: ChatInput): Promise<ReceivedEvent> {
     const dedupe = this.eventId(key, input)
     if (input.kind === 'deleted') {
-      return { dedupe, raw: input.raw, event: { kind: 'deleted', ...this.locate(key, input.thread), message: input.message } }
+      return { dedupe, raw: input.raw, event: { kind: 'deleted', ...this.locationOf(key, input.thread), message: input.message } }
     }
     if (input.kind === 'reaction') {
       const event = input.reaction
       const emoji = (event.emoji?.name ?? event.rawEmoji).toLowerCase().replace(/[^a-z0-9_+-]/g, '_').slice(0, 64) || 'unknown'
       return { dedupe, raw: event.raw, event: {
-        kind: 'reaction', ...this.locate(key, event.threadId), message: event.messageId,
+        kind: 'reaction', ...this.locationOf(key, event.threadId), message: event.messageId,
         emoji, added: event.added, author: this.author(event.user, event.raw),
       } }
     }
@@ -139,7 +143,7 @@ export abstract class ChatSyncProvider<E extends ProviderEvent = ProviderEvent> 
     const found = this.transport.links?.(key, message) ?? []
     const links = found.length ? { links: found.slice(0, LINKS_PER_MESSAGE_MAX) } : {}
     const common = {
-      ...this.locate(key, message.threadId), message: message.id,
+      ...this.locationOf(key, message.threadId), message: message.id,
       text: this.transport.markdown?.(message) ?? markdownOf(message), author: await this.authorOf(message),
       ...links,
     }
@@ -196,6 +200,12 @@ export abstract class ChatSyncProvider<E extends ProviderEvent = ProviderEvent> 
   }
   override async fetchLink(link: ExternalLink): Promise<FetchedLink> {
     return this.transport.fetchLink ? this.transport.fetchLink(link) : super.fetchLink(link)
+  }
+  override locate(url: string): { thread: string; message: string | null } | null {
+    return this.transport.locate ? this.transport.locate(url) : super.locate(url)
+  }
+  override async url(thread: string, message: string): Promise<string | null> {
+    return this.transport.url ? this.transport.url(thread, message) : super.url(thread, message)
   }
 
   override async read(target: string, options: { limit: number }): Promise<SourceRead> {

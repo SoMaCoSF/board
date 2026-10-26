@@ -18,6 +18,7 @@ import {
   SchedulesQuery,
   SignInQuery,
   SourceReadQuery,
+  LinkedQuery,
   SyncAccountBody,
   SyncBody,
   SyncCodeBody,
@@ -93,6 +94,7 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
       return {}
     case 'message':
     case 'posted':
+    case 'synced':
     case 'delete':
     case 'cancelSchedule':
     case 'attachment':
@@ -169,6 +171,8 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
       return { id, ...(TypingBody.parse(await body()) ?? {}) }
     case 'readSource':
       return { key, ...SourceReadQuery.parse(queryObject(url)) }
+    case 'linked':
+      return LinkedQuery.parse(queryObject(url))
   }
 }
 
