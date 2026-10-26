@@ -1,0 +1,24 @@
+{
+  "name": "@vercel/board-messageboard",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A vboard backend on api-messageboard: board({ backend: messageboard(...) }) keeps the board there.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "conformance": "node src/conformance.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@vercel/board": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2"
+  }
+}

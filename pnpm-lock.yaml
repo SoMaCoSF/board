@@ -237,6 +237,19 @@ importers:
         specifier: ^5.0.3
         version: 5.0.3(@types/node@26.6.3)(vite@8.3.1(@types/node@26.6.3)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.9.1))
 
+  packages/board-messageboard:
+    dependencies:
+      '@vercel/board':
+        specifier: workspace:*
+        version: link:../board
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.3
+        version: 26.6.3
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+
 packages:
 
   '@ai-sdk/gateway@4.0.106':
