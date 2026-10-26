@@ -79,7 +79,7 @@ describe.skipIf(!url)('board on Postgres', () => {
     const at = new URL(url!)
     at.pathname = '/postgres'
     const missing = postgres({ connectionString: at.toString() })
-    await expect(missing.tables.message(1)).rejects.toThrow(/apply node_modules\/board\/sql\/postgres\/schema\.sql/)
+    await expect(missing.tables.message(1)).rejects.toThrow(/apply node_modules\/@vercel\/board\/sql\/postgres\/schema\.sql/)
     await missing.close()
   })
 })
