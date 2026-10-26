@@ -560,6 +560,14 @@ export function messageboard(options: MessageboardOptions): Backend {
     async readSource(_caller, { key }) {
       throw new HttpError(404, 'not_synced_here', `this board doesn't run sync entry ${key}`)
     },
+    // Nothing syncs from this board yet: a message it can read is synced nowhere, and no link names one.
+    async synced(_caller, { id }) {
+      await api('GET', await onBoard(`/messages/${encodeURIComponent(id)}`))
+      return { targets: [] }
+    },
+    async linked() {
+      throw new HttpError(404, 'message_not_found', "this board syncs nothing yet, so no platform link names one of its messages")
+    },
 
     schedule: notKept('no_scheduler', 'schedules'),
     schedules: notKept('no_scheduler', 'schedules'),
