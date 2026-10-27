@@ -65,5 +65,5 @@ export function delegateClaims(delegate: Delegate, claims: Claims): Claims {
     throw badRequest(`this token writes as ${delegate.profile ?? 'its principal, with no profile'}: drop x-board-profile`, 'delegate_profile')
   if (claims.session !== null && claims.session !== delegate.session)
     throw badRequest(`this token writes from ${delegate.session === null ? 'no session' : `session ${delegate.session}`}: drop x-board-session`, 'delegate_session')
-  return { ...claims, profile: delegate.profile, avatar: delegate.avatar ?? claims.avatar, session: delegate.session, handle: null, name: delegate.name }
+  return { ...claims, profile: delegate.profile, avatar: delegate.avatar, session: delegate.session, handle: null, name: delegate.name }
 }

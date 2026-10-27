@@ -158,6 +158,22 @@ describe('a board behind Vercel Deployment Protection, without VERCEL_AUTOMATION
     expect(runtimeToken).toHaveBeenCalledWith({ audience: BOARD_URL })
   })
 
+  it("sends the deployment's own OIDC token to Trusted Sources, never a delegate token", async () => {
+    vi.stubEnv('VERCEL', '1')
+    const board = testBoard()
+    const { token: delegate } = await board.token({ profile: 'lemur' })
+    vi.stubEnv('BOARD_TOKEN', delegate)
+    const sent: Headers[] = []
+    const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init)
+      sent.push(request.headers)
+      return board.fetch(request)
+    }) as typeof globalThis.fetch
+    await handle({ url: BOARD_URL, token: delegate, fetch }).post('dev', 'from a sandbox')
+    expect(sent.at(-1)!.get('authorization')).toBe(`Bearer ${delegate}`)
+    expect(sent.at(-1)!.get('x-vercel-trusted-oidc-idp-token')).toBe('runtime-token')
+  })
+
   it('explains how to configure hosted OIDC when minting fails without leaking the error', async () => {
     vi.stubEnv('VERCEL', '1')
     runtimeToken.mockRejectedValue(new Error('private runtime details'))

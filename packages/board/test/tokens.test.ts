@@ -52,6 +52,8 @@ describe('delegate tokens', () => {
     expect(await as({ 'x-board-profile': 'someone-else' })).toMatchObject({ status: 400, body: { error: { code: 'delegate_profile' } } })
     expect(await as({ 'x-board-session': 'thread-2' })).toMatchObject({ status: 400, body: { error: { code: 'delegate_session' } } })
     expect(await as({ 'x-board-profile': 'lemur', 'x-board-session': 'thread-1' })).toMatchObject({ status: 200, body: { profile: 'lemur' } })
+    // Its avatar is the token's too: a header can't dress it up.
+    expect(await as({ 'x-board-avatar': 'https://evil.example/face.png' })).toMatchObject({ status: 200, body: { avatar: null } })
   })
 
   it('do at most what their scope says, and a channel glob is its subtree', async () => {

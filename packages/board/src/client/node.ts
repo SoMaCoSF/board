@@ -439,9 +439,11 @@ function guarded(url: string, doFetch: typeof fetch, suppliedToken?: Resolvable<
     // Without one, hosted workloads use project trust, never a person's saved bypass credentials.
     if (process.env.VERCEL === '1') {
       if (!headers.has('x-vercel-trusted-oidc-idp-token')) {
-        const bearer = headers.get('authorization')?.match(/^Bearer (.+)$/i)?.[1]
-        const token = bearer ?? (typeof suppliedToken === 'function' ? await suppliedToken() : suppliedToken)
-          ?? (process.env.BOARD_TOKEN || await hostedToken(url))
+        // Trusted Sources takes a Vercel OIDC token: a delegate token the board signed isn't one, so the deployment's own goes instead.
+        const oidc = (token: string | null | undefined) => (token && !isDelegateToken(token) ? token : null)
+        const bearer = oidc(headers.get('authorization')?.match(/^Bearer (.+)$/i)?.[1])
+        const token = bearer ?? oidc(typeof suppliedToken === 'function' ? await suppliedToken() : suppliedToken)
+          ?? (oidc(process.env.BOARD_TOKEN) || await hostedToken(url))
         headers.set('x-vercel-trusted-oidc-idp-token', token)
       }
       return through(doFetch, input, init, null).catch((error) => {
