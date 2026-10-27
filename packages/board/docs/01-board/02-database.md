@@ -209,6 +209,37 @@ doesn't reach the board. Schedules live in the log, so create them again; a
 board on `http()` registers its watchers again when it next starts, or on
 `POST /watchers`.
 
+## Moving from vboard
+
+`@vercel/board` keeps its log under new names (`board`, `board-schedules`, …),
+so a board that ran on `vboard` 0.14 opens empty on the same store. Copy
+vboard's log over once with `migrateFromVboard`, on the same store, before
+the new board writes anything:
+
+```ts
+import { migrateFromVboard, replayClock } from '@vercel/board/backend-a2'
+import { redisHttp } from '@vercel/board/backend-a2/store-redis-http'
+
+const clock = replayClock()
+const store = redisHttp({ url, token, keyPrefix: 'my-board', clock })
+console.log(await migrateFromVboard({ store, clock, blob }))
+// [{ from: 'vboard\u001fboard', to: 'board\u001fboard', copied: 18234, existing: 0, files: 41 }, …]
+```
+
+It copies the board's messages, schedules, linked accounts, and registered
+watchers, in order. Each event keeps its ID, index, and time, so message IDs,
+thread keys, and schedules stay the same. vboard's own principals
+(`vboard:client`) become board's (`board:client`). It fills the tables from the
+copy, and with `blob`, copies each message's files from `vboard/attachments/`
+to `board/attachments/`. Sync and watchers start after the copy, so nothing is
+sent to a platform or woken again. Platform inboxes and watchers' pending
+queues start empty.
+
+Stop vboard first, or run it again right before the new board's first write:
+a run that stopped partway, or ran before vboard wrote more, picks up where it
+left off. Once the new board has written to a session, the migration refuses
+it. An event board's contract no longer accepts stops it before it writes.
+
 ## SQLite
 
 `sqlite({ path })` keeps the log and the tables in one file, and creates the

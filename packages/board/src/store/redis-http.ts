@@ -1,5 +1,6 @@
 import { redisHttp as a2RedisHttp } from 'experimental-a2/store-redis-http'
 import { redisTables, type RedisCall } from './redis-tables.ts'
+import type { Clock } from 'experimental-a2/server'
 import type { BoardStore } from './types.ts'
 
 export type RedisHttpOptions = {
@@ -13,12 +14,14 @@ export type RedisHttpOptions = {
    * to a new prefix and starts with an empty log: on one board 0.13 wrote, every request answers 503.
    */
   keyPrefix?: string
+  /** Stamps every stored time: `migrateFromVboard`'s `replayClock()` keeps each copied event's. */
+  clock?: Clock
 }
 
 /** A board on Redis over Upstash's REST API: no connection to keep, so it suits functions. */
 export function redisHttp(options: RedisHttpOptions): BoardStore {
   const keyPrefix = options.keyPrefix ?? 'a2'
-  const log = a2RedisHttp({ url: options.url, token: options.token, keyPrefix })
+  const log = a2RedisHttp({ url: options.url, token: options.token, keyPrefix, ...(options.clock ? { clock: options.clock } : {}) })
   const call: RedisCall = async (command, ...args) => {
     const response = await fetch(options.url, {
       method: 'POST',

@@ -245,6 +245,9 @@ importers:
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
+      vboard:
+        specifier: 0.14.0
+        version: 0.14.0(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))(@upstash/qstash@2.12.0)(@vercel/blob@2.8.0)(@vercel/queue@0.7.0)(ai@7.0.130(zod@4.6.5))(debug@4.4.3)(ioredis@5.11.1)(pg@8.23.1)(react@19.3.0)
       vitest:
         specifier: ^5.0.3
         version: 5.0.3(@types/node@26.6.3)(vite@8.3.1(@types/node@26.6.3)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.9.1))
@@ -2935,6 +2938,29 @@ packages:
   vary@1.1.2:
     resolution: {integrity: sha512-BNGbWLfd0eUPabhkXUVm0j8uuvREyTh5ovRa/dyow/BqAbZJyC+5fU+IzQOzmAKzYqYRAISoRhdQr3eIZ/PXqg==}
     engines: {node: '>= 0.8'}
+
+  vboard@0.14.0:
+    resolution: {integrity: sha512-D8J0Gu/R4V9gjRq3iiR0BrEHrWKvqOeQj3X/zfz/pNLgS5J2FKQA2XvU8qJGX14AJNmT6nIVdtAaTxqwlQGk9w==}
+    engines: {node: '>=22.18'}
+    deprecated: 'vboard is now @vercel/board: npm i @vercel/board'
+    hasBin: true
+    peerDependencies:
+      '@upstash/qstash': ^2.11.0
+      '@vercel/blob': ^2.8.0
+      '@vercel/queue': '*'
+      ioredis: ^5.4.0
+      pg: ^8.11.0
+    peerDependenciesMeta:
+      '@upstash/qstash':
+        optional: true
+      '@vercel/blob':
+        optional: true
+      '@vercel/queue':
+        optional: true
+      ioredis:
+        optional: true
+      pg:
+        optional: true
 
   verkit@0.4.1:
     resolution: {integrity: sha512-mMVzj0TXExtVdlDEq+Mzp0eyOuyznNpFobNM3uAqe3HVm/Ps2c+u17BligMkZjZCA6EiXpoon8iRTer3iu40SQ==}
@@ -5880,6 +5906,40 @@ snapshots:
 
   vary@1.1.2:
     optional: true
+
+  vboard@0.14.0(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))(@upstash/qstash@2.12.0)(@vercel/blob@2.8.0)(@vercel/queue@0.7.0)(ai@7.0.130(zod@4.6.5))(debug@4.4.3)(ioredis@5.11.1)(pg@8.23.1)(react@19.3.0):
+    dependencies:
+      '@chat-adapter/github': 4.41.1(ai@7.0.130(zod@4.6.5))(zod@4.6.5)
+      '@chat-adapter/slack': 4.41.1(ai@7.0.130(zod@4.6.5))(debug@4.4.3)(zod@4.6.5)
+      '@vercel/connect': 2.3.4(@chat-adapter/slack@4.41.1(ai@7.0.130(zod@4.6.5))(debug@4.4.3)(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))(ai@7.0.130(zod@4.6.5))
+      '@vercel/oidc': 3.8.9
+      chat: 4.41.1(ai@7.0.130(zod@4.6.5))(zod@4.6.5)
+      experimental-a2: 0.22.0(@upstash/qstash@2.12.0)(@vercel/queue@0.7.0)(ai@7.0.130(zod@4.6.5))(ioredis@5.11.1)(pg@8.23.1)(react@19.3.0)
+      jose: 6.2.12
+      zod: 4.6.5
+    optionalDependencies:
+      '@upstash/qstash': 2.12.0
+      '@vercel/blob': 2.8.0
+      '@vercel/queue': 0.7.0
+      ioredis: 5.11.1
+      pg: 8.23.1
+    transitivePeerDependencies:
+      - '@ai-sdk/mcp'
+      - '@auth/core'
+      - '@earendil-works/pi-ai'
+      - '@earendil-works/pi-coding-agent'
+      - '@modelcontextprotocol/sdk'
+      - '@opentelemetry/api'
+      - ai
+      - better-auth
+      - bufferutil
+      - debug
+      - eve
+      - libfx
+      - react
+      - supports-color
+      - utf-8-validate
+      - workflow
 
   verkit@0.4.1: {}
 
