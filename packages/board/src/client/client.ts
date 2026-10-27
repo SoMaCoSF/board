@@ -34,6 +34,7 @@ import type {
   ThreadsQueryInput,
   ThreadSummaryView,
   ThreadView,
+  TokenView,
   TypingResult,
 } from '../api/routes.ts'
 import type { Actor } from '../contract/folds.ts'
@@ -185,6 +186,43 @@ export type Written<T> = T & { unknownMentions?: string[] }
 const written = <T>(value: T, unknownMentions: string[] | undefined): Written<T> =>
   unknownMentions?.length ? { ...value, unknownMentions } : (value as Written<T>)
 
+/** Whether `token` is a delegate token a board signed (`board-delegate+jwt`): read, never verified. */
+export function isDelegateToken(token: string): boolean {
+  const header = token.split('.')[0]
+  if (!header || token.split('.').length !== 3) return false
+  try {
+    const text = atob(header.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(header.length / 4) * 4, '='))
+    return (JSON.parse(text) as { typ?: unknown }).typ === 'board-delegate+jwt'
+  } catch {
+    return false
+  }
+}
+
+/** What `token()` asks for: who the delegate writes as, what it may do of what you may, and for how long. */
+export type TokenOptions = {
+  /** The profile it writes as, under your principal: `clever-lemur-1956`. Yours by default. */
+  profile?: string
+  avatar?: string
+  /** The agent session it writes from. Yours by default. */
+  session?: string
+  /**
+   * What it may do, at most, of what you may: `x-board-scope`'s syntax (`feedback/=post`), a list
+   * for every channel (`['read', 'post']`), or a map from pattern to grant (`{ 'dev/': ['read', 'post'] }`).
+   * Everything you may, by default.
+   */
+  can?: string | 'all' | readonly string[] | Readonly<Record<string, 'all' | readonly string[]>>
+  /** `'30m'`, `'2h'` (the most), or milliseconds. `'1h'` by default. */
+  ttl?: string | number
+}
+
+/** A `can` as a scope string. */
+export function scopeString(can: NonNullable<TokenOptions['can']>): string {
+  const grant = (value: 'all' | readonly string[]) => (value === 'all' ? 'all' : value.join(','))
+  if (typeof can === 'string') return can === 'all' ? '*=all' : can
+  if (Array.isArray(can)) return `*=${grant(can as readonly string[])}`
+  return Object.entries(can as Record<string, 'all' | readonly string[]>).map(([pattern, value]) => `${pattern}=${grant(value)}`).join(';')
+}
+
 export function createBoardClient(options: ClientOptions) {
   const base = options.url.replace(/\/+$/, '')
   // Browsers reject a bare `fetch` detached from `window` ("Illegal invocation").
@@ -194,7 +232,13 @@ export function createBoardClient(options: ClientOptions) {
   async function headers(auth: boolean, as?: ProfileOption): Promise<Record<string, string>> {
     const out: Record<string, string> = { ...(options.headers ? await resolve(options.headers) : {}) }
     if (!auth) return out
-    if (options.token !== undefined) out.authorization = `Bearer ${await resolve(options.token)}`
+    const token = options.token === undefined ? undefined : await resolve(options.token)
+    if (token !== undefined) out.authorization = `Bearer ${token}`
+    // A delegate token says who it writes as itself: only a profile asked for here goes with it, for the board to refuse.
+    if (token !== undefined && isDelegateToken(token)) {
+      if (as !== undefined && as !== null) out['x-board-profile'] = typeof as === 'string' ? as : as.name
+      return out
+    }
     const profile = as !== undefined ? as : options.profile === undefined ? null : await resolve(options.profile)
     if (profile !== null) {
       const { name, avatar } = typeof profile === 'string' ? { name: profile, avatar: undefined } : profile
@@ -274,6 +318,20 @@ export function createBoardClient(options: ClientOptions) {
       }),
     discovery: () => call<Discovery>('GET', '/', { auth: false }),
     me: () => call<Me>('GET', '/me'),
+    /**
+     * A delegate token, signed by the board: it writes as you, with the profile and session it
+     * names, and does at most what `can` says of what you may: for an agent's sandbox, say.
+     */
+    token: (input: TokenOptions = {}) =>
+      call<TokenView>('POST', '/tokens', {
+        body: {
+          ...(input.profile !== undefined ? { profile: input.profile } : {}),
+          ...(input.avatar !== undefined ? { avatar: input.avatar } : {}),
+          ...(input.session !== undefined ? { session: input.session } : {}),
+          ...(input.can !== undefined ? { scope: scopeString(input.can) } : {}),
+          ...(input.ttl !== undefined ? { ttl: typeof input.ttl === 'number' ? `${Math.floor(input.ttl / 1000)}s` : input.ttl } : {}),
+        },
+      }),
     channels: async () => (await call<{ channels: ChannelView[] }>('GET', '/channels')).channels,
     actors: async () => (await call<{ actors: (Actor & { person?: ActorView['person'] })[] }>('GET', '/actors')).actors,
 

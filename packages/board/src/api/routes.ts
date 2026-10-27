@@ -11,6 +11,7 @@ import {
   MESSAGE_TEXT_MAX,
   MessageText,
   platformAvatar,
+  SCOPE_MAX,
   storable,
 } from '../contract/schemas.ts'
 import { ExternalAuthor, ExternalEvent, ExternalTarget, Link as LinkSchema, LINKS_PER_MESSAGE_MAX, Origin } from '../contract/external.ts'
@@ -360,6 +361,22 @@ export const InboxAckBody = z.object({ lease: z.string().min(1).max(64), error: 
 
 /** A one-time code for linking an account on sync entry `sync`: a person's own, for themselves. */
 export const SyncCodeBody = z.object({ sync: SyncKey })
+
+/**
+ * A token for a delegate (an agent in a sandbox, a widget), signed by the board: it writes as the
+ * caller's principal, with this profile, avatar, and session, and does at most what `scope` says
+ * (`x-board-scope`'s syntax, `feedback/=post`) of what the caller may do. `ttl` is capped at 2h,
+ * and at the caller's own token's expiry.
+ */
+export const TokenBody = z
+  .object({
+    profile: z.string().regex(/^[A-Za-z][A-Za-z0-9-]{0,31}$/, 'profile names start with a letter and use up to 32 letters, numbers, and hyphens').optional(),
+    avatar: z.string().max(2000).optional(),
+    session: z.string().trim().min(1).max(200).optional(),
+    scope: z.string().min(1).max(SCOPE_MAX).optional(),
+    ttl: Duration.optional(),
+  })
+  .default({})
 /**
  * A platform account, linked to whoever a code was issued to: one posted from the account, or
  * carried through its sign-in. `message` is the platform message that posted it.
@@ -492,6 +509,17 @@ export type BoardEventView = BoardEvent extends infer E
       }
     : never
   : never
+
+/** A delegate token, as `POST /tokens` answers it. */
+export type TokenView = {
+  token: string
+  expiresAt: string
+  /** What it may do at most: the caller's access, narrowed by `scope`, as it is now. */
+  can: AccessSummary
+}
+
+/** The public keys the board signs delegate tokens with, as `GET /.well-known/jwks.json` publishes them. */
+export type KeysView = { keys: Record<string, unknown>[] }
 
 export type Discovery = {
   version: string
@@ -765,6 +793,10 @@ export const routes = {
   openapi: { method: 'GET', path: '/openapi.json' },
   /** Your linked platform accounts. */
   identity: { method: 'GET', path: '/identity' },
+  /** A delegate token, signed by the board: never for a narrowed caller or another delegate. 501 `no_tokens` where the board signs none. */
+  token: { method: 'POST', path: '/tokens', body: TokenBody },
+  /** The public keys delegate tokens are signed with. No token. */
+  keys: { method: 'GET', path: '/.well-known/jwks.json' },
   /** Starts a sign-in that carries a code (no token), on the board that runs the entry's sync. */
   signIn: { method: 'GET', path: '/identity/sign-in', query: SignInQuery },
   /** Where a sign-in comes back (no token): links the account it authorized to the code's person. */

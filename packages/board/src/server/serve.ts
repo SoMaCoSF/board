@@ -31,6 +31,7 @@ import {
   SyncRootsQuery,
   SyncUnlinkBody,
   ThreadsQuery,
+  TokenBody,
   TypingBody,
   type MessageView,
 } from '../api/routes.ts'
@@ -55,7 +56,7 @@ import type { WatcherContext } from './watcher.ts'
 import { VERSION } from '../version.ts'
 
 /** The methods whose answer is something new. */
-const CREATED = new Set<Method>(['post', 'schedule', 'upload', 'uploadFinish'])
+const CREATED = new Set<Method>(['post', 'schedule', 'upload', 'uploadFinish', 'token'])
 
 /** Shown inline only when a browser can't run it: everything else downloads. */
 const INLINE = /^(image\/(png|jpeg|gif|webp|avif)|video\/(mp4|webm)|text\/plain)$/
@@ -81,11 +82,14 @@ function attachmentResponse({ attachment, data }: Protocol['attachment']['output
 }
 
 /** A method's input, from the request: its path's `:id` or `:key`, its query, or its body, validated. */
-async function inputOf(name: Method, request: Request, url: URL, params: Record<string, string>): Promise<unknown> {
+async function inputOf(name: Method, request: Request, url: URL, params: Record<string, string>, audience: string): Promise<unknown> {
   const id = params.id ?? ''
   const key = params.key ?? ''
   const body = () => readJson(request)
   switch (name) {
+    case 'token':
+      return { ...TokenBody.parse(await body()), audience }
+    case 'keys':
     case 'discovery':
     case 'me':
     case 'channels':
@@ -201,6 +205,16 @@ function sourceOf(caller: Caller): WriteSource | null {
 
 /** The middleware's own handle: its writes skip the middleware. */
 const MIDDLEWARE: SelfCaller = { self: 'middleware', origin: { via: { kind: 'middleware' } } }
+/** What a delegate token can't do, though its minter can: each a phrase for the refusal. */
+const DELEGATES_REFUSED = new Map<string, string>([
+  ['identity', 'see linked accounts'],
+  ['identityUnlink', 'unlink accounts'],
+  ['syncCode', 'link accounts'],
+  ['syncAccount', 'link accounts'],
+  ['syncUnlink', 'unlink accounts'],
+  ['token', 'mint another token'],
+])
+
 /** board()'s own code, for what it looks up itself. */
 const OWN: SelfCaller = { self: null, origin: { via: { kind: 'client', name: null } } }
 
@@ -829,14 +843,23 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       // http() with no access of its own doesn't serve. Nothing runs for one before that.
       if (!injected && !policy.open) throw servesOnly()
       if (!injected && target.kind === 'protocol' && target.name === 'discovery') return json(await discovery(request, boardUrl, request.signal))
+      // The keys delegate tokens are signed with are public, and verify the board's own tokens.
+      if (!injected && target.kind === 'protocol' && target.name === 'keys')
+        return json(await backend.keys(OWN, {}, request.signal), 200, { 'cache-control': 'public, max-age=300' })
       if (target.kind === 'protocol' && typeof (backend[target.name] as unknown) !== 'function') throw notFound(`no route: ${request.method} ${url.pathname}`)
       // A sync callback's client does everything but its own writes as sync.
       const own = injected && 'platform' in injected ? engine!.caller : injected
       const asked = own ? null : requestOf(request, boardUrl)
       const caller: Caller = own ?? (await callerOf(asked!))
+      // A delegate writes as its minter, so what's the minter's own to do stays the minter's.
+      if ('identity' in caller && caller.identity.principal.delegate && DELEGATES_REFUSED.has(target.name))
+        throw forbidden(`this is a delegate token, so it can't ${DELEGATES_REFUSED.get(target.name)}`)
       if (target.kind === 'board') return await serve(target.name, caller, request, url, match.params)
 
-      const input = await inputOf(target.name, request, url, match.params)
+      // A token in process is for the board's own URL, never the in-process one.
+      const audience = injected ? ownUrl() : boardUrl
+      if (target.name === 'token' && audience === null && backend.keeps) throw new HttpError(501, 'no_url', "this board doesn't know its URL yet, so it can't mint tokens for it: pass board({ url })")
+      const input = await inputOf(target.name, request, url, match.params, audience ?? boardUrl)
       if (target.name === 'events' && (request.headers.get('accept') ?? '').includes('text/event-stream'))
         return await sse(caller, input as Protocol['events']['input'], request, asked ? () => callerOf(asked) : null)
       const output = injected && 'platform' in injected ? await asPlatform(target.name, injected, input, request.signal) : await invoke(target.name, caller, input, request.signal)

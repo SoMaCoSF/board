@@ -3,7 +3,8 @@ import { createHash, randomBytes } from 'node:crypto'
 import type { z } from 'zod'
 import { A2Error, idempotentId, reducer } from 'experimental-a2'
 import { consumer, createServer, type A2Scheduler, type ConsumerContext } from 'experimental-a2/server'
-import { boardContract, IDENTITY_SESSION, identityContract, inboxContract, INBOXES_SESSION, inboxSession, SCHEDULES_SESSION, type InboxEvent } from '../contract/contract.ts'
+import { boardContract, IDENTITY_SESSION, identityContract, inboxContract, INBOXES_SESSION, inboxSession, KEYS_SESSION, keysContract, SCHEDULES_SESSION, type InboxEvent } from '../contract/contract.ts'
+import { mintDelegate, newSigningKey, verifyDelegate, type SigningKey } from './delegate-sign.ts'
 import { BOARD_SESSION, type BoardEvent, type BoardEvents } from '../contract/events.ts'
 import type { ExternalAuthor, Link, Origin } from '../contract/external.ts'
 import { actorsReducer, channelsReducer, identityCodesReducer } from '../contract/reducers.ts'
@@ -180,6 +181,16 @@ const inboxesReducer = reducer({
   return state
 })
 
+/** The board's signing key: the first `key.created`. */
+const signingKeyReducer = reducer({
+  contract: keysContract,
+  name: 'board.signing-key.v1',
+  initialState: { key: null } as { key: SigningKey | null },
+}).fold((state, event) => {
+  if (event.type === 'key.created' && state.key === null) state.key = event.payload as unknown as SigningKey
+  return state
+})
+
 /** A platform event in an inbox. */
 type Received = Extract<InboxEvent, { type: 'external.received' }>
 type PlatformEvent = Received['payload']['event']
@@ -308,6 +319,24 @@ function build(options: A2Options & { store: BoardStore }, binding: BoardBinding
   })
   const identityServer = createServer({ contract: identityContract, store: log })
   const codes = identityServer.session(IDENTITY_SESSION)
+  const keyLog = createServer({ contract: keysContract, store: log }).session(KEYS_SESSION)
+  let signing: Promise<SigningKey> | null = null
+  /** The board's signing key: the first one its log holds, made the first time it's needed. */
+  const signingKey = () =>
+    (signing ??= (async () => {
+      const first = async () => (await keyLog.state(signingKeyReducer)).state.key
+      const found = await first()
+      if (found) return found
+      const made = await newSigningKey()
+      // One ID for every instance's first key: the one that lands first is the board's.
+      await keyLog.append({ type: 'key.created', id: 'key:1', payload: made } as never).catch((error: unknown) => {
+        if (!duplicate(error)) throw error
+      })
+      return (await first())!
+    })()).catch((error: unknown) => {
+      signing = null
+      throw error
+    })
   const inboxes = inboxServer.session(INBOXES_SESSION)
   /** The inboxes this instance knows have an `inbox.opened`, so most pushes write nothing more. */
   const opened = new Set<string>()
@@ -445,6 +474,12 @@ function build(options: A2Options & { store: BoardStore }, binding: BoardBinding
   }
 
   const methods: ProtocolMethods = {
+    async token(caller, input) {
+      return mintDelegate(await identityOf(caller), input, await signingKey())
+    },
+    async keys() {
+      return { keys: [(await signingKey()).publicJwk] }
+    },
     async discovery() {
       // As its own code sees it: board() answers a request with who the board is to it, the URL it
       // reached and the project tokens are minted for. Its own code reaches it in process when
@@ -1183,7 +1218,8 @@ function build(options: A2Options & { store: BoardStore }, binding: BoardBinding
    * narrowed. A narrowed pull would take matches from it, and a narrowed register replace it.
    */
   function ownWatchers(principal: Granted) {
-    if (principal.scope !== undefined) throw forbidden("this token is narrowed with x-board-scope: registering and running watchers is its project's job")
+    if (principal.scope !== undefined)
+      throw forbidden(`this token is ${principal.delegate ? 'a delegate token' : 'narrowed with x-board-scope'}: registering and running watchers is its project's job`)
   }
 
   /**
@@ -1213,7 +1249,8 @@ function build(options: A2Options & { store: BoardStore }, binding: BoardBinding
    * there, from wherever on the platform they are.
    */
   function unnarrowed(principal: Granted, what: string) {
-    if (principal.scope !== undefined) throw forbidden(`this token is narrowed with x-board-scope, so it can't ${what}: that's its project's sync's job`)
+    if (principal.scope !== undefined)
+      throw forbidden(`this token is ${principal.delegate ? 'a delegate token' : 'narrowed with x-board-scope'}, so it can't ${what}: that's its project's sync's job`)
   }
 
   /**
@@ -1392,6 +1429,9 @@ export function a2(options: A2Options = {}) {
     routes: [] as BackendRoute[],
     // The board lives here: board() lets its people and own deployments in by default.
     keeps: true,
+    async verifyToken(token: string, audience: string) {
+      return verifyDelegate(token, audience, (await methods.keys({ self: null, origin: { via: { kind: 'client', name: null } } }, {}, new AbortController().signal)).keys)
+    },
     bind(given: BoardBinding) {
       if (binding) throw new Error('a2: this backend already serves a board: create one a2() per board()')
       binding = given

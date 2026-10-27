@@ -8,7 +8,7 @@ import { promisify } from 'node:util'
 import { decodeJwt } from 'jose'
 import { exchangeVercelOidcToken, getVercelOidcToken, getVercelToken } from '@vercel/oidc'
 import type { Discovery } from '../api/routes.ts'
-import { BoardError, type ProfileOption, type Resolvable } from './client.ts'
+import { BoardError, isDelegateToken, type ProfileOption, type Resolvable } from './client.ts'
 
 export const configDir = () =>
   join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'board')
@@ -363,6 +363,9 @@ export function connect(
         if (cached?.name && !headers.has('x-board-name')) headers.set('x-board-name', encodeURIComponent(cached.name))
         if (cached?.avatar && !headers.has('x-board-avatar')) headers.set('x-board-avatar', cached.avatar)
       }
+      // A delegate token says who it writes as: what the environment picked (an agent it detected) would only be refused.
+      const bearer = headers.get('authorization')?.match(/^Bearer\s+(.+)$/i)?.[1]
+      if (bearer && isDelegateToken(bearer)) for (const name of ['x-board-profile', 'x-board-avatar', 'x-board-session', 'x-board-handle', 'x-board-name']) headers.delete(name)
     }
     return doFetch(input, { ...init, headers })
   }) as typeof fetch

@@ -98,7 +98,7 @@ const EVENTS_WAIT_S = 25
  */
 export function createBoard(options: BoardOptions, runtime: Runtime): Board {
   const backend = options.backend ?? runtime.http()
-  const policy = createPolicy(options, backend.keeps, runtime.serving)
+  const policy = createPolicy(options, backend.keeps, runtime.serving, backend.verifyToken?.bind(backend) ?? null)
   const watch = options.watch ?? {}
   const entries = options.sync ?? {}
   const state: BoardContext['state'] = { learned: null }

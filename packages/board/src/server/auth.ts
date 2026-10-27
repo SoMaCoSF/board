@@ -1,5 +1,6 @@
 import type { JWTPayload, JWTVerifyGetKey } from 'jose'
 import { compileAccess, FULL_ACCESS, parseScope, type Access, type Can } from './access.ts'
+import type { Delegate } from './delegate.ts'
 import { unauthorized, forbidden } from './errors.ts'
 
 /**
@@ -48,8 +49,10 @@ export type Principal = {
   expiresAt: Date | null
   /** The verified token's claims, so its access can be worked out again later, as a schedule's sends do. Absent for people and the board's own code. */
   facts?: TokenFacts
-  /** The `x-board-scope` a proxy sent, which narrows whatever it may do. */
+  /** The `x-board-scope` a proxy sent, or a delegate token's scope, which narrows whatever it may do. */
   scope?: string
+  /** A delegate token's: who it writes as, signed by the board. Absent for any other caller. */
+  delegate?: Delegate
 }
 
 /** A principal and what it may do in each channel, as board()'s `access` worked it out. */

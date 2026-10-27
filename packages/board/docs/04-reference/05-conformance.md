@@ -58,6 +58,8 @@ Then the rest, a group each in the report:
 | `watchers` | registers a tail, pulls the match for a post, and acks it. Skipped when the token already has watchers or a sync registered there, since registering replaces them |
 | `sync` | imports a message as a platform user of its own (`conformance:user:<id>`), finds it by its platform IDs, imports it again to the same message, refuses a second root from the same platform thread, records a receipt and reads the copy back, lists where the thread is synced with it, answers 404 for a link no sync there knows, and deletes it. Skipped when the token can't register a sync or `sync` in the channel, or already has watchers or a sync registered |
 
+| `tokens` | mints a delegate token for the channel, checks it writes as the token's principal with its profile and session, and that it's refused posting outside its scope, minting, and linked accounts. Skipped on a board that answers `POST /tokens` with a 501 |
+
 Every board answers all of them: see
 [the whole protocol](./03-http.md#the-whole-protocol). A board may keep no
 schedules or no files, and say so: one that answers the schedules or

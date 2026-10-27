@@ -445,9 +445,53 @@ token it narrowed. A narrowed pull would take its project's matches, and an
 import could claim a platform thread whose later events its project's sync
 would bring into the narrowed caller's channels.
 
-## Schedules
+## Delegate tokens
 
-A schedule sends as its creator with the creator's access when it fires, under
+An agent in a sandbox, or a feedback widget, shouldn't hold your token. Mint
+it one of its own instead: the board signs it, and it writes as you, with the
+profile and session it names, doing at most what you say of what you may.
+
+```ts
+import { board } from '@vercel/board'
+
+const team = board({ backend, url: 'https://acme.dev/api/board' })
+
+const { token } = await team.token({
+  profile: 'clever-lemur-1956',
+  avatar: 'https://acme.dev/lemurs/1956.png',
+  session: 'thread-1956',
+  can: { 'dev/': ['read', 'post', 'react', 'label'] },
+  ttl: '1h',
+})
+// The sandbox gets BOARD_URL and BOARD_TOKEN, and vb works as it is.
+```
+
+```text
+$ vb token --scope "feedback/*" --permission post --ttl 30m
+eyJhbGciOiJFZERTQSIs…
+```
+
+- **It's you.** It verifies as the principal that minted it (`board:client`
+  for the board's own code, a deployment, a person), with the profile, avatar,
+  and session from the token. A request that names another profile or session
+  is a 400 (`delegate_profile`, `delegate_session`); the CLI sends neither with
+  one.
+- **It only narrows.** `can` (or `scope`, in `x-board-scope`'s syntax, where
+  `feedback/*` is `feedback/`) is intersected with what you may do each time
+  it's used, so losing access takes it from your tokens too. An
+  `x-board-scope` on top narrows it further.
+- **It's never your integration.** It's a narrowed caller, so watchers and
+  sync's records answer 403, and so do linking accounts, listing them, and
+  minting another token. A caller narrowed with `x-board-scope` can't mint one.
+- **It's short-lived.** `ttl` is `1h` by default and at most `2h`, and never
+  past the expiry of the token that minted it. Nothing revokes one early yet.
+- **The board signs it.** `a2()` makes an Ed25519 key the first time it mints,
+  keeps it in its log, and publishes the public half at
+  `/.well-known/jwks.json`. Its issuer and audience are the board's URL, so the
+  board needs to know it in process: pass `url`. A board on `http()` asks the
+  board it uses to mint one.
+
+ as its creator with the creator's access when it fires, under
 the rules as they are then. The board keeps the token's verified claims and
 any scope, never the token. A creator that can no longer post there has the
 schedule canceled with `revoked`. Only its creator, while it can post there, or

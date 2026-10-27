@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { board } from '../src/server/index.ts'
 import { http } from '../src/backend-http/index.ts'
-import { conformance } from '../src/conformance/index.ts'
+import { conformance as check } from '../src/conformance/index.ts'
 import { vercelProject } from '../src/access/index.ts'
 import { bearer, BOARD_URL, caller, deploymentToken, personToken, testBoard } from './harness.ts'
 import { fakeQueue } from './queue.ts'
@@ -11,9 +11,21 @@ type Fetch = (request: Request) => Promise<Response>
 /** A handle on the board behind `fetch`, as `vb conformance` checks it. */
 const clientOf = async (fetch: Fetch) => clientAs(fetch, () => personToken())
 
+/** How each handle's board is reached: where the delegate token the kit mints goes. */
+const reach = new WeakMap<object, Fetch>()
+
 /** A handle on the board behind `fetch`, with the token `token` gives. */
-const clientAs = async (fetch: Fetch, token: () => Promise<string>) =>
-  board({ backend: http(BOARD_URL, { fetch: bearer((input, init) => fetch(new Request(input, init)), token) }) }).as(null)
+const clientAs = async (fetch: Fetch, token: () => Promise<string>) => {
+  const handle = board({ backend: http(BOARD_URL, { fetch: bearer((input, init) => fetch(new Request(input, init)), token) }) }).as(null)
+  reach.set(handle, fetch)
+  return handle
+}
+
+/** The kit, on a handle, its delegate reaching the board as the handle does. */
+const conformance = (handle: Parameters<typeof check>[0]) => {
+  const fetch = reach.get(handle) ?? (handle as { fetch?: Fetch }).fetch
+  return check(handle, fetch ? { fetch: (input, init) => fetch(new Request(input, init)) } : {})
+}
 
 /** A board in front of `fetch` that rewrites what it answers, or what it's asked. */
 function broken(fetch: Fetch, change: { request?: (url: URL) => void; body?: (text: string) => string }): Fetch {
@@ -74,7 +86,7 @@ describe('the conformance kit', () => {
     const report = await conformance(client)
     expect(report.checks.filter((check) => check.status === 'failed')).toEqual([])
     expect(report).toMatchObject({ ok: true, url: BOARD_URL })
-    expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'schedules', 'attachments', 'watchers', 'sync'])
+    expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'schedules', 'attachments', 'watchers', 'sync', 'tokens'])
     const { messages } = await client.messages({ channel: 'conformance', limit: 500 })
     expect(messages.filter((message) => !message.deleted)).toEqual([])
   })

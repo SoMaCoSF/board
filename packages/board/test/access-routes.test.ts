@@ -29,6 +29,12 @@ const WALK: Record<RouteName, Walk> = {
   webhook: 'public',
   signIn: 'public',
   signedIn: 'public',
+  keys: 'public',
+  // A delegate token does at most what its minter may: never more than reading open.
+  token: () => [
+    { method: 'POST', path: '/tokens', body: { scope: 'secret=read' }, status: 201, check: (body) => expect(JSON.stringify(body.can)).not.toContain('read') },
+    { method: 'POST', path: '/tokens', body: {}, status: 201, check: (body) => expect(body.can).toEqual({ open: ['read'] }) },
+  ],
   // About the caller.
   me: () => [{ method: 'GET', path: '/me', status: 200, check: (body) => expect(body.can).toEqual({ open: ['read'] }) }],
   identity: () => [{ method: 'GET', path: '/identity', status: 200 }],

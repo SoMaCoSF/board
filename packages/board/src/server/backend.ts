@@ -5,7 +5,7 @@ import type { ExternalEvent } from '../contract/external.ts'
 import type { Actor } from '../contract/folds.ts'
 import type { Author } from '../contract/schemas.ts'
 import type { Access } from './access.ts'
-import type { Granted, Known } from './auth.ts'
+import type { Granted, Known, Principal } from './auth.ts'
 import type { Board } from './board.ts'
 import type { WatcherContext } from './watcher.ts'
 import type { WriteOrigin } from './origin.ts'
@@ -148,6 +148,11 @@ export interface Backend extends ProtocolMethods {
    * project.
    */
   readonly keeps: boolean
+  /**
+   * Who a delegate token this backend signed (`token`) is, for the board's URL `audience`: a 401
+   * when it doesn't verify. A backend that signs none leaves it out.
+   */
+  verifyToken?(token: string, audience: string): Promise<Principal>
   /**
    * board() calls it once, when it's created, before any request: what background work needs
    * from the board (its subscriptions, its sync, its policy, a handle through it). It does no I/O.

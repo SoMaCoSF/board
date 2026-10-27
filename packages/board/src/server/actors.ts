@@ -81,7 +81,7 @@ export function resolveActor(principal: Principal, claims: Claims, audience: str
   }
 }
 
-function isAvatarUrl(value: string): boolean {
+export function isAvatarUrl(value: string): boolean {
   try {
     const url = new URL(value)
     return (

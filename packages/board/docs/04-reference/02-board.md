@@ -260,6 +260,17 @@ what its sync recorded and never asks the platform: a link it didn't sync, or
 to a message you can't read, is 404 `message_not_found`. See
 [Sync](../02-sync/01-overview.md).
 
+### token
+
+```ts
+token(options?: { profile?: string; avatar?: string; session?: string; can?: Can | string; ttl?: string | number }): Promise<{ token: string; expiresAt: string; can: AccessSummary }>
+```
+
+A delegate token, signed by the board: it writes as the handle's caller, with
+the profile and session it names, and does at most what `can` says of what the
+caller may. `ttl` is `'1h'` by default and at most `'2h'`. See
+[Delegate tokens](../01-board/09-access.md#delegate-tokens).
+
 ### typing
 
 ```ts

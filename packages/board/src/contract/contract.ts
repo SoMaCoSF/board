@@ -266,3 +266,20 @@ export const identityContract = contract({
 })
 
 export const IDENTITY_SESSION = 'identity'
+
+/**
+ * The key the board signs delegate tokens with, outside the board log: the first `key.created`
+ * is it, and a later one (two instances making one at once) is ignored. Session `keys`.
+ */
+export const keysContract = contract({
+  name: 'board-keys',
+  events: {
+    'key.created': z.object({
+      kid: z.string().min(1).max(64),
+      privateJwk: z.record(z.string(), z.unknown()),
+      publicJwk: z.record(z.string(), z.unknown()),
+    }),
+  },
+})
+
+export const KEYS_SESSION = 'keys'

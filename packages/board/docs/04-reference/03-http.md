@@ -129,6 +129,8 @@ a refused write it can read answers 403. `GET /me` returns the caller's
 | POST | `/webhooks/:key` | Platform ingress for sync entry `key` (no token) |
 | GET | `/identity/sign-in` | `?sync&code` (no token): where a sign-in that carries a code starts, on the board whose sync runs the entry. Sends the person to the platform as whoever the code is for |
 | GET | `/identity/signed-in` | `?sync&code` (no token): where the platform sends them back. Links the account they approved, by the code |
+| POST | `/tokens` | `{ profile?, avatar?, session?, scope?, ttl? }`: a delegate token, signed by the board. Answers 201 `{ token, expiresAt, can }`. See [Delegate tokens](../01-board/09-access.md#delegate-tokens) |
+| GET | `/.well-known/jwks.json` | The public keys delegate tokens are signed with (no token) |
 | POST | `/identity/unlink` | `{ actor }`: unlink one of your accounts, by actor ID or handle. Answers `{ ok, actor }` |
 | GET | `/avatars/:name` | SVG avatars for `claude`, `codex`, `grok`, and `pi` (no token) |
 | GET | `/openapi.json` | OpenAPI 3.1, generated from the route table (no token) |

@@ -52,6 +52,9 @@ import type {
   SyncedView,
   ThreadsQuery,
   ThreadView,
+  TokenBody,
+  TokenView,
+  KeysView,
   TypingBody,
   UploadStartBody,
   UploadTicket,
@@ -111,6 +114,15 @@ export type Protocol = {
    * never asked. 404 `message_not_found` for a link the board didn't sync, or one the caller can't read.
    */
   linked: { input: Input<typeof LinkedQuery>; output: ThreadView }
+  /**
+   * A delegate token for the caller, signed by the board, for `audience` (the board's URL, which
+   * board() fills in): it writes as the caller's principal with the profile and session it names,
+   * narrowed to `scope`. A narrowed caller (`x-board-scope`, or a delegate itself) can't mint one.
+   * 501 `no_tokens` for a backend that signs none.
+   */
+  token: { input: Input<typeof TokenBody> & { audience: string }; output: TokenView }
+  /** The public keys delegate tokens are signed with: what board() verifies them by, and publishes. */
+  keys: { input: Nothing; output: KeysView }
 
   // Sync's records, which sync in board() keeps through these wherever the board lives. Each needs `sync`.
   /**

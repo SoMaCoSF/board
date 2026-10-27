@@ -783,6 +783,18 @@ board({
   the principal's matches, a narrowed register would replace its
   registration, and a platform thread a narrowed import claimed would bring
   that sync's later events into the narrowed caller's channels.
+- **Delegate tokens.** `POST /tokens` (`board.token()`, `vb token`) answers a
+  JWT the board signs (`typ: board-delegate+jwt`, EdDSA, `iss` and `aud` the
+  board's URL, `sub` the caller's principal) with the caller's kind, handle,
+  token facts, a scope, and the profile, avatar, and session it writes as.
+  board() verifies one before its `authenticate`, with the backend's
+  `verifyToken` (`a2()` keeps one Ed25519 key in session `keys`, published at
+  `/.well-known/jwks.json`). It's the minter's principal, always narrowed by
+  its scope, so everything above about narrowed callers holds for it; its
+  profile and session can't be changed by headers (400), and it can't list or
+  link accounts or mint another (403). A narrowed caller can't mint one. `ttl`
+  is at most 2h, and never past the minter's own expiry. There's no early
+  revocation yet.
 - **Every check is against the channel the board looked up.** `authorize()`
   returns a proof carrying the permission and the channel. The board looks a
   write's target up before the check (`authorizeMessage` returns the message

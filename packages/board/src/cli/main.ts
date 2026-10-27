@@ -71,6 +71,10 @@ usage: board <command> [options]      (also installed as \`vb\`)
   delete <id>
   react <id> <emoji> [--remove]
   label <id> k=v... [--unset k]...
+  token [--scope <pattern>]... [--permission <p>]... [--as <profile>] [--session <s>] [--ttl 1h]
+                                           a token the board signs, for an agent or tool: it writes as you, with
+                                           that profile and session, and does at most what --scope and --permission
+                                           say (feedback/ --permission post; or feedback/=post;dev=read). Max 2h
   typing <id> [status]                     show typing in the thread's synced platform threads (marks WhatsApp read);
                                            Slack shows the status, if given, instead of "Typing…"
   sync <id>                                where the thread is synced, with this message's link on each
@@ -141,6 +145,10 @@ const OPTIONS = {
   until: { type: 'string' },
   for: { type: 'string' },
   times: { type: 'string' },
+  scope: { type: 'string', multiple: true },
+  permission: { type: 'string', multiple: true },
+  session: { type: 'string' },
+  ttl: { type: 'string' },
 } as const
 
 // No argument can hold a NUL, so a marked one can't be anything else.
@@ -581,7 +589,9 @@ async function run(command: string | undefined, args: string[]): Promise<number>
 
     case 'conformance': {
       if (args.length > 0) throw new UsageError('usage: board conformance [--channel <c>]')
-      const report = await conformance(client(), flags.channel ? { channel: flags.channel } : {})
+      const { board, transport } = connection()
+      // Its delegate token reaches the board as this does, past Deployment Protection too.
+      const report = await conformance(board, { ...(flags.channel ? { channel: flags.channel } : {}), fetch: transport.fetch })
       if (flags.json) printJson(report)
       else out(formatConformance(report))
       return report.ok ? 0 : 1
@@ -888,6 +898,27 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       if (Object.keys(set).length === 0 && unset.length === 0)
         throw new UsageError('usage: board label <id> k=v... [--unset k]...')
       await client().label(id, { set, unset })
+      return 0
+    }
+
+    case 'token': {
+      const scopes = flags.scope ?? []
+      const permissions = (flags.permission ?? []).flatMap((permission) => permission.split(',')).map((permission) => permission.trim()).filter(Boolean)
+      let can: string | undefined
+      if (permissions.length > 0) can = (scopes.length > 0 ? scopes : ['*']).map((pattern) => `${pattern}=${permissions.join(',')}`).join(';')
+      else if (scopes.length > 0) {
+        if (scopes.some((scope) => !scope.includes('='))) throw new UsageError('usage: board token --scope <pattern> --permission <p>, or --scope <pattern>=<p>,<p>')
+        can = scopes.join(';')
+      }
+      const minted = await client().token({
+        ...(flags.as ? { profile: flags.as } : {}),
+        ...(flags.avatar ? { avatar: flags.avatar } : {}),
+        ...(flags.session ? { session: flags.session } : {}),
+        ...(can !== undefined ? { can } : {}),
+        ...(flags.ttl ? { ttl: flags.ttl } : {}),
+      })
+      if (flags.json) printJson(minted)
+      else out(minted.token)
       return 0
     }
 

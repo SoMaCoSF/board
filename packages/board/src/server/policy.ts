@@ -16,7 +16,8 @@ import {
   type Principal,
   type RuleFunction,
 } from './auth.ts'
-import type { Identity } from './backend.ts'
+import type { Backend, Identity } from './backend.ts'
+import { delegateClaims, intersectScopes, isDelegateFor } from './delegate.ts'
 import { HttpError, RejectedError, unauthorized } from './errors.ts'
 import type { ProjectIdentity } from './identity.ts'
 
@@ -71,7 +72,13 @@ export type Policy = ReturnType<typeof createPolicy>
  * principals its backend stores. `keeps`: the backend keeps the board, so the defaults let its
  * people and own deployments in when `access` is left out.
  */
-export function createPolicy(options: PolicyOptions, keeps: boolean, serving: (() => Promise<Serving>) | null) {
+export function createPolicy(
+  options: PolicyOptions,
+  keeps: boolean,
+  serving: (() => Promise<Serving>) | null,
+  /** Who a delegate token the board signed is, where its backend signs them: they verify its own. */
+  verifyOwn: Backend['verifyToken'] | null = null,
+) {
   /** Whether requests are served at all: a board on `http()` serves none without an `access` of its own. */
   const open = keeps || options.access !== undefined
   const access = options.access ?? []
@@ -144,6 +151,8 @@ export function createPolicy(options: PolicyOptions, keeps: boolean, serving: ((
   }
 
   async function verify(request: CallerRequest): Promise<Principal> {
+    // A delegate token this board signed: its own keys say who it is, whatever verifier it has.
+    if (verifyOwn && request.credential !== null && isDelegateFor(request.credential, request.audience)) return verifyOwn(request.credential, request.audience)
     const authenticate = await verifier()
     let result: Awaited<ReturnType<Authenticate>>
     try {
@@ -171,8 +180,11 @@ export function createPolicy(options: PolicyOptions, keeps: boolean, serving: ((
      */
     async identify(request: CallerRequest): Promise<Identity> {
       const found = await principalOf(request)
-      const principal = request.claims.scope === null ? found : { ...found, scope: request.claims.scope }
-      const { author, actor } = resolveActor(principal, request.claims, request.audience)
+      // A proxy's scope narrows a delegate's further, never past it.
+      const scope = request.claims.scope === null ? found.scope : found.scope === undefined ? request.claims.scope : intersectScopes(found.scope, request.claims.scope)
+      const principal = scope === undefined ? found : { ...found, scope }
+      const claims = found.delegate ? delegateClaims(found.delegate, request.claims) : request.claims
+      const { author, actor } = resolveActor(principal, claims, request.audience)
       return { principal: { ...principal, access: await authority.grant(principal) }, author, actor }
     },
     /** What a stored principal (a schedule's creator, a watcher's registrant) may do now: null once nothing. */

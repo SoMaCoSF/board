@@ -446,6 +446,20 @@ stops one, yours or anyone's with `manage` in its channel, and prints
 ``error: this board has no scheduler: pass `scheduler` to `a2()` to send later``.
 See [Scheduled messages](../01-board/07-schedules.md).
 
+### token
+
+```text
+vb token [--scope <pattern>]... [--permission <p>]... [--as <profile>] [--session <s>] [--ttl 1h]
+```
+
+Prints a delegate token the board signs, for an agent or a tool to write with:
+it writes as you, with that profile and session, and does at most what
+`--scope` and `--permission` say of what you may (`--scope "feedback/*"
+--permission post`, or a whole scope, `--scope "feedback/=post;dev=read"`).
+`--ttl` is at most `2h`. `--json` prints `{ token, expiresAt, can }`. A
+delegate token can't mint another. See
+[Delegate tokens](../01-board/09-access.md#delegate-tokens).
+
 ### typing
 
 ```text

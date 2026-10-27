@@ -1,5 +1,5 @@
 import type { MessageView, RegistrationView } from '../api/routes.ts'
-import { BoardError } from '../client/client.ts'
+import { BoardError, createBoardClient } from '../client/client.ts'
 import type { Board } from '../server/board.ts'
 
 /**
@@ -10,7 +10,7 @@ import type { Board } from '../server/board.ts'
  */
 
 /** What a check is about, for the report's headings. */
-export type CheckGroup = 'core' | 'schedules' | 'attachments' | 'watchers' | 'sync'
+export type CheckGroup = 'core' | 'schedules' | 'attachments' | 'watchers' | 'sync' | 'tokens'
 
 export type CheckResult = {
   group: CheckGroup
@@ -30,6 +30,8 @@ export type ConformanceReport = {
 export type ConformanceOptions = {
   /** Where it posts. Default `conformance`. */
   channel?: string
+  /** How the delegate token it mints reaches the board, at its discovery's URL. Default `fetch`. */
+  fetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 }
 
 class Mismatch extends Error {}
@@ -73,6 +75,9 @@ type Context = {
   /** The board's position before this run wrote anything. */
   start: string
   me: { actor: string; principal: string }
+  /** The board's URL, from its discovery, and how a delegate reaches it. */
+  url: string
+  fetch: NonNullable<ConformanceOptions['fetch']>
   root?: MessageView
   reply?: MessageView
   posted: string[]
@@ -84,7 +89,7 @@ type Check = { group: CheckResult['group']; name: string; run: (ctx: Context) =>
  * The groups a board may keep none of, saying so with a 501: a board on `a2()` without a scheduler
  * answers `no_scheduler`, and without a blob store `no_files`.
  */
-const OPTIONAL = new Set<CheckGroup>(['schedules', 'attachments'])
+const OPTIONAL = new Set<CheckGroup>(['schedules', 'attachments', 'tokens'])
 
 const needRoot = (ctx: Context) => {
   check(ctx.root && ctx.reply, "posting failed, so there's nothing to read")
@@ -96,6 +101,9 @@ async function post(ctx: Context, text: string, extra: { id?: string; attachment
   ctx.posted.push(message.id)
   return message
 }
+
+/** A client on the board with a delegate token, which sends nothing but the token about who it is. */
+const delegateClient = (ctx: Context, token: string) => createBoardClient({ url: ctx.url, token, fetch: ctx.fetch })
 
 const CHECKS: Check[] = [
   {
@@ -410,6 +418,31 @@ const CHECKS: Check[] = [
       }
     },
   },
+  {
+    group: 'tokens',
+    name: 'mints a delegate token that writes as its minter, with the profile and session it signed, within its scope',
+    run: async (ctx) => {
+      const session = `conformance-${ctx.labels.conformance}`
+      const minted = await ctx.board.token({ profile: 'conformance-delegate', session, can: `${ctx.channel}=read,post,label`, ttl: '5m' })
+      check(typeof minted.token === 'string' && minted.token.split('.').length === 3, `a token should be a JWT, got ${show(minted.token)}`)
+      check(!Number.isNaN(Date.parse(minted.expiresAt)) && Date.parse(minted.expiresAt) <= Date.now() + 2 * 3600_000 + 60_000, `a token should expire within 2h, got ${show(minted.expiresAt)}`)
+      const delegate = delegateClient(ctx, minted.token)
+      const me = await delegate.me()
+      same(me.principal, ctx.me.principal, "the delegate's principal")
+      same(me.profile, 'conformance-delegate', "the delegate's profile")
+      same(me.session, session, "the delegate's session")
+      same(show(me.can), show({ [ctx.channel]: ['read', 'post', 'label'] }), "what the delegate may do")
+      const message = await delegate.post(ctx.channel, { text: 'conformance: from a delegate', labels: ctx.labels, noSync: true })
+      ctx.posted.push(message.id)
+      same(message.by.principal, ctx.me.principal, "the delegate's post's principal")
+      same(message.by.profile, 'conformance-delegate', "the delegate's post's profile")
+      same(message.by.session, session, "the delegate's post's session")
+      // It can't widen what it may do, or act as its minter's integration.
+      await rejects(delegate.post(`${ctx.channel}-outside`, { text: 'conformance: outside its scope', noSync: true }), 403, 'forbidden', 'a delegate posting outside its scope')
+      await rejects(delegate.token(), 403, 'forbidden', 'a delegate minting another token')
+      await rejects(delegate.identity(), 403, 'forbidden', "a delegate reading its minter's linked accounts")
+    },
+  },
 ]
 
 /** Runs the checks against `board`, in order, and reports each. It never throws for what the board answers. */
@@ -437,6 +470,8 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
     labels: { conformance: crypto.randomUUID().slice(0, 8) },
     start: (await board.messages({ channel, limit: 1 })).cursor,
     me,
+    url,
+    fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)),
     posted: [],
   }
   try {
