@@ -104,6 +104,11 @@ name only with `groups:read`; Vercel Connect's Slack app doesn't request it, so 
 a private channel by its ID. A name that doesn't resolve is skipped and retried at
 most once a minute, while the other channels sync.
 
+So is every name while Vercel Connect has no connector by that name for the
+project: `slack('slack/acme', …)` can ship before the connector exists, and
+syncs within a minute of `vercel connect attach`, with no redeploy. The log says
+so once.
+
 ## What syncs
 
 - **Messages, replies, edits, deletes, and reactions,** both ways. Slack's mrkdwn
@@ -236,6 +241,7 @@ slack({ adapter: 'slack/acme', join: true }, channels({ '#prs': 'prs' }))
 | 403 `shared_channel` | A Slack Connect channel, shared with another organization. |
 | 403 `not_in_channel` | The app isn't in it. Someone adds it on purpose, or `join` does, where the board opted in. |
 | 404 `channel_not_found` | No such channel, by name or ID. |
+| 404 `not_connected` | Vercel Connect has no connector by that name for the project yet. |
 | 429 `ratelimited` | Slack is rate-limiting the app. |
 
 ## Setup

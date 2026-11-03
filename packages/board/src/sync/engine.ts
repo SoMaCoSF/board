@@ -18,7 +18,7 @@ import { waitUntil } from '../server/wait-until.ts'
 import type { SyncProvider } from './provider.ts'
 import { replaceMentions } from '../contract/mentions.ts'
 import { SyncOverrides, immutable, type SyncRoot, type ProviderEvent, type SyncResult } from './events.ts'
-import { channelMissing, routesFor, ReceivedEvent, ResolvedTarget, UnreadableError, type ProviderSender, type Renderer } from './provider.ts'
+import { channelMissing, notConnected, routesFor, ReceivedEvent, ResolvedTarget, UnreadableError, type ProviderSender, type Renderer } from './provider.ts'
 import type { SyncIn, SyncOut } from './fn.ts'
 import { ChannelPath } from '../contract/schemas.ts'
 import { displayText } from '../contract/bots.ts'
@@ -227,23 +227,33 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
   /** How long a name that didn't resolve (say, a Slack channel that doesn't exist yet) waits before another try. */
   const RETRY_MS = 60_000
   const resolutions = new Map<string, { id: Promise<string>; failed: boolean; at: number }>()
+  /** Entries already said to be unconnected: until one connects, a minute's retry says nothing new. */
+  const unconnected = new Set<string>()
   /**
    * A platform channel's ID from its name, on entry `key`: what sync functions route by. Each
    * resolves once. One the platform says doesn't exist is logged and
-   * tried again a minute later; one it couldn't check is asked again on the next call, so a
-   * retried event asks again.
+   * tried again a minute later, as is every channel while the entry isn't connected to its
+   * platform yet, which is logged once; one it couldn't check is asked again on the next call,
+   * so a retried event asks again.
    */
   function resolve(key: string, name: string): Promise<string> {
     const at = `${key}:${name}`
     const cached = resolutions.get(at)
     if (cached && (!cached.failed || Date.now() - cached.at < RETRY_MS)) return cached.id
     const entry = { id: platformOf(key).resolveChannel(name), failed: false, at: Date.now() }
-    entry.id.catch((error: unknown) => {
-      entry.failed = true
-      const missing = channelMissing(error)
-      if (!missing && resolutions.get(at) === entry) resolutions.delete(at)
-      console.warn(`[board] sync ${key}: ${missing ? 'skipping' : "couldn't resolve"} ${name}: ${(error as Error).message}`)
-    })
+    entry.id.then(
+      () => void unconnected.delete(key),
+      (error: unknown) => {
+        entry.failed = true
+        const missing = channelMissing(error)
+        if (!missing && resolutions.get(at) === entry) resolutions.delete(at)
+        if (notConnected(error)) {
+          if (unconnected.has(key)) return
+          unconnected.add(key)
+        }
+        console.warn(`[board] sync ${key}: ${missing ? 'skipping' : "couldn't resolve"} ${name}: ${(error as Error).message}`)
+      },
+    )
     resolutions.set(at, entry)
     return entry.id
   }
@@ -1329,7 +1339,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
   /** The status for what a platform wouldn't read: the caller's mistake, missing, refused, or the platform failing. */
   const unreadableStatus = (code: string) => {
     if (code === 'unsupported' || code === 'invalid_target') return 400
-    if (code === 'channel_not_found') return 404
+    if (code === 'channel_not_found' || code === 'not_connected') return 404
     if (code === 'ratelimited') return 429
     if (['no_client', 'list_failed', 'internal_error', 'fatal_error', 'service_unavailable', 'request_timeout'].includes(code)) return 502
     return 403

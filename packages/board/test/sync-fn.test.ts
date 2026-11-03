@@ -186,6 +186,72 @@ describe('sync functions', () => {
     warn.mockRestore()
   })
 
+  /** What Vercel Connect throws for a token: `404 not_found` when it has no such connector. */
+  const connectError = (status: number, code: string) => Object.assign(new Error(`Connect answered ${status} ${code}`), { name: 'ConnectError', status, code })
+
+  /** A Slack whose Connect connector can fail, mirroring #support into `support`, and what reached Connect and Slack. */
+  async function connectedSlack(failure: () => Error | null) {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const conversations = { list: vi.fn(async () => ({ channels: [{ id: 'C9', name: 'support', is_member: true }] })), info: vi.fn(), join: vi.fn() }
+    const connect = vi.fn(async () => {
+      const error = failure()
+      if (error) throw error
+      return { conversations } as never
+    })
+    const s = fakePlatform('slack', withSlackClient({ conversations }, false))
+    // What went out, once `channels` is done with each: only roots are posted here, so the routes
+    // the webhook reads, which a function of your own drops, don't matter.
+    const routed = channels<SlackEvent>({ '#support': 'support' })
+    const done: string[] = []
+    const fn: SyncFn<SlackEvent> = async (sync) => {
+      await routed(sync)
+      if (sync.direction === 'out') done.push(sync.message.text)
+    }
+    const board = testBoard({ sync: { slack: slack({ adapter: s.adapter, client: connect }, fn) } })
+    const julian = caller(board.fetch, await personToken())
+    const post = async (text: string) => {
+      await julian('POST', '/messages', { channel: 'support', text })
+      await vi.waitFor(() => expect(done).toContain(text))
+    }
+    return { warn, connect, s, post }
+  }
+
+  it("skips Slack quietly while its Connect connector doesn't exist, and syncs a minute after it does", async () => {
+    let connected = false
+    const { warn, connect, s, post } = await connectedSlack(() => (connected ? null : connectError(404, 'not_found')))
+    await post('one')
+    await post('two')
+    await post('three')
+    // Connect asked once, not once a message, and said once.
+    expect(connect).toHaveBeenCalledTimes(1)
+    const said = () => warn.mock.calls.filter(([line]) => String(line).includes('no connector')).length
+    expect(said()).toBe(1)
+
+    // A minute on, it asks again, and says nothing new.
+    const now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 61_000)
+    await post('four')
+    expect(connect).toHaveBeenCalledTimes(2)
+    expect(said()).toBe(1)
+    expect(s.channelPosts).toEqual([])
+
+    connected = true
+    clock.mockReturnValue(now + 122_000)
+    await post('five')
+    await vi.waitFor(() => expect(s.channelPosts.map((sent) => JSON.parse(sent.text).markdown)).toEqual([expect.stringContaining('five')]))
+    expect(s.channelPosts[0]!.channelId).toBe('slack:C9')
+    clock.mockRestore()
+    warn.mockRestore()
+  })
+
+  it('asks Connect again on every message when it fails for any other reason', async () => {
+    const { warn, connect, post } = await connectedSlack(() => connectError(500, 'internal_error'))
+    await post('one')
+    await post('two')
+    expect(connect).toHaveBeenCalledTimes(2)
+    warn.mockRestore()
+  })
+
   it("never starts a thread back in the channel a root came from", async () => {
     const s = fakePlatform('slack')
     const board = testBoard({ sync: { slack: slack({ adapter: s.adapter }, channels({ C1: 'firehose', C2: 'firehose' })) } })

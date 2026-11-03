@@ -39,10 +39,15 @@ export class UnreadableError extends Error {
 }
 
 /**
- * Whether `resolveChannel` failed because the platform has no such channel, so no event can be
- * in it, rather than because it couldn't tell (a failed listing, a missing scope).
+ * Whether `resolveChannel` failed because no event can be in that channel: the platform has no
+ * such channel, or the board isn't connected to the platform yet (`not_connected`: its Vercel
+ * Connect connector doesn't exist), rather than because it couldn't tell (a failed listing, a
+ * missing scope).
  */
-export const channelMissing = (error: unknown) => error instanceof UnreadableError && error.code === 'channel_not_found'
+export const channelMissing = (error: unknown) => error instanceof UnreadableError && (error.code === 'channel_not_found' || error.code === 'not_connected')
+
+/** Whether `error` says the board isn't connected to the platform yet. */
+export const notConnected = (error: unknown) => error instanceof UnreadableError && error.code === 'not_connected'
 
 /** A file to send: its bytes (a Node `Buffer` is one), its name, and its type. */
 export type ProviderFile = { data: Uint8Array; filename: string; mimeType?: string }

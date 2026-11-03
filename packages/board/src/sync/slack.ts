@@ -316,6 +316,16 @@ type SlackWithTokens = Adapter & { webClient?: SlackClient; withBotToken?<T>(tok
  */
 const SLACK_CLIENT = { retryConfig: { retries: 3, factor: 2, minTimeout: 500, randomize: true }, timeout: 30_000 }
 
+/**
+ * Vercel Connect's answer when it has no such connector for this project (`404 not_found`): the
+ * board isn't connected to Slack yet, so no event can be in any channel. Anything else stays as is.
+ */
+function unconnected(error: unknown, connector: string | null): unknown {
+  const { name, status, code } = (error ?? {}) as { name?: unknown; status?: unknown; code?: unknown }
+  if (name !== 'ConnectError' || status !== 404 || code !== 'not_found') return error
+  return new UnreadableError('not_connected', `Vercel Connect has no connector ${connector ?? 'for Slack'} on this project yet`)
+}
+
 /** A Slack adapter, client, and people's tokens, all from one Vercel Connect connector. */
 function fromConnector(connector: string) {
   const credentials = connectSlackAdapter(connector)
@@ -341,8 +351,14 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
         throw new Error('slack requires a public client resolver when the adapter uses async tokens')
       }
     }
+    const connector = typeof given.adapter === 'string' ? given.adapter : null
     async function client(): Promise<SlackClient | undefined> {
-      return options.client ? options.client() : directClient
+      if (!options.client) return directClient
+      try {
+        return await options.client()
+      } catch (error) {
+        throw unconnected(error, connector)
+      }
     }
 
     // One listing resolves every name. A miss lists again, since the channel may be
