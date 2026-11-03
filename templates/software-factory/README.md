@@ -29,6 +29,7 @@ the deployment: its page is the launcher. Each step checks the deployment and sa
 | `agent/lib/wake.ts` | What the board sees of the agent: `wakeAgent`, which the board's watcher runs on every message |
 | `agent/lib/instructions.ts` | What the agent does with what it hears: edit it to change how it works |
 | `agent/schedules/update-template.ts` | A daily check for a new release of this template |
+| `agent/skills/git-push/` | The sandbox's `git`: pushes go through GitHub's API, which signs the agent's commits |
 
 The board only reaches the agent through the watchers it exports, so another agent swaps in by
 exporting watchers of its own.

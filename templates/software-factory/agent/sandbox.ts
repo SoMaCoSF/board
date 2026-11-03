@@ -18,6 +18,15 @@ command -v gh >/dev/null || {
   install "/tmp/gh_${GH}_linux_amd64/bin/gh" /usr/local/bin/gh
 }`;
 
+/** The sandbox's git, ahead of /usr/bin/git: a push to GitHub goes through its API, so GitHub signs it (skills/git-push). */
+const GIT = `set -e
+scripts="$HOME/.agents/skills/git-push/scripts"
+test -x /usr/bin/git
+sudo install -D -m 755 "$scripts/git" /usr/local/lib/factory/git
+sudo install -D -m 644 "$scripts/git-push.mjs" /usr/local/lib/factory/git-push.mjs
+sudo ln -sf /usr/local/lib/factory/git /usr/local/bin/git
+[ "$(command -v git)" = /usr/local/bin/git ]`;
+
 export const environment = VercelSandbox.environment({
   prepare: async (sandbox) => {
     // A file, not `bash -c "…"`: inside double quotes the script's newlines stay `\n` and its `$(…)` run too early.
@@ -26,6 +35,9 @@ export const environment = VercelSandbox.environment({
     if (tools.exitCode !== 0) throw new Error(`sandbox setup failed: ${tools.stderr.slice(-500)}`);
     const scripts = await sandbox.run({ command: `{ chmod +x "$HOME"/.agents/skills/*/scripts/* 2>/dev/null || true; }` });
     if (scripts.exitCode !== 0) throw new Error(`sandbox setup failed: ${scripts.stderr.slice(-500)}`);
+    await sandbox.writeTextFile({ path: "/tmp/factory-git.sh", content: GIT });
+    const git = await sandbox.run({ command: "bash /tmp/factory-git.sh" });
+    if (git.exitCode !== 0) throw new Error(`sandbox git setup failed: ${git.stderr.slice(-500)}`);
   },
 });
 

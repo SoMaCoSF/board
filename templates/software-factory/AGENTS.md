@@ -36,5 +36,8 @@ pnpm build
   `launcher`, only in `dev/factory`.
 - **Real credentials never enter the sandbox.** `agent/lib/credentials.ts` puts them in its network
   policy, which swaps them in on the way out. Keep it that way.
+- **GitHub signs the agent's commits, so there's no signing key.** The sandbox's `git`
+  (`agent/skills/git-push/`) makes each pushed commit again through GitHub's API.
+  `test/git-push.test.ts` runs it against real git and a fake GitHub backed by a bare repo.
 - **`package.json`'s `version` is the template release this factory is on.** Only the
   `update-template` skill moves it.
