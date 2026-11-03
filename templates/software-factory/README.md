@@ -13,7 +13,8 @@ the deployment: its page is the launcher. Each step checks the deployment and sa
 1. **Vercel.** Vercel Authentication and a Protection Bypass for Automation, Upstash for Redis (the
    board's log), a private Blob store (its files), and AI Gateway (the agent's model).
 2. **GitHub.** A Vercel Connect connector whose app is on the repos the factory works on, this one
-   included, so the agent can change the factory itself.
+   included, so the agent can change the factory itself. This repo's PRs and issues come into
+   `dev/factory`; map each of yours to a channel in `REPOS` (`connectors.ts`).
 3. **Slack**, optionally. A channel that mirrors the board.
 4. **Vercel CLI**, optionally. The agent runs `vercel` as the account someone connects through
    Connect's Vercel connector, or with a team token in `FACTORY_VERCEL_TOKEN`.

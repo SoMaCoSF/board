@@ -80,6 +80,20 @@ test("a factory that's set up passes every step, with Slack left optional", asyn
   assert.equal(byId(steps).slack!.optional, true);
 });
 
+test("GitHub names the repos the app is on that come into no channel", async () => {
+  // The app is on acme/factory, which comes into dev/factory on its own, and acme/web, which no one mapped.
+  const { github } = byId(await setup(fake().deps));
+  assert.equal(github!.status, "done");
+  assert.equal(github!.summary, "Works on 2 repos, its own code included. acme/web isn't in REPOS, so its PRs and issues stay off the board.");
+});
+
+test("GitHub says nothing more when every repo the app is on comes in", async () => {
+  const { github } = byId(
+    await setup(fake({ routes: { "https://api.github.com/installation/repositories": () => json({ total_count: 1, repositories: [{ full_name: "acme/factory" }] }) } }).deps),
+  );
+  assert.equal(github!.summary, "Works on 1 repo, its own code included.");
+});
+
 test("the agent's vercel CLI runs as whoever connected Vercel", async () => {
   const { cli } = byId(await setup(fake().deps));
   assert.equal(cli!.status, "done");

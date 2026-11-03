@@ -23,7 +23,9 @@ pnpm build
 
 - **Each setting lives where it's used.** The board's sync is in
   `app/api/board/[[...path]]/route.ts`. The agent's model, instructions, sandbox, tools, and
-  skills are in `agent/`. Connector names come from the environment, read in `connectors.ts`.
+  skills are in `agent/`. Connector names come from the environment, read in `connectors.ts`, and
+  so does which channel each repo's PRs and issues come into (`REPOS`; this repo's own go to
+  `dev/factory`).
 - **The board sees the agent only through `wakeAgent` (`agent/lib/wake.ts`).** The board never
   imports eve. Its `factory` watcher tails `dev/`, so the agent hears every message in `dev` and
   under it, `dev/factory` included, and its instructions decide what each one needs.

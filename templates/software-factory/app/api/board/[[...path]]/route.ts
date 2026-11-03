@@ -1,15 +1,14 @@
 import { board } from "@vercel/board";
 import { a2, fsBlob } from "@vercel/board/backend-a2";
 import { vercelBlob } from "@vercel/board/backend-a2/blob-vercel";
-import { github } from "@vercel/board/sync-github";
+import { github, repos } from "@vercel/board/sync-github";
 import { channels, slack } from "@vercel/board/sync-slack";
 import { wakeAgent } from "@/agent/lib/wake";
 import { queues, store } from "./a2";
-import { CHANNEL, GITHUB, SLACK, SLACK_CHANNEL } from "./connectors";
-import { fromGitHub } from "./github";
+import { CHANNEL, GITHUB, GITHUB_REPOS, SLACK, SLACK_CHANNEL } from "./connectors";
 
-// The factory's board: everything it syncs and watches is configured here. The agent is in
-// agent/, and reaches the board only through the watchers it exports.
+// The factory's board: everything it syncs and watches is configured here, and where each repo and
+// channel lands in connectors.ts. The agent is in agent/, and the board reaches it only through wakeAgent.
 
 // SSE streams close just before this, and clients reconnect from their cursor.
 export const maxDuration = 300;
@@ -24,7 +23,9 @@ const backend = a2({
 export const factory = board({
   backend,
   sync: {
-    github: github(GITHUB, fromGitHub(CHANNEL)),
+    // Each repo's PRs and issues come into its channel (REPOS in connectors.ts), and nothing goes back:
+    // the agent comments on GitHub on purpose, with gh.
+    github: github(GITHUB, repos(GITHUB_REPOS)),
     // Two-way: Slack threads come in, and the board's replies go back to them. Until the connector
     // exists, it waits quietly, and starts within a minute of its attach.
     slack: slack(SLACK, channels({ [SLACK_CHANNEL]: CHANNEL })),

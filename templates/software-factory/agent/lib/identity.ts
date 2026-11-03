@@ -20,11 +20,8 @@ export const BOARD = process.env.VERCEL_PROJECT_PRODUCTION_URL
 /** Whether the board is on this machine, where a sandbox can't reach it. */
 export const LOCAL_BOARD = ["localhost", "127.0.0.1", "[::1]"].includes(new URL(BOARD).hostname);
 
-/** This factory's own repo, which it changes when it's asked to improve itself. */
-export const OWN_REPO =
-  process.env.VERCEL_GIT_REPO_OWNER && process.env.VERCEL_GIT_REPO_SLUG
-    ? `${process.env.VERCEL_GIT_REPO_OWNER}/${process.env.VERCEL_GIT_REPO_SLUG}`
-    : null;
+/** This factory's own repo, which it changes when it's asked to improve itself: the board's, from the deployment. */
+export { OWN_REPO } from "../../app/api/board/[[...path]]/connectors.ts";
 
 type Author = { principal: string; profile: string | null; session: string | null; actor?: string };
 

@@ -222,8 +222,7 @@ type Repo = { full_name: string; permissions?: { push?: boolean } };
 
 /** The connector, the repos its app is on, and among them this factory's own, which the agent changes to improve itself. */
 async function githubStep(deps: Deps, project: Project): Promise<Step> {
-  const { github: connector } = connectors(deps.env);
-  const own = deps.env.VERCEL_GIT_REPO_OWNER && deps.env.VERCEL_GIT_REPO_SLUG ? `${deps.env.VERCEL_GIT_REPO_OWNER}/${deps.env.VERCEL_GIT_REPO_SLUG}` : null;
+  const { github: connector, ownRepo: own } = connectors(deps.env);
   const token = await deps.connect(connector).catch((error: unknown) => error);
   if (typeof token !== "string") {
     if (!deps.env.VERCEL_ENV && !deps.env.VERCEL_OIDC_TOKEN) return step("github", { status: "todo", summary: "", fix: [SIGN_IN] });
@@ -270,7 +269,13 @@ async function githubStep(deps: Deps, project: Project): Promise<Step> {
   const shown = repositories.map((repo) => repo.full_name).slice(0, 3).join(", ") + (total_count > 3 ? `, +${total_count - 3}` : "");
   const rows: [string, string][] = [["repos", shown || "none"]];
   if (total_count === 0) return step("github", { status: "todo", summary: "", rows, fix: [{ text: "Install the app on your repos, this one included.", ...(install ? { link: install } : {}) }] });
-  if (!own) return step("github", { status: "done", summary: `Works on ${total_count === 1 ? "1 repo" : `${total_count} repos`}.`, rows });
+  // Installed but in no channel: the board drops their PRs and issues (REPOS in connectors.ts, matched as GitHub writes them).
+  const mapped = connectors(deps.env).repos;
+  const off = total_count > repositories.length ? [] : repositories.map((repo) => repo.full_name).filter((name) => !(name in mapped));
+  const unmapped = off.length
+    ? ` ${off.slice(0, 2).join(", ")}${off.length > 2 ? `, +${off.length - 2}` : ""} ${off.length === 1 ? "isn't" : "aren't"} in REPOS, so ${off.length === 1 ? "its" : "their"} PRs and issues stay off the board.`
+    : "";
+  if (!own) return step("github", { status: "done", summary: `Works on ${total_count === 1 ? "1 repo" : `${total_count} repos`}.${unmapped}`, rows });
 
   const repo = repositories.find((candidate) => candidate.full_name.toLowerCase() === own.toLowerCase());
   if (!repo && total_count > repositories.length) {
@@ -284,7 +289,7 @@ async function githubStep(deps: Deps, project: Project): Promise<Step> {
       fix: [{ text: `Give the app write access to ${own}, so the agent can change its own code.`, ...(install ? { link: install } : {}) }],
     });
   }
-  return step("github", { status: "done", summary: `Works on ${total_count === 1 ? "1 repo" : `${total_count} repos`}, its own code included.`, rows });
+  return step("github", { status: "done", summary: `Works on ${total_count === 1 ? "1 repo" : `${total_count} repos`}, its own code included.${unmapped}`, rows });
 }
 
 async function slackStep(deps: Deps, project: Project): Promise<Step> {
