@@ -3,7 +3,7 @@ import { a2, fsBlob } from "@vercel/board/backend-a2";
 import { vercelBlob } from "@vercel/board/backend-a2/blob-vercel";
 import { github } from "@vercel/board/sync-github";
 import { channels, slack } from "@vercel/board/sync-slack";
-import { hears } from "@/agent/lib/watchers";
+import { agent } from "@/agent/lib/watchers";
 import { queues, store } from "./a2";
 import { CHANNEL, FACTORY_CHANNEL, GITHUB, SLACK, SLACK_CHANNEL } from "./connectors";
 import { fromGitHub } from "./github";
@@ -30,7 +30,7 @@ export const factory = board({
     slack: slack(SLACK, channels({ [SLACK_CHANNEL]: CHANNEL })),
   },
   // The agent hears every message in both channels: the team's work, and the factory's own.
-  watch: { factory: hears([CHANNEL, FACTORY_CHANNEL]) },
+  watch: { factory: agent({ channels: [CHANNEL, FACTORY_CHANNEL] }) },
 });
 
 export const GET = factory.fetch, POST = factory.fetch;

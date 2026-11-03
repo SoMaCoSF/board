@@ -10,7 +10,7 @@ import { taskMessage, tell } from "./sessions";
  * decide whether it has anything to add. Of its own messages, only the ones a schedule posted (its
  * reminders to itself) do.
  */
-export function hears(channels: string[]): Watcher {
+export function agent({ channels }: { channels: string[] }): Watcher {
   return {
     // One channel tails just that one; several tail every channel, and the rest are skipped below.
     tail: channels.length === 1 ? channels[0]! : "",
