@@ -4,7 +4,7 @@ import { open, sameOrigin } from "@/lib/gate";
 
 // The launcher's chat reaches the board through here: the page is just another board handle, on
 // `http()` to this route, as `vb inspect`'s page is on its proxy. It acts as `launcher`, for whoever
-// is on the page, and only reads and posts in factory-development.
+// is on the page, and only reads and posts in dev/factory (that channel alone, not a subtree).
 
 // Events long-poll.
 export const maxDuration = 300;
@@ -13,7 +13,7 @@ const PROFILE = "launcher";
 
 const refuse = (status: number, message: string) => Response.json({ error: { code: "forbidden", message } }, { status });
 
-/** Whether a message's thread is in factory-development. */
+/** Whether a message's thread is in dev/factory. */
 const inChannel = async (id: string) => (await factory.thread(id).catch(() => null))?.message.channel === FACTORY_CHANNEL;
 
 async function handle(request: Request, { params }: { params: Promise<{ path?: string[] }> }): Promise<Response> {

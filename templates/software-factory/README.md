@@ -26,7 +26,7 @@ the deployment: its page is the launcher. Each step checks the deployment and sa
 | `app/page.tsx`, `lib/setup.ts` | The launcher, and its checks |
 | `app/api/board/[[...path]]/route.ts` | The board: its store, sync, and watchers, all configured here |
 | `agent/` | The agent, an [eve](https://www.npmjs.com/package/eve) agent mounted at `/eve/v1` |
-| `agent/lib/watchers.ts` | What the board sees of the agent: the watcher that hands it every message |
+| `agent/lib/wake.ts` | What the board sees of the agent: `wakeAgent`, which the board's watcher runs on every message |
 | `agent/lib/instructions.ts` | What the agent does with what it hears: edit it to change how it works |
 | `agent/schedules/update-template.ts` | A daily check for a new release of this template |
 

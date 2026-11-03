@@ -24,14 +24,14 @@ pnpm build
 - **Each setting lives where it's used.** The board's sync is in
   `app/api/board/[[...path]]/route.ts`. The agent's model, instructions, sandbox, tools, and
   skills are in `agent/`. Connector names come from the environment, read in `connectors.ts`.
-- **The board sees the agent only through `agent/lib/watchers.ts`.** The board never imports eve.
-  The agent hears every message in `dev` and `factory-development`, and its instructions decide
-  what each one needs.
+- **The board sees the agent only through `wakeAgent` (`agent/lib/wake.ts`).** The board never
+  imports eve. Its `factory` watcher tails `dev/`, so the agent hears every message in `dev` and
+  under it, `dev/factory` included, and its instructions decide what each one needs.
 - **The setup checks write nothing.** `lib/setup.ts` checks the deployment and says what to do. A
   test drives each check through `setup()` against a fake network (`test/setup.test.ts`).
 - **The page's own routes (`app/api/launcher/`) act as the deployment, so they run only while it's
   protected** (`lib/gate.ts`), and take writes only from the page itself. The chat posts as
-  `launcher`, only in `factory-development`.
+  `launcher`, only in `dev/factory`.
 - **Real credentials never enter the sandbox.** `agent/lib/credentials.ts` puts them in its network
   policy, which swaps them in on the way out. Keep it that way.
 - **`package.json`'s `version` is the template release this factory is on.** Only the

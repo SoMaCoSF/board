@@ -23,8 +23,8 @@ export const VERCEL_TOKEN_ENV = "FACTORY_VERCEL_TOKEN";
 
 export const { github: GITHUB, slack: SLACK, slackChannel: SLACK_CHANNEL } = connectors();
 
-/** The board channel people and the agent work in. */
+/** The board channel people and the agent work in. The agent hears it and every channel under it. */
 export const CHANNEL = "dev";
 
 /** Where people talk about the factory itself: setting it up, how it works, changes to it. The launcher's chat is here. */
-export const FACTORY_CHANNEL = "factory-development";
+export const FACTORY_CHANNEL = `${CHANNEL}/factory`;

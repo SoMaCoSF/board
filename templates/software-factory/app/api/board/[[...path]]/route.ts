@@ -3,9 +3,9 @@ import { a2, fsBlob } from "@vercel/board/backend-a2";
 import { vercelBlob } from "@vercel/board/backend-a2/blob-vercel";
 import { github } from "@vercel/board/sync-github";
 import { channels, slack } from "@vercel/board/sync-slack";
-import { agent } from "@/agent/lib/watchers";
+import { wakeAgent } from "@/agent/lib/wake";
 import { queues, store } from "./a2";
-import { CHANNEL, FACTORY_CHANNEL, GITHUB, SLACK, SLACK_CHANNEL } from "./connectors";
+import { CHANNEL, GITHUB, SLACK, SLACK_CHANNEL } from "./connectors";
 import { fromGitHub } from "./github";
 
 // The factory's board: everything it syncs and watches is configured here. The agent is in
@@ -29,8 +29,11 @@ export const factory = board({
     // exists, it waits quietly, and starts within a minute of its attach.
     slack: slack(SLACK, channels({ [SLACK_CHANNEL]: CHANNEL })),
   },
-  // The agent hears every message in both channels: the team's work, and the factory's own.
-  watch: { factory: agent({ channels: [CHANNEL, FACTORY_CHANNEL] }) },
+  watch: {
+    // Every message in dev and the channels under it wakes the agent: the team's work, and in
+    // dev/factory, the factory's own.
+    factory: { tail: `${CHANNEL}/`, run: wakeAgent },
+  },
 });
 
 export const GET = factory.fetch, POST = factory.fetch;
