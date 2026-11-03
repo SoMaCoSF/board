@@ -1,16 +1,19 @@
 import type { MessageView } from "@vercel/board";
 import { NAME } from "../agent/lib/identity.ts";
-import { CHANNEL, FACTORY_CHANNEL, connectors, VERCEL_SUBJECT, VERCEL_TOKEN_ENV } from "../app/api/board/[[...path]]/connectors.ts";
+import { CHANNEL, FACTORY_CHANNEL, connectors, githubScope } from "../app/api/board/[[...path]]/connectors.ts";
 
 // The launcher's steps: each checks what the factory needs, from this deployment, and says what to do
 // while it isn't there. Nothing here writes anything.
 
 export type Status = "done" | "todo" | "waiting" | "skipped" | "locked" | "error";
 
-/** One thing to do: a line, then each command in its own box, or a link (`post`: a button that posts to it, on this page). */
-export type Fix = { text: string; commands?: string[]; link?: { href: string; label: string; post?: boolean } };
+/** One thing to do: a line, then each command in its own box, or a link. */
+export type Fix = { text: string; commands?: string[]; link?: { href: string; label: string } };
 
-export type StepId = "vercel" | "github" | "slack" | "cli" | "try";
+export type StepId = "vercel" | "github" | "slack" | "try";
+
+/** What Vercel Connect needs to mint a GitHub token for some repos alone. */
+type Scope = NonNullable<ReturnType<typeof githubScope>>;
 
 export type Step = {
   id: StepId;
@@ -34,17 +37,15 @@ export type Deps = {
   fetch: typeof fetch;
   /** This deployment's OIDC token. */
   oidc(): Promise<string>;
-  /** A Connect connector's app token. */
-  connect(connector: string): Promise<string>;
-  /** A Connect connector's token for one of its users. */
-  connectUser(connector: string, id: string): Promise<string>;
+  /** A Connect connector's app token, or with `scope`, one for those GitHub repos alone. */
+  connect(connector: string, scope?: Scope): Promise<string>;
   /** AI Gateway's balance, in dollars. */
   credits(): Promise<number>;
   /** The board's latest messages in a channel, newest last, optionally only those synced from one platform. */
   messages(query: { channel: string; from?: string; limit: number }): Promise<MessageView[]>;
 };
 
-const TITLES: Record<StepId, string> = { vercel: "Vercel", github: "GitHub", slack: "Slack", cli: "Vercel CLI", try: "Try it" };
+const TITLES: Record<StepId, string> = { vercel: "Vercel", github: "GitHub", slack: "Slack", try: "Try it" };
 
 const step = (id: StepId, rest: Omit<Step, "id" | "title">): Step => ({ id, title: TITLES[id], ...rest });
 
@@ -95,61 +96,13 @@ export async function setup(deps: Deps): Promise<Step[]> {
   const project = token ? projectOf(token) : null;
   const vercel = await vercelStep(deps, local, project);
   if (!local && vercel.status === "locked") {
-    const rest: StepId[] = ["github", "slack", "cli", "try"];
-    return [{ ...vercel, status: "todo" }, ...rest.map((id) => step(id, { status: "locked", summary: "", optional: id === "slack" || id === "cli" }))];
+    const rest: StepId[] = ["github", "slack", "try"];
+    return [{ ...vercel, status: "todo" }, ...rest.map((id) => step(id, { status: "locked", summary: "", optional: id === "slack" }))];
   }
-  const [github, slack, cli, tryIt] = await Promise.all([githubStep(deps, project), slackStep(deps, project), cliStep(deps, project), tryStep(deps)]);
-  return [vercel, github, slack, cli, tryIt];
+  const [github, slack, tryIt] = await Promise.all([githubStep(deps, project), slackStep(deps, project), tryStep(deps)]);
+  return [vercel, github, slack, tryIt];
 }
 
-/**
- * The agent's `vercel` CLI: a team token in the environment, or an account someone connected through
- * Connect's Vercel connector on this page. It runs as whoever that is.
- */
-async function cliStep(deps: Deps, project: Project): Promise<Step> {
-  const { vercel: connector } = connectors(deps.env);
-  const who = async (token: string) => {
-    const response = await deps.fetch("https://api.vercel.com/v2/user", { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) });
-    if (!response.ok) throw new Error(`Vercel answered ${response.status}`);
-    const { user } = (await response.json()) as { user: { username: string } };
-    return user.username;
-  };
-  const team = deps.env[VERCEL_TOKEN_ENV];
-  if (team) {
-    const name = await who(team).catch((error: unknown) => error);
-    return typeof name === "string"
-      ? step("cli", { optional: true, status: "done", summary: `Runs as ${name}, with a team token.` })
-      : step("cli", { optional: true, status: "error", summary: `${VERCEL_TOKEN_ENV}: ${message(name)}` });
-  }
-  const token = await deps.connectUser(connector, VERCEL_SUBJECT.id).catch((error: unknown) => error);
-  if (typeof token === "string") {
-    const name = await who(token).catch((error: unknown) => error);
-    return typeof name === "string"
-      ? step("cli", { optional: true, status: "done", summary: `Runs as ${name}.` })
-      : step("cli", { optional: true, status: "error", summary: `${connector}: ${message(name)}` });
-  }
-  if (!deps.env.VERCEL_ENV && !deps.env.VERCEL_OIDC_TOKEN) return step("cli", { optional: true, status: "todo", summary: "", fix: [SIGN_IN] });
-  const connect: Fix = { text: "Connect a Vercel account for the agent to act as. It asks once, here.", link: { href: "/api/launcher/vercel", label: "Connect Vercel", post: true } };
-  // The connector is there, with no account connected yet (or one whose token can't be renewed).
-  if (token instanceof Error && (token.name === "UserAuthorizationRequiredError" || token.name === "NoValidTokenError")) {
-    return step("cli", { optional: true, status: "todo", summary: "", fix: [connect] });
-  }
-  return step("cli", {
-    optional: true,
-    status: "skipped",
-    summary: "Let the agent use the vercel CLI.",
-    fix: [
-      {
-        text: "Create a Vercel connector and attach it, then connect an account.",
-        commands: [
-          `vercel connect create vercel --name ${connector.split("/")[1] ?? "factory"}`,
-          `vercel connect attach ${connector} --project ${project?.name ?? "<project>"}`,
-        ],
-      },
-      { text: `Or add a team token, then redeploy.`, commands: [`vercel env add ${VERCEL_TOKEN_ENV} --environment production --sensitive`] },
-    ],
-  });
-}
 
 /**
  * Deployed, protected, with its storage and AI Gateway. An open production comes back `locked`, so
@@ -289,6 +242,10 @@ async function githubStep(deps: Deps, project: Project): Promise<Step> {
       fix: [{ text: `Give the app write access to ${own}, so the agent can change its own code.`, ...(install ? { link: install } : {}) }],
     });
   }
+  // The agent's GitHub token covers one thread's repos at a time (agent/lib/credentials.ts), so Connect
+  // has to mint one for a single repo: this one, as the agent's turns ask for it.
+  const scoped = await deps.connect(connector, githubScope([repo.full_name])!).catch((error: unknown) => error);
+  if (typeof scoped !== "string") return step("github", { status: "error", summary: `Couldn't get a token for ${repo.full_name} alone: ${message(scoped)}`, rows });
   return step("github", { status: "done", summary: `Works on ${total_count === 1 ? "1 repo" : `${total_count} repos`}, its own code included.${unmapped}`, rows });
 }
 
@@ -361,8 +318,7 @@ export async function liveDeps(read: Deps["messages"]): Promise<Deps> {
     env: process.env,
     fetch,
     oidc: () => getVercelOidcToken(),
-    connect: (connector) => getToken(connector, { subject: { type: "app" } }),
-    connectUser: (connector, id) => getToken(connector, { subject: { type: "user", id } }),
+    connect: (connector, scope) => getToken(connector, { subject: { type: "app" }, ...(scope ? { authorizationDetails: scope } : {}) }),
     credits: async () => Number((await gateway.getCredits()).balance),
     messages: read,
   };

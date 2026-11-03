@@ -37,14 +37,7 @@ function Fixes({ fix }: { fix: Fix[] }): ReactNode {
               <Copy text={command} />
             </div>
           ))}
-          {item.link?.post ? (
-            // A write, from this page: its route checks the Origin, and comes back here when it's done.
-            <form method="post" action={item.link.href}>
-              <button className="button" type="submit">
-                {item.link.label}
-              </button>
-            </form>
-          ) : item.link ? (
+          {item.link ? (
             <a className="button secondary" href={item.link.href} target="_blank" rel="noreferrer">
               {item.link.label}
             </a>

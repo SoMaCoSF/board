@@ -6,6 +6,7 @@ import { channels, slack } from "@vercel/board/sync-slack";
 import { wakeAgent } from "@/agent/lib/wake";
 import { queues, store } from "./a2";
 import { CHANNEL, GITHUB, GITHUB_REPOS, SLACK, SLACK_CHANNEL } from "./connectors";
+import { withoutForks } from "./github";
 
 // The factory's board: everything it syncs and watches is configured here, and where each repo and
 // channel lands in connectors.ts. The agent is in agent/, and the board reaches it only through wakeAgent.
@@ -23,9 +24,9 @@ const backend = a2({
 export const factory = board({
   backend,
   sync: {
-    // Each repo's PRs and issues come into its channel (REPOS in connectors.ts), and nothing goes back:
-    // the agent comments on GitHub on purpose, with gh.
-    github: github(GITHUB, repos(GITHUB_REPOS)),
+    // Each repo's PRs and issues come into its channel (REPOS in connectors.ts), but not forks' PRs,
+    // and nothing goes back: the agent comments on GitHub on purpose, with gh.
+    github: github(GITHUB, repos(withoutForks(GITHUB_REPOS))),
     // Two-way: Slack threads come in, and the board's replies go back to them. Until the connector
     // exists, it waits quietly, and starts within a minute of its attach.
     slack: slack(SLACK, channels({ [SLACK_CHANNEL]: CHANNEL })),

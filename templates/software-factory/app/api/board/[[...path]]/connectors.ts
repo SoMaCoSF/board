@@ -31,15 +31,27 @@ export function connectors(env: Env = process.env) {
     /** Slack: the board mirrors `slackChannel` (a name or an ID) into its channel, once this connector exists. */
     slack: env.SLACK_CONNECTOR || "slack/factory",
     slackChannel: env.SLACK_CHANNEL || "#factory",
-    /** Vercel, for the agent's `vercel` CLI: a Connect connector one person authorizes, as whom the agent runs it. */
-    vercel: env.VERCEL_CONNECTOR || "vercel/factory",
   };
 }
 
-/** The one account Connect's Vercel connector holds for the agent: whoever connects it on the setup page. */
-export const VERCEL_SUBJECT = { type: "user", id: "factory" } as const;
-
-/** A team token the agent's `vercel` CLI uses instead of the connector, kept out of the sandbox like every credential. */
-export const VERCEL_TOKEN_ENV = "FACTORY_VERCEL_TOKEN";
-
 export const { github: GITHUB, ownRepo: OWN_REPO, repos: GITHUB_REPOS, slack: SLACK, slackChannel: SLACK_CHANNEL } = connectors();
+
+/**
+ * The repos a thread's GitHub token covers: the one its root came from (`pr=` or `issue=`, which
+ * GitHub sync labels it with), else every repo the board brings in, this factory's own first.
+ */
+export function threadRepos(root: { labels: Record<string, string> }, repos: Record<string, string> = GITHUB_REPOS): string[] {
+  const from = (root.labels.pr ?? root.labels.issue)?.replace(/#\d+$/, "");
+  return from ? [from] : Object.keys(repos);
+}
+
+/**
+ * What Vercel Connect needs to mint a GitHub token for `repos` (`owner/name`) alone. One
+ * installation token covers one org: the first repo's, with those of its repos. Null for no repos.
+ */
+export function githubScope(repos: string[]) {
+  const org = repos[0]?.split("/")[0];
+  if (!org) return null;
+  const repositories = repos.filter((repo) => repo.split("/")[0] === org).map((repo) => repo.split("/")[1]!);
+  return [{ type: "github_app_installation" as const, org, repositories }];
+}

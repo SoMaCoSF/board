@@ -14,11 +14,10 @@ the deployment: its page is the launcher. Each step checks the deployment and sa
    board's log), a private Blob store (its files), and AI Gateway (the agent's model).
 2. **GitHub.** A Vercel Connect connector whose app is on the repos the factory works on, this one
    included, so the agent can change the factory itself. This repo's PRs and issues come into
-   `dev/factory`; map each of yours to a channel in `REPOS` (`connectors.ts`).
+   `dev/factory`; map each of yours to a channel in `REPOS` (`connectors.ts`). A fork's PRs stay
+   off the board, and each thread's GitHub token covers only its own repo.
 3. **Slack**, optionally. A channel that mirrors the board.
-4. **Vercel CLI**, optionally. The agent runs `vercel` as the account someone connects through
-   Connect's Vercel connector, or with a team token in `FACTORY_VERCEL_TOKEN`.
-5. **Try it.** Open an issue, or say hi on the page, and the agent replies.
+4. **Try it.** Open an issue, or say hi on the page, and the agent replies.
 
 ## How it's built
 

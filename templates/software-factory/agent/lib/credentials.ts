@@ -2,35 +2,27 @@ import type { NetworkPolicy, NetworkPolicyRule } from "@vercel/sandbox";
 import { defineState } from "eve/context";
 import type { SandboxNetworkPolicy } from "eve/sandbox";
 import type { ToolContext } from "eve/tools";
-import { connectors, GITHUB, VERCEL_SUBJECT, VERCEL_TOKEN_ENV } from "../../app/api/board/[[...path]]/connectors";
+import { GITHUB, githubScope, threadRepos } from "../../app/api/board/[[...path]]/connectors";
 import { environment } from "../sandbox";
 import type { BoardTask } from "./board";
 import { BOARD, LOCAL_BOARD, NAME, VB_ROUTES, headers } from "./identity";
 import { expiresAt, stale } from "./tokens";
+import { agentBoard } from "./vb-tool";
 
 // Real credentials go in the sandbox's network policy, swapped in on the way out, never in the sandbox.
+// Anything the sandbox runs can use them while they're there, so each is the least the thread needs.
 
 const GITHUB_MS = 30 * 60_000;
 const GIT_EMAIL = `${NAME}@users.noreply.github.com`;
 
-/** Where the Vercel CLI keeps its settings on Linux: its current team among them. */
-const VERCEL_CONFIG = "$HOME/.local/share/com.vercel.cli";
-
-const bearer = (token: string): NetworkPolicyRule[] => [{ transform: [{ headers: { authorization: `Bearer ${token}` } }] }];
-
 /**
  * The real credentials on the way out, and who the agent is on the board. Without a GitHub token (no
- * connector yet), GitHub gets none, and the agent still works on the board; without a Vercel token,
- * the `vercel` CLI gets none.
+ * connector yet, or no repo for this thread), GitHub gets none, and the agent still works on the board.
  */
-export function policy(
-  thread: string,
-  tokens: { gateway: string; board: string; github: string | null; vercel: string | null },
-  bypass: string | undefined,
-): NetworkPolicy {
+export function policy(thread: string, tokens: { gateway: string; board: string; github: string | null }, bypass: string | undefined): NetworkPolicy {
   const github: Record<string, NetworkPolicyRule[]> = tokens.github
     ? {
-        "api.github.com": bearer(tokens.github),
+        "api.github.com": [{ transform: [{ headers: { authorization: `Bearer ${tokens.github}` } }] }],
         "github.com": [{ transform: [{ headers: { authorization: `Basic ${Buffer.from(`x-access-token:${tokens.github}`).toString("base64")}` } }] }],
       }
     : {};
@@ -48,28 +40,31 @@ export function policy(
             ],
           }),
       ...github,
-      ...(tokens.vercel ? { "api.vercel.com": bearer(tokens.vercel) } : {}),
       "*": [],
     },
   };
 }
 
 /**
- * The agent's `vercel` CLI token: a team token in the environment, or the account someone connected
- * through Connect's Vercel connector on the setup page. Null when there's neither.
+ * A GitHub token for this thread's repos only (`threadRepos`): code run from one repo's PR can't reach
+ * the app's other repos. Null when there's no repo to scope it to, or no connector yet.
  */
-async function vercelToken(getTokenResponse: typeof import("@vercel/connect").getTokenResponse) {
-  const team = process.env[VERCEL_TOKEN_ENV];
-  if (team) return { token: team, until: Number.POSITIVE_INFINITY };
-  const connected = await getTokenResponse(connectors().vercel, { subject: VERCEL_SUBJECT, validityBufferMs: GITHUB_MS }).catch(() => null);
-  return connected ? { token: connected.token, until: connected.expiresAt } : null;
+async function githubToken(getToken: typeof import("@vercel/connect").getToken, thread: string, boardToken: string, bypass: string | undefined) {
+  const root = await agentBoard(thread, { token: async () => boardToken, bypass })
+    .thread(thread)
+    .then((view) => view.message)
+    .catch(() => null);
+  const repos = threadRepos(root ?? { labels: {} });
+  const scope = githubScope(repos);
+  if (!scope) {
+    console.warn(`[factory] no repo to scope a GitHub token to for thread ${thread} (REPOS in connectors.ts), so the agent can't reach GitHub this turn`);
+    return null;
+  }
+  return getToken(GITHUB, { subject: { type: "app" }, validityBufferMs: GITHUB_MS, authorizationDetails: scope }).catch((error: unknown) => {
+    console.warn(`[factory] no GitHub token from ${GITHUB} for ${repos.join(", ")}, so the agent can't reach GitHub this turn:`, error);
+    return null;
+  });
 }
-
-/** The team a token's claims name, by ID. */
-const teamOf = (jwt: string): string | null => {
-  const owner = JSON.parse(Buffer.from(jwt.split(".")[1]!, "base64url").toString()).owner_id;
-  return typeof owner === "string" && /^team_[A-Za-z0-9]+$/.test(owner) ? owner : null;
-};
 
 const given = defineState("factory.credentials", () => ({ until: 0 }));
 
@@ -78,29 +73,15 @@ export async function give(ctx: Pick<ToolContext, "getSandbox">, board: BoardTas
   const now = Date.now();
   if (!force && !stale(given.get().until, now)) return;
   const sandbox = await ctx.getSandbox(environment);
-  const [{ getToken, getTokenResponse }, { getVercelOidcToken }] = await Promise.all([import("@vercel/connect"), import("@vercel/oidc")]);
-  const [gateway, boardToken, github, vercel] = await Promise.all([
-    getVercelOidcToken(),
-    getVercelOidcToken({ audience: BOARD }),
-    getToken(GITHUB, { subject: { type: "app" }, validityBufferMs: GITHUB_MS }).catch((error: unknown) => {
-      console.warn(`[factory] no GitHub token from ${GITHUB}, so the agent can't reach GitHub this turn:`, error);
-      return null;
-    }),
-    vercelToken(getTokenResponse),
-  ]);
-  const tokens = { gateway, board: boardToken, github, vercel: vercel?.token ?? null };
-  await sandbox.setNetworkPolicy(policy(board.thread, tokens, process.env.VERCEL_AUTOMATION_BYPASS_SECRET) as SandboxNetworkPolicy);
-  // git's identity, and the Vercel CLI's team: this factory's, so `vercel` works on it without --scope.
-  const team = vercel ? teamOf(gateway) : null;
-  const setup = [
-    `git config --global user.name ${JSON.stringify(NAME)}`,
-    `git config --global user.email ${GIT_EMAIL}`,
-    ...(team ? [`mkdir -p "${VERCEL_CONFIG}"`, `printf '{"currentTeam":"%s"}' ${team} > "${VERCEL_CONFIG}/config.json"`] : []),
-  ].join(" && ");
-  const configured = await sandbox.run({ command: setup });
-  if (configured.exitCode !== 0) throw new Error(`sandbox setup failed: ${configured.stderr.slice(-300)}`);
+  const [{ getToken }, { getVercelOidcToken }] = await Promise.all([import("@vercel/connect"), import("@vercel/oidc")]);
+  const bypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+  const [gateway, boardToken] = await Promise.all([getVercelOidcToken(), getVercelOidcToken({ audience: BOARD })]);
+  const github = await githubToken(getToken, board.thread, boardToken, bypass);
+  await sandbox.setNetworkPolicy(policy(board.thread, { gateway, board: boardToken, github }, bypass) as SandboxNetworkPolicy);
+  const git = await sandbox.run({
+    command: `git config --global user.name ${JSON.stringify(NAME)} && git config --global user.email ${GIT_EMAIL}`,
+  });
+  if (git.exitCode !== 0) throw new Error(`git config failed: ${git.stderr.slice(-300)}`);
   // Without GitHub, the next turn's start asks again: the connector may be set up by then.
-  given.update(() => ({
-    until: Math.min(expiresAt(gateway), expiresAt(boardToken), ...(github ? [now + GITHUB_MS] : []), vercel?.until ?? Number.POSITIVE_INFINITY),
-  }));
+  given.update(() => ({ until: Math.min(expiresAt(gateway), expiresAt(boardToken), ...(github ? [now + GITHUB_MS] : [])) }));
 }

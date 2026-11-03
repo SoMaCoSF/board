@@ -7,8 +7,6 @@ import { BOARD } from "./lib/identity";
 const VB = pkg.version;
 /** Pinned: asking GitHub's API for the latest hits the unauthenticated rate limit sandboxes share. */
 const GH = "2.102.0";
-/** The Vercel CLI, pinned like the rest. */
-const VERCEL = "65.10.0";
 
 /** Sandbox setup, as root, once at build into the snapshot. */
 const TOOLS = `set -e
@@ -18,8 +16,7 @@ command -v pnpm >/dev/null || npm install -g pnpm >/dev/null 2>&1
 command -v gh >/dev/null || {
   curl -fsSL "https://github.com/cli/cli/releases/download/v${GH}/gh_${GH}_linux_amd64.tar.gz" | tar xz -C /tmp
   install "/tmp/gh_${GH}_linux_amd64/bin/gh" /usr/local/bin/gh
-}
-vercel --version 2>/dev/null | grep -q "${VERCEL}" || npm install -g vercel@${VERCEL} >/dev/null 2>&1`;
+}`;
 
 export const environment = VercelSandbox.environment({
   prepare: async (sandbox) => {
@@ -43,9 +40,6 @@ export default defineSandbox(() =>
       BOARD_URL: BOARD,
       BOARD_TOKEN: "from-the-network-policy",
       GH_TOKEN: "from-the-network-policy",
-      // Swapped for the real one on the way to api.vercel.com, when the setup page's Vercel CLI step is done.
-      VERCEL_TOKEN: "from-the-network-policy",
-      VERCEL_TELEMETRY_DISABLED: "1",
     },
   }),
 );
