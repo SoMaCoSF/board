@@ -1,3 +1,5 @@
+import { ownRepo } from "../../lib/github.ts";
+
 // Who the agent is on the board, and where the board is.
 
 /** Its name on the board: the profile it posts under, and what people @mention. */
@@ -17,8 +19,8 @@ export const BOARD = process.env.VERCEL_PROJECT_PRODUCTION_URL
   ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}/api/board`
   : process.env.BOARD_URL || "http://localhost:3000/api/board";
 
-/** This factory's own repo, which it changes when it's asked to improve itself: the board's, from the deployment. */
-export { OWN_REPO } from "../../app/api/board/[[...path]]/connectors.ts";
+/** This factory's own repo, which it changes when it's asked to improve itself. */
+export const OWN_REPO = ownRepo();
 
 type Author = { principal: string; profile: string | null; session: string | null; actor?: string };
 

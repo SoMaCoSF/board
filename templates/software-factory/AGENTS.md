@@ -21,16 +21,17 @@ pnpm test        # node --test, with Node's type stripping
 pnpm build
 ```
 
-- **Each setting lives where it's used.** The board's sync is in
-  `app/api/board/[[...path]]/route.ts`. The agent's model, instructions, sandbox, tools, and
-  skills are in `agent/`. Connector names come from the environment, read in `connectors.ts`, and
-  so does which channel each repo's PRs and issues come into (`REPOS`; this repo's own go to
-  `dev/factory`).
-- **The board sees the agent only through `wakeAgent` (`agent/lib/wake.ts`).** The board never
-  imports eve. Its `factory` watcher tails `dev/`, so the agent hears every message in `dev` and
-  under it, `dev/factory` included, and its instructions decide what each one needs.
-- **The setup checks write nothing.** `lib/setup.ts` checks the deployment and says what to do. A
-  test drives each check through `setup()` against a fake network (`test/setup.test.ts`).
+- **Each setting lives where it's used.** The board's sync is all in
+  `app/api/board/[[...path]]/route.ts`: its connectors, which channel each repo's PRs and issues
+  come into (`repoChannels`; this repo's own go to `dev/factory`), and which Slack channels it
+  mirrors. The agent's model, instructions, sandbox, tools, and skills are in `agent/`.
+- **The board sees the agent only through `wakeAgent` (`agent/lib/wake.ts`), and the agent never
+  imports the board's config.** Its `factory` watcher tails `dev/`, so the agent hears every
+  message in `dev` and under it, and passes the GitHub access each thread gets. The agent's
+  `setup_steps` tool asks the setup page's own `/api/launcher/steps`.
+- **The setup checks write nothing.** `lib/setup.ts` checks the deployment against what the board
+  route syncs and says what to do. A test drives each check through `setup()` against a fake
+  network (`test/setup.test.ts`).
 - **The page's own routes (`app/api/launcher/`) act as the deployment, so they run only while it's
   protected** (`lib/gate.ts`), and take writes only from the page itself. The chat posts as
   `launcher`, only in `dev/factory`.

@@ -1,6 +1,6 @@
 import type { MessageView } from "@vercel/board";
 import { NAME } from "../agent/lib/identity.ts";
-import { CHANNEL, FACTORY_CHANNEL, connectors, githubScope } from "../app/api/board/[[...path]]/connectors.ts";
+import { githubScope, ownRepo } from "./github.ts";
 
 // The launcher's steps: each checks what the factory needs, from this deployment, and says what to do
 // while it isn't there. Nothing here writes anything.
@@ -31,9 +31,13 @@ export type Step = {
 
 type Env = Record<string, string | undefined>;
 
+/** What the board syncs, as its route configures it: the checks look for these. */
+export type Synced = { connectors: { github: string; slack: string }; repoChannels: Record<string, string>; slackChannels: Record<string, string> };
+
 /** What the checks reach: the environment, the network, and the board. Tests pass their own. */
 export type Deps = {
   env: Env;
+  synced: Synced;
   fetch: typeof fetch;
   /** This deployment's OIDC token. */
   oidc(): Promise<string>;
@@ -175,7 +179,8 @@ type Repo = { full_name: string; permissions?: { push?: boolean } };
 
 /** The connector, the repos its app is on, and among them this factory's own, which the agent changes to improve itself. */
 async function githubStep(deps: Deps, project: Project): Promise<Step> {
-  const { github: connector, ownRepo: own } = connectors(deps.env);
+  const connector = deps.synced.connectors.github;
+  const own = ownRepo(deps.env);
   const token = await deps.connect(connector).catch((error: unknown) => error);
   if (typeof token !== "string") {
     if (!deps.env.VERCEL_ENV && !deps.env.VERCEL_OIDC_TOKEN) return step("github", { status: "todo", summary: "", fix: [SIGN_IN] });
@@ -222,11 +227,11 @@ async function githubStep(deps: Deps, project: Project): Promise<Step> {
   const shown = repositories.map((repo) => repo.full_name).slice(0, 3).join(", ") + (total_count > 3 ? `, +${total_count - 3}` : "");
   const rows: [string, string][] = [["repos", shown || "none"]];
   if (total_count === 0) return step("github", { status: "todo", summary: "", rows, fix: [{ text: "Install the app on your repos, this one included.", ...(install ? { link: install } : {}) }] });
-  // Installed but in no channel: the board drops their PRs and issues (REPOS in connectors.ts, matched as GitHub writes them).
-  const mapped = connectors(deps.env).repos;
+  // Installed but in no channel: the board drops their PRs and issues (matched as GitHub writes them).
+  const mapped = deps.synced.repoChannels;
   const off = total_count > repositories.length ? [] : repositories.map((repo) => repo.full_name).filter((name) => !(name in mapped));
   const unmapped = off.length
-    ? ` ${off.slice(0, 2).join(", ")}${off.length > 2 ? `, +${off.length - 2}` : ""} ${off.length === 1 ? "isn't" : "aren't"} in REPOS, so ${off.length === 1 ? "its" : "their"} PRs and issues stay off the board.`
+    ? ` ${off.slice(0, 2).join(", ")}${off.length > 2 ? `, +${off.length - 2}` : ""} ${off.length === 1 ? "isn't" : "aren't"} in repoChannels, so ${off.length === 1 ? "its" : "their"} PRs and issues stay off the board.`
     : "";
   if (!own) return step("github", { status: "done", summary: `Works on ${total_count === 1 ? "1 repo" : `${total_count} repos`}.${unmapped}`, rows });
 
@@ -250,7 +255,9 @@ async function githubStep(deps: Deps, project: Project): Promise<Step> {
 }
 
 async function slackStep(deps: Deps, project: Project): Promise<Step> {
-  const { slack: connector, slackChannel: channel } = connectors(deps.env);
+  const connector = deps.synced.connectors.slack;
+  const wanted = Object.keys(deps.synced.slackChannels);
+  const channel = wanted.join(", ");
   const token = await deps.connect(connector).catch((error: unknown) => error);
   if (typeof token !== "string") {
     if (!deps.env.VERCEL_ENV && !deps.env.VERCEL_OIDC_TOKEN) return step("slack", { optional: true, status: "todo", summary: "", fix: [SIGN_IN] });
@@ -285,19 +292,18 @@ async function slackStep(deps: Deps, project: Project): Promise<Step> {
   ]).catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
   if (checked instanceof Error) return step("slack", { optional: true, status: "error", summary: message(checked) });
   const [who, mine] = checked;
-  const wanted = channel.replace(/^#/, "");
-  const joined = mine.channels.some((candidate) => candidate.id === wanted || candidate.name === wanted);
+  const missing = wanted.filter((name) => !mine.channels.some((candidate) => candidate.id === name || candidate.name === name.replace(/^#/, "")));
   const rows: [string, string][] = [["workspace", who.team], ["app", `@${who.user}`]];
-  if (!joined) {
-    return step("slack", { optional: true, status: "todo", summary: "", rows, fix: [{ text: `Invite the app to ${channel}:`, commands: [`/invite @${who.user}`] }] });
+  if (missing.length) {
+    return step("slack", { optional: true, status: "todo", summary: "", rows, fix: [{ text: `Invite the app to ${missing.join(", ")}:`, commands: [`/invite @${who.user}`] }] });
   }
   return step("slack", { optional: true, status: "done", summary: `Mirrors ${channel}.`, rows });
 }
 
 async function tryStep(deps: Deps): Promise<Step> {
   const read: MessageView[][] | Error = await Promise.all([
-    deps.messages({ channel: CHANNEL, limit: 200 }),
-    deps.messages({ channel: FACTORY_CHANNEL, limit: 200 }),
+    deps.messages({ channel: "dev", limit: 200 }),
+    deps.messages({ channel: "dev/factory", limit: 200 }),
   ]).catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
   if (read instanceof Error) return step("try", { status: "error", summary: `Couldn't read the board: ${message(read)}` });
   const recent = read.flat();
@@ -308,7 +314,7 @@ async function tryStep(deps: Deps): Promise<Step> {
 }
 
 /** The checks' real dependencies, loaded only when the launcher runs. */
-export async function liveDeps(read: Deps["messages"]): Promise<Deps> {
+export async function liveDeps(read: Deps["messages"], synced: Synced): Promise<Deps> {
   const [{ getVercelOidcToken }, { getToken }, { gateway }] = await Promise.all([
     import("@vercel/oidc"),
     import("@vercel/connect"),
@@ -316,6 +322,7 @@ export async function liveDeps(read: Deps["messages"]): Promise<Deps> {
   ]);
   return {
     env: process.env,
+    synced,
     fetch,
     oidc: () => getVercelOidcToken(),
     connect: (connector, scope) => getToken(connector, { subject: { type: "app" }, ...(scope ? { authorizationDetails: scope } : {}) }),

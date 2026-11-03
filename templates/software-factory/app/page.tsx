@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import { NAME } from "@/agent/lib/identity";
-import { FACTORY_CHANNEL } from "@/app/api/board/[[...path]]/connectors";
-import { factory } from "@/app/api/board/[[...path]]/route";
+import { connectors, factory, repoChannels, slackChannels } from "@/app/api/board/[[...path]]/route";
 import { Chat } from "@/components/chat";
 import { Copy } from "@/components/copy";
 import { Refresh } from "@/components/refresh";
@@ -12,7 +11,7 @@ import { gated, liveDeps, setup } from "@/lib/setup";
 export const dynamic = "force-dynamic";
 
 export default async function Launcher(): Promise<ReactNode> {
-  const deps = await liveDeps(async (query) => (await factory.messages(query)).messages);
+  const deps = await liveDeps(async (query) => (await factory.messages(query)).messages, { connectors, repoChannels, slackChannels });
   const steps = await setup(deps);
   const required = steps.filter((step) => !step.optional);
   const done = required.filter((step) => step.status === "done").length;
@@ -39,7 +38,7 @@ export default async function Launcher(): Promise<ReactNode> {
       {gated(steps) ? null : (
         <section className="talk">
           <h2>Talk to it</h2>
-          <Chat channel={FACTORY_CHANNEL} agent={NAME} />
+          <Chat channel="dev/factory" agent={NAME} />
         </section>
       )}
       <section className="next">

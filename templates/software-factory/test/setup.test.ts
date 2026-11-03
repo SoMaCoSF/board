@@ -44,6 +44,12 @@ function fake(options: { env?: Record<string, string | undefined>; routes?: Rout
   const routes = { ...ROUTES, ...options.routes };
   const deps: Deps = {
     env: options.env ?? PRODUCTION,
+    // As the board route configures it, on a deployment of acme/factory.
+    synced: {
+      connectors: { github: "github/factory", slack: "slack/factory" },
+      repoChannels: { "acme/factory": "dev/factory" },
+      slackChannels: { "#factory": "dev" },
+    },
     fetch: (async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input instanceof Request ? input.url : input);
       requests.push(url);
@@ -76,7 +82,7 @@ test("GitHub names the repos the app is on that come into no channel", async () 
   // The app is on acme/factory, which comes into dev/factory on its own, and acme/web, which no one mapped.
   const { github } = byId(await setup(fake().deps));
   assert.equal(github!.status, "done");
-  assert.equal(github!.summary, "Works on 2 repos, its own code included. acme/web isn't in REPOS, so its PRs and issues stay off the board.");
+  assert.equal(github!.summary, "Works on 2 repos, its own code included. acme/web isn't in repoChannels, so its PRs and issues stay off the board.");
 });
 
 test("GitHub asks Connect for a token for the factory's own repo alone, as the agent's turns do", async () => {

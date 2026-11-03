@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { githubScope, threadRepos } from "../app/api/board/[[...path]]/connectors.ts";
+import { githubScope, threadRepos } from "../lib/github.ts";
 
 // What a thread's GitHub token covers: what agent/lib/credentials.ts asks Vercel Connect for each turn.
 
-const REPOS = { "acme/factory": "dev/factory", "acme/web": "dev", "other/api": "dev/api" };
+const REPOS = ["acme/factory", "acme/web", "other/api"];
 
 test("a thread from a GitHub PR or issue gets its own repo alone", () => {
   assert.deepEqual(threadRepos({ labels: { pr: "acme/web#7", state: "open" } }, REPOS), ["acme/web"]);

@@ -4,7 +4,10 @@ import { session } from "./identity";
 // The board reaches the agent over eve's HTTP API on this deployment: one eve session per thread,
 // kept in the project's Redis.
 
-export type AgentMessage = { thread: string; key: string; text: string };
+/** The GitHub connector the agent acts through, and the repos the board brings in (`owner/name`). */
+export type GitHubAccess = { github: string; repos: string[] };
+
+export type AgentMessage = { thread: string; key: string; text: string; github: GitHubAccess };
 
 export type Sessions = {
   get(key: string): Promise<string | null>;
@@ -27,7 +30,7 @@ const gone = (error: unknown) =>
     (error as { code?: string }).code === "session_stranded");
 
 /** Delivers a message to the thread's session, once per `key`. Two racing first messages each make a session; the loser's is reset. */
-export async function deliver({ thread, key, text }: AgentMessage, deps: { sessions?: Sessions; eve?: EveSessions } = {}) {
+export async function deliver({ thread, key, text, github }: AgentMessage, deps: { sessions?: Sessions; eve?: EveSessions } = {}) {
   const sessions = deps.sessions ?? (await kv());
   const eve = deps.eve ?? (await client());
   const name = session(thread);
@@ -43,12 +46,12 @@ export async function deliver({ thread, key, text }: AgentMessage, deps: { sessi
       }
     }
     try {
-      await eve.send(session, text, { board: { thread } });
+      await eve.send(session, text, { board: { thread, ...github } });
     } catch (error) {
       if (!gone(error)) throw error;
       const fresh = await eve.create();
       await sessions.set(`session:${name}`, fresh);
-      await eve.send(fresh, text, { board: { thread } });
+      await eve.send(fresh, text, { board: { thread, ...github } });
     }
   } catch (error) {
     await sessions.delete(`told:${name}:${key}`).catch(() => {});

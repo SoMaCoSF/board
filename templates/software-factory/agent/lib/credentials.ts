@@ -2,7 +2,7 @@ import type { NetworkPolicy, NetworkPolicyRule } from "@vercel/sandbox";
 import { defineState } from "eve/context";
 import type { SandboxNetworkPolicy } from "eve/sandbox";
 import type { ToolContext } from "eve/tools";
-import { GITHUB, githubScope, threadRepos } from "../../app/api/board/[[...path]]/connectors";
+import { githubScope, threadRepos } from "../../lib/github";
 import { environment } from "../sandbox";
 import type { BoardTask } from "./board";
 import { BOARD, NAME } from "./identity";
@@ -33,22 +33,22 @@ export function policy(tokens: { gateway: string; github: string | null }): Netw
 }
 
 /**
- * A GitHub token for this thread's repos only (`threadRepos`): code run from one repo's PR can't reach
- * the app's other repos. Null when there's no repo to scope it to, or no connector yet.
+ * A GitHub token for this thread's repos only (`threadRepos`), through the connector the board named:
+ * code run from one repo's PR can't reach the app's other repos. Null without a repo or a connector.
  */
-async function githubToken(getToken: typeof import("@vercel/connect").getToken, thread: string, boardToken: string, bypass: string | undefined) {
-  const root = await agentBoard(thread, { token: async () => boardToken, bypass })
-    .thread(thread)
+async function githubToken(getToken: typeof import("@vercel/connect").getToken, board: BoardTask, boardToken: string, bypass: string | undefined) {
+  const root = await agentBoard(board.thread, { token: async () => boardToken, bypass })
+    .thread(board.thread)
     .then((view) => view.message)
     .catch(() => null);
-  const repos = threadRepos(root ?? { labels: {} });
+  const repos = threadRepos(root ?? { labels: {} }, board.repos);
   const scope = githubScope(repos);
-  if (!scope) {
-    console.warn(`[factory] no repo to scope a GitHub token to for thread ${thread} (REPOS in connectors.ts), so the agent can't reach GitHub this turn`);
+  if (!scope || !board.github) {
+    console.warn(`[factory] no repo to scope a GitHub token to for thread ${board.thread} (repoChannels in the board route), so the agent can't reach GitHub this turn`);
     return null;
   }
-  return getToken(GITHUB, { subject: { type: "app" }, validityBufferMs: GITHUB_MS, authorizationDetails: scope }).catch((error: unknown) => {
-    console.warn(`[factory] no GitHub token from ${GITHUB} for ${repos.join(", ")}, so the agent can't reach GitHub this turn:`, error);
+  return getToken(board.github, { subject: { type: "app" }, validityBufferMs: GITHUB_MS, authorizationDetails: scope }).catch((error: unknown) => {
+    console.warn(`[factory] no GitHub token from ${board.github} for ${repos.join(", ")}, so the agent can't reach GitHub this turn:`, error);
     return null;
   });
 }
@@ -63,7 +63,7 @@ export async function give(ctx: Pick<ToolContext, "getSandbox">, board: BoardTas
   const [{ getToken }, { getVercelOidcToken }] = await Promise.all([import("@vercel/connect"), import("@vercel/oidc")]);
   const bypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
   const [gateway, boardToken] = await Promise.all([getVercelOidcToken(), getVercelOidcToken({ audience: BOARD })]);
-  const github = await githubToken(getToken, board.thread, boardToken, bypass);
+  const github = await githubToken(getToken, board, boardToken, bypass);
   await sandbox.setNetworkPolicy(policy({ gateway, github }) as SandboxNetworkPolicy);
   const git = await sandbox.run({
     command: `git config --global user.name ${JSON.stringify(NAME)} && git config --global user.email ${GIT_EMAIL}`,
