@@ -1,12 +1,10 @@
 import type { WatcherContext } from "@vercel/board";
 import { session } from "./identity";
 
-// How the board's watchers reach the agent: over eve's HTTP API on this deployment, one eve session
-// per thread, kept in the project's Redis. Each message is sent once per key.
+// The board reaches the agent over eve's HTTP API on this deployment: one eve session per thread,
+// kept in the project's Redis.
 
-export type AgentMessage = { thread: string; key: string; message: string };
-
-export const boardContext = (thread: string) => ({ board: { thread } });
+export type AgentMessage = { thread: string; key: string; text: string };
 
 export type Sessions = {
   get(key: string): Promise<string | null>;
@@ -17,7 +15,7 @@ export type Sessions = {
 
 export type EveSessions = {
   create(): Promise<string>;
-  send(session: string, message: string, clientContext: object): Promise<void>;
+  send(session: string, text: string, clientContext: object): Promise<void>;
   reset(session: string): Promise<void>;
 };
 
@@ -28,11 +26,8 @@ const gone = (error: unknown) =>
     error.name === "ClientSessionStrandedError" ||
     (error as { code?: string }).code === "session_stranded");
 
-/** Sends a message once per `key`. Two racing first messages each make a session; the loser's is reset. */
-export async function send(
-  { thread, key, message }: AgentMessage,
-  deps: { sessions?: Sessions; eve?: EveSessions } = {},
-) {
+/** Delivers a message to the thread's session, once per `key`. Two racing first messages each make a session; the loser's is reset. */
+export async function deliver({ thread, key, text }: AgentMessage, deps: { sessions?: Sessions; eve?: EveSessions } = {}) {
   const sessions = deps.sessions ?? (await kv());
   const eve = deps.eve ?? (await client());
   const name = session(thread);
@@ -47,14 +42,13 @@ export async function send(
         session = (await sessions.get(`session:${name}`))!;
       }
     }
-    const context = boardContext(thread);
     try {
-      await eve.send(session, message, context);
+      await eve.send(session, text, { board: { thread } });
     } catch (error) {
       if (!gone(error)) throw error;
       const fresh = await eve.create();
       await sessions.set(`session:${name}`, fresh);
-      await eve.send(fresh, message, context);
+      await eve.send(fresh, text, { board: { thread } });
     }
   } catch (error) {
     await sessions.delete(`told:${name}:${key}`).catch(() => {});
@@ -62,60 +56,26 @@ export async function send(
   }
 }
 
-/** How many times a message is tried before the thread hears the agent couldn't start, and the wait after a first failure. */
-const TRIES = 3;
-const RETRY_MS = 5_000;
-
 /**
- * Runs `start` until it works, up to TRIES times, and if it never does, says so in the thread instead
- * of throwing: a watcher that throws gets 5 tries in about 15 seconds, then board drops the event
- * without a word in the thread. Saying so tells the thread, and the next reply tries again.
+ * Delivers a message to the agent, trying 3 times, and says so in the thread if it never gets there.
+ * Throwing instead would lose it quietly: board retries a watcher 5 times in about 15 seconds, then
+ * drops the event.
  */
-export async function startOrSay(
-  board: Pick<WatcherContext["board"], "reply">,
-  thread: string,
-  start: () => Promise<void>,
-  retryMs = RETRY_MS,
-) {
+export async function sendToAgent(board: Pick<WatcherContext["board"], "reply">, message: AgentMessage, retryMs = 5_000) {
   for (let attempt = 1; ; attempt++) {
     try {
-      return await start();
+      return await deliver(message);
     } catch (error) {
-      if (attempt < TRIES) {
+      if (attempt < 3) {
         await new Promise((resolve) => setTimeout(resolve, retryMs * attempt));
         continue;
       }
-      console.error(`[factory] the agent couldn't start on board thread #${thread}:`, error);
+      console.error(`[factory] the agent couldn't start on board thread #${message.thread}:`, error);
       const reason = (error instanceof Error ? error.message : String(error)).split("\n")[0]!.slice(0, 200);
-      await board.reply(thread, `The agent couldn't start: \`${reason}\`. Reply here to try again.`);
+      await board.reply(message.thread, `The agent couldn't start: \`${reason}\`. Reply here to try again.`);
       return;
     }
   }
-}
-
-/** Tells the agent about a thread, and says so in the thread when it can't. */
-export async function tell(board: Pick<WatcherContext["board"], "reply">, input: AgentMessage) {
-  await startOrSay(board, input.thread, () => send(input));
-}
-
-/**
- * Where a thread came from, for the agent's PR: a GitHub issue's or PR's link, or the platform.
- * `origin.thread` is the sync target: `slack:C0123:1727000000.123456`, `github:owner/repo:issue:12`.
- */
-export function sourceOf(origin: { thread: string } | null | undefined) {
-  const thread = origin?.thread ?? "";
-  const gh = /^github:([^/:]+\/[^/:]+):(issue:)?(\d+)$/.exec(thread);
-  if (gh) return { platform: "GitHub", url: `https://github.com/${gh[1]}/${gh[2] ? "issues" : "pull"}/${gh[3]}` };
-  if (thread.startsWith("slack:")) return { platform: "Slack", url: null };
-  return null;
-}
-
-/** The message that tells the agent about a new thread, with where it came from when it's synced. */
-export function taskMessage(thread: { id: string; origin: { thread: string } | null; author?: { name: string } | null }) {
-  const source = sourceOf(thread.origin);
-  const by = thread.author?.name ? ` by ${thread.author.name}` : "";
-  const where = source ? `, posted${by} on ${source.platform}${source.url ? `: ${source.url}` : ""}` : "";
-  return `There's a new thread on the board, #${thread.id}${where}.`;
 }
 
 async function client(): Promise<EveSessions> {

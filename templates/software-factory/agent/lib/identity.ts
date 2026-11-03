@@ -17,9 +17,6 @@ export const BOARD = process.env.VERCEL_PROJECT_PRODUCTION_URL
   ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}/api/board`
   : process.env.BOARD_URL || "http://localhost:3000/api/board";
 
-/** Whether the board is on this machine, where a sandbox can't reach it. */
-export const LOCAL_BOARD = ["localhost", "127.0.0.1", "[::1]"].includes(new URL(BOARD).hostname);
-
 /** This factory's own repo, which it changes when it's asked to improve itself: the board's, from the deployment. */
 export { OWN_REPO } from "../../app/api/board/[[...path]]/connectors.ts";
 

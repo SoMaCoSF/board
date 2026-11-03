@@ -1,23 +1,23 @@
 import type { WatcherContext } from "@vercel/board";
 import { byAgent } from "./identity";
-import { taskMessage, tell } from "./sessions";
-
-// What the board sees of the agent: the board route's watcher runs this for each event it tails, so
-// another agent swaps in with a wakeAgent of its own.
+import { sendToAgent } from "./sessions";
 
 /**
- * Hands a board event to the agent: every message posted wakes it, and its instructions decide
- * whether it has anything to add. Of its own messages, only the ones a schedule posted (its
- * reminders to itself) do.
+ * All the board sees of the agent: it hands over every message posted where the watcher tails, and
+ * reactions to the agent's own messages. The agent reads the thread and decides what each needs.
  */
 export async function wakeAgent({ event, board }: WatcherContext): Promise<void> {
   const message = event.message;
-  if (event.type !== "message.posted" || !message) return;
+  if (!message) return;
   const thread = message.re ?? message.id;
-  if (byAgent(thread, message.by) && message.schedule === undefined) return;
-  await tell(board, {
-    thread,
-    key: `message-${message.id}`,
-    message: message.re === null ? taskMessage(message) : `There's a new message, #${message.id}, in board thread #${thread}.`,
-  });
+  let text: string;
+  if (event.type === "message.posted") {
+    // Its own messages don't wake it, except the reminders it schedules for itself.
+    if (byAgent(thread, message.by) && message.schedule === undefined) return;
+    text = message.re ? `New message #${message.id} in board thread #${thread}.` : `New board thread #${thread}.`;
+  } else if (event.type === "reaction.added") {
+    if (!byAgent(thread, message.by) || byAgent(thread, event.payload.by)) return;
+    text = `${event.actor?.name ?? "Someone"} reacted :${event.payload.emoji}: to your message #${message.id} in board thread #${thread}.`;
+  } else return;
+  await sendToAgent(board, { thread, key: event.cursor, text });
 }

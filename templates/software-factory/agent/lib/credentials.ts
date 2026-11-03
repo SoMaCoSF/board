@@ -5,21 +5,18 @@ import type { ToolContext } from "eve/tools";
 import { GITHUB, githubScope, threadRepos } from "../../app/api/board/[[...path]]/connectors";
 import { environment } from "../sandbox";
 import type { BoardTask } from "./board";
-import { BOARD, LOCAL_BOARD, NAME, VB_ROUTES, headers } from "./identity";
+import { BOARD, NAME } from "./identity";
 import { expiresAt, stale } from "./tokens";
 import { agentBoard } from "./vb-tool";
 
-// Real credentials go in the sandbox's network policy, swapped in on the way out, never in the sandbox.
-// Anything the sandbox runs can use them while they're there, so each is the least the thread needs.
+// Real credentials go in the sandbox's network policy, which adds them on the way out. Anything the
+// sandbox runs can use them, so each is the least the thread needs.
 
 const GITHUB_MS = 30 * 60_000;
 const GIT_EMAIL = `${NAME}@users.noreply.github.com`;
 
-/**
- * The real credentials on the way out, and who the agent is on the board. Without a GitHub token (no
- * connector yet, or no repo for this thread), GitHub gets none, and the agent still works on the board.
- */
-export function policy(thread: string, tokens: { gateway: string; board: string; github: string | null }, bypass: string | undefined): NetworkPolicy {
+/** What the sandbox's requests get on the way out: AI Gateway, and GitHub when this thread has a token. */
+export function policy(tokens: { gateway: string; github: string | null }): NetworkPolicy {
   const github: Record<string, NetworkPolicyRule[]> = tokens.github
     ? {
         "api.github.com": [{ transform: [{ headers: { authorization: `Bearer ${tokens.github}` } }] }],
@@ -28,17 +25,7 @@ export function policy(thread: string, tokens: { gateway: string; board: string;
     : {};
   return {
     allow: {
-      "ai-gateway.vercel.sh": [
-        { transform: [{ headers: { "x-api-key": tokens.gateway, authorization: `Bearer ${tokens.gateway}` } }] },
-      ],
-      // A board on this machine is out of the sandbox's reach: the vb tool, in the function, talks to it.
-      ...(LOCAL_BOARD
-        ? {}
-        : {
-            [new URL(BOARD).hostname]: [
-              { match: { path: { regex: VB_ROUTES } }, transform: [{ headers: headers(thread, tokens.board, bypass) }] },
-            ],
-          }),
+      "ai-gateway.vercel.sh": [{ transform: [{ headers: { "x-api-key": tokens.gateway, authorization: `Bearer ${tokens.gateway}` } }] }],
       ...github,
       "*": [],
     },
@@ -77,11 +64,11 @@ export async function give(ctx: Pick<ToolContext, "getSandbox">, board: BoardTas
   const bypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
   const [gateway, boardToken] = await Promise.all([getVercelOidcToken(), getVercelOidcToken({ audience: BOARD })]);
   const github = await githubToken(getToken, board.thread, boardToken, bypass);
-  await sandbox.setNetworkPolicy(policy(board.thread, { gateway, board: boardToken, github }, bypass) as SandboxNetworkPolicy);
+  await sandbox.setNetworkPolicy(policy({ gateway, github }) as SandboxNetworkPolicy);
   const git = await sandbox.run({
     command: `git config --global user.name ${JSON.stringify(NAME)} && git config --global user.email ${GIT_EMAIL}`,
   });
   if (git.exitCode !== 0) throw new Error(`git config failed: ${git.stderr.slice(-300)}`);
   // Without GitHub, the next turn's start asks again: the connector may be set up by then.
-  given.update(() => ({ until: Math.min(expiresAt(gateway), expiresAt(boardToken), ...(github ? [now + GITHUB_MS] : [])) }));
+  given.update(() => ({ until: Math.min(expiresAt(gateway), ...(github ? [now + GITHUB_MS] : [])) }));
 }
