@@ -1,0 +1,710 @@
+/* board's docs, in grayscale: dark by default, light when the system asks. */
+:root {
+  color-scheme: light dark;
+  --bg: #040404;
+  --shade: #161616;
+  --shade-hover: #1b1b1b;
+  --line: #252525;
+  --rule: #383838;
+  --faint: #7a7a7a;
+  --muted: #909090;
+  --ink: #dedede;
+  --bright: #fafafa;
+  --code-bg: #0d0d0d;
+  --header: 40px;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 87.5%;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #fafafa;
+    --shade: #f0f0f0;
+    --shade-hover: #e8e8e8;
+    --line: #e0e0e0;
+    --rule: #c9c9c9;
+    --faint: #6e6e6e;
+    --muted: #525252;
+    --ink: #1c1c1c;
+    --bright: #000000;
+    --code-bg: #f4f4f4;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--muted);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--faint) 35%, transparent);
+}
+
+:focus-visible {
+  outline: 2px dashed var(--ink);
+  outline-offset: 2px;
+}
+
+a {
+  color: var(--ink);
+  text-underline-offset: 3px;
+}
+
+a:hover {
+  color: var(--bright);
+}
+
+code,
+pre,
+button {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+/* ── header ──────────────────────────────────────────────────────── */
+
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  height: var(--header);
+  padding: 0 0.75rem;
+  background: var(--bg);
+  border-bottom: 1px dashed var(--line);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.brand svg {
+  color: var(--bright);
+}
+
+.brand:hover span {
+  color: var(--bright);
+  text-decoration: underline;
+}
+
+.crumb {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--faint);
+  font-weight: 400;
+  text-decoration: none;
+}
+
+.crumb:hover {
+  color: var(--bright);
+}
+
+.site-nav {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  margin-left: auto;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.site-nav a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.site-nav a:hover {
+  color: var(--bright);
+}
+
+/* ── launcher ────────────────────────────────────────────────────── */
+
+.launcher {
+  max-width: 50rem;
+  margin: 0 auto;
+  padding: 4rem 1.25rem 5rem;
+}
+
+.hero h1 {
+  margin: 0 0 0.75rem;
+  color: var(--bright);
+  font-size: clamp(1.6rem, 4.5vw, 2.25rem);
+  font-weight: 600;
+  line-height: 1.15;
+  text-wrap: balance;
+}
+
+.lede {
+  max-width: 40rem;
+  margin: 0;
+}
+
+.hero-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1rem;
+  margin-top: 1.5rem;
+}
+
+.progress {
+  color: var(--faint);
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--bright);
+  background: var(--bright);
+  color: var(--bg);
+  font-weight: 500;
+  text-decoration: none;
+  cursor: default;
+}
+
+.button:hover {
+  color: var(--bg);
+  opacity: 0.85;
+}
+
+.button.secondary {
+  border-color: var(--line);
+  background: var(--shade);
+  color: var(--ink);
+}
+
+.button.secondary:hover {
+  background: var(--shade-hover);
+  color: var(--bright);
+  opacity: 1;
+}
+
+.button:disabled {
+  color: var(--faint);
+}
+
+.spin {
+  animation: spin 1.2s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    rotate: 360deg;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+}
+
+/* ── stepper ─────────────────────────────────────────────────────── */
+
+/* Steps hang off a dashed rail, as the docs' sections hang off their rules. */
+.stepper {
+  --marker: 1.75rem;
+  margin: 3.5rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.step {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--marker) minmax(0, 1fr);
+  gap: 1rem;
+  padding: 1.5rem 0;
+  border-top: 1px dashed var(--rule);
+}
+
+.step:last-child {
+  border-bottom: 1px dashed var(--rule);
+}
+
+.marker {
+  display: grid;
+  place-items: center;
+  width: var(--marker);
+  height: var(--marker);
+  border: 1px solid var(--line);
+  background: var(--shade);
+  color: var(--faint);
+  font-size: 0.85rem;
+}
+
+.step[data-status="done"] .marker {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--bg);
+}
+
+.step[data-current] .marker,
+.step[data-status="error"] .marker,
+.step[data-status="waiting"] .marker {
+  border-color: var(--bright);
+  color: var(--bright);
+}
+
+.step[data-status="skipped"] .marker,
+.step[data-status="locked"] .marker {
+  border-style: dashed;
+}
+
+.step-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  min-height: var(--marker);
+}
+
+.step-head h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.step[data-current] .step-head h2 {
+  color: var(--bright);
+}
+
+.step[data-status="locked"] .step-head h2,
+.step[data-status="skipped"] .step-head h2 {
+  color: var(--muted);
+}
+
+.status {
+  margin-left: auto;
+  color: var(--faint);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+}
+
+.step[data-current] .status,
+.step[data-status="error"] .status {
+  color: var(--bright);
+}
+
+.summary {
+  margin: 0.15rem 0 0;
+  max-width: 40rem;
+}
+
+/* Columns, not colons: a row's label, then its value. */
+.rows {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.15rem 1.25rem;
+  margin: 0.75rem 0 0;
+}
+
+.rows > div {
+  display: contents;
+}
+
+.rows dt {
+  color: var(--faint);
+}
+
+.rows dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+}
+
+.fix {
+  margin: 1rem 0 0;
+  padding-left: 1.25rem;
+}
+
+.fix > li::marker {
+  color: var(--faint);
+}
+
+.fix > li + li {
+  margin-top: 0.9rem;
+}
+
+.fix p {
+  margin: 0 0 0.5rem;
+  color: var(--ink);
+}
+
+.how {
+  margin-top: 0.6rem;
+}
+
+.how summary {
+  display: inline-flex;
+  gap: 0.5rem;
+  color: var(--faint);
+  cursor: default;
+  list-style: none;
+}
+
+.how summary::-webkit-details-marker {
+  display: none;
+}
+
+.how summary::before {
+  content: "+";
+}
+
+.how[open] summary::before {
+  content: "−";
+}
+
+.how summary:hover {
+  color: var(--bright);
+}
+
+/* ── code ────────────────────────────────────────────────────────── */
+
+pre {
+  margin: 0;
+  padding: 0.75rem 0.9rem;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  background: var(--code-bg);
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+/* One command per box, on one line: it scrolls instead of wrapping, beside its copy button. */
+.command {
+  display: flex;
+  border: 1px solid var(--line);
+  background: var(--code-bg);
+}
+
+.command pre {
+  flex: 1;
+  min-width: 0;
+  padding: 0.6rem 0.8rem;
+  border: 0;
+  white-space: pre;
+  scrollbar-width: thin;
+}
+
+.command + .command,
+.command + .button,
+.fix p + .button {
+  margin-top: 0.5rem;
+}
+
+.next .command {
+  margin-top: 0.75rem;
+}
+
+.copy {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 2.5rem;
+  border: 0;
+  border-left: 1px solid var(--line);
+  background: none;
+  color: var(--faint);
+  cursor: default;
+}
+
+/* A single thing to do needs no number. */
+.fix:has(> li:only-child) {
+  padding-left: 0;
+  list-style: none;
+}
+
+.copy:hover {
+  color: var(--bright);
+}
+
+/* ── chat ────────────────────────────────────────────────────────── */
+
+.talk {
+  margin-top: 4rem;
+}
+
+.talk h2 {
+  margin: 0 0 0.75rem;
+  color: var(--bright);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.chat {
+  border: 1px solid var(--line);
+  background: var(--code-bg);
+}
+
+.chat-head {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.5rem 0.9rem;
+  border-bottom: 1px dashed var(--line);
+  color: var(--faint);
+}
+
+.chat-log {
+  max-height: 28rem;
+  min-height: 8rem;
+  overflow-y: auto;
+  overflow-anchor: none;
+}
+
+.chat-empty {
+  margin: 0;
+  padding: 1.5rem 0.9rem;
+  color: var(--faint);
+}
+
+.chat-thread {
+  padding: 0.75rem 0.9rem;
+}
+
+.chat-thread + .chat-thread {
+  border-top: 1px dashed var(--line);
+}
+
+.chat-thread[data-target] {
+  background: var(--shade);
+}
+
+.chat-replies {
+  margin: 0.5rem 0 0 0.25rem;
+  padding-left: 0.9rem;
+  border-left: 1px dashed var(--rule);
+}
+
+.chat-message + .chat-message {
+  margin-top: 0.6rem;
+}
+
+.chat-meta {
+  display: flex;
+  gap: 0.6rem;
+  align-items: baseline;
+}
+
+.chat-author {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.chat-message[data-agent] .chat-author {
+  color: var(--bright);
+}
+
+.chat-meta time {
+  color: var(--faint);
+  font-size: 0.8rem;
+}
+
+.chat-text {
+  margin: 0.1rem 0 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.chat-text > :first-child {
+  margin-top: 0;
+}
+
+.chat-text > :last-child {
+  margin-bottom: 0;
+}
+
+.chat-text p,
+.chat-text ul,
+.chat-text ol,
+.chat-text pre {
+  margin: 0.4rem 0;
+}
+
+.chat-text ul,
+.chat-text ol {
+  padding-left: 1.75rem;
+}
+
+.chat-text li + li {
+  margin-top: 0.15rem;
+}
+
+.chat-text strong {
+  color: var(--bright);
+}
+
+.chat-text code {
+  padding: 0.05em 0.3em;
+  background: var(--shade);
+  font-size: 0.92em;
+}
+
+.chat-text pre code {
+  padding: 0;
+  background: none;
+}
+
+.chat-foot {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  min-height: 1rem;
+  margin-top: 0.4rem;
+}
+
+.chat-waiting {
+  display: inline-flex;
+  gap: 0.4rem;
+  align-items: center;
+  color: var(--faint);
+}
+
+.chat-reply {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--faint);
+  cursor: default;
+}
+
+.chat-reply:hover {
+  color: var(--bright);
+}
+
+.composer {
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.composer-target {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  padding: 0.4rem 0.9rem 0;
+  color: var(--faint);
+  font-size: 0.85rem;
+}
+
+.composer-target button {
+  display: grid;
+  place-items: center;
+  padding: 0.1rem;
+  border: 0;
+  background: none;
+  color: var(--faint);
+  cursor: default;
+}
+
+.composer-target button:hover {
+  color: var(--bright);
+}
+
+.composer-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+  padding: 0.5rem 0.5rem 0.5rem 0.9rem;
+}
+
+.composer textarea {
+  flex: 1;
+  min-height: 1.6rem;
+  max-height: 10rem;
+  padding: 0.2rem 0;
+  border: 0;
+  outline: none;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  resize: none;
+  field-sizing: content;
+}
+
+.composer textarea::placeholder {
+  color: var(--faint);
+}
+
+.send {
+  display: grid;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border: 1px solid var(--bright);
+  background: var(--bright);
+  color: var(--bg);
+  cursor: default;
+}
+
+.send:disabled {
+  border-color: var(--line);
+  background: var(--shade);
+  color: var(--faint);
+}
+
+.chat-error {
+  margin: 0;
+  padding: 0.5rem 0.9rem;
+  border-top: 1px dashed var(--line);
+  color: var(--ink);
+}
+
+/* ── after the steps ─────────────────────────────────────────────── */
+
+.next {
+  margin-top: 4rem;
+}
+
+.next h2 {
+  margin: 0 0 0.5rem;
+  color: var(--bright);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.next p {
+  margin: 0 0 0.75rem;
+}
+
+@media (max-width: 40rem) {
+  .launcher {
+    padding-top: 2.5rem;
+  }
+
+  .step {
+    gap: 0.75rem;
+  }
+
+  .status {
+    display: none;
+  }
+}
