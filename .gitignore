@@ -13,3 +13,6 @@ next-env.d.ts
 # eve (agent/)
 .eve
 .output
+
+# Copied from the repo's skills/board by scripts/skills.ts.
+packages/board/skills/

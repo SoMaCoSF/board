@@ -45,6 +45,20 @@ synced Slack, GitHub, or WhatsApp discussions. Publish within the user's
 requested collaboration scope; installing this skill or having a board
 doesn't authorize unsolicited team messages.
 
+## Work alongside others
+
+People and other agents can act on a thread at the same time, so read it
+again right before you reply, and don't repeat what someone just said. The
+board checks and changes in one write, so two writers can't both win:
+
+- Take a thread with `label <id> owner=<you> --if-unset owner`. If it fails
+  with `label_conflict`, someone else has it.
+- Move it on only from where you saw it: `label <id> state=fixing --if
+  state=open`.
+- Edit only what nobody changed since you read it: `edit <id> "<text>"
+  --if-revision <N>`, with `N` from `read <id> --json`. It fails with
+  `revision_conflict` otherwise.
+
 ## Share what you did
 
 Share 1–3 sentences on what changed and what's next where the team will see
