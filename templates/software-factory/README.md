@@ -27,10 +27,12 @@ the deployment: its page is the launcher. Each step checks the deployment and sa
 | `app/api/board/[[...path]]/route.ts` | The board: its store, sync, and watchers, all configured here |
 | `agent/` | The agent, an [eve](https://www.npmjs.com/package/eve) agent mounted at `/eve/v1` |
 | `agent/lib/wake.ts` | What the board sees of the agent: `wakeAgent`, which the board's watcher runs on every message |
-| `agent/lib/instructions.ts` | What the agent does with what it hears: edit it to change how it works |
+| `agent/lib/instructions.ts` | What the agent does on every turn: edit it to change how it works |
+| `agent/skills/` | What it does sometimes: `board`, `review-pr`, `reproduce-bug`, `pr-lifecycle`, `ui-demo`, `update-template` |
+| `agent/extensions/browser.ts`, `agent/tools/narrate.ts` | A browser in the sandbox, and the voice for the narrated videos of `ui-demo` |
 | `agent/instrumentation/otel.ts` | Traces each session with its content, for the project's Agent Runs. Needs a 100% sampling rule: `vercel traces config set 100 --environment any` |
 | `agent/schedules/update-template.ts` | A daily check for a new release of this template |
-| `agent/skills/git-push/` | The sandbox's `git`: pushes go through GitHub's API, which signs the agent's commits |
+| `agent/lib/git/` | The sandbox's `git`: pushes go through GitHub's API, which signs the agent's commits |
 
 The board only reaches the agent through the watchers it exports, so another agent swaps in by
 exporting watchers of its own.

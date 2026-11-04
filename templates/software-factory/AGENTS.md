@@ -25,6 +25,9 @@ pnpm build
   `app/api/board/[[...path]]/route.ts`: its connectors, which channel each repo's PRs and issues
   come into (`repoChannels`; this repo's own go to `dev/factory`), and which Slack channels it
   mirrors. The agent's model, instructions, sandbox, tools, and skills are in `agent/`.
+- **Instructions are for every turn, skills for some.** `agent/lib/instructions.ts` holds the
+  judgment every turn needs, with a line pointing at each skill; a procedure the agent needs only
+  sometimes (reviewing, reproducing a bug, seeing a PR through, demos) is a skill in `agent/skills/`.
 - **The board sees the agent only through `wakeAgent` (`agent/lib/wake.ts`), and the agent never
   imports the board's config.** Its `factory` watcher tails `dev/`, so the agent hears every
   message in `dev` and under it, and passes the GitHub access each thread gets. The agent's
@@ -38,7 +41,7 @@ pnpm build
 - **Real credentials never enter the sandbox.** `agent/lib/credentials.ts` puts them in its network
   policy, which swaps them in on the way out. Keep it that way.
 - **GitHub signs the agent's commits, so there's no signing key.** The sandbox's `git`
-  (`agent/skills/git-push/`) makes each pushed commit again through GitHub's API.
+  (`agent/lib/git/`, which `agent/sandbox.ts` installs) makes each pushed commit again through GitHub's API.
   `test/git-push.test.ts` runs it against real git and a fake GitHub backed by a bare repo.
 - **`package.json`'s `version` is the template release this factory is on.** Only the
   `update-template` skill moves it.

@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@agent-browser/eve':
+        specifier: 0.41.2
+        version: 0.41.2(@vercel/sandbox@3.9.1)(eve@0.84.1)
       '@chat-adapter/github':
         specifier: ^4.41.1
         version: 4.43.0(ai@7.0.159(zod@4.6.7))(zod@4.6.7)
@@ -83,6 +86,20 @@ importers:
         version: 7.0.2
 
 packages:
+
+  '@agent-browser/eve@0.41.2':
+    resolution: {integrity: sha512-nzk0eF4QW53QNRb8qvXzmHKADtUJFuCCGfU76exmq0l+JI7UPEmp0/iCZuKCX/C3zqWviXSpJ4bzuyXFEGicCA==}
+    engines: {node: '>=24.0.0'}
+    peerDependencies:
+      eve: '>=0.84.0'
+
+  '@agent-browser/sandbox@0.41.2':
+    resolution: {integrity: sha512-sI5//Z2ifHQSXskRcc65CNsPAmWx7L++tMpKw4HW0VAWnTlI1wSsgwsmvyV/dlcAgzc8Bc6naYpf13+d1VfVcA==}
+    peerDependencies:
+      '@vercel/sandbox': '>=1.0.0'
+    peerDependenciesMeta:
+      '@vercel/sandbox':
+        optional: true
 
   '@ai-sdk/gateway@4.0.132':
     resolution: {integrity: sha512-ppStDEz96g+JEuxGiVTP29OKBjPyYZXRxs38wnq3427U2QbZtxe6TukrgSAAq0n4yaHvSvVAWJY9kBlW8XudYg==}
@@ -1848,6 +1865,9 @@ packages:
   zod@4.1.11:
     resolution: {integrity: sha512-WPsqwxITS2tzx1bzhIKsEs19ABD5vmCVa4xBo2tq/SrV4RNZtfws1EnCWQXM6yh8bD08a1idvkB5MZSBiZsjwg==}
 
+  zod@4.4.3:
+    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
+
   zod@4.6.7:
     resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
 
@@ -1859,6 +1879,18 @@ ignoredOptionalDependencies:
   - node-liblzma
 
 snapshots:
+
+  '@agent-browser/eve@0.41.2(@vercel/sandbox@3.9.1)(eve@0.84.1)':
+    dependencies:
+      '@agent-browser/sandbox': 0.41.2(@vercel/sandbox@3.9.1)
+      eve: 0.84.1(@vercel/connect@2.7.0)(ai@7.0.159(zod@4.6.7))(chat@4.43.0(ai@7.0.159(zod@4.6.7))(zod@4.6.7))(just-bash@3.6.0)(next@16.4.4(@types/node@26.6.6)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react@19.3.1)
+      zod: 4.4.3
+    transitivePeerDependencies:
+      - '@vercel/sandbox'
+
+  '@agent-browser/sandbox@0.41.2(@vercel/sandbox@3.9.1)':
+    optionalDependencies:
+      '@vercel/sandbox': 3.9.1
 
   '@ai-sdk/gateway@4.0.132(zod@4.6.7)':
     dependencies:
@@ -3698,6 +3730,8 @@ snapshots:
   yaml@2.9.1: {}
 
   zod@4.1.11: {}
+
+  zod@4.4.3: {}
 
   zod@4.6.7: {}
 

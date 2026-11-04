@@ -9,7 +9,7 @@ import { after, test } from "node:test";
 
 // The sandbox's git, run for real: git itself, and a fake GitHub whose Git data API is a bare repo.
 // The bare repo refuses every native push, so a branch can change there only through the API.
-const GIT = join(import.meta.dirname, "../agent/skills/git-push/scripts/git");
+const GIT = join(import.meta.dirname, "../agent/lib/git/git");
 const REMOTE = "https://github.com/acme/web.git";
 const APP = { GIT_COMMITTER_NAME: "factory[bot]", GIT_COMMITTER_EMAIL: "bot@example.com", GIT_AUTHOR_NAME: "factory[bot]", GIT_AUTHOR_EMAIL: "bot@example.com" };
 const ENV = {

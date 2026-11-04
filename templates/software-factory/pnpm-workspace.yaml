@@ -1,7 +1,9 @@
 # This app is its own pnpm root, in its own repo and inside vercel-labs/board alike.
-# pnpm holds back releases newer than a day; the board this template ships with is let through.
+# pnpm holds back releases newer than a day; the versions this template pins are let through.
 minimumReleaseAgeExclude:
   - '@vercel/board@0.30.0'
+  - '@agent-browser/eve@0.41.2'
+  - '@agent-browser/sandbox@0.41.2'
 
 ignoredOptionalDependencies:
   - "@mongodb-js/zstd"

@@ -1,6 +1,6 @@
 ---
 name: update-template
-description: Bring a new release of the software factory template into this factory, keeping its own changes. Use for a board task labeled template=<version>.
+description: "Bring a new release of the software factory template into this factory, keeping its own changes. Use for a board task labeled template=<version>."
 ---
 
 # Update the template

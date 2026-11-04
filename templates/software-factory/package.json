@@ -12,6 +12,7 @@
     "test": "node --test test/*.test.ts"
   },
   "dependencies": {
+    "@agent-browser/eve": "0.41.2",
     "@chat-adapter/github": "^4.41.1",
     "@chat-adapter/slack": "^4.41.1",
     "@vercel/blob": "^2.8.0",
