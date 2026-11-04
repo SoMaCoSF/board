@@ -7,6 +7,8 @@ type Principal =
   | { type: 'user'; userId: string }
   | { type: 'app'; clientId: string }
   | { type: 'project'; projectId: string; environment: string }
+  /** A platform user whose write a sync imported. */
+  | { type: 'external'; id: string; syncKey: string }
 type Actor = { id: string; principal: Principal; profile?: { name: string; avatar?: string }; session?: string }
 type Message = {
   id: string
@@ -26,6 +28,10 @@ type Message = {
   feedSequence: number
   attachments?: { id: string; name: string; type: string; size: number }[]
   schedule?: { id: string; n: number }
+  /** A sync's import: the key it came through, and where on its platform. */
+  from?: string
+  origin?: Record<string, unknown> & { thread: string; message: string }
+  noSync?: boolean
 }
 type Schedule = {
   id: string
@@ -58,7 +64,9 @@ type Thread = {
   messages: Message[]
 }
 type Change = Record<string, unknown> & { createdAt: number; messageId?: string }
-type ActorView = { id: string; kind: 'person' | 'agent' | 'deployment' | 'app'; handle: string; name?: string; lastSeenAt: number }
+type ActorView = { id: string; kind: 'person' | 'agent' | 'deployment' | 'app' | 'external'; handle: string; name?: string; lastSeenAt: number }
+type Copy = { thread: string; message: string; files?: string[] | null; asUser?: true }
+type InboxEntry = { id: string; thread: string; event: unknown; raw: unknown; createdAt: number; lease?: string; leaseUntil?: number; attempts: number; done: boolean }
 
 const EMOJI = /^[a-z0-9_+-]{1,64}$/
 const CHANNEL = /^[a-z0-9_-]+(\/[a-z0-9_-]+)*$/
@@ -96,16 +104,29 @@ export function fakeMessageboard(options: { teamId?: string; slug?: string; boar
   const stored = new Map<string, Uint8Array<ArrayBuffer>>()
   const STORAGE = 'http://storage.test/'
   type Filter = { channelIds?: string[]; channelTree?: string; threadId?: string; authors?: string[]; text?: string; labels?: { key: string; values?: string[] }[] }
-  type Registration = { owner: string; url: string | null; path?: string; branch?: string; watch: Record<string, { filter: Filter; when: 'matches' | 'enters' }>; hash: string }
+  type Registration = { owner: string; url: string | null; path?: string; branch?: string; watch: Record<string, { filter: Filter; when: 'matches' | 'enters' }>; sync: { key: string; platform: string }[]; hash: string }
   type Match = { id: string; watcher: string; threadId: string; change: Change; lease?: string; leaseUntil?: number; attempts: number }
   /** By principal, as the API keeps them: one each. */
   const registrations = new Map<string, Registration>()
   const queued = new Map<string, Match[]>()
   const schedules = new Map<string, Schedule>()
+  // Sync's records, as `messageboard-sync` keeps them: who owns each key, which board thread a
+  // platform thread is, which board message a platform message is, an import's client IDs, each
+  // thread's targets, and each message's copies on them.
+  const keyOwners = new Map<string, string>()
+  const externalViews = new Map<string, Omit<ActorView, 'lastSeenAt'>>()
+  const platformThreads = new Map<string, string>()
+  const platformMessages = new Map<string, string>()
+  const imports = new Map<string, string>()
+  const syncs = new Map<string, { targets: string[]; external: Record<string, string> }>()
+  const copies = new Map<string, Record<string, Copy>>()
+  const undelivered = new Map<string, Record<string, string>>()
+  const inboxes = new Map<string, InboxEntry[]>()
   let clock = 0
   const now = () => (clock = Math.max(Date.now(), clock + 1))
 
-  const principalId = (p: Principal) => (p.type === 'user' ? `vercel:user:${p.userId}` : p.type === 'app' ? `vercel:app:${p.clientId}` : `vercel:project:${p.projectId}:${p.environment}`)
+  const principalId = (p: Principal) =>
+    p.type === 'user' ? `vercel:user:${p.userId}` : p.type === 'app' ? `vercel:app:${p.clientId}` : p.type === 'external' ? p.id : `vercel:project:${p.projectId}:${p.environment}`
   const samePrincipal = (a: Principal, b: Principal) => principalId(a) === principalId(b)
 
   function actorOf(request: Request): Actor {
@@ -129,6 +150,7 @@ export function fakeMessageboard(options: { teamId?: string; slug?: string; boar
   /** An actor as the API names them (`viewFor` in api-messageboard): a person by their account. */
   function viewOf(actor: Actor): Omit<ActorView, 'lastSeenAt'> {
     const p = actor.principal
+    if (p.type === 'external') return externalViews.get(actor.id) ?? { id: actor.id, kind: 'external', handle: actor.id }
     const account = p.type === 'user' ? accounts[p.userId] : undefined
     const base = p.type === 'user' ? (account?.username ?? p.userId) : p.type === 'app' ? p.clientId : `project:${p.projectId}:${p.environment}`
     if (actor.profile) return { id: actor.id, kind: 'agent', handle: `${base}/${actor.profile.name.toLowerCase()}`, name: actor.profile.name }
@@ -166,6 +188,9 @@ export function fakeMessageboard(options: { teamId?: string; slug?: string; boar
     ...(Object.keys(m.labels).length ? { labels: { ...m.labels } } : {}),
     ...(m.attachments?.length ? { attachments: m.attachments } : {}),
     ...(m.schedule ? { schedule: m.schedule } : {}),
+    ...(m.from !== undefined ? { from: m.from } : {}),
+    ...(m.origin ? { origin: m.origin } : {}),
+    ...(m.noSync ? { noSync: true } : {}),
   })
   const showThread = (t: Thread) => {
     const { messages, ...rest } = t
@@ -191,7 +216,18 @@ export function fakeMessageboard(options: { teamId?: string; slug?: string; boar
   function match(change: Change) {
     const messageId = (change as { messageId?: string }).messageId
     const message = messageId ? messageNamed(messageId) : undefined
-    if (!message || !String(change.type).startsWith('message.')) return
+    if (!message) return
+    // A sync gets every message change, and a thread bound to one of its own keys' targets.
+    const binding = (change as { binding?: { target: string } }).binding
+    for (const registration of registrations.values()) {
+      if (registration.sync.length === 0) continue
+      if (change.type === 'thread.synced' && !registration.sync.some(({ key }) => binding?.target.startsWith(`${key}:`))) continue
+      if (change.type !== 'thread.synced' && !String(change.type).startsWith('message.')) continue
+      const lane = queued.get(registration.owner) ?? []
+      queued.set(registration.owner, lane)
+      lane.push({ id: `mat_${randomUUID()}`, watcher: '@sync', threadId: message.threadId, change, attempts: 0 })
+    }
+    if (!String(change.type).startsWith('message.')) return
     const thread = threads.get(message.threadId)!
     const channel = channels.find((c) => c.id === thread.channelId)!
     const rootLabels = thread.messages[0]?.labels ?? {}
@@ -234,7 +270,12 @@ export function fakeMessageboard(options: { teamId?: string; slug?: string; boar
     return channel
   }
 
-  function post(actor: Actor, thread: Thread, body: { text: string; replyTo?: number; clientId?: string; labels?: Record<string, string>; attachments?: string[]; schedule?: { id: string; n: number }; after?: number }) {
+  function post(
+    actor: Actor,
+    thread: Thread,
+    body: { text: string; replyTo?: number; clientId?: string; labels?: Record<string, string>; attachments?: string[]; schedule?: { id: string; n: number }; after?: number },
+    imported?: { from?: string; origin?: Message['origin']; noSync?: boolean },
+  ) {
     // A reply's precondition, checked with the post: the thread's newest is still the one it names.
     if (body.after !== undefined && (!Number.isInteger(body.after) || body.after < 1 || body.after > thread.messageCount)) throw new Refused(400, 'invalid_after')
     if (body.after !== undefined && body.after !== thread.messageCount) throw new Refused(409, 'newer_message', `message ${thread.messageCount} came after ${body.after}`)
@@ -266,6 +307,9 @@ export function fakeMessageboard(options: { teamId?: string; slug?: string; boar
       feedSequence: 0,
       ...(files.length ? { attachments: files.map(({ id, name, type, size }) => ({ id, name, type, size })) } : {}),
       ...(body.schedule ? { schedule: body.schedule } : {}),
+      ...(imported?.from !== undefined ? { from: imported.from } : {}),
+      ...(imported?.origin ? { origin: imported.origin } : {}),
+      ...(imported?.noSync ? { noSync: true } : {}),
     }
     for (const file of files) file.messageId = message.id
     thread.messages.push(message)
@@ -273,7 +317,7 @@ export function fakeMessageboard(options: { teamId?: string; slug?: string; boar
     thread.lastActivityAt = createdAt
     thread.lastMessage = { id: message.id, sequence, createdAt, createdBy: actor }
     if (body.clientId) posts.set(`${principalId(actor.principal)}|${body.clientId}`, message.id)
-    message.feedSequence = emit(thread.channelId, { type: 'message.posted', threadId: thread.id, message: sequence, messageId: message.id, revision: 1 }, actor)
+    message.feedSequence = emit(thread.channelId, { type: 'message.posted', threadId: thread.id, message: sequence, messageId: message.id, revision: 1, ...(imported?.from !== undefined ? { from: imported.from } : {}) }, actor)
     return message
   }
 
@@ -296,13 +340,13 @@ export function fakeMessageboard(options: { teamId?: string; slug?: string; boar
 
   async function watchers(method: string, rest: string, actor: Actor, parsed: Record<string, any>, url: URL): Promise<unknown> {
     const owner = principalId(actor.principal)
-    const view = (r: Registration) => ({ owner: r.owner, url: r.url, ...(r.path ? { path: r.path, ...(r.branch ? { branch: r.branch } : {}) } : {}), watch: r.watch, hash: r.hash })
+    const view = (r: Registration) => ({ owner: r.owner, url: r.url, ...(r.path ? { path: r.path, ...(r.branch ? { branch: r.branch } : {}) } : {}), watch: r.watch, sync: r.sync.map(({ key, platform }) => ({ key, platform, signIn: false })), hash: r.hash })
     if (method === 'GET' && rest === '/watchers') {
       const found = registrations.get(owner)
       return { watchers: found ? [view(found)] : [] }
     }
     if (method === 'PUT' && rest === '/watchers') {
-      const body = parsed as { url?: string | null; path?: string; branch?: string; watch: Registration['watch']; tag?: string }
+      const body = parsed as { url?: string | null; path?: string; branch?: string; watch: Registration['watch']; sync?: { key: string; platform: string }[]; tag?: string }
       // A URL, or a path on the caller's own project (a preview's with its branch), as api-messageboard checks one.
       if (body.url !== undefined && body.path !== undefined) throw new Refused(400, 'bad_request', 'A url or a path, not both.')
       if (body.branch !== undefined && body.path === undefined) throw new Refused(400, 'bad_request', 'A branch goes with a path.')
@@ -315,8 +359,15 @@ export function fakeMessageboard(options: { teamId?: string; slug?: string; boar
       }
       for (const [id, spec] of Object.entries(body.watch))
         if (spec.when === 'enters' && Object.keys(spec.filter).length === 0) throw new Refused(400, 'bad_watcher', `watch ${id}: \`when: enters\` needs a filter to enter`)
+      // Sync entries claim their keys: only a project's own token holds any, and a key is one project's.
+      const sync = body.sync ?? []
+      if (sync.length > 0 && principal.type !== 'project') throw new Refused(403, 'sync_needs_project', "Only a project the board grants syncs: register sync entries with the project's own token.")
+      if (new Set(sync.map(({ key }) => key)).size !== sync.length) throw new Refused(400, 'duplicate_sync_key')
+      for (const { key } of sync) if ((keyOwners.get(key) ?? owner) !== owner) throw new Refused(409, 'sync_key_taken', `Sync key ${key} is another project's on this board.`)
+      for (const [key, holder] of keyOwners) if (holder === owner && !sync.some((entry) => entry.key === key)) keyOwners.delete(key)
+      for (const { key } of sync) keyOwners.set(key, owner)
       const where = body.path !== undefined ? { url: null, path: body.path.replace(/(.)\/+$/, '$1'), ...(body.branch ? { branch: body.branch } : {}) } : { url: body.url ?? null }
-      const made: Registration = { owner, ...where, watch: body.watch, hash: body.tag ?? randomUUID().replaceAll('-', '') }
+      const made: Registration = { owner, ...where, watch: body.watch, sync: sync.map(({ key, platform }) => ({ key, platform })), hash: body.tag ?? randomUUID().replaceAll('-', '') }
       registrations.set(owner, made)
       return view(made)
     }
@@ -454,6 +505,274 @@ export function fakeMessageboard(options: { teamId?: string; slug?: string; boar
     return undefined
   }
 
+  /** The sync key a platform location is under: `slack` of `slack:C1:1.2`. */
+  const keyOf = (location: string) => location.slice(0, location.indexOf(':'))
+  /** A sync's call, for a key the caller's project owns on the board: 403 `sync_key_not_owned` otherwise. */
+  function owning(actor: Actor, key: string) {
+    if (keyOwners.get(key) !== principalId(actor.principal)) throw new Refused(403, 'sync_key_not_owned', 'This caller syncs no key on this board: register it as a sync entry first.')
+  }
+  /** A sync's read, for a caller that owns any key here. */
+  function syncing(actor: Actor) {
+    if (![...keyOwners.values()].includes(principalId(actor.principal))) throw new Refused(403, 'sync_key_not_owned', 'This caller syncs no key on this board: register it as a sync entry first.')
+  }
+  const platformKey = (thread: string, message: string) => `${thread}|${message}`
+  const syncOf = (threadId: string) => {
+    const found = syncs.get(threadId) ?? { targets: [], external: {} }
+    syncs.set(threadId, found)
+    return found
+  }
+
+  /** What `/sync/*` and a message's `/synced` answer, as api-messageboard's sync services keep them. */
+  function syncRoute(method: string, rest: string, actor: Actor, body: Record<string, any>, url: URL): unknown {
+    const owner = principalId(actor.principal)
+    let found: RegExpExecArray | null
+    if (method === 'POST' && rest === '/sync/imports') return { message: syncImport(actor, body) }
+    if (method === 'POST' && rest === '/sync/receipts') {
+      const message = messageNamed(body.message)
+      if (!message) throw new Refused(404, 'message_not_found')
+      owning(actor, keyOf(body.target))
+      const synced = syncOf(message.threadId)
+      if (body.kind === 'thread') {
+        if (synced.targets.includes(body.target)) return { ok: true, attached: false }
+        synced.targets.push(body.target)
+        if (body.targetKind === 'thread') {
+          synced.external[body.target] = body.target
+          platformThreads.set(body.target, message.threadId)
+        }
+        // The sync that owns the target hears of it as an `@sync` match, and backfills a channel.
+        const thread = threadAt(message.threadId)
+        const root = thread.messages[0]!
+        emit(thread.channelId, { type: 'thread.synced', threadId: thread.id, message: 1, messageId: root.id, binding: { target: body.target, targetKind: body.targetKind, cause: body.cause } }, actor)
+        return { ok: true, attached: true }
+      }
+      const kept = copies.get(message.id) ?? {}
+      copies.set(message.id, kept)
+      if (body.kind === 'message') {
+        // The first copy recorded stands.
+        kept[body.target] ??= { thread: body.external.thread, message: body.external.message, ...(body.files !== undefined ? { files: body.files } : {}), ...(body.external.asUser ? { asUser: true } : {}) }
+        platformMessages.set(platformKey(body.external.thread, body.external.message), message.id)
+        if (message.sequence === 1 && synced.external[body.target] === undefined) {
+          synced.external[body.target] = body.external.thread
+          platformThreads.set(body.external.thread, message.threadId)
+        }
+        delete undelivered.get(message.id)?.[body.target]
+      } else if (body.kind === 'files') {
+        if (kept[body.target]) kept[body.target]!.files = body.files
+      } else if (body.kind === 'failed') {
+        undelivered.set(message.id, { ...undelivered.get(message.id), [body.target]: body.error })
+      } else throw new Refused(400, 'invalid_request')
+      return { ok: true }
+    }
+    if (method === 'GET' && rest === '/sync/find') {
+      syncing(actor)
+      const thread = url.searchParams.get('thread') ?? undefined
+      const message = url.searchParams.get('message') ?? undefined
+      const post = url.searchParams.get('post') ?? undefined
+      if (message !== undefined && thread === undefined) throw new Refused(400, 'invalid_find')
+      let foundMessage: string | null = post === undefined ? null : (imports.get(`${owner}|${post}`) ?? null)
+      if (thread !== undefined && message !== undefined) foundMessage = platformMessages.get(platformKey(thread, message)) ?? foundMessage
+      return { thread: thread === undefined ? null : (platformThreads.get(thread) ?? null), message: foundMessage }
+    }
+    if ((found = /^\/sync\/threads\/([^/]+)$/.exec(rest)) && method === 'GET') {
+      syncing(actor)
+      const thread = threadAt(decodeURIComponent(found[1]!))
+      const synced = syncOf(thread.id)
+      // Only the caller's own keys' targets.
+      const mine = (target: string) => keyOwners.get(keyOf(target)) === owner
+      const targets = synced.targets.filter(mine)
+      return { thread: thread.id, root: thread.messages[0]!.id, channel: thread.channelId, targets, external: Object.fromEntries(Object.entries(synced.external).filter(([target]) => mine(target))) }
+    }
+    if (method === 'GET' && rest === '/sync/copies') {
+      syncing(actor)
+      const asked = url.searchParams.getAll('message')
+      if (asked.length < 1 || asked.length > 100) throw new Refused(400, 'invalid_request')
+      const mine = (target: string) => keyOwners.get(keyOf(target)) === owner
+      return {
+        copies: Object.fromEntries(
+          asked.filter((id) => messageNamed(id)).map((id) => [id, Object.fromEntries(Object.entries(copies.get(id) ?? {}).filter(([target]) => mine(target)))]),
+        ),
+      }
+    }
+    if (method === 'GET' && rest === '/sync/linked') {
+      const thread = url.searchParams.get('thread') ?? ''
+      const message = url.searchParams.get('message')
+      const id = message !== null ? platformMessages.get(platformKey(thread, message)) : (() => {
+        const threadId = platformThreads.get(thread)
+        return threadId ? threads.get(threadId)?.messages[0]?.id : undefined
+      })()
+      const at = id ? messageNamed(id) : undefined
+      if (!at) throw new Refused(404, 'message_not_found')
+      return { thread: at.threadId, message: at.id }
+    }
+    if ((found = /^\/messages\/([^/]+)\/synced$/.exec(rest)) && method === 'GET') {
+      const message = messageNamed(decodeURIComponent(found[1]!))
+      if (!message) throw new Refused(404, 'message_not_found')
+      const synced = syncOf(message.threadId)
+      const kept = copies.get(message.id) ?? {}
+      return {
+        targets: synced.targets.map((target) => {
+          const external = synced.external[target] ?? null
+          const copy = kept[target] ?? (external !== null ? kept[external] : undefined)
+          return { target, key: keyOf(target), thread: copy?.thread ?? external, message: copy?.message ?? null, undelivered: undelivered.get(message.id)?.[target] ?? null }
+        }),
+      }
+    }
+    if ((found = /^\/sync\/inbox\/([^/]+)(\/next|\/([^/]+)\/ack)?$/.exec(rest))) {
+      const key = decodeURIComponent(found[1]!)
+      owning(actor, key)
+      const lane = inboxes.get(`${owner}|${key}`) ?? []
+      inboxes.set(`${owner}|${key}`, lane)
+      if (method === 'POST' && found[2] === undefined) {
+        // An ID the inbox has had is skipped.
+        let queued = 0
+        for (const { id, thread, event, raw } of body.events as { id: string; thread: string; event: unknown; raw: unknown }[]) {
+          if (lane.some((entry) => entry.id === id)) continue
+          lane.push({ id, thread, event, raw, createdAt: now(), attempts: 0, done: false })
+          queued++
+        }
+        return { ok: true, queued }
+      }
+      if (method === 'GET' && found[2] === '/next') {
+        const limit = Number(url.searchParams.get('limit') ?? 10)
+        const open = lane.filter((entry) => !entry.done)
+        const held = new Set(open.filter((entry) => entry.lease && entry.leaseUntil! > Date.now()).map((entry) => entry.thread))
+        const heads = new Map<string, InboxEntry>()
+        for (const entry of open) if (!heads.has(entry.thread)) heads.set(entry.thread, entry)
+        const free = [...heads.values()].filter((entry) => !held.has(entry.thread)).slice(0, limit)
+        for (const entry of free) {
+          if (entry.lease) entry.attempts++
+          entry.lease = randomUUID()
+          entry.leaseUntil = Date.now() + 5 * 60_000
+        }
+        return { items: free.map(({ id, thread, lease, attempts, event, raw }) => ({ id, key, thread, lease, attempt: attempts, event, raw })) }
+      }
+      if (method === 'POST' && found[3] !== undefined) {
+        const entry = lane.find((one) => one.id === decodeURIComponent(found![3]!) && !one.done)
+        if (!entry) throw new Refused(404, 'no_item')
+        if (entry.lease !== body.lease) throw new Refused(409, 'stale_lease')
+        if (body.error !== undefined) {
+          entry.attempts++
+          delete entry.lease
+        } else entry.done = true
+        return { ok: true }
+      }
+      if (method === 'GET' && found[2] === undefined) {
+        return { events: [...lane].reverse().map(({ id, thread, createdAt, event, raw }) => ({ id, thread, createdAt: new Date(createdAt).toISOString(), event, raw })) }
+      }
+    }
+    throw new Refused(404, 'not_found', `${method} ${rest}`)
+  }
+
+  /** A platform's write, as its platform user: the board message it wrote or changed, or null for one the sync never brought here. */
+  function syncImport(actor: Actor, body: Record<string, any>): string | null {
+    const author = body.author as { id: string; handle: string; name: string; avatar?: string | null }
+    if (body.op === 'seen') {
+      owning(actor, keyOf(author.id))
+      externalViews.set(author.id, { id: author.id, kind: 'external', handle: author.handle, name: author.name })
+      return null
+    }
+    const key: string = body.from ?? body.source?.key ?? keyOf(body.origin?.thread ?? author.id)
+    owning(actor, key)
+    externalViews.set(author.id, { id: author.id, kind: 'external', handle: author.handle, name: author.name })
+    const platformUser: Actor = { id: author.id, principal: { type: 'external', id: author.id, syncKey: key } }
+    const owner = principalId(actor.principal)
+    if (body.op === 'post') {
+      if (body.id !== undefined) {
+        const again = imports.get(`${owner}|${body.id}`)
+        if (again) return again
+      }
+      const origin = body.origin as (Message['origin'] & { subthread?: string | null }) | null | undefined
+      if (origin) {
+        // A platform thread is one board thread's, and a platform message one board message's.
+        if (body.re === undefined && platformThreads.has(origin.thread)) throw new Refused(409, 'already_synced', `\`${origin.thread}\` is already synced with another thread.`)
+        if (platformMessages.has(platformKey(origin.thread, origin.message))) throw new Refused(409, 'already_synced')
+      }
+      let thread: Thread
+      let replyTo: number | undefined
+      if (body.re !== undefined) {
+        const re = messageNamed(body.re)
+        if (!re) throw new Refused(404, 'message_not_found')
+        thread = threadAt(re.threadId)
+        if (re.sequence > 1) replyTo = re.sequence
+        // A reply's platform thread is its own thread's.
+        const owner = origin ? platformThreads.get(origin.thread) : undefined
+        if (origin && owner !== undefined && owner !== thread.id) throw new Refused(409, 'already_synced')
+        if (origin && owner === undefined) throw new Refused(409, 'not_synced', `\`${origin.thread}\` isn't synced with this thread.`)
+      } else {
+        if (body.channelId === undefined) throw new Refused(400, 'invalid_request', 'A root import names its channelId.')
+        const channel = channelAt(body.channelId)
+        const createdAt = now()
+        thread = { id: `thr_${randomUUID()}`, channelId: channel.id, messageCount: 0, lastActivityAt: createdAt, createdAt, createdBy: platformUser, messages: [] }
+        threads.set(thread.id, thread)
+      }
+      const message = post(platformUser, thread, { text: body.text, ...(replyTo !== undefined ? { replyTo } : {}), ...(body.labels ? { labels: body.labels } : {}) }, {
+        ...(body.from !== null && body.from !== undefined ? { from: body.from } : {}),
+        ...(origin ? { origin } : {}),
+        ...(body.noSync ? { noSync: true } : {}),
+      })
+      if (origin) {
+        // A root binds its thread to the platform thread it came from, as a target, with no feed event.
+        if (body.re === undefined) {
+          platformThreads.set(origin.thread, thread.id)
+          const synced = syncOf(thread.id)
+          synced.targets.push(origin.thread)
+          synced.external[origin.thread] = origin.thread
+        }
+        platformMessages.set(platformKey(origin.thread, origin.message), message.id)
+        // Its copy on the thread it came from.
+        copies.set(message.id, { ...copies.get(message.id), [origin.thread]: { thread: origin.thread, message: origin.message } })
+      }
+      if (body.id !== undefined) imports.set(`${owner}|${body.id}`, message.id)
+      return message.id
+    }
+    // Every other op finds the message it changes, by its board ID or its platform IDs.
+    const id: string | undefined = body.message ?? (body.origin ? platformMessages.get(platformKey(body.origin.thread, body.origin.message)) : undefined)
+    const message = id ? messageNamed(id) : undefined
+    if (!message) return null
+    const thread = threadAt(message.threadId)
+    const ref = { threadId: thread.id, message: message.sequence, messageId: message.id, ...(body.from ? { from: body.from } : {}) }
+    if ((body.op === 'edit' || body.op === 'delete') && body.revision !== undefined && body.revision !== message.revision) throw new Refused(409, 'revision_conflict')
+    if (body.op === 'edit') {
+      if (message.deletedAt !== undefined) throw new Refused(409, 'message_deleted')
+      if (message.text !== body.text) {
+        Object.assign(message, { text: body.text, editedAt: now(), revision: message.revision + 1, changes: message.changes + 1 })
+        emit(thread.channelId, { type: 'message.edited', ...ref, revision: message.revision }, platformUser)
+      }
+    } else if (body.op === 'delete') {
+      if (message.deletedAt === undefined) {
+        Object.assign(message, { text: '', attachments: undefined, deletedAt: now(), revision: message.revision + 1, changes: message.changes + 1 })
+        emit(thread.channelId, { type: 'message.deleted', ...ref, revision: message.revision }, platformUser)
+      }
+    } else if (body.op === 'react') {
+      const by = message.reactions.get(body.emoji) ?? new Map()
+      if (body.remove ? by.has(platformUser.id) : !by.has(platformUser.id)) {
+        if (body.remove) by.delete(platformUser.id)
+        else by.set(platformUser.id, { actor: platformUser, createdAt: now() })
+        if (by.size) message.reactions.set(body.emoji, by)
+        else message.reactions.delete(body.emoji)
+        message.changes++
+        emit(thread.channelId, { type: body.remove ? 'message.reaction_removed' : 'message.reaction_added', ...ref, emoji: body.emoji }, platformUser)
+      }
+    } else if (body.op === 'labels') {
+      const changes: Record<string, { from?: string; to?: string }> = {}
+      for (const key of (body.unset ?? []) as string[])
+        if (Object.hasOwn(message.labels, key)) {
+          changes[key] = { from: message.labels[key]! }
+          delete message.labels[key]
+        }
+      for (const [key, value] of Object.entries((body.set ?? {}) as Record<string, string>))
+        if (message.labels[key] !== value) {
+          changes[key] = { ...(Object.hasOwn(message.labels, key) ? { from: message.labels[key]! } : {}), to: value }
+          message.labels[key] = value
+        }
+      if (Object.keys(changes).length) {
+        message.changes++
+        emit(thread.channelId, { type: 'message.labeled', ...ref, labels: changes }, platformUser)
+      }
+    } else if (body.op !== 'links') throw new Refused(400, 'invalid_request')
+    return message.id
+  }
+
   async function route(request: Request): Promise<unknown> {
     const url = new URL(request.url)
     if (url.searchParams.get('teamId') && url.searchParams.get('teamId') !== teamId) throw new Refused(403, 'forbidden')
@@ -465,7 +784,8 @@ export function fakeMessageboard(options: { teamId?: string; slug?: string; boar
     // Completing an upload takes no body.
     const body = method === 'GET' || /\/attachments\/[^/]+\/complete$/.test(path) ? {} : ((await request.json()) as Record<string, any>)
     // Registering and acking watchers, and completing uploads, take no operation ID: each is idempotent as it is.
-    if (method !== 'GET' && !/\/watchers(\/|$)|\/complete$/.test(path) && typeof body.operationId !== 'string') throw new Refused(400, 'invalid_operation_id')
+    // Nor do a sync's receipts and inbox, which are idempotent by what they name, or an import of a platform user seen.
+    if (method !== 'GET' && !/\/watchers(\/|$)|\/complete$|\/sync\/(receipts|inbox)/.test(path) && body.op !== 'seen' && typeof body.operationId !== 'string') throw new Refused(400, 'invalid_operation_id')
     if (method === 'GET' && path === '/me') return { teamId, actor, view: viewOf(actor) }
     if (method === 'GET' && path === '/boards') return { boards: boardId ? [{ id: boardId, teamId, name: 'General', visibility: 'team' }] : [], defaultBoardId: boardId, cursor: null }
     if (method === 'POST' && path === '/boards/default') {
@@ -529,6 +849,7 @@ export function fakeMessageboard(options: { teamId?: string; slug?: string; boar
       return again
     }
     if (rest === '/watchers' || rest.startsWith('/watchers/')) return watchers(method, rest, actor, body, url)
+    if (rest.startsWith('/sync/') || /^\/messages\/[^/]+\/synced$/.test(rest)) return syncRoute(method, rest, actor, body, url)
     if (rest === '/schedules' || rest.startsWith('/schedules/')) {
       const answered = schedulesRoute(method, rest, actor, body, url)
       if (answered !== undefined) return answered

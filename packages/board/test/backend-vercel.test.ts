@@ -9,6 +9,9 @@ import { compileAccess, type Can } from '../src/server/access.ts'
 import type { Caller } from '../src/server/backend.ts'
 import type { Middleware } from '../src/server/middleware.ts'
 import { as, fakeMessageboard } from './messageboard.ts'
+import { fakePlatform } from './sync-fixtures.ts'
+import { slack } from '../src/sync/slack.ts'
+import { channels } from '../src/sync/fn.ts'
 
 const API = 'http://localhost'
 
@@ -61,7 +64,7 @@ const verified = (can: Can, who: { id: string; kind: string; handle: string; nam
   }) as unknown as Caller
 
 describe('vercel()', () => {
-  it("passes the conformance kit's core, attachments, and watchers, and fails what sync needs of Vercel's API", async () => {
+  it("passes the conformance kit's core, attachments, and watchers as a person, who keeps no sync, and fails noSync, which Vercel's API doesn't keep on a post", async () => {
     const report = await conformance(handleOn(fakeMessageboard()))
     const statuses = Object.fromEntries(report.checks.map((check) => [`${check.group}: ${check.name}`, check.status]))
     expect(statuses).toEqual({
@@ -87,10 +90,23 @@ describe('vercel()', () => {
       'attachments: takes a file, posts it, and gives it back': 'passed',
       'watchers: matches a registered tail, hands the match to a pull, and takes its ack': 'passed',
       'watchers: wakes by path only where its discovery says so, and only a Vercel project': 'passed',
-      "sync: keeps sync's records: an import as a platform author, its lookups by platform ID, a receipt, and where it's synced": 'failed',
-      "sync: queues a platform thread's events in its sync's inbox once, and leases each after the one before is acked": 'failed',
-      'sync: hands a sync each message change as a match of its @sync watcher': 'failed',
+      // Only a project's own token registers sync entries on Vercel's board.
+      "sync: keeps sync's records: an import as a platform author, its lookups by platform ID, a receipt, and where it's synced": 'skipped',
+      "sync: queues a platform thread's events in its sync's inbox once, and leases each after the one before is acked": 'skipped',
+      'sync: hands a sync each message change as a match of its @sync watcher': 'skipped',
       'sync: keeps noSync on a post and a reply, so sync sends neither': 'failed',
+    })
+  }, 30_000)
+
+  it("passes the conformance kit's sync as the project's own deployment, which owns the sync keys it registers", async () => {
+    const report = await conformance(handleOn(fakeMessageboard(), 'project:prj_pong:production'))
+    const sync = Object.fromEntries(report.checks.filter((check) => check.group === 'sync').map((check) => [check.name, check.status]))
+    expect(sync).toEqual({
+      "keeps sync's records: an import as a platform author, its lookups by platform ID, a receipt, and where it's synced": 'passed',
+      "queues a platform thread's events in its sync's inbox once, and leases each after the one before is acked": 'passed',
+      'hands a sync each message change as a match of its @sync watcher': 'passed',
+      // Vercel's API takes noSync only on an import, not on a post or a reply.
+      'keeps noSync on a post and a reply, so sync sends neither': 'failed',
     })
   }, 30_000)
 
@@ -636,5 +652,69 @@ describe('vercel()', () => {
     const signal = new AbortController().signal
     await expect(backend.register(verified('all'), { url: null, watch: { w: { tail: 'general' } } } as never, signal)).rejects.toMatchObject({ status: 403 })
     await expect(backend.matches(verified('all'), {}, signal)).rejects.toMatchObject({ status: 403 })
+  })
+})
+
+describe('sync on a board on vercel()', () => {
+  const PONG = 'https://pong.example/api/board'
+  const PROJECT = 'vercel:project:prj_pong:production'
+
+  /** The project's board on Vercel's API, syncing Slack's C1 with `firehose`, which the test wakes as the API would. */
+  async function setup() {
+    const api = fakeMessageboard()
+    const s = fakePlatform('slack')
+    const pong = board({
+      backend: vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:production'), files: api.files }),
+      url: PONG,
+      basePath: '/api/board',
+      sync: { slack: slack({ adapter: s.adapter }, channels({ C1: 'firehose' })) },
+    })
+    await pong.me()
+    // It registers its sync entry with its watchers, which claims the key for the project.
+    await vi.waitFor(() => expect(api.registrations.get(PROJECT)?.sync).toEqual([{ key: 'slack', platform: 'slack' }]))
+    const wake = () => pong.fetch(new Request(`${PONG}/wake`, { method: 'POST' })).then((response) => response.json() as Promise<{ ran: number }>)
+    const webhook = (body: unknown) => pong.fetch(new Request(`${PONG}/webhooks/slack`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }))
+    return { api, s, pong, wake, webhook, julian: handleOn(api) }
+  }
+
+  it('imports a Slack message as its Slack author once the API wakes it, and its retry once', async () => {
+    const { s, wake, webhook, julian } = await setup()
+    const message = { type: 'message', threadId: 'slack:C1:100', id: '100', text: 'export is broken', user: 'U_ADA' }
+    expect((await webhook(message)).status).toBe(200)
+    await webhook(message)
+    await vi.waitFor(async () => {
+      await wake()
+      expect((await julian.messages({ channel: 'firehose' })).messages).toHaveLength(1)
+    })
+    const [root] = (await julian.messages({ channel: 'firehose' })).messages
+    expect(root).toMatchObject({ text: 'export is broken', from: 'slack', by: { actor: 'slack:user:U_ADA' }, origin: { thread: 'slack:C1:100', message: '100' } })
+    // A reply in the Slack thread lands in the same board thread.
+    await webhook({ type: 'message', threadId: 'slack:C1:100', id: '101', text: 'same here', user: 'U_BOB' })
+    await vi.waitFor(async () => {
+      await wake()
+      expect((await julian.thread(root!.id)).replies.map((reply) => [reply.text, reply.by.actor])).toEqual([['same here', 'slack:user:U_BOB']])
+    })
+    // Nothing it imported goes back to Slack.
+    expect(s.posts).toEqual([])
+  })
+
+  it("delivers a reply on the board to the Slack thread it came from, as its @sync match, and records the copy", async () => {
+    const { api, s, wake, webhook, julian } = await setup()
+    await webhook({ type: 'message', threadId: 'slack:C1:100', id: '100', text: 'export is broken', user: 'U_ADA' })
+    let root: string | undefined
+    await vi.waitFor(async () => {
+      await wake()
+      root = (await julian.messages({ channel: 'firehose' })).messages[0]?.id
+      expect(root).toBeDefined()
+    })
+    const reply = await julian.reply(root!, { text: 'looking into it' })
+    await vi.waitFor(async () => {
+      await wake()
+      expect(s.posts.map((post) => [post.threadId, post.text])).toEqual([['slack:C1:100', expect.stringContaining('looking into it')]])
+    })
+    // Its receipt is the API's: where the reply landed, under the project's key.
+    const { targets } = await julian.sync(reply.id)
+    expect(targets).toEqual([expect.objectContaining({ target: 'slack:C1:100', key: 'slack', message: s.posts[0]!.id })])
+    expect(api.requests).toContain('POST /boards/brd_test/sync/receipts')
   })
 })

@@ -1,11 +1,11 @@
 import type { Method, Protocol } from '../api/protocol.ts'
-import { RegisterBody, type ActorView, type BoardEventView, type ChannelView, type Discovery, type Me, type MessageView, type RegistrationView, type ScheduleView, type ThreadSummaryView } from '../api/routes.ts'
+import { RegisterBody, type ActorView, type BoardEventView, type ChannelView, type Discovery, type InboxEntry, type InboxItem, type Me, type MessageView, type RegistrationView, type ScheduleView, type ThreadSummaryView } from '../api/routes.ts'
 import { duration, type ProfileOption } from '../client/client.ts'
 import { derivedId, sha256 } from '../client/ids.ts'
 import { IMPORT_BYTES_MAX, RemoteWatcherId, type Attachment, type Author, type Labels } from '../contract/schemas.ts'
 import { VERSION } from '../version.ts'
 import type { Access, Permission } from './access.ts'
-import { type Backend, type BoardBinding, type Caller, type Identity, type ProtocolMethods } from './backend.ts'
+import { SYNC, type Backend, type BoardBinding, type Caller, type Identity, type ProtocolMethods, type SyncEntry } from './backend.ts'
 import { callerProfile, PROJECTS_OWN } from './backend-http.ts'
 import { fileName, mediaType } from './blob.ts'
 import { badRequest, forbidden, HttpError, json, notFound } from './errors.ts'
@@ -20,6 +20,8 @@ type ApiPrincipal =
   | { type: 'user'; userId: string; clientId?: string }
   | { type: 'app'; clientId: string }
   | { type: 'project'; projectId: string; environment: string }
+  /** A platform user whose write a sync imported: `slack:user:U0456`, never a credential's holder. */
+  | { type: 'external'; id: string; syncKey: string }
 type ApiActor = { id: string; principal: ApiPrincipal; profile?: { name: string; avatar?: string }; session?: string }
 type ApiChannel = { id: string; name: string }
 type ApiThread = {
@@ -52,6 +54,11 @@ type ApiMessage = {
   attachments?: Attachment[]
   /** Set when a schedule posted it: which schedule, and which of its sends, from 0. */
   schedule?: { id: string; n: number }
+  /** The sync key a sync imported it through, and where it came from on its platform. */
+  from?: string
+  origin?: { channel?: string; thread: string; subthread: string | null; message: string; context: string | null }
+  /** Set when no sync sends it out. */
+  noSync?: boolean
 }
 /** A message posted later as its creator, in `channelId` or as a reply in `threadId`. Times are milliseconds. */
 type ApiSchedule = {
@@ -74,7 +81,7 @@ type ApiSchedule = {
 }
 /** A file on the board: `messageId` once a post carries it. */
 type ApiAttachment = Attachment & { boardId: string; sha256: string; state: 'pending' | 'ready'; messageId?: string }
-type ApiActorView = { id: string; kind: 'person' | 'agent' | 'deployment' | 'app'; handle: string; name?: string; avatar?: string }
+type ApiActorView = { id: string; kind: 'person' | 'agent' | 'deployment' | 'app' | 'external'; handle: string; name?: string; avatar?: string }
 type ApiChange = {
   type: string
   channelId: string
@@ -88,6 +95,10 @@ type ApiChange = {
   cursor?: string
   /** With `include=message`, the message as it is now. */
   currentMessage?: ApiMessage
+  /** The sync key a change a sync imported came through, so that sync doesn't send it back. */
+  from?: string
+  /** For `thread.synced`: the target the thread was just bound to. */
+  binding?: { target: string; targetKind: 'channel' | 'thread'; cause: 'config' | 'request' }
 }
 type ApiMe = { teamId: string; actor: ApiActor; view?: ApiActorView; project?: { id: string; environment: string } }
 /** Which messages a watcher sees, in the API's terms: a tail is translated into one. */
@@ -100,7 +111,11 @@ type ApiWatcherFilter = {
   labels?: { key: string; values?: string[] }[]
 }
 type ApiWatcherSpec = { filter: ApiWatcherFilter; when: 'matches' | 'enters' }
-type ApiRegistration = { owner: string; url: string | null; path?: string; branch?: string; watch: Record<string, ApiWatcherSpec>; hash: string }
+type ApiRegistration = { owner: string; url: string | null; path?: string; branch?: string; watch: Record<string, ApiWatcherSpec>; sync?: SyncEntry[]; hash: string }
+/** What the API keeps of where a message's thread is synced: `synced` adds each copy's link. */
+type ApiSynced = { targets: { target: string; key: string; thread: string | null; message: string | null; undelivered: string | null }[] }
+type ApiInboxItem = { id: string; key: string; thread: string; lease: string; attempt: number; event?: unknown; raw?: unknown }
+type ApiInboxEntry = { id: string; thread: string; createdAt: string; event?: unknown; raw?: unknown }
 type ApiMatch = { id: string; watcher: string; threadId: string; lease: string; attempt: number; event: ApiChange & { messageId: string } }
 
 export type VercelOptions = {
@@ -185,6 +200,7 @@ function locate(id: string): { threadId: string; sequence: number } | null {
 function principalId(principal: ApiPrincipal): string {
   if (principal.type === 'user') return `vercel:user:${principal.userId}`
   if (principal.type === 'app') return `vercel:app:${principal.clientId}`
+  if (principal.type === 'external') return principal.id
   return `vercel:project:${principal.projectId}:${principal.environment}`
 }
 
@@ -201,6 +217,11 @@ const SCHEDULER: Author = { actor: 'board:schedule', principal: 'board:schedule'
 /** The API names nobody, so an actor's handle is its profile, or a short form of its principal. */
 function actorView(actor: ApiActor): ActorView & { id: string } {
   const { principal } = actor
+  // A platform user the API doesn't list: by their platform ID's last part, `U0456` of `slack:user:U0456`.
+  if (principal.type === 'external') {
+    const handle = principal.id.slice(principal.id.lastIndexOf(':') + 1) || principal.id
+    return { id: actor.id, kind: 'external', handle, name: handle, avatar: null }
+  }
   const base =
     principal.type === 'user'
       ? `user-${principal.userId.slice(0, 6).toLowerCase()}`
@@ -219,7 +240,9 @@ type Filters = Protocol['messages']['input']
 /**
  * Vercel's board for your team, in Vercel's API: this deployment keeps nothing and reads and writes
  * it as itself, its people as themselves. Messages, threads, reactions, labels, a channel's
- * changes, schedules, files, and watchers work; what the API keeps none of yet (sync) answers 501.
+ * changes, schedules, files, watchers, and sync's records work. Sync runs here, with the keys this
+ * project claims when it registers; what the API keeps none of yet (files and preconditions on an
+ * import, `sync` on a post, typing) answers 501 or nothing.
  */
 export function createVercel(options: VercelOptions, environment: VercelEnvironment | null) {
   const origin = (options.api ?? 'https://api.vercel.com').replace(/\/+$/, '')
@@ -437,7 +460,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     }
     const kind = found && apiKind(found.kind)
     // The API names a project or an app by its ID, and an agent under one after it: board's names say more.
-    if (!found || !(kind === 'person' || (kind === 'agent' && actor.principal.type === 'user'))) return actorView(actor)
+    if (!found || !(kind === 'person' || kind === 'external' || (kind === 'agent' && actor.principal.type === 'user'))) return actorView(actor)
     return { id: actor.id, kind, handle: found.handle, name: found.name ?? found.handle, avatar: found.avatar ?? null }
   }
 
@@ -454,9 +477,9 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       reactions: message.deletedAt === undefined ? await reactors(who, message) : {},
       mentions: [],
       by: authorOf(message.createdBy),
-      noSync: false,
-      origin: null,
-      from: null,
+      noSync: message.noSync ?? false,
+      origin: message.origin ? { ...message.origin } : null,
+      from: message.from ?? null,
       createdAt: iso(message.createdAt),
       editedAt: message.editedAt === undefined ? null : iso(message.editedAt),
       deleted: message.deletedAt !== undefined,
@@ -661,9 +684,13 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     return { messages, feeds, newest }
   }
 
-  /** A change in the API's feed as a board event, with the message as it is now. Null for what isn't a message's. */
-  async function eventOf(who: Who, change: ApiChange, channel: string, cursor: string, filters: Filters, me: string, given?: { thread: ApiThread; message: ApiMessage }): Promise<BoardEventView | null> {
-    if (!change.messageId || !change.type.startsWith('message.')) return null
+  /**
+   * A change in the API's feed as a board event, with the message as it is now. Null for what isn't
+   * a message's. `thread.synced` is a sync's alone, so only an `@sync` match (`synced`) is one.
+   */
+  async function eventOf(who: Who, change: ApiChange, channel: string, cursor: string, filters: Filters, me: string, given?: { thread: ApiThread; message: ApiMessage }, synced = false): Promise<BoardEventView | null> {
+    if (!change.messageId) return null
+    if (!change.type.startsWith('message.') && !(synced && change.type === 'thread.synced' && change.binding)) return null
     const found =
       given ??
       (await messageById(who, change.messageId).catch((error: unknown) => {
@@ -674,25 +701,33 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     const message = await view(who, found.message, channel)
     const by = authorOf(change.actor)
     const base = { id: message.id, thread: message.thread }
+    // The sync key a change came through, so that sync doesn't send it back where it came from.
+    const from = change.from ?? null
     let type: BoardEventView['type']
     let payload: Record<string, unknown>
     switch (change.type) {
+      case 'thread.synced': {
+        const { target, targetKind, cause } = change.binding!
+        type = 'thread.synced'
+        payload = { thread: message.thread, target, cause, kind: targetKind, by }
+        break
+      }
       case 'message.posted':
         type = 'message.posted'
-        payload = { channel, text: message.text, re: message.re, replyTo: message.replyTo, thread: message.thread, labels: message.labels, noSync: false, mentions: [], by, origin: null, from: null, attachments: message.attachments, links: [] }
+        payload = { channel, text: message.text, re: message.re, replyTo: message.replyTo, thread: message.thread, labels: message.labels, noSync: message.noSync, mentions: [], by, origin: message.origin, from: message.from, attachments: message.attachments, links: [] }
         break
       case 'message.edited':
         type = 'message.edited'
-        payload = { ...base, text: message.text, mentions: [], by, from: null }
+        payload = { ...base, text: message.text, mentions: [], by, from }
         break
       case 'message.deleted':
         type = 'message.deleted'
-        payload = { ...base, by, from: null }
+        payload = { ...base, by, from }
         break
       case 'message.reaction_added':
       case 'message.reaction_removed':
         type = change.type === 'message.reaction_added' ? 'reaction.added' : 'reaction.removed'
-        payload = { ...base, emoji: change.emoji, by, from: null }
+        payload = { ...base, emoji: change.emoji, by, from }
         break
       case 'message.labeled': {
         const changed = Object.entries(change.labels ?? {})
@@ -829,6 +864,18 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
   }
 
   /**
+   * Who sync's records are read and written as: this deployment, whose project owns the sync keys
+   * it registered. A gateway caller never touches them, since the API would see the project.
+   */
+  function syncer(method: Method, caller: Caller): Who {
+    checkCaller(method, caller)
+    return deployment
+  }
+
+  /** Whether this board's own code asks about one of its own sync entries, which only it runs. */
+  const runsHere = (caller: Caller, key: string) => !('identity' in caller) && bound().sync.some((entry) => entry.key === key)
+
+  /**
    * The API owns messages and schedules by principal, and sees every caller here as this project:
    * a caller that is the project (its own deployment's token) changes what it wrote, as on any
    * board, and anyone else would be changing what the project wrote for others.
@@ -863,7 +910,11 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
   }
 
   /** A watcher's tail registers with the API as its own: an API watcher, so a match is the API's to make. */
-  const tagOf = async (watch: Record<string, WatcherSpec>) => (await sha256(canonicalWatchers(watch))).slice(0, 32)
+  /** A registration's tag: its tails', and its sync entries' too when it has any, so a change to either registers again. */
+  const tagOf = async (watch: Record<string, WatcherSpec>, sync: readonly SyncEntry[]) => {
+    const entries = [...sync].map(({ key, platform }) => `${key}=${platform}`).sort()
+    return (await sha256(entries.length ? `${canonicalWatchers(watch)}\u001fsync:${entries.join(',')}` : canonicalWatchers(watch))).slice(0, 32)
+  }
 
   /** Who `--by` names, as the API's authors: an actor, a principal, or everyone here with that handle or profile, as of now. */
   async function authorsOf(who: Who, by: string): Promise<string[]> {
@@ -928,13 +979,18 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
   const whereOf = (found: ApiRegistration) =>
     found.path ? { url: null, path: found.path, ...(found.branch ? { branch: found.branch } : {}) } : { url: found.url }
 
-  async function registerAs(who: Who, where: WakeAt, watch: Record<string, { tail: string; when?: 'matches' | 'enters' | undefined }>): Promise<RegistrationView> {
+  async function registerAs(who: Who, where: WakeAt, watch: Record<string, { tail: string; when?: 'matches' | 'enters' | undefined }>, sync: readonly SyncEntry[]): Promise<RegistrationView> {
     const specs: Record<string, WatcherSpec> = Object.fromEntries(Object.entries(watch).map(([id, spec]) => [id, { tail: spec.tail, when: spec.when ?? 'matches' }]))
     const filters = Object.fromEntries(await Promise.all(Object.entries(specs).map(async ([id, spec]) => [id, await filterOf(who, id, spec)] as const)))
+    // Its sync entries claim their keys on the board: only this project imports, receives, and reads through them.
+    const entries = sync.map(({ key, platform }) => ({ key, platform }))
     // vboard's own hash of the tails, which every wake-up carries back, so a board can tell its registration is stale.
-    const made = await api<ApiRegistration>(who, 'PUT', await onBoard(who, '/watchers'), { body: { ...where, watch: filters, tag: await tagOf(specs) } })
-    return { owner: made.owner, ...whereOf(made), watch: specs, sync: [], hash: made.hash }
+    const made = await api<ApiRegistration>(who, 'PUT', await onBoard(who, '/watchers'), { body: { ...where, watch: filters, ...(entries.length ? { sync: entries } : {}), tag: await tagOf(specs, entries) } })
+    return { owner: made.owner, ...whereOf(made), watch: specs, sync: syncOf(made), hash: made.hash }
   }
+
+  /** A registration's sync entries, as board shows them. */
+  const syncOf = (found: ApiRegistration): SyncEntry[] => (found.sync ?? []).map(({ key, platform }) => ({ key, platform }))
 
   /** A match as vboard hands it out: its event as `vb tail --json` prints it, with its message as it is now. */
   async function matchOf(who: Who, match: ApiMatch, me: string) {
@@ -943,7 +999,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       throw error
     })
     const channel = found && (await channelById(who, found.thread.channelId))
-    const event = found && channel && (await eventOf(who, match.event, channel.name, match.id, {}, me, found))
+    const event = found && channel && (await eventOf(who, match.event, channel.name, match.id, {}, me, found, match.watcher === SYNC))
     if (!event?.message) return null
     return { id: match.id, watcher: match.watcher, thread: event.message.thread, lease: match.lease, attempt: match.attempt, event }
   }
@@ -979,6 +1035,8 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
   const deployment: Who = { profile: null, session: null }
   /** This board's config's watchers, which run here when the API wakes it. */
   let tails: Record<string, WatcherSpec> = {}
+  /** This board's sync entries, which register with its watchers once board() binds a sync. */
+  let syncing: SyncEntry[] = []
 
   const bound = () => {
     if (!binding) throw new Error('vercel: used before board() bound it')
@@ -990,15 +1048,15 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
   const runner = registrant({
     remote: "Vercel's API",
     registry: {
-      register: (where) => registerAs(deployment, where, tails),
+      register: (where) => registerAs(deployment, where, tails, syncing),
       matches: ({ signal, ...query }) => pullAs(deployment, query, signal),
       ack: (id, body) => ackAs(deployment, id, body),
     },
     // The API wakes a path on this project, through its Deployment Protection, wherever this board has one.
     wakeAt: async (here) => wakePath(here) ?? { url: here },
     binding: bound,
-    hash: () => tagOf(tails),
-    hasWork: () => Object.keys(tails).length > 0,
+    hash: () => tagOf(tails, syncing),
+    hasWork: () => Object.keys(tails).length > 0 || syncing.length > 0,
     rethrow: (error) => {
       throw error
     },
@@ -1030,7 +1088,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
         audience: origin,
         team_id: id,
         project_id: null,
-        sync: [],
+        sync: binding ? binding.sync.map(({ key, platform }) => ({ key, platform })) : [],
         // The API finds a project's deployment for a path, and wakes it through its Deployment Protection.
         wake_by_path: true,
       } satisfies Discovery
@@ -1407,12 +1465,116 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
         await new Promise((resolve) => setTimeout(resolve, Math.min(1000, until - Date.now())))
       }
     },
-    // Nothing syncs here, so no platform shows typing.
+    // The API keeps no typing, so no platform shows it.
     async typing() {
       return { targets: [] }
     },
-    async readSource(_caller, { key }) {
-      throw notFound(`this board doesn't run sync entry ${key}`, 'not_synced_here')
+    // A platform channel is read, and joined, with this board's own sync app: the API has none.
+    async readSource(caller, { key, target, limit, after }) {
+      if (!runsHere(caller, key)) throw notFound(`this board doesn't run sync entry ${key}`, 'not_synced_here')
+      return bound().readSource(key, target, limit ?? 50, after ?? null)
+    },
+    async joinSource(caller, { key, target }) {
+      if (!runsHere(caller, key)) throw notFound(`this board doesn't run sync entry ${key}`, 'not_synced_here')
+      return bound().joinSource(key, target)
+    },
+
+    async synced(caller, { id }, signal) {
+      const who = whoOf(caller)
+      // Reading where it's synced takes what reading it does.
+      await readableMessage(who, accessOf(caller), id, signal)
+      const { targets } = await api<ApiSynced>(who, 'GET', await onBoard(who, `/messages/${encodeURIComponent(id)}/synced`), { signal })
+      return {
+        targets: await Promise.all(
+          targets.map(async (row) => ({ ...row, url: row.thread !== null && row.message !== null ? await bound().linkOf(row.key, row.thread, row.message) : null })),
+        ),
+      }
+    },
+    async linked(caller, { url }, signal) {
+      // The platform is never asked: a link no entry here reads, and one to nothing a sync brought here, are the same 404.
+      const missing = () => notFound('no message on this board for that link', 'message_not_found')
+      const who = whoOf(caller)
+      for (const { platform, thread, message } of bound().locate(url))
+        for (const { key } of bound().sync.filter((entry) => entry.platform === platform)) {
+          const found = await api<{ thread: string; message: string }>(who, 'GET', await onBoard(who, '/sync/linked'), {
+            query: { thread: `${key}:${thread}`, ...(message !== null ? { message } : {}) },
+            signal,
+          }).catch((error: unknown) => {
+            if (error instanceof HttpError && error.status === 404) return null
+            throw error
+          })
+          if (!found) continue
+          try {
+            return await methods.message(caller, { id: found.message }, signal)
+          } catch (error) {
+            if (error instanceof HttpError && error.status === 404) throw missing()
+            throw error
+          }
+        }
+      throw missing()
+    },
+
+    // Sync's records, kept by the API under the sync keys this project claimed when it registered.
+    async syncImport(caller, body, signal) {
+      const who = syncer('syncImport', caller)
+      if (body.op === 'post') {
+        const { channel, attachments, after, ...rest } = body
+        // The API keeps no files on an import, and no precondition on one: it would refuse them unread.
+        if (attachments?.length) throw notSupported('files on an imported post')
+        if (after !== undefined) throw notSupported('`after` on an imported post')
+        const channelId = channel === undefined ? undefined : (await channelToPost(who, channel)).id
+        return api(who, 'POST', await onBoard(who, '/sync/imports'), { body: { operationId: operationId(), ...rest, ...(channelId ? { channelId } : {}) }, signal })
+      }
+      if (body.op === 'labels' && body.if !== undefined) throw notSupported('`if` on imported labels')
+      if (body.op === 'seen') return api(who, 'POST', await onBoard(who, '/sync/imports'), { body, signal })
+      return api(who, 'POST', await onBoard(who, '/sync/imports'), { body: { operationId: operationId(), ...body }, signal })
+    },
+    async syncReceipt(caller, body, signal) {
+      const who = syncer('syncReceipt', caller)
+      return api(who, 'POST', await onBoard(who, '/sync/receipts'), { body, signal })
+    },
+    async syncThread(caller, { thread }, signal) {
+      const who = syncer('syncThread', caller)
+      const found = await api<{ thread: string; root: string; channel: string; targets: string[]; external: Record<string, string> }>(who, 'GET', await onBoard(who, `/sync/threads/${encodeURIComponent(thread)}`), { signal })
+      // The API names the channel by its ID; sync imports into it by name.
+      return { ...found, channel: (await channelById(who, found.channel)).name }
+    },
+    async syncFind(caller, { thread, message, post }, signal) {
+      const who = syncer('syncFind', caller)
+      const found = await api<{ thread: string | null; message: string | null }>(who, 'GET', await onBoard(who, '/sync/find'), { query: { thread, message, post }, signal })
+      return { thread: found.thread, message: found.message }
+    },
+    async syncCopies(caller, { message }, signal) {
+      const who = syncer('syncCopies', caller)
+      // Each message is its own `message` in the query, as the API reads a list.
+      const query = new URLSearchParams(message.map((id) => ['message', id])).toString()
+      return api(who, 'GET', await onBoard(who, `/sync/copies?${query}`), { signal })
+    },
+    async inboxPush(caller, { key, events }, signal) {
+      const who = syncer('inboxPush', caller)
+      // A platform thread's events come one at a time: it's the lane each goes on.
+      const pushed = events.map(({ id, event, raw }) => ({ id, thread: event.thread, event, raw }))
+      await api(who, 'POST', await onBoard(who, `/sync/inbox/${encodeURIComponent(key)}`), { body: { events: pushed }, signal })
+      return { ok: true }
+    },
+    async inboxNext(caller, { key, limit }, signal) {
+      const who = syncer('inboxNext', caller)
+      const { items } = await api<{ items: ApiInboxItem[] }>(who, 'GET', await onBoard(who, `/sync/inbox/${encodeURIComponent(key)}/next`), { query: { limit: limit?.toString() }, signal })
+      return { items: items.map(({ id, thread, lease, attempt, event, raw }) => ({ id, key, thread, lease, attempt, event: event as InboxItem['event'], raw })) }
+    },
+    async inboxAck(caller, { key, id, lease, error }, signal) {
+      const who = syncer('inboxAck', caller)
+      await api(who, 'POST', await onBoard(who, `/sync/inbox/${encodeURIComponent(key)}/${encodeURIComponent(id)}/ack`), { body: { lease, ...(error !== undefined ? { error } : {}) }, signal })
+      return { ok: true }
+    },
+    async inbox(caller, { key, channel, limit }, signal) {
+      const who = syncer('inbox', caller)
+      const { events } = await api<{ events: ApiInboxEntry[] }>(who, 'GET', await onBoard(who, `/sync/inbox/${encodeURIComponent(key)}`), { query: { limit: limit?.toString() }, signal })
+      const entries = events.map(({ id, createdAt, event, raw }) => {
+        const pushed = (event ?? {}) as InboxEntry['event'] & { channel?: string }
+        return { id, channel: pushed.channel ?? '', createdAt, sync: key, event: pushed, raw }
+      })
+      return { events: channel === undefined ? entries : entries.filter((entry) => entry.channel === channel) }
     },
     async watchers(caller) {
       ownWatchers(caller, 'list watchers')
@@ -1424,7 +1586,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
             owner: found.owner,
             ...whereOf(found),
             watch: Object.fromEntries(await Promise.all(Object.entries(found.watch).map(async ([id, spec]) => [id, { tail: await tailOf(who, spec), when: spec.when }] as const))),
-            sync: [],
+            sync: syncOf(found),
             hash: found.hash,
           })),
         ),
@@ -1432,8 +1594,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     },
     async register(caller, body) {
       ownWatchers(caller, 'register watchers')
-      if ((body.sync?.length ?? 0) > 0) throw notSupported('sync')
-      return registerAs(whoOf(caller), typeof body.path === 'string' ? { path: body.path, ...(body.branch ? { branch: body.branch } : {}) } : { url: body.url ?? null }, body.watch)
+      return registerAs(whoOf(caller), typeof body.path === 'string' ? { path: body.path, ...(body.branch ? { branch: body.branch } : {}) } : { url: body.url ?? null }, body.watch, body.sync ?? [])
     },
     async matches(caller, query, signal) {
       ownWatchers(caller, 'pull matches')
@@ -1467,9 +1628,9 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     sendsSchedulesHere: false,
     bind(next: BoardBinding) {
       if (binding) throw new Error('vercel: this backend already serves a board: create one vercel() per board()')
-      const kinds = Object.values(next.subscriptions).map((subscription) => subscription.kind)
-      if (kinds.includes('sync')) throw new Error("vercel: Vercel's boards don't run sync yet: leave `sync` out")
       for (const id of Object.keys(next.subscriptions)) own.add(id)
+      // Sync subscribes as itself, beside the watchers: the API hands it its board's changes as `@sync` matches.
+      syncing = next.subscriptions[SYNC]?.kind === 'sync' ? next.sync.map(({ key, platform }) => ({ key, platform })) : []
       tails = Object.fromEntries(
         Object.entries(next.subscriptions).flatMap(([id, subscription]) => (subscription.kind === 'tail' ? [[id, { tail: subscription.tail, when: subscription.when }]] : [])),
       )
