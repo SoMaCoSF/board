@@ -64,6 +64,31 @@ describe('attachments', () => {
     expect(anonymous.status).toBe(401)
   })
 
+  it("keeps a board token's unposted files to it and the tokens it was minted with, never its minter's others", async () => {
+    const { board, client, call } = await setup()
+    const mint = async (body: Record<string, unknown>, by = call) => (await by('POST', '/tokens', body)).body.secret as string
+    const widget = await mint({ name: 'feedback-widget', can: { 'feedback/': ['post'] } })
+    const sibling = await mint({ name: 'deploy-bot', can: { 'feedback/': ['post'] } })
+    const child = await mint({ name: 'widget-child' }, caller(board.fetch, widget))
+    const fetch = ((input: RequestInfo | URL, init?: RequestInit) => board.fetch(new Request(input, init))) as typeof globalThis.fetch
+    const upload = (secret: string, name: string) => createBoardClient({ url: BOARD_URL, token: secret, fetch }).upload({ data: PNG, name, type: 'image/png' })
+    const status = async (secret: string, id: string) => (await board.fetch(new Request(`${BOARD_URL}/attachments/${id}`, { headers: { authorization: `Bearer ${secret}` } }))).status
+
+    const julians = await client.upload({ data: PNG, name: 'payroll.png', type: 'image/png' })
+    const widgets = await upload(widget, 'widget.png')
+    const childs = await upload(child, 'child.png')
+    // Its minter's file, a sibling's, and a parent's, to a child, are files that aren't there.
+    expect(await status(widget, julians.id)).toBe(404)
+    expect(await status(sibling, widgets.id)).toBe(404)
+    expect(await status(child, widgets.id)).toBe(404)
+    expect((await caller(board.fetch, widget)('POST', '/messages', { channel: 'feedback/web', text: 'look', attachments: [julians.id] })).status).toBe(404)
+    // Its own, and its child's, it may read; its minter reads all of them.
+    expect(await status(widget, widgets.id)).toBe(200)
+    expect(await status(widget, childs.id)).toBe(200)
+    expect((await client.download(widgets.id)).status).toBe(200)
+    expect((await caller(board.fetch, widget)('POST', '/messages', { channel: 'feedback/web', text: 'look', attachments: [widgets.id] })).status).toBe(201)
+  })
+
   it('records only files it stored, and lets a message with files have no text', async () => {
     const { client, call } = await setup()
     const missing = await call('POST', '/messages', { channel: 'ops', text: 'here', attachments: ['AAAAAAAAAAAAAAAAAAAAAA'] })
@@ -197,6 +222,20 @@ describe('attachments', () => {
       // Bytes that aren't the size it said are refused.
       await blob.put(`board/attachments/${ticket.id}`, new Uint8Array(size - 1), 'video/quicktime')
       expect((await call('POST', `/attachments/uploads/${ticket.id}`, {})).body.error.code).toBe('size_mismatch')
+    })
+
+    it("keeps a board token's direct upload to it: another of its minter's tokens can't finish or read it", async () => {
+      const { board, blob, call } = await directSetup()
+      const mint = async (name: string) => caller(board.fetch, (await call('POST', '/tokens', { name, can: { 'ops/': ['read', 'post'] } })).body.secret)
+      const sandbox = await mint('sandbox')
+      const sibling = await mint('deploy-bot')
+      const size = 5 * 1024 * 1024
+      const ticket = (await sandbox('POST', '/attachments/uploads', { name: 'run.mov', type: 'video/quicktime', size })).body
+      await blob.put(`board/attachments/${ticket.id}`, new Uint8Array(size), 'video/quicktime')
+      expect((await sibling('POST', `/attachments/uploads/${ticket.id}`, {})).status).toBe(404)
+      expect((await sandbox('POST', `/attachments/uploads/${ticket.id}`, {})).status).toBe(201)
+      expect((await sibling('POST', '/messages', { channel: 'ops', text: 'x', attachments: [ticket.id] })).status).toBe(404)
+      expect((await sandbox('POST', '/messages', { channel: 'ops', text: 'the run', attachments: [ticket.id] })).status).toBe(201)
     })
 
     it('finishes once, and answers the same attachment when finished again', async () => {

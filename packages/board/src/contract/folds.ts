@@ -194,38 +194,14 @@ export type Actor = {
   host?: true
 }
 
-/** A platform actor proved to be a principal (`actor.linked`). */
-export type ActorLink = { to: string; method: 'code' | 'consent'; at: string }
-
 export type ActorsState = {
   byId: Record<string, Actor>
   /** Lowercased handle → actor IDs. Handles aren't reserved, so several can share one. */
   byHandle: Record<string, string[]>
-  /** Platform actor → the principal it's linked to. Display and filtering only, never permissions. */
-  links: Record<string, ActorLink>
 }
 
-/** The principal an actor belongs to: its link, its own principal for a profile (`…+claude`), or itself. */
-export function personOf(actors: ActorsState, actor: string): string {
-  const linked = own(actors.links, actor)?.to
-  if (linked) return linked
-  const plus = actor.indexOf('+')
-  return plus === -1 ? actor : actor.slice(0, plus)
-}
-
-/** The platform actors linked to `principal`. */
-export const linkedTo = (actors: ActorsState, principal: string): string[] =>
-  Object.entries(actors.links).filter(([, link]) => link.to === principal).map(([actor]) => actor)
-
+/** Who's who: `actor.seen`. */
 export function foldActors(state: ActorsState, event: BoardEvent): ActorsState {
-  if (event.type === 'actor.linked') {
-    setOwn(state.links, event.payload.actor, { to: event.payload.to, method: event.payload.method, at: iso(event.createdAt) })
-    return state
-  }
-  if (event.type === 'actor.unlinked') {
-    delete state.links[event.payload.actor]
-    return state
-  }
   if (event.type !== 'actor.seen') return state
   const { actor, kind, handle, name, avatar, host } = event.payload
   const previous = own(state.byId, actor)
@@ -244,9 +220,8 @@ export function foldActors(state: ActorsState, event: BoardEvent): ActorsState {
 
 /** A copy of a board message on a platform. */
 /** `files`: the platform's IDs for the message's files, or null when it refused them; unset until they're sent. */
-/** `asUser`: posted with its author's own token, so editing or deleting it needs that token too. */
 /** `by`: the principal of the sync elsewhere that recorded it, whose copy it is to change; none for the board's own sync's. */
-export type ExternalCopy = { thread: string; message: string; files?: string[] | null; asUser?: true; by?: string }
+export type ExternalCopy = { thread: string; message: string; files?: string[] | null; by?: string }
 
 export type SyncedThread = {
   root: number
@@ -331,8 +306,4 @@ export function foldSync(state: SyncState, event: BoardEvent): SyncState {
       return state
   }
 }
-
-export type IdentityCode = { principal: string; sync: string; expiresAt: string; usedBy: string | null; usedIn: string | null }
-/** Code hash → its code. */
-export type IdentityCodesState = Record<string, IdentityCode>
 

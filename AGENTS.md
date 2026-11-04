@@ -159,8 +159,8 @@ thread rather than starting one.
   addressed to someone else, and keeps board replies to a few lines; a review's detail
   goes in a GitHub review on the code. Review is its initial task; people can redirect
   Eve in the thread to fix, push, approve, mark ready, merge, or close the PR.
-  `shipit` lets anyone add `:shipit:` to a PR's Slack root
-  to request a merge as the factory GitHub App. Slack delivers that alias as
+  `shipit` lets anyone add `:shipit:` to a PR's root, in Slack or on the board
+  (`vb react <root> shipit`), to request a merge as the factory GitHub App. Slack delivers that alias as
   `squirrel`, which the watcher also accepts, and `:approved:` works the same way. It reads the current PR, marks it
   ready if it's a draft, and merges with that head SHA and a merge commit,
   honoring GitHub's merge rules;

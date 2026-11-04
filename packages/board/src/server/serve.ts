@@ -3,7 +3,6 @@ import {
   DeleteBody,
   EditBody,
   EventsQuery,
-  IdentityUnlinkBody,
   InboxAckBody,
   InboxNextQuery,
   InboxPushBody,
@@ -16,21 +15,18 @@ import {
   Ref,
   RegisterBody,
   ScheduleBody,
+  GrantBody,
+  TokenBody,
   SchedulesQuery,
-  SignInQuery,
   SourceJoinBody,
   SourceReadQuery,
   LinkedQuery,
-  SyncAccountBody,
   SyncBody,
-  SyncCodeBody,
   SyncCopiesQuery,
   SyncFindQuery,
   SyncImportBody,
   UploadStartBody,
   SyncReceiptBody,
-  SyncRootsQuery,
-  SyncUnlinkBody,
   ThreadsQuery,
   TypingBody,
   type MessageView,
@@ -57,6 +53,11 @@ import { VERSION } from '../version.ts'
 
 /** The methods whose answer is something new. */
 const CREATED = new Set<Method>(['post', 'schedule', 'upload', 'uploadFinish'])
+
+/** An email, as `--mentions` names one: sync looks its platform user up. */
+const EMAIL = /^[^\s@]+@[^\s@]+$/
+/** How long a filter's email lookup holds. */
+const EMAIL_TTL_MS = 5 * 60_000
 
 /** Shown inline only when a browser can't run it: everything else downloads. */
 const INLINE = /^(image\/(png|jpeg|gif|webp|avif)|video\/(mp4|webm)|text\/plain)$/
@@ -91,13 +92,16 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
     case 'me':
     case 'channels':
     case 'actors':
-    case 'identity':
     case 'watchers':
+    case 'grants':
+    case 'tokens':
       return {}
     case 'message':
     case 'posted':
     case 'synced':
     case 'cancelSchedule':
+    case 'revokeGrant':
+    case 'revokeToken':
     case 'attachment':
     case 'uploadFinish':
       return { id }
@@ -120,6 +124,10 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
       return PostBody.parse(await body())
     case 'schedule':
       return ScheduleBody.parse(await body())
+    case 'createGrant':
+      return GrantBody.parse(await body())
+    case 'createToken':
+      return TokenBody.parse(await body())
     case 'register':
       return RegisterBody.parse(await body())
     case 'edit':
@@ -154,8 +162,6 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
       return SyncFindQuery.parse(queryObject(url))
     case 'syncCopies':
       return SyncCopiesQuery.parse(queryObject(url))
-    case 'syncRoots':
-      return SyncRootsQuery.parse(queryObject(url))
     case 'inboxPush':
       return { key, ...InboxPushBody.parse(await body()) }
     case 'inboxNext':
@@ -164,12 +170,6 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
       return { key, id, ...InboxAckBody.parse(await body()) }
     case 'inbox':
       return { key, ...InboxQuery.parse(queryObject(url)) }
-    case 'syncCode':
-      return SyncCodeBody.parse(await body())
-    case 'syncAccount':
-      return SyncAccountBody.parse(await body())
-    case 'syncUnlink':
-      return SyncUnlinkBody.parse(await body())
     case 'typing':
       return { id, ...(TypingBody.parse(await body()) ?? {}) }
     case 'readSource':
@@ -259,15 +259,39 @@ export async function createServe(context: BoardContext): Promise<Serve> {
    * board learns who they are; the rest stay plain text.
    */
   async function withEmails(text: string): Promise<string> {
-    // Each one sync finds, the board must know before a post can mention them; one it can't learn stays an email.
-    const find = engine
-      ? async (email: string) => {
-          const actor = await engine.findByEmail(email)
-          if (actor) await backend.syncImport(engine.caller, { op: 'seen', author: { ...actor, isBot: false } }, new AbortController().signal)
-          return actor
-        }
-      : undefined
-    return (await withEmailMentions(text, find)).text
+    return (await withEmailMentions(text, engine ? learnEmail : undefined)).text
+  }
+
+  /**
+   * The synced platform's user with this email, whom the board learns: a post can mention only
+   * an actor it knows, and a platform mention of them resolves only once it does.
+   */
+  async function learnEmail(email: string): Promise<Actor | null> {
+    const actor = await engine!.findByEmail(email)
+    if (actor) await backend.syncImport(engine!.caller, { op: 'seen', author: { ...actor, isBot: false } }, new AbortController().signal)
+    return actor
+  }
+
+  /** Emails filters named, as sync found them, for a few minutes: `tail` and `wait` ask at every page. */
+  const mentioned = new Map<string, { at: number; actor: Promise<Actor | null> }>()
+
+  /**
+   * `--mentions ada@vercel.com`: the synced platform's user with that email, for a caller that may
+   * read somewhere. Anything else, and an email sync doesn't know, goes on as it came.
+   */
+  async function withMentioned<Q extends { mentions?: string | undefined }>(caller: Caller, query: Q): Promise<Q> {
+    const email = query.mentions?.toLowerCase()
+    if (!engine || email === undefined || !EMAIL.test(email)) return query
+    const access = accessOf(caller)
+    if (access !== null && !access.anywhere('read')) return query
+    let found = mentioned.get(email)
+    if (!found || Date.now() - found.at > EMAIL_TTL_MS) {
+      if (mentioned.size >= 1000) mentioned.clear()
+      found = { at: Date.now(), actor: learnEmail(email).catch(() => null) }
+      mentioned.set(email, found)
+    }
+    const actor = await found.actor
+    return actor ? { ...query, mentions: actor.id } : query
   }
 
   /**
@@ -635,8 +659,9 @@ export async function createServe(context: BoardContext): Promise<Serve> {
     return { message: await read(message!) }
   }
 
-  /** The protocol method `name`, as board() serves it: what it posts and edits with the emails they mention resolved. */
+  /** The protocol method `name`, as board() serves it: what it posts and edits, and the filters it reads by, with their emails resolved. */
   async function invoke(name: Method, caller: Caller, input: unknown, signal: AbortSignal): Promise<unknown> {
+    if (name === 'messages' || name === 'threads' || name === 'events') input = await withMentioned(caller, input as { mentions?: string })
     switch (name) {
       case 'post':
         return post(caller, input as Protocol['post']['input'], signal)
@@ -649,6 +674,12 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       }
       case 'syncImport':
         return syncImport(caller, input as Protocol['syncImport']['input'], signal)
+      case 'grants':
+      case 'createGrant':
+      case 'revokeGrant':
+        // A board whose `access` is one function decides alone: a grant it kept would never apply.
+        if (backend.keeps && !policy.takesGrants) throw new HttpError(501, 'no_grants', "this board's access is one function, which decides alone: it keeps no grants")
+        return (backend[name] as (caller: Caller, input: unknown, signal: AbortSignal) => Promise<unknown>).call(backend, caller, input, signal)
       case 'schedule': {
         const body = input as Protocol['schedule']['input']
         const schedule = (made: Protocol['schedule']['input']) => (backend.sendsSchedulesHere === false ? screenSchedule(caller, made, signal) : backend.schedule(caller, made, signal))
@@ -677,27 +708,6 @@ export async function createServe(context: BoardContext): Promise<Serve> {
     }
   }
 
-  /**
-   * A sign-in that carries a code, where the entry's sync runs: a browser opens it with no token,
-   * so the code is all it has. `signIn` sends the person to the platform as whoever the code was
-   * issued to; `signedIn`, where the platform sends them back, links the account they approved.
-   */
-  async function signingIn(name: 'signIn' | 'signedIn', url: URL, signal: AbortSignal): Promise<Response> {
-    const { sync: key, code } = SignInQuery.parse(queryObject(url))
-    if (!engine || !entries[key]) throw notFound(`no sync entry named ${key}`)
-    const page = (status: number, text: string) => new Response(`${text}\n`, { status, headers: { 'content-type': 'text/plain; charset=utf-8' } })
-    const { holder } = await backend.syncFind(engine.caller, { code }, signal)
-    if (holder === null) return page(404, "That link has expired or been used. Run `vb identity link` again for a new one.")
-    if (name === 'signIn') {
-      const back = ownUrl()
-      const at = await engine.signIn(key, holder, back ? `${back}/identity/signed-in?${new URLSearchParams({ sync: key, code })}` : undefined)
-      return new Response(null, { status: 302, headers: { location: at } })
-    }
-    const linked = await engine.redeemSignIn(key, holder, code)
-    if (!linked) return page(409, `${entries[key]!.platform} hasn't said you approved yet: finish signing in, then open this page again.`)
-    return page(200, `Linked ${linked.handle ? `@${linked.handle}` : linked.actor}. You can close this tab.`)
-  }
-
   /** board()'s own routes for a caller: sync's, which run where board() does. */
   async function serve(name: BoardRoute, caller: Caller, request: Request, url: URL, params: Record<string, string>): Promise<Response> {
     const signal = request.signal
@@ -716,17 +726,6 @@ export async function createServe(context: BoardContext): Promise<Serve> {
         const target = await resolveTarget(body.target)
         const { attached } = await backend.syncReceipt(caller, { kind: 'thread', message: id, target: target.target, targetKind: target.kind, cause: 'request' }, signal)
         return json({ target: target.target, attached: attached ?? true })
-      }
-      case 'identityUnlink': {
-        // Who may unlink what is the backend's: it answers for the caller's own links.
-        const body = IdentityUnlinkBody.parse(await readJson(request))
-        const { links } = await backend.identity(caller, {}, signal)
-        const wanted = body.actor.replace(/^@/, '').toLowerCase()
-        const found = links.filter((link) => link.actor === body.actor || link.handle?.toLowerCase() === wanted).map((link) => link.actor)
-        if (found.length === 0) throw notFound(`${body.actor} isn't linked to you`, 'not_linked')
-        if (found.length > 1) throw badRequest(`${body.actor} names several of your accounts: use ${found.join(' or ')}`, 'ambiguous_actor')
-        await backend.syncUnlink(caller, { account: found[0]! }, signal)
-        return json({ ok: true, actor: found[0]! })
       }
       default:
         throw notFound(`no route: ${request.method} ${url.pathname}`)
@@ -826,7 +825,6 @@ export async function createServe(context: BoardContext): Promise<Serve> {
         if (!engine || !entries[match.params.key ?? '']) throw notFound(`no sync entry named ${match.params.key}`)
         return await engine.handleWebhook(match.params.key!, request)
       }
-      if (target.kind === 'board' && (target.name === 'signIn' || target.name === 'signedIn')) return await signingIn(target.name, url, request.signal)
       if (target.kind === 'board' && target.name === 'avatar') {
         const name = match.param ?? ''
         if (!(KNOWN_AGENTS as readonly string[]).includes(name)) throw notFound(`no avatar: ${name}`)
@@ -851,7 +849,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
 
       const input = await inputOf(target.name, request, url, match.params)
       if (target.name === 'events' && (request.headers.get('accept') ?? '').includes('text/event-stream'))
-        return await sse(caller, input as Protocol['events']['input'], request, asked ? () => callerOf(asked) : null)
+        return await sse(caller, await withMentioned(caller, input as Protocol['events']['input']), request, asked ? () => callerOf(asked) : null)
       const output = injected && 'platform' in injected ? await asPlatform(target.name, injected, input, request.signal) : await invoke(target.name, caller, input, request.signal)
       if (target.name === 'attachment') return attachmentResponse(output as Protocol['attachment']['output'])
       return json(output, CREATED.has(target.name) ? 201 : 200)

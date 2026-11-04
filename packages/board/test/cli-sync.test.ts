@@ -50,46 +50,6 @@ afterAll(async () => {
   await Promise.all(servers.map((server) => server.close()))
 })
 
-function vb(args: string[]) {
-  return new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
-    const child = spawn(process.execPath, [CLI, ...args], { env })
-    let stdout = ''
-    let stderr = ''
-    child.stdout.on('data', (d) => (stdout += d))
-    child.stderr.on('data', (d) => (stderr += d))
-    child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }))
-    child.stdin.end()
-  })
-}
-
-describe('the CLI on a project whose board is on http()', () => {
-  it("links a Slack account on the team's board, which the project's sync links when the code comes in", async () => {
-    const linked = await vb(['identity', 'link', 'slack', '--no-wait'])
-    expect(linked).toMatchObject({ code: 0, stderr: '' })
-    const code = linked.stdout.match(/vb-[A-Z2-9]{4}-[A-Z2-9]{4}/)?.[0]
-    expect(code).toBeDefined()
-
-    // The team's board issued it. Posted from that Slack account, the project's sync redeems it there.
-    await project.fetch(
-      new Request(`${projectUrl}/webhooks/slack`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ type: 'message', threadId: 'slack:C1:100', id: '100', text: code, user: 'U_JULIAN', name: 'jb' }),
-      }),
-    )
-    const julian = caller(team.fetch, await personToken('u_julian', teamUrl))
-    await vi.waitFor(async () => expect((await julian('GET', '/identity')).body.links).toEqual([expect.objectContaining({ actor: 'slack:user:U_JULIAN', method: 'code' })]))
-    await vi.waitFor(() => expect(s.reactions).toEqual([{ threadId: 'slack:C1:100', messageId: '100', emoji: 'check', added: true }]))
-
-    // The CLI reads it there too, and posts there.
-    const listed = await vb(['identity'])
-    expect(listed).toMatchObject({ code: 0, stderr: '' })
-    expect(listed.stdout).toContain('slack:user:U_JULIAN  by code')
-    expect(await vb(['post', 'firehose', 'from the CLI'])).toMatchObject({ code: 0, stderr: '' })
-    expect((await julian('GET', '/messages?channel=firehose')).body.messages.map((m: { text: string }) => m.text)).toEqual(['from the CLI'])
-  }, 20_000)
-})
-
 /** Slack's Web API, as the app reads #project-vercel-kit: two messages, the older with replies. */
 const kit = {
   conversations: {

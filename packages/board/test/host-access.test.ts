@@ -72,7 +72,7 @@ describe("a host's authenticate and access", () => {
     expect((await ada('GET', '/me')).body).toMatchObject({ principal: 'vercel:user:u_ada', handle: 'ada' })
   })
 
-  it('carries its principal through reads, writes, /identity, tails and SSE', async () => {
+  it('carries its principal through reads, writes, tails and SSE', async () => {
     const tenant = hosted('team_a')
     const ada = caller(tenant.fetch, 'pt_ada', { 'x-board-handle': 'ada' })
     const posted = await ada('POST', '/messages', { channel: 'dev', text: 'one' })
@@ -82,7 +82,6 @@ describe("a host's authenticate and access", () => {
 
     expect((await ada('GET', '/messages?channel=dev')).body.messages.map((m: { text: string }) => m.text)).toEqual(['one'])
     expect((await ada('GET', `/messages/${posted.body.message.id}`)).body.message.labels).toEqual({ kind: 'bug' })
-    expect((await ada('GET', '/identity')).body).toMatchObject({ principal: 'vercel:user:u_ada', links: [] })
     const tail = await ada('GET', '/events?after=0&channel=dev')
     expect(tail.body.events.map((e: { type: string }) => e.type)).toContain('message.posted')
 

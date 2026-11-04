@@ -218,6 +218,24 @@ export function compileAccess(can: Can): Access {
 }
 
 export const FULL_ACCESS = compileAccess('all')
+const NO_ACCESS = compileAccess([])
+
+/** What any of `accesses` allows, channel by channel: grants that match one principal add up. */
+export function union(accesses: readonly Access[]): Access {
+  const all = accesses.filter(isAccess)
+  if (all.length === 0) return NO_ACCESS
+  const rules = all.map((access) => access[RULES])
+  // `*` and every pattern any side names: each governs channels where every answer is fixed.
+  const patterns = new Map<string, Pattern>([['*', { kind: 'all' }]])
+  for (const side of rules) for (const [pattern] of entriesIn(side)) patterns.set(key(pattern), pattern)
+  return fromRules(canonical([...patterns.values()].map((pattern) => [pattern, new Set(rules.flatMap((side) => [...at(side, pattern)]))] as const)))
+}
+
+/** An access as `x-board-scope` writes it, `dev/=read,post;ci/=read`, or `*=` for nothing: what a stored principal keeps. */
+export function scopeOf(access: Access): string {
+  const entries = Object.entries(access.summary()).map(([pattern, permissions]) => `${pattern}=${permissions.join(',')}`)
+  return entries.length > 0 ? entries.join(';') : '*='
+}
 
 /**
  * `x-board-scope`: `dev/=read,post,react,label;ci/=read`. Each entry is a

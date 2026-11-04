@@ -20,6 +20,8 @@ export const OIDC_ISS = 'https://gitlab.test'
 const { publicKey, privateKey } = await generateKeyPair('RS256')
 const jwk = { ...(await exportJWK(publicKey)), kid: 'test', alg: 'RS256' }
 const jwks = createLocalJWKSet({ keys: [jwk] })
+/** The test issuers' public keys, as an issuer's `jwks_uri` serves them. */
+export const testKeys = { keys: [jwk] }
 
 /** The test issuers, to combine with other auth options. */
 export const testAuth = {

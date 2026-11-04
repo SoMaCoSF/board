@@ -11,12 +11,8 @@ export function shipit(options: GitHubOptions & { tellEve: typeof tellEve }): Wa
     tail: "dev --label pr",
     run: async ({ event, board }) => {
       const root = event.message;
-      if (
-        event.type !== "reaction.added" ||
-        !MERGE_EMOJI.has(event.payload.emoji) ||
-        event.payload.from !== "slack" ||
-        !event.payload.by.principal.startsWith("slack:user:")
-      ) return;
+      // From Slack or on the board, by anyone who can react in `dev`: GitHub's merge rules decide.
+      if (event.type !== "reaction.added" || !MERGE_EMOJI.has(event.payload.emoji)) return;
       // On a PR thread's root, or on a factory PR's message in the thread it was built for.
       const thread = prThreadOf(root);
       if (!root || !thread) return;

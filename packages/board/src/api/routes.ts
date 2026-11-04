@@ -18,7 +18,7 @@ import { ExternalAuthor, ExternalEvent, ExternalTarget, Link as LinkSchema, LINK
 import type { BoardEvent } from '../contract/events.ts'
 import type { Link } from '../contract/external.ts'
 import type { Actor, Channel, ExternalCopy, Message } from '../contract/folds.ts'
-import type { AccessSummary } from '../server/access.ts'
+import type { AccessSummary, Can as AccessCan } from '../server/access.ts'
 
 /**
  * A message's, schedule's, or cursor's ID: a string clients pass back as they got it, and never
@@ -174,6 +174,29 @@ export const SchedulesQuery = z.object({
   all: flag.optional(),
 })
 
+const CanGrant = z.union([z.literal('all'), z.array(z.string().min(1).max(16)).max(8)])
+/** What a grant or token lets do: `'all'`, a list for every channel, or a map from channel pattern to one. board() checks the patterns. */
+const Can = z.union([CanGrant, z.record(z.string().min(1).max(300), CanGrant)])
+const ClaimValue = z.string().min(1).max(1000)
+
+/** Who a grant lets in: an issuer (`vercel`, `github`, or an https URL) and the claims its tokens carry, exactly. */
+export const GrantBody = z.object({
+  issuer: z.string().min(1).max(1000),
+  claims: z.record(z.string().min(1).max(200), z.union([ClaimValue, z.array(ClaimValue).min(1).max(32)])),
+  can: Can.optional(),
+})
+
+/** A token acting as the caller: what it may do, and the profile and session every request with it writes as. */
+export const TokenBody = z.object({
+  name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, 'a token name is up to 64 letters, numbers, and ._-'),
+  can: Can.optional(),
+  profile: z.string().regex(/^[A-Za-z][A-Za-z0-9-]{0,31}$/, 'a profile is up to 32 letters, numbers, and hyphens').optional(),
+  avatar: z.string().url().max(2048).optional(),
+  session: z.string().regex(/^[A-Za-z0-9_.:-]{1,128}$/, 'a session is up to 128 letters, numbers, and _.:-').optional(),
+  /** How long it lives: `30d` by default, at most `90d`. */
+  expires: Duration.optional(),
+})
+
 export const SyncBody = z.object({ target: z.string().min(3).max(300) })
 export const InboxQuery = z.object({
   channel: z.string().optional(),
@@ -190,9 +213,9 @@ const Registering = z.object({
     .refine((watch) => Object.keys(watch).length <= REGISTERED_WATCHERS_MAX, `a board registers at most ${REGISTERED_WATCHERS_MAX} watchers`),
   /**
    * Its sync entries: its sync subscribes too, to every post, change, and thread sync in the channels
-   * where it may sync, and the board lists the entries and links accounts on them.
+   * where it may sync, and the board lists the entries.
    */
-  sync: z.array(z.object({ key: z.string().min(1).max(64), platform: z.string().min(1).max(64), signIn: z.boolean().default(false) })).max(32).optional(),
+  sync: z.array(z.object({ key: z.string().min(1).max(64), platform: z.string().min(1).max(64) })).max(32).optional(),
 })
 
 /**
@@ -265,8 +288,6 @@ export const SourceJoinBody = z.object({ target: z.string().min(1).max(4000) })
 
 /** A platform's link to a message or thread, such as a Slack permalink or a GitHub comment's URL. */
 export const LinkedQuery = z.object({ url: z.string().url().max(4000) })
-
-export const IdentityUnlinkBody = z.object({ actor: z.string().min(1).max(256) })
 
 /** A sync entry's key: `slack`, `github`. */
 const SyncKey = z.string().min(1).max(64)
@@ -347,7 +368,7 @@ export const SyncReceiptBody = z.discriminatedUnion('kind', [
     kind: z.literal('message'),
     message: Ref,
     target: ExternalTarget,
-    external: z.object({ thread: ExternalTarget, message: z.string().min(1).max(300), asUser: z.literal(true).optional() }),
+    external: z.object({ thread: ExternalTarget, message: z.string().min(1).max(300) }),
     /** Its files, when they went with it: the platform's IDs, or null when it refused them. */
     files: PlatformFiles.optional(),
   }),
@@ -364,21 +385,15 @@ export const SyncReceiptBody = z.discriminatedUnion('kind', [
   }),
 ])
 
-/** What sync looks up by platform ID: a thread or message, who an account is, and a person's accounts. */
+/** What sync looks up by platform ID: a thread or a message. */
 export const SyncFindQuery = z.object({
-  /** A live one-time code: who it was issued to, for a sign-in that carries it. */
-  code: z.string().min(1).max(64).optional(),
   /** The post the caller's sync imported with this client ID. */
   post: z.string().min(1).max(200).optional(),
   thread: ExternalTarget.optional(),
   /** With `thread`: the platform message in it. */
   message: z.string().min(1).max(300).optional(),
-  account: ActorId.optional(),
-  person: ActorId.optional(),
 })
 export const SyncCopiesQuery = z.object({ message: repeated.pipe(z.array(Ref).min(1).max(100)) })
-/** A person's own roots since `since`, in epoch milliseconds. */
-export const SyncRootsQuery = z.object({ by: ActorId, since: z.coerce.number().int().nonnegative() })
 
 /** Platform events for a sync key's inbox, each with the platform's own ID for it, which dedupes it. */
 export const InboxPushBody = z.object({
@@ -387,23 +402,6 @@ export const InboxPushBody = z.object({
 export const InboxNextQuery = z.object({ limit: z.coerce.number().int().min(1).max(50).optional() })
 export const InboxAckBody = z.object({ lease: z.string().min(1).max(64), error: z.string().min(1).max(500).optional() })
 
-/** A one-time code for linking an account on sync entry `sync`: a person's own, for themselves. */
-export const SyncCodeBody = z.object({ sync: SyncKey })
-/**
- * A platform account, linked to whoever a code was issued to: one posted from the account, or
- * carried through its sign-in. `message` is the platform message that posted it.
- */
-export const SyncAccountBody = z.object({
-  sync: SyncKey,
-  account: PlatformUser,
-  code: z.string().min(1).max(64),
-  message: z.string().max(1024).optional(),
-  /** `consent` when the code came through the account's own sign-in, so the board posts as them. */
-  method: z.enum(['code', 'consent']).optional(),
-})
-/** A sign-in that carries a code, on the board whose sync runs the entry. */
-export const SignInQuery = z.object({ sync: SyncKey, code: z.string().min(1).max(64) })
-export const SyncUnlinkBody = z.object({ account: ActorId })
 
 /**
  * A direct upload, before its bytes: what the file will be called, its type, its exact size, and
@@ -421,7 +419,7 @@ export type UploadTicket = { id: string; url: string; headers: Record<string, st
 
 export const EditBody = z.object({ text: MessageText, revision: Revision.optional() })
 export const DeleteBody = z.object({ revision: Revision.optional() }).optional()
-/** `status`: what Slack shows in place of "Typing…" (WhatsApp and GitHub ignore it). */
+/** `status`: what Slack shows in place of "Typing…" (other platforms ignore it). */
 export const TypingBody = z.object({ status: z.string().trim().min(1).max(100).optional() }).optional()
 export const ReactBody = z.object({ emoji: Emoji, remove: z.boolean().optional() })
 /** At most this many labels in a label write's `if`. */
@@ -448,7 +446,6 @@ export type FiltersInput = z.input<typeof Filters>
 export type SyncImportInput = z.input<typeof SyncImportBody>
 export type SyncReceiptInput = z.input<typeof SyncReceiptBody>
 export type SyncFindInput = z.input<typeof SyncFindQuery>
-export type SyncAccountInput = z.input<typeof SyncAccountBody>
 export type MessagesQueryInput = z.input<typeof MessagesQuery>
 export type ThreadsQueryInput = z.input<typeof ThreadsQuery>
 export type EventsQueryInput = z.input<typeof EventsQuery>
@@ -456,6 +453,10 @@ export type PostInput = z.input<typeof PostBody>
 export type ScheduleInput = z.input<typeof ScheduleBody>
 export type ScheduleBodyOutput = z.output<typeof ScheduleBody>
 export type SchedulesQueryInput = z.input<typeof SchedulesQuery>
+/** What `grant` takes: `can` as `access` writes it. */
+export type GrantInput = Omit<z.input<typeof GrantBody>, 'can'> & { can?: AccessCan }
+/** What `token` takes: `can` as `access` writes it. */
+export type TokenInput = Omit<z.input<typeof TokenBody>, 'can'> & { can?: AccessCan }
 export type SchedulesQueryOutput = z.output<typeof SchedulesQuery>
 
 /** A scheduled message. It posts as `by`, its creator; each message it posts carries `schedule: { id, n }`. */
@@ -486,14 +487,35 @@ export type ScheduleView = {
   createdAt: string
 }
 
-/** The person a platform account is linked to (`actor.linked`). */
-export type PersonView = { id: string; handle: string; name: string; avatar: string | null }
+/** A grant: who it lets in, what it lets them do, and who set it when. */
+export type GrantView = {
+  id: string
+  issuer: string
+  claims: Record<string, string | string[]>
+  can: AccessSummary
+  /** The actor that last set it. */
+  by: string
+  at: string
+}
 
-/**
- * `kind` says who wrote it: a `person` or a platform user (`external`), an agent (`profile`), or a deployment or workflow.
- * `person` is who a linked platform account belongs to.
- */
-export type ActorView = Pick<Actor, 'kind' | 'handle' | 'name' | 'avatar'> & { person?: PersonView }
+/** A token, as its minter and `manage` see it: never its secret. */
+export type TokenView = {
+  id: string
+  name: string
+  /** What it may do now: its minter's access, as the board's rules and grants give it, narrowed by the token's `can`. `{}` once its minter may do nothing. */
+  can: AccessSummary
+  profile: string | null
+  session: string | null
+  /** The actor that minted it, and when. */
+  by: string
+  at: string
+  expiresAt: string
+  /** The token it was minted with, which it stops with. */
+  parent: string | null
+}
+
+/** `kind` says who wrote it: a `person` or a platform user (`external`), an agent (`profile`), or a deployment or workflow. */
+export type ActorView = Pick<Actor, 'kind' | 'handle' | 'name' | 'avatar'>
 /** A message as clients see it: its IDs are refs, and `version` says which of two views of it is newer. */
 export type MessageView = Omit<Message, 'id' | 're' | 'replyTo' | 'links' | 'schedule' | 'version' | 'revision'> & {
   id: string
@@ -569,7 +591,7 @@ export type RegistrationView = {
   owner: string
   watch: Record<string, { tail: string; when: 'matches' | 'enters' }>
   /** Its sync entries. With any, its sync gets every event it delivers to platforms, as matches of watcher `@sync`. */
-  sync: { key: string; platform: string; signIn: boolean }[]
+  sync: { key: string; platform: string }[]
   /** Every wake-up carries it, so the board can tell its registration is stale. */
   hash: string
 } & (
@@ -616,21 +638,6 @@ export type Me = {
   can: AccessSummary
 }
 
-/** A platform account linked to you, as `GET /identity` lists it. */
-export type LinkedAccount = { actor: string; handle: string | null; name: string | null; method: 'code' | 'consent'; at: string }
-export type IdentityView = {
-  principal: string
-  links: LinkedAccount[]
-  /** The sync entries you haven't linked an account on. Boards older than it leave it out. */
-  unlinked?: string[]
-  cursor: string
-}
-/**
- * How to prove an account is yours: post `code` from it anywhere the board syncs before
- * `expiresAt`, or, when the entry signs people in, open `signIn` and approve: it carries the code.
- */
-export type SyncCodeView = { code: string; expiresAt: string; signIn?: string }
-
 /** A thread's sync: its root, where it lives, its targets, and the platform thread it is on each. */
 export type SyncThreadView = { thread: string; root: string; channel: string; targets: string[]; external: Record<string, string> }
 /** What a platform ID is on the board. Each answers only when it was asked. */
@@ -639,12 +646,6 @@ export type SyncFindView = {
   thread: string | null
   /** The board message a platform message is a copy of, or came in as. */
   message: string | null
-  /** Who a platform account is linked to, and how. */
-  person: { id: string; method: 'code' | 'consent' } | null
-  /** The platform accounts linked to a person, and how. */
-  accounts: { id: string; method: 'code' | 'consent' }[]
-  /** Who a live code was issued to. */
-  holder: string | null
 }
 /** A message's copies, by target: where it went, or came from, on each platform. */
 export type SyncCopiesView = { copies: Record<string, Record<string, ExternalCopy>> }
@@ -748,7 +749,7 @@ export type InboxEntry = {
 
 /** The route table: method, path, and the schemas that validate input. */
 export const routes = {
-  /** Where the board is, its project, and the sync entries it links accounts on. No token. */
+  /** Where the board is, its project, and its sync entries. No token. */
   discovery: { method: 'GET', path: '/' },
   me: { method: 'GET', path: '/me' },
   channels: { method: 'GET', path: '/channels' },
@@ -775,6 +776,14 @@ export const routes = {
   schedules: { method: 'GET', path: '/schedules', query: SchedulesQuery },
   /** Its creator, or manage in its channel, may cancel a schedule. Canceling one that's done is a no-op. */
   cancelSchedule: { method: 'POST', path: '/schedules/:id/cancel' },
+  /** Grants need manage in every channel. Setting one with the same issuer and claims changes its `can`. */
+  grants: { method: 'GET', path: '/grants' },
+  createGrant: { method: 'POST', path: '/grants', body: GrantBody },
+  revokeGrant: { method: 'POST', path: '/grants/:id/revoke' },
+  /** Your tokens, or every one with manage in every channel. A token acts as whoever minted it. */
+  tokens: { method: 'GET', path: '/tokens' },
+  createToken: { method: 'POST', path: '/tokens', body: TokenBody },
+  revokeToken: { method: 'POST', path: '/tokens/:id/revoke' },
   /** The caller's own post with the client ID it gave: what `POST /messages` answered, for telling a retry before posting. */
   posted: { method: 'GET', path: '/posts/:id' },
   /** Raw platform events in a sync key's inbox, newest first: the caller's own, and the board's with `sync` everywhere. */
@@ -795,14 +804,6 @@ export const routes = {
   syncFind: { method: 'GET', path: '/sync/find', query: SyncFindQuery },
   /** Messages' copies on platforms. */
   syncCopies: { method: 'GET', path: '/sync/copies', query: SyncCopiesQuery },
-  /** A person's recent roots, for telling their own platform copies from new messages. */
-  syncRoots: { method: 'GET', path: '/sync/roots', query: SyncRootsQuery },
-  /** A one-time code for linking a platform account. */
-  syncCode: { method: 'POST', path: '/sync/codes', body: SyncCodeBody },
-  /** Links a platform account, by a code or for a person. */
-  syncAccount: { method: 'POST', path: '/sync/accounts', body: SyncAccountBody },
-  /** Unlinks a platform account. */
-  syncUnlink: { method: 'POST', path: '/sync/accounts/unlink', body: SyncUnlinkBody },
   /** Reads a platform channel or thread on demand, where that sync runs, without syncing or storing it. Full access only. */
   readSource: { method: 'GET', path: '/sources/:key/read', query: SourceReadQuery },
   /** Adds the app to a public channel so it can be read, where that sync runs and opted in with `join`. Full access only. */
@@ -818,13 +819,6 @@ export const routes = {
   /** After the `PUT`: the board checks what landed in the store and records the attachment. */
   uploadFinish: { method: 'POST', path: '/attachments/uploads/:id' },
   openapi: { method: 'GET', path: '/openapi.json' },
-  /** Your linked platform accounts. */
-  identity: { method: 'GET', path: '/identity' },
-  /** Starts a sign-in that carries a code (no token), on the board that runs the entry's sync. */
-  signIn: { method: 'GET', path: '/identity/sign-in', query: SignInQuery },
-  /** Where a sign-in comes back (no token): links the account it authorized to the code's person. */
-  signedIn: { method: 'GET', path: '/identity/signed-in', query: SignInQuery },
-  identityUnlink: { method: 'POST', path: '/identity/unlink', body: IdentityUnlinkBody },
   /** Watchers registered by boards on `http()`: every one to `manage` everywhere, the caller's own to anyone else. */
   watchers: { method: 'GET', path: '/watchers' },
   /** Registers the caller's watchers, replacing its last registration. On a board on `http()`, registers its own, with no body or token. */

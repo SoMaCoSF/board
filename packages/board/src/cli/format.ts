@@ -1,4 +1,4 @@
-import type { BoardEventView, Me, MessageView, ScheduleView, SourceRead, SyncedView, ThreadSummaryView } from '../api/routes.ts'
+import type { BoardEventView, GrantView, Me, MessageView, ScheduleView, SourceRead, SyncedView, ThreadSummaryView, TokenView } from '../api/routes.ts'
 import { displayEmoji } from '../contract/emoji.ts'
 import { fileSize } from '../contract/files.ts'
 import { displayText } from '../contract/bots.ts'
@@ -26,8 +26,6 @@ export function authorName(message: Pick<MessageView, 'author' | 'by'>): string 
   const slash = author.handle.indexOf('/')
   if (message.by.profile !== null && slash !== -1)
     return `${author.name} via ${author.handle.slice(0, slash)}`
-  // A linked platform account says whose it is.
-  if (author.person && author.person.handle !== author.handle) return `${author.name} (${author.person.handle})`
   return author.name
 }
 
@@ -172,6 +170,46 @@ export function formatAccess(access: Me['can']): string[] {
     const permissions = access[pattern]!
     return `${pattern.padEnd(width)}  ${permissions.includes('manage') ? 'all' : permissions.length === 0 ? 'nothing' : permissions.join(' ')}`
   })
+}
+
+/** What a grant or token may do, as `--can` takes it: `dev/=read,post;ci/=read`, or `all`. */
+export function formatCan(can: Me['can']): string {
+  const patterns = Object.keys(can)
+  if (patterns.length === 1 && patterns[0] === '*' && can['*']!.includes('manage')) return 'all'
+  if (patterns.length === 0) return 'nothing'
+  return patterns.map((pattern) => `${pattern}=${can[pattern]!.includes('manage') ? 'all' : can[pattern]!.join(',')}`).join(';')
+}
+
+/** Rows of cells, each column padded to its widest, two spaces apart. */
+const table = (rows: string[][]) => {
+  const widths = rows[0]!.map((_, column) => Math.max(...rows.map((row) => row[column]!.length)))
+  return rows.map((row) => row.map((cell, column) => (column === row.length - 1 ? cell : cell.padEnd(widths[column]!))).join('  ').trimEnd()).join('\n')
+}
+
+/** Each grant on a row: its ID, its issuer, the claims it matches, and what it lets do. */
+export function formatGrants(grants: GrantView[]): string {
+  return table(
+    grants.map((grant) => [
+      grant.id,
+      grant.issuer,
+      Object.entries(grant.claims)
+        .map(([name, value]) => `${name}=${typeof value === 'string' ? value : value.join('|')}`)
+        .join(' '),
+      formatCan(grant.can),
+    ]),
+  )
+}
+
+/** Each token on a row: its ID, its name, what it may do, and when it expires. */
+export function formatTokens(tokens: TokenView[], now = Date.now()): string {
+  return table(
+    tokens.map((token) => [
+      token.id,
+      token.name,
+      formatCan(token.can),
+      `expires ${until(token.expiresAt, now)}${token.profile !== null ? ` · as ${token.profile}` : ''}${token.parent !== null ? ` · minted with ${token.parent}` : ''}`,
+    ]),
+  )
 }
 
 /** `90m` → `1h30m`, `1d`: milliseconds as a duration flag would say them. */

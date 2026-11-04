@@ -10,7 +10,7 @@ import {
 } from '../contract/contract.ts'
 import { actorKind, type Attachment, type Author, type Labels } from '../contract/schemas.ts'
 import { authorize, type Access } from './access.ts'
-import type { Granted, Known, Principal } from './auth.ts'
+import { wroteAs, type Granted, type Known, type Principal } from './auth.ts'
 import { actorsReducer } from '../contract/reducers.ts'
 import type { ActorsState } from '../contract/folds.ts'
 import { replaceMentions } from '../contract/mentions.ts'
@@ -21,6 +21,7 @@ import type { WriteOrigin } from './origin.ts'
 import { DroppedError } from './middleware.ts'
 import { indexOf, ref, scheduleRef } from './feed.ts'
 import { waitUntil } from './wait-until.ts'
+import { storedPrincipal } from './registry.ts'
 
 /** Vercel Queues delays at most 6 days: a send further out than this goes in hops. */
 export const MAX_HOP_MS = 5 * 86_400_000
@@ -140,11 +141,12 @@ export function nextSend(schedule: Pick<Schedule, 'every' | 'until' | 'times'>, 
  * needs `post` there now, as it would to create it. Where it can't read, the
  * schedule is its own only if it was created without reading too, so a
  * principal ID shared with a caller that reads doesn't reach that caller's.
+ * A board token that pins a profile owns only what was scheduled as it (`wroteAs`).
  */
-export const createdBy = (schedule: Schedule, principal: Pick<Granted, 'id' | 'access'>) =>
-  schedule.as.principal.id === principal.id &&
-  principal.access.can('post', schedule.channel) &&
-  (schedule.blind || principal.access.readable(schedule.channel))
+export const createdBy = (schedule: Schedule, identity: { principal: Pick<Granted, 'id' | 'access' | 'pinned'>; actor: { id: string } }) =>
+  wroteAs(identity, { principal: schedule.as.principal.id, actor: schedule.as.actor.id }) &&
+  identity.principal.access.can('post', schedule.channel) &&
+  (schedule.blind || identity.principal.access.readable(schedule.channel))
 
 export const scheduleView = (schedule: Schedule, actors: ActorsState): ScheduleView => {
   const author = actors.byId[schedule.as.actor.id] ?? schedule.as.actor
@@ -413,7 +415,13 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
       if (every !== null && every > MAX_AHEAD_MS) throw badRequest('`every` is at most a year')
       const first = body.at !== undefined ? Date.parse(body.at) : now + duration(body.in ?? body.every!)
       if (first < now - 60_000) throw badRequest('`at` is in the past')
-      const until = body.until !== undefined ? Date.parse(body.until) : body.for !== undefined ? first + duration(body.for) : null
+      const asked = body.until !== undefined ? Date.parse(body.until) : body.for !== undefined ? first + duration(body.for) : null
+      // One made with a board token stops when the token does, so it ends by the token's expiry,
+      // and its `until` says so.
+      const expires = identity.principal.token !== undefined ? (identity.principal.expiresAt?.getTime() ?? null) : null
+      if (expires !== null && first > expires)
+        throw badRequest(`this token expires ${new Date(expires).toISOString()}, before the schedule's first send: schedule it with a credential that lasts`, 'token_expires_first')
+      const until = expires !== null && (asked === null || asked > expires) ? expires : asked
       if (until !== null && until < first) throw badRequest('the schedule stops before its first send')
       if (first > now + MAX_AHEAD_MS || (until !== null && until > now + MAX_AHEAD_MS))
         throw badRequest('a schedule reaches at most a year out: its first send and its stop')
@@ -447,13 +455,7 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
           times: body.times ?? null,
           as: {
             author: identity.author,
-            principal: {
-              id: identity.principal.id,
-              kind: identity.principal.kind,
-              handle: identity.principal.handle,
-              ...(identity.principal.facts ? { facts: identity.principal.facts } : {}),
-              ...(identity.principal.scope !== undefined ? { scope: identity.principal.scope } : {}),
-            },
+            principal: storedPrincipal(identity.principal),
             actor: identity.actor,
           },
           ...(identity.principal.access.readable(channel!) ? {} : { blind: true as const }),
@@ -480,7 +482,7 @@ export function createSchedules(options: { store?: A2Store | undefined; schedule
       const schedule = state.byId[id]
       const missing = () => notFound(`schedule not found: s${id}`, 'schedule_not_found')
       if (!schedule) throw missing()
-      if (!createdBy(schedule, identity.principal)) authorize(identity.principal.access, 'manage', schedule.channel, missing)
+      if (!createdBy(schedule, identity)) authorize(identity.principal.access, 'manage', schedule.channel, missing)
       const canceled = schedule.next !== null
       if (canceled) await session.append({ type: 'schedule.canceled', payload: { id, by: identity.author, reason: 'canceled' } })
       const { state: after } = await session.state(schedulesReducer)

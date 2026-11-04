@@ -25,10 +25,9 @@ export default defineConfig([
       'backend-vercel': 'src/backend-vercel/index.default.ts',
       'backend-vercel.node': 'src/backend-vercel/index.ts',
       sync: 'src/sync/index.ts',
-      'sync.chat': 'src/sync/chat-provider.ts',
+      'sync-chat-sdk': 'src/sync/chat-sdk.ts',
       'sync-slack': 'src/sync/slack.ts',
       'sync-github': 'src/sync/github.ts',
-      'sync-kapso': 'src/sync/kapso.ts',
       'sync-linear': 'src/sync/linear.ts',
       cli: 'src/cli/bin.ts',
       // `@vercel/board/cli`: the CLI for another one to embed, as `vercel board`, without `serve` or `inspect`.

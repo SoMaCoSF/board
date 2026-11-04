@@ -1,6 +1,6 @@
 ---
 title: Access
-description: "The board's code says what each caller may do in each channel: read, post, react, label, sync, or manage. Anything out of reach answers 404."
+description: "The board's code says what each caller may do in each channel: read, post, react, label, sync, or manage. Grants and tokens say the same while it runs. Anything out of reach answers 404."
 ---
 
 ## Who gets what
@@ -16,10 +16,11 @@ without asking; the rest get what `access` gives them:
 | A person: your `vercel login`, or `vb serve`'s local user | everything |
 | The board's own deployments in the environment it runs in | everything |
 | The board's own deployments in any other environment | nothing |
-| Another Vercel project, a GitHub Actions workflow, any other OIDC issuer | nothing |
+| Another Vercel project, a GitHub Actions workflow, any other OIDC issuer | what its [grants](#grants) give, or nothing |
+| A [board token](#tokens) | what its minter may do, narrowed to its `can` |
 | The board's own code: watchers, sync, middleware, its [handle](./01-mounting.md#the-handle) | everything |
 
-A caller no rule matches is refused with 403, whatever it asks.
+A caller no rule or grant matches is refused with 403, whatever it asks.
 
 The board's environment is the one Vercel runs it in (`VERCEL_TARGET_ENV`,
 which names custom environments, or `VERCEL_ENV`). A production board trusts
@@ -103,10 +104,135 @@ export const { scheduler } = backend
   its registrant may read at each event, and the middleware sees every write
   that reaches the backend, its own code's included.
 
+## Grants
+
+`access` is the board's code. A grant is the same trust kept on the board, so
+people let a CI run or another project in while the board runs, with no
+deploy:
+
+```ts scripts/grants.ts
+import { board } from '@vercel/board'
+import { http } from '@vercel/board/backend-http'
+
+const team = board({ backend: http('https://acme.vercel.app/api/board') })
+
+// acme/web's runs report in ci/ and read the replies there.
+const { grant } = await team.createGrant({ issuer: 'github', claims: { repository: 'acme/web' }, can: { 'ci/': ['read', 'post'] } })
+// Another team's production deployments post feedback, and do nothing else.
+await team.createGrant({ issuer: 'vercel', claims: { owner_id: 'team_partner', project_id: 'prj_front', environment: 'production' }, can: { 'feedback/': ['post'] } })
+console.log(await team.grants())
+await team.revokeGrant(grant.id)
+```
+
+```text
+$ vb grants create github --claim repository=acme/web --can ci/=read,post
+granted g1
+$ vb grants
+g1  github  repository=acme/web  ci/=read,post
+$ vb grants revoke g1
+revoked g1
+```
+
+- **A grant is an issuer, the claims its tokens carry, and `can`.** `vercel`
+  and `github` name those issuers; any other is an https URL on the internet,
+  and the board fetches its keys once a grant names it, by OIDC discovery: its
+  `/.well-known/openid-configuration` must name it as `issuer`, with a
+  `jwks_uri` that's an https URL on the internet, and no redirect is followed. Every claim must match
+  exactly, and a list is any of its values (`--claim` twice with one name).
+- **It names who it lets in.** A Vercel grant names `project_id` and
+  `environment`, since a preview runs any branch's code, and a GitHub grant
+  `repository` or `repository_id`: those issuers sign tokens for everyone they
+  serve. Any other issuer's names at least one claim. `owner_id` keeps a
+  project's grant to its team.
+- **The same issuer and claims are one grant.** Setting it again changes its
+  `can` (`updated g1`). Claims that differ, such as another environment, are
+  another grant.
+- **`can` left out is read, post, react, and label everywhere,** what Vercel's
+  API gives a project it lets use a board.
+- **Grants add to the rules.** A principal gets what the rule that matches it
+  gives, and what every grant that matches gives, added up: a grant never goes
+  unused because a rule matched first. People and the board's own deployments
+  where it runs are never a grant's, and a rule function that answers `null`
+  refuses, grants or not. A board whose `access` is one function decides
+  alone, and answers 501 `no_grants`.
+- **Grants are the board's bookkeeping:** setting, listing, and revoking them
+  takes `manage` in every channel. A revoke holds from the next request, and a
+  schedule a principal made stops as any creator's does when it loses access.
+
+## Tokens
+
+A token is a credential the board issues, for what has no OIDC token of its
+own: a widget, a sandbox, a script on a laptop. It acts as whoever minted it,
+narrowed to its `can`:
+
+```text
+$ vb tokens create feedback-widget --can feedback/=post
+board_7pQ…
+$ BOARD_TOKEN=board_7pQ… vb post feedback/web "love the new board"
+2
+$ BOARD_TOKEN=board_7pQ… vb post dev hi
+error: You can't post to dev.
+  this token can't post in dev
+$ vb tokens
+t1  feedback-widget  feedback/=post  expires in 30d
+$ vb tokens revoke t1
+revoked t1
+```
+
+```ts scripts/sandbox-token.ts
+import { board } from '@vercel/board'
+import { http } from '@vercel/board/backend-http'
+
+const team = board({ backend: http('https://acme.vercel.app/api/board') })
+
+// Every request with it writes as clever-lemur, from session thread-1956, in dev/ at most.
+const { token, secret } = await team.createToken({ name: 'sandbox-1956', can: { 'dev/': ['read', 'post', 'react'] }, profile: 'clever-lemur', session: 'thread-1956', expires: '7d' })
+// sandbox.env.BOARD_TOKEN = secret   // yours
+await team.revokeToken(token.id)
+```
+
+- **The secret shows once,** when it's minted: `board_` and 43 more
+  characters. The board keeps its SHA-256. It goes where any token does,
+  `Authorization: Bearer`, and `BOARD_TOKEN` for `vb` and the handle.
+- **It's its minter, narrowed.** Any caller mints one: a person, a deployment,
+  a workflow. Its access is worked out on every request, under the rules and
+  grants as they are then, and narrowed to its `can`, so it never does more
+  than its minter could at that moment. A person's token writes under their
+  handle; a workflow's token loses what its grant gave once the grant goes.
+- **`can` left out is a grant's default:** read, post, react, and label
+  everywhere. A token gets `sync` or `manage` only when its `can` says so,
+  `--can '*=all'` for everything its minter may do.
+- **It's never its minter's integration,** even with `*=all`: like any
+  [narrowed](#narrowing-a-token) caller, it can't register watchers or write
+  sync's records, which take the minter's own credential.
+- **A person's token outlives their access to the project,** as their
+  schedules do: the board can't tell they left. Revoke their tokens when they
+  go (`vb tokens` with `manage` lists everyone's).
+- **It may pin a profile, with its avatar, and a session.** Every request with
+  it writes as them, whatever the request says. Without them, a request labels
+  itself as any does: `vb` in Claude Code writes as `claude` under you. One that
+  pins a profile edits, deletes, and cancels only what was written as that
+  profile, not your own posts. Another token that pins it is the same author.
+- **It expires** 30 days after it's minted, or after `expires`, 90 days at
+  most. A token minted with a token is its child: it keeps its parent's pins,
+  is narrowed to its parent's `can`, lives no longer, and stops when its parent
+  does.
+- **Revoking it holds from the next request,** for it and every token minted
+  with it, and cancels a schedule made with it, `revoked`. A schedule made with
+  it ends by its expiry, which its `until` shows, and one that would first
+  send later is refused, `token_expires_first`. Its minter lists and
+  revokes their tokens; `manage` in every channel lists and revokes everyone's.
+  A token lists and revokes only itself and the tokens minted with it, so a
+  widget's token never reaches your others. Revoking someone else's answers as
+  one that isn't there: `revoked: false`.
+- **`board()` checks its own,** before `authenticate` runs, so a host's
+  verifier never sees them. On a board on `http()`, a token is the board it
+  uses', and its callers can't mint one there: it would act as the project.
+
 ## A board on `http()`
 
 A board on `http()` keeps no log, and with no `access` of its own it serves no
-requests but its wake-ups, webhooks, and its sync's sign-ins. With one, it
+requests but its wake-ups and webhooks. With one, it
 serves its own callers as a gateway to the board it uses: it verifies and
 limits them, then acts on that board as its project.
 
@@ -346,7 +472,7 @@ through the binding's `handle(caller)`, so the middleware sees it.
   inbox needs `sync` in all of them, since raw events span them.
   `{ '*': 'all', 'security/': [] }` can do neither.
 - **`sync` speaks for platform users.** A caller with it in a channel can write
-  there as any Slack, GitHub, or WhatsApp user it names, which is what a board
+  there as any Slack, GitHub, or Linear user it names, which is what a board
   on `http()` that syncs needs on the board it uses. Who those users are (name,
   handle, avatar) shows in every channel, so only the board's own sync, or one
   with `sync` in every channel, changes that: anyone else's imports name their
@@ -400,7 +526,9 @@ Reads show only what the caller can read, everywhere:
   carries them is readable. A post or a schedule can carry only files its
   author may read, so a file can't move into a channel through someone else.
   The uploader is a principal ID, which a repo's workflows share, so a
-  workflow can attach a file another of them uploaded if it knows its ID.
+  workflow can attach a file another of them uploaded if it knows its ID. A
+  board token is narrower: it reads only the files it, or a token minted with
+  it, uploaded, never its minter's others.
 - **Links** to a board message you can't read show `couldn't read it:
   not_readable` instead of what it said. The log keeps the snapshot.
 
@@ -440,8 +568,8 @@ than 4000 characters, is a 400 with `invalid_scope`, and the message says what
 to write.
 
 A narrowed caller is never its principal's integration. Registering,
-pulling, and acking watchers, and sync's records (imports, receipts, the
-inbox, and linking accounts), answer 403: they're its project's, with the
+pulling, and acking watchers, and sync's records (imports, receipts, and the
+inbox), answer 403: they're its project's, with the
 token it narrowed. A narrowed pull would take its project's matches, and an
 import could claim a platform thread whose later events its project's sync
 would bring into the narrowed caller's channels.
@@ -449,7 +577,8 @@ would bring into the narrowed caller's channels.
 ## Schedules
 
 A schedule sends as its creator with the creator's access when it fires, under
-the rules as they are then. The board keeps the token's verified claims and
+the rules and grants as they are then, and only while the board token it was
+made with, if any, is live. The board keeps the token's verified claims and
 any scope, never the token. A creator that can no longer post there has the
 schedule canceled with `revoked`. Only its creator, while it can post there, or
 `manage` in its channel, can cancel one. A repo's workflows share one principal,
@@ -495,8 +624,8 @@ They don't say where or what.
 
 ### Is there a static token for callers without OIDC?
 
-Not built in. `oidcTokens()` takes OIDC tokens only: people, Vercel projects,
-GitHub Actions, and through `oidc()`, GitLab, Buildkite, and cloud workload
-identity, each living as long as its token. A credential of your own, such as
-a session cookie or a key you issue, takes
+Yes: a [board token](#tokens), which you mint, list, and revoke, and which
+lives 90 days at most. Callers with an OIDC token need none: a
+[grant](#grants) lets them in by their claims, each living as long as its
+token. A credential of your own, such as a session cookie, takes
 [a verifier of your own](#a-hosts-own-verifier).

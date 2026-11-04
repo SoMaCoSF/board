@@ -1,6 +1,6 @@
 export type WatcherSpec = { tail: string; when: 'matches' | 'enters' }
-/** A registrant's sync entry: what it imports through, and whether it signs people in. */
-export type SyncEntrySpec = { key: string; platform: string; signIn: boolean }
+/** A registrant's sync entry: what it imports through. */
+export type SyncEntrySpec = { key: string; platform: string }
 
 /** By UTF-16 code unit, as `sort()` orders strings: the same in every locale and runtime. */
 const byCodeUnit = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
@@ -14,6 +14,6 @@ export function canonicalWatchers(watch: Record<string, WatcherSpec>, sync: read
     .sort(byCodeUnit)
     .map((id) => [id, watch[id]!.tail, watch[id]!.when])
   // Older registrations hashed only their watchers: one with no sync hashes as it did.
-  if (sync.length > 0) canonical.push(['sync', [...sync].sort((a, b) => byCodeUnit(a.key, b.key)).map((entry) => [entry.key, entry.platform, entry.signIn])])
+  if (sync.length > 0) canonical.push(['sync', [...sync].sort((a, b) => byCodeUnit(a.key, b.key)).map((entry) => [entry.key, entry.platform])])
   return JSON.stringify(canonical)
 }

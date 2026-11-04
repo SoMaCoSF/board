@@ -34,7 +34,7 @@ function reached(start: string): string[] {
 }
 
 describe('the published types', () => {
-  const entries = Object.entries(pkg.exports).filter(([path]) => !/backend-a2|sync-|sync\/chat|package\.json/.test(path))
+  const entries = Object.entries(pkg.exports).filter(([path]) => !/backend-a2|sync-|package\.json/.test(path))
 
   it.each(entries)('%s reaches no optional peer', (_path, entry) => {
     const types = typesOf(entry)

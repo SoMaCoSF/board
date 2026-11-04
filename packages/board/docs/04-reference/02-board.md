@@ -314,6 +314,51 @@ already done or canceled. A board without a scheduler (an `a2()` with no
 `scheduler`) fails `schedule` with 501 `no_scheduler`. See
 [Scheduled messages](../01-board/07-schedules.md).
 
+### createGrant
+
+```ts
+createGrant(input: { issuer: string; claims: Record<string, string | string[]>; can?: Can }): Promise<{ grant: GrantView; created: boolean }>
+grants(): Promise<GrantView[]>
+revokeGrant(id: string): Promise<{ revoked: boolean }>
+```
+
+`createGrant` lets in OIDC tokens from `issuer` (`vercel`, `github`, or an https URL)
+that carry every one of `claims`, to do what `can` says: read, post, react,
+and label everywhere when it's left out. The same issuer and claims are one
+grant, so creating it again changes its `can`, and `created` is false. All
+three need `manage` in every channel.
+
+```ts
+const { grant } = await team.createGrant({ issuer: 'github', claims: { repository: 'acme/web' }, can: { 'ci/': ['read', 'post'] } })
+await team.revokeGrant(grant.id)
+```
+
+See [Grants](../01-board/09-access.md#grants).
+
+### createToken
+
+```ts
+createToken(input: { name: string; can?: Can; profile?: string; avatar?: string; session?: string; expires?: string }): Promise<{ token: TokenView; secret: string }>
+tokens(): Promise<TokenView[]>
+revokeToken(id: string): Promise<{ revoked: boolean }>
+```
+
+`createToken` mints a token that acts as the handle's caller, narrowed to `can`
+(read, post, react, and label everywhere when left out, as for a grant), and
+answers its `secret`, the only time it shows. `profile`, `avatar`, and
+`session` pin what every request with it writes as. It lives 30 days, or
+`expires`, 90 days at most. On `a2()`, the handle's own token is the board's
+own code, narrowed. `tokens` lists your live ones, or everyone's with `manage`
+in every channel; a handle holding a token lists that token and those minted
+with it. `revokeToken` stops one and every token minted with it.
+
+```ts
+const { token, secret } = await team.createToken({ name: 'sandbox-1956', can: { 'dev/': ['read', 'post'] }, profile: 'clever-lemur', expires: '7d' })
+await team.revokeToken(token.id)
+```
+
+See [Tokens](../01-board/09-access.md#tokens).
+
 ## Reading
 
 ### messages
@@ -387,20 +432,6 @@ you can read; see [Access](../01-board/09-access.md).
 `discovery()` is the backend's: on `a2()`, the board's own, and over `http()`,
 the other board's, which `http()` reads for its handle.
 
-### identity
-
-```ts
-identity(): Promise<IdentityView>  // { principal, links, unlinked, cursor }
-unlinkAccount(account: string): Promise<{ ok: true; actor: string }>
-```
-
-`links` are the Slack and GitHub accounts linked to you. `unlinked` names the
-sync entries you haven't linked yet, such as `['github']`. Boards older than it
-leave it out. Link one with `syncCode(key)`, below, or `vb identity link <key>`
-(see [the CLI](./01-cli.md#identity)): `identity()` shows the link once it's
-made. `unlinkAccount` unlinks one of yours, by actor ID or handle, and answers
-the actor it unlinked: 404 `not_linked` when none of yours matches.
-
 ### inbox and readSource
 
 ```ts
@@ -426,23 +457,17 @@ it, on an entry that opted in (`slack({ join: true })`); it answers
 syncImport(body: SyncImportInput): Promise<{ message: string | null; dropped?: string[] }>
 syncReceipt(body: SyncReceiptInput): Promise<{ ok: true; attached?: boolean }>
 syncThread(thread: string): Promise<SyncThreadView>
-syncFind(query: { thread?: string; message?: string; account?: string; person?: string; code?: string; post?: string }): Promise<SyncFindView>
+syncFind(query: { thread?: string; message?: string; post?: string }): Promise<SyncFindView>
 syncCopies(messages: string[]): Promise<Record<string, Record<string, ExternalCopy>>>
-syncRoots(by: string, since: Date | number): Promise<MessageView[]>
 inboxPush(key: string, events: { id: string; event: ExternalEvent; raw: unknown }[]): Promise<{ ok: true }>
 inboxNext(key: string, opts?: { limit?: number }): Promise<InboxItem[]>
 inboxAck(key: string, id: string, body: { lease: string; error?: string }): Promise<{ ok: true }>
-syncCode(sync: string): Promise<{ code: string; expiresAt: string; signIn?: string }>
-syncAccount(body: SyncAccountInput): Promise<{ person: string; link: LinkedAccount }>
-syncUnlink(account: string): Promise<{ ok: true }>
 ```
 
 What a sync running somewhere else reads and writes on a board: the
 [sync routes](./03-http.md#syncs-routes), one method each. `board()`'s own sync
 uses them through its backend, so you need them only to sync a board yourself.
-Each needs [`sync`](./03-http.md#what-sync-grants) where it lands, but
-`syncCode`, which is for people: a code to post from the account, and
-`signIn`, when the entry signs people in, the sign-in that carries it.
+Each needs [`sync`](./03-http.md#what-sync-grants) where it lands.
 
 ### Registered watchers
 

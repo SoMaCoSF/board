@@ -9,7 +9,7 @@ import type { MessageFilter, MessageTables, Page, ThreadSummary } from './types.
 export type RedisCall = (command: string, ...args: Array<string | number>) => Promise<unknown>
 
 /** What a query reads of a message without parsing all of it. */
-type Meta = { re: number | null; c: string; t: string; ca: number; d: boolean }
+type Meta = { re: number | null; c: string; t: string; d: boolean }
 
 /** A root's thread summary: replies that aren't deleted, and the latest one's ID (its own when none). */
 type Summary = { n: number; at: number }
@@ -227,13 +227,6 @@ for i = 1, #KEYS do out[i] = redis.call('HGETALL', KEYS[i]) end
 return out
 `
 
-/** A person's roots posted at or after ARGV[1]. KEYS: messages, their roots by creation time. */
-const RECENT = `
-local ids = redis.call('ZRANGEBYSCORE', KEYS[2], ARGV[1], '+inf')
-if #ids == 0 then return {} end
-return redis.call('HMGET', KEYS[1], unpack(ids))
-`
-
 /**
  * What an event reads before it applies, in one script so it reads the primary,
  * where the position check runs: a replica can lag it. Nothing, when the
@@ -378,8 +371,6 @@ export function redisTables(send: RedisCall, prefix: string, options: { scanBudg
     mention: (actor: string) => `${p}:i:mn:${actor}`,
     attachment: (id: string) => `${p}:i:at:${id}`,
     from: (from: string) => `${p}:i:f:${from}`,
-    /** A person's roots, by when they were posted: for the echo check. */
-    rootsBy: (principal: string) => `${p}:rr:${principal}`,
     label: (token: string) => `${p}:i:${token}`,
     copies: (id: number | string) => `${p}:cp:${id}`,
   }
@@ -475,7 +466,7 @@ export function redisTables(send: RedisCall, prefix: string, options: { scanBudg
     if (m && read) {
       const id = String(m.id)
       const created = change.message!.created
-      const meta: Meta = { re: m.re, c: m.channel, t: m.text.toLowerCase(), ca: Date.parse(m.createdAt), d: m.deleted }
+      const meta: Meta = { re: m.re, c: m.channel, t: m.text.toLowerCase(), d: m.deleted }
       out.push(['HSET', k.messages, id, JSON.stringify(m)], ['HSET', k.metas, id, luaJson(meta)])
       out.push(['ZADD', k.versions(id), String(event.index), String(event.index)], ['HSET', k.versionData, String(event.index), JSON.stringify(m)])
       if (created) {
@@ -483,7 +474,6 @@ export function redisTables(send: RedisCall, prefix: string, options: { scanBudg
         for (const key of [k.all, k.channel(m.channel), k.thread(id), k.byActor(m.by.actor), k.byPrincipal(m.by.principal), k.from(m.from ?? 'board')])
           out.push(['ZADD', key, id, id])
         if (m.re !== null) out.push(['ZADD', k.thread(m.re), id, id])
-        else out.push(['ZADD', k.rootsBy(m.by.principal), String(meta.ca), id])
       }
       if (change.message!.terms) {
         const old = read.message
@@ -719,11 +709,6 @@ export function redisTables(send: RedisCall, prefix: string, options: { scanBudg
         const message = parse<Message>(row)
         return message ? [message] : []
       })
-    },
-
-    async recentRoots(principal, since) {
-      const rows = (await evaluate(RECENT, [k.messages, k.rootsBy(principal)], [since])) as unknown[]
-      return rows.map((row) => parse<Message>(row)!).sort((a, b) => a.id - b.id)
     },
 
     async close() {},

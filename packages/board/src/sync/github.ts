@@ -5,10 +5,9 @@ import type { ExternalAuthor, ExternalEvent } from '../contract/external.ts'
 import { markdownOf } from './chat.ts'
 import { z } from 'zod'
 import { envelope, eventSchema } from './events.ts'
-import type { ReceivedEvent, ResolvedTarget, SyncContext, ProviderPost, ProviderDelivery } from './provider.ts'
+import type { ReceivedEvent, ResolvedTarget, SyncContext } from './provider.ts'
 import { createGitHubAdapter } from '@chat-adapter/github'
 import { connectGitHubAdapter } from '@vercel/connect/chat'
-import { connectUserTokens, withUserTokens } from './users.ts'
 import { into, withRoutes, type SyncFn, type SyncUnit } from './fn.ts'
 
 /** `owner/repo:12` (and its review threads) → `owner/repo:pulls`; `owner/repo:issue:3` → `owner/repo:issues`. */
@@ -210,9 +209,8 @@ export type GitHubEvent = z.infer<typeof GitHubEvent>
 export type GitHubRepo = SyncUnit<GitHubEvent> | { pulls?: SyncUnit<GitHubEvent>; issues?: SyncUnit<GitHubEvent> }
 export type GitHubOptions = {
   /**
-   * A Vercel Connect connector (`'github/acme'`): board builds the GitHub adapter
-   * and people's sign-in, so comments they write on the board post as them.
-   * Or your own Chat SDK adapter, wrapped in `withUserTokens` to post as people.
+   * A Vercel Connect connector (`'github/acme'`): board builds the GitHub adapter.
+   * Or your own Chat SDK adapter.
    */
   adapter: Adapter | string
   /**
@@ -220,32 +218,6 @@ export type GitHubOptions = {
    * board looks it up from the installation token; set it to skip that call.
    */
   botUserId?: number
-}
-
-/** `owner/repo:12`, `owner/repo:issue:3`, or `owner/repo:12:rc:345` (a review comment thread). */
-function parseThread(thread: string) {
-  const match = /^([^/]+)\/([^:]+):(?:issue:)?(\d+)(?::rc:(\d+))?$/.exec(thread)
-  if (!match) throw new Error(`invalid GitHub thread: ${thread}`)
-  return { owner: match[1]!, repo: match[2]!, number: Number(match[3]), review: match[4] ? Number(match[4]) : null }
-}
-
-/** GitHub's REST API with a person's own token: Chat SDK's adapter only holds the app's. */
-async function asPerson(token: string, method: string, path: string, body?: unknown): Promise<unknown> {
-  const response = await fetch(`https://api.github.com${path}`, {
-    method,
-    headers: {
-      authorization: `Bearer ${token}`,
-      accept: 'application/vnd.github+json',
-      'x-github-api-version': '2022-11-28',
-      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  })
-  if (!response.ok) {
-    const detail = await response.text().catch(() => '')
-    throw Object.assign(new Error(`GitHub ${method} ${path}: ${response.status} ${detail.slice(0, 200)}`), { data: { error: `github_${response.status}` } })
-  }
-  return response.status === 204 ? null : response.json()
 }
 
 /**
@@ -309,11 +281,10 @@ function fromConnector(connector: string, botUserId: number | undefined): Adapte
       detecting.logger?.warn('Could not detect the GitHub bot user ID', { error })
     }
   }
-  return withUserTokens(adapter as unknown as Adapter, connectUserTokens(connector))
+  return adapter as unknown as Adapter
 }
 
 export class GitHubProvider extends ChatSyncProvider<GitHubEvent> {
-  private readonly body: (post: ProviderPost) => string
 
   constructor(given: GitHubOptions, sync: SyncFn<GitHubEvent>) {
     const options = {
@@ -453,40 +424,6 @@ export class GitHubProvider extends ChatSyncProvider<GitHubEvent> {
         return { target, channel: at === -1 ? target : channelOf(target), kind: at === -1 ? 'channel' : 'thread' }
       },
     }, sync)
-    // The adapter's own markdown rendering, so a comment posted as a person reads like one posted as the app.
-    const converter = (options.adapter as { formatConverter?: { renderPostable(message: { markdown: string }): string } }).formatConverter
-    this.body = (post) => {
-      try {
-        return converter ? converter.renderPostable({ markdown: post.markdown }) : post.markdown
-      } catch {
-        return post.markdown
-      }
-    }
-  }
-
-  // As a person, straight to GitHub's API: through the adapter, their comment would teach it that
-  // they're the bot, and their own comments would stop syncing.
-  override async whoAmI(token: string) {
-    const user = (await asPerson(token, 'GET', '/user')) as User
-    if (!user.id) throw new Error("GitHub didn't say whose token this is")
-    return { ...author(user), isBot: false }
-  }
-  override async postAs(token: string, target: string, kind: ResolvedTarget['kind'], post: ProviderPost): Promise<ProviderDelivery> {
-    if (kind === 'channel') throw new Error('github cannot start threads')
-    const { owner, repo, number, review } = parseThread(target)
-    const body = this.body(post)
-    const comment = (await (review !== null
-      ? asPerson(token, 'POST', `/repos/${owner}/${repo}/pulls/${number}/comments/${review}/replies`, { body })
-      : asPerson(token, 'POST', `/repos/${owner}/${repo}/issues/${number}/comments`, { body }))) as { id: number }
-    return { thread: target, message: String(comment.id) }
-  }
-  override async editAs(token: string, thread: string, message: string, post: ProviderPost) {
-    const { owner, repo, review } = parseThread(thread)
-    await asPerson(token, 'PATCH', `/repos/${owner}/${repo}/${review !== null ? 'pulls' : 'issues'}/comments/${message}`, { body: this.body(post) })
-  }
-  override async deleteAs(token: string, thread: string, message: string) {
-    const { owner, repo, review } = parseThread(thread)
-    await asPerson(token, 'DELETE', `/repos/${owner}/${repo}/${review !== null ? 'pulls' : 'issues'}/comments/${message}`)
   }
 
   /**
@@ -531,4 +468,3 @@ export class GitHubProvider extends ChatSyncProvider<GitHubEvent> {
     })
   }
 }
-export { withUserTokens, type UserTokens } from './users.ts'

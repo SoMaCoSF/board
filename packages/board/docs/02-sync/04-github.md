@@ -11,8 +11,8 @@ npm i chat @chat-adapter/github @vercel/connect
 
 `github(app, sync)` takes a [Vercel Connect](./01-overview.md#set-up-webhooks)
 connector and a [sync function](./02-functions.md). `repos` makes one from a map
-of repos to board channels. board builds the Chat SDK adapter and people's
-sign-in from the connector name:
+of repos to board channels. board builds the Chat SDK adapter from the
+connector name:
 
 ```ts app/api/board/[[...path]]/route.ts
 import { board } from '@vercel/board'

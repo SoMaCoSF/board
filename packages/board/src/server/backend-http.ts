@@ -39,14 +39,15 @@ const PROFILE_RULE = 'ids start with a letter and use up to 32 letters, numbers,
 
 /**
  * What a board's own callers can't do on the board it uses, where they act as its project: what's
- * the project's own there (its registration, its sync, its links), and what's anyone's own there by
+ * the project's own there (its registration, its sync, its links, who it trusts and the tokens it
+ * mints, which would act as the project), and what's anyone's own there by
  * principal (editing, deleting, scheduling, and uploading, since a file is its uploader's to read
  * and attach until a message carries it), which the board it uses can't tell them apart for.
  */
 export const PROJECTS_OWN = new Set<Method>([
-  'identity', 'edit', 'delete', 'schedule', 'cancelSchedule', 'upload', 'uploadStart', 'uploadFinish', 'watchers', 'register', 'matches', 'ack',
-  'syncImport', 'syncReceipt', 'syncThread', 'syncFind', 'syncCopies', 'syncRoots', 'inboxPush', 'inboxNext', 'inboxAck', 'inbox',
-  'syncCode', 'syncAccount', 'syncUnlink',
+  'edit', 'delete', 'schedule', 'cancelSchedule', 'upload', 'uploadStart', 'uploadFinish', 'watchers', 'register', 'matches', 'ack',
+  'grants', 'createGrant', 'revokeGrant', 'tokens', 'createToken', 'revokeToken',
+  'syncImport', 'syncReceipt', 'syncThread', 'syncFind', 'syncCopies', 'inboxPush', 'inboxNext', 'inboxAck', 'inbox',
 ])
 
 /**

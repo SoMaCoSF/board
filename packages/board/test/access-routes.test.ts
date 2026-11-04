@@ -27,13 +27,8 @@ const WALK: Record<RouteName, Walk> = {
   avatar: 'public',
   openapi: 'public',
   webhook: 'public',
-  signIn: 'public',
-  signedIn: 'public',
   // About the caller.
   me: () => [{ method: 'GET', path: '/me', status: 200, check: (body) => expect(body.can).toEqual({ open: ['read'] }) }],
-  identity: () => [{ method: 'GET', path: '/identity', status: 200 }],
-  // Which of the caller's links it names is the backend's to say: none of theirs.
-  identityUnlink: () => [{ method: 'POST', path: '/identity/unlink', body: { actor: '@julian' }, status: 404 }],
   // Lists drop what the caller can't read.
   channels: () => [
     { method: 'GET', path: '/channels', status: 200, check: (body) => expect(body.channels.map((c: any) => c.path)).toEqual(['open']) },
@@ -99,6 +94,14 @@ const WALK: Record<RouteName, Walk> = {
     { method: 'POST', path: `/schedules/${secret.schedule}/cancel`, status: 404 },
     { method: 'POST', path: `/schedules/s${open.schedule}/cancel`, status: 403 },
   ],
+  // Who the board trusts is its bookkeeping: manage in every channel.
+  grants: () => [{ method: 'GET', path: '/grants', status: 403 }],
+  createGrant: () => [{ method: 'POST', path: '/grants', body: { issuer: 'github', claims: { repository: 'acme/web' }, can: 'all' }, status: 403 }],
+  revokeGrant: () => [{ method: 'POST', path: '/grants/g1/revoke', status: 403 }],
+  // Anyone mints a token, which acts as them: it can't do more than they can.
+  createToken: () => [{ method: 'POST', path: '/tokens', body: { name: 'walker', can: 'all' }, status: 200 }],
+  tokens: () => [{ method: 'GET', path: '/tokens', status: 200, check: (body) => expect(body.tokens.map((token: any) => token.name)).not.toContain('keeper') }],
+  revokeToken: () => [{ method: 'POST', path: '/tokens/t999999/revoke', status: 200, check: (body) => expect(body).toEqual({ revoked: false }) }],
   attachment: ({ secret }) => [{ method: 'GET', path: `/attachments/${secret.file}`, status: 404 }],
   // Only your own post, by the client ID you gave it.
   posted: () => [
@@ -145,7 +148,6 @@ const WALK: Record<RouteName, Walk> = {
   syncThread: () => [{ method: 'GET', path: '/sync/threads/t1', status: 403 }],
   syncFind: () => [{ method: 'GET', path: '/sync/find?thread=slack:C1:1&message=1', status: 403 }],
   syncCopies: ({ secret }) => [{ method: 'GET', path: `/sync/copies?message=${secret.root}`, status: 403 }],
-  syncRoots: () => [{ method: 'GET', path: '/sync/roots?by=vercel:user:u_keeper&since=0', status: 403 }],
   inboxPush: () => [
     {
       method: 'POST',
@@ -156,16 +158,6 @@ const WALK: Record<RouteName, Walk> = {
   ],
   inboxNext: () => [{ method: 'GET', path: '/inbox/slack/next', status: 403 }],
   inboxAck: () => [{ method: 'POST', path: '/inbox/slack/e1/ack', body: { lease: 'l1' }, status: 403 }],
-  syncCode: () => [
-    { method: 'POST', path: '/sync/codes', body: { sync: 'slack' }, status: 403 },
-    { method: 'POST', path: '/sync/codes', body: { sync: 'slack', person: 'vercel:user:u_keeper' }, status: 403 },
-  ],
-  syncAccount: () => [
-    { method: 'POST', path: '/sync/accounts', body: { sync: 'slack', account: SLACK_USER, code: 'vb-AAAA-BBBB' }, status: 403 },
-    // Only by a code: there's no linking an account to someone by naming them.
-    { method: 'POST', path: '/sync/accounts', body: { sync: 'slack', account: SLACK_USER, person: 'vercel:user:u_keeper' }, status: 400 },
-  ],
-  syncUnlink: () => [{ method: 'POST', path: '/sync/accounts/unlink', body: { account: 'slack:user:U1' }, status: 404 }],
   // Registered watchers: each sees only what its registrant reads, and pulls only its own.
   watchers: () => [{ method: 'GET', path: '/watchers', status: 200, check: (body) => expect(body.watchers).toEqual([]) }],
   register: () => [{ method: 'POST', path: '/watchers', body: { watch: { fix: { tail: 'secret' } } }, status: 200 }],

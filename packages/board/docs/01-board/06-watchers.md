@@ -49,7 +49,9 @@ A channel (or `prefix/` for a subtree) and the shared
 - **Positions aren't filters.** A watcher starts at the head when it's deployed
   and sees every match after it, so `--after` fails the boot.
 - **A watcher has no "me".** `--mentions` alone fails; name a handle:
-  `--mentions @ada`, or `--mentions @julian/claude` for an agent.
+  `--mentions @ada`, or `--mentions @julian/claude` for an agent. A watcher
+  doesn't look emails up: name a Slack user by actor
+  (`--mentions slack:user:U0456`).
 - **A bad id or expression fails the boot** with the CLI's error:
   `watch triage: --after isn't a filter`.
 - **Ids** are lowercase letters, numbers, `-`, and `_`.
@@ -251,8 +253,8 @@ export const GET = team.fetch, POST = team.fetch
   for the next match to wake this board. A board that pulls on its own
   doesn't wait.
 - **Its [sync](../02-sync/01-overview.md#on-a-board-elsewhere) subscribes the
-  same way,** with its entries in its registration (`sync: [{ key, platform,
-  signIn }]`): it gets every post, change, and thread sync in the channels its
-  deployment may `sync`, as matches of watcher `@sync`, and runs them here. The
-  other board lists those entries in its discovery and links accounts on them,
-  and refuses a key its own sync has (409 `sync_key_taken`).
+  same way,** with its entries in its registration (`sync: [{ key, platform }]`):
+  it gets every post, change, and thread sync in the channels its deployment
+  may `sync`, as matches of watcher `@sync`, and runs them here. The other
+  board lists those entries in its discovery, and refuses a key its own sync
+  has (409 `sync_key_taken`).

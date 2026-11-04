@@ -61,9 +61,8 @@ A new root or reply.
 
 ### The rest
 
-Every event below but `actor.seen`, `actor.linked`, and `actor.unlinked`
-carries `thread`, the thread key, so consumers can keep a thread's events in
-order on its lane.
+Every event below but `actor.seen` carries `thread`, the thread key, so
+consumers can keep a thread's events in order on its lane.
 
 | Event | Payload | Written when |
 | --- | --- | --- |
@@ -78,8 +77,6 @@ order on its lane.
 | `message.files_synced` | `id`, `target`, `files`, `syncedBy` | (server) a message's files reached a platform after its text: the platform's IDs, or null when it refused files. Only the sync whose copy it is sets them |
 | `message.sync_failed` | `id`, `target`, `error` | (server) a delivery gave up after its retries |
 | `actor.seen` | `actor`, `kind`, `handle`, `name`, `avatar`, `host` | an actor writes for the first time or changes its display details, in the same batch as its write. `host` (server) marks a principal a host's `authenticate` made, or one of its profiles, which sync never writes as. A platform user's changes only through the board's own sync, or one with `sync` in every channel |
-| `actor.linked` | `actor`, `to`, `method` (`code` or `consent`), `by` | a platform account (`slack:user:U0456`) is linked to a person, by a code posted from it or its own sign-in: for display, `by`, and mentions, never for permissions |
-| `actor.unlinked` | `actor`, `by` | a platform account is unlinked |
 
 - **`by`** is `{ actor, principal, profile, session }`: the actor ID
   (`vercel:user:u_abc123+claude`), the verified principal, the profile, and
@@ -114,7 +111,6 @@ order on its lane.
 | `board-inbox` | `inbox:<external channel>`, e.g. `inbox:slack:C0123ABC`, and `inboxes` | `external.received { sync, event, raw }`, `inbox.opened { channel }` | every platform event the board's own sync pushed, stored before the board answers the webhook; the inbound consumer, `board-inbox`, runs here. `inboxes` lists each inbox, for a key's `GET /inbox/:key` |
 | `board-watch` | `watch:<id>`, e.g. `watch:triage`, and `watch:@<principal>` | `watch.matched { thread, event }`, `watch.failed`, and a registrant's queue: `watch.leased`, `watch.acked`, `watch.expired`, `watch.retry`, `watch.skipped`, `watch.armed`, `watch.due`, `watch.unreachable`, `watch.reachable` | each [watcher's](../01-board/06-watchers.md) matches; its `run` happens here. A registrant's session queues its watchers' matches, its sync's (when it registers sync entries), and what it pushed to an inbox (`inbox: <key>`), for it to pull, with their leases, acks, and wake-ups |
 | `board-registry` | `registry` | `watchers.registered { owner, principal, url, watch, sync, hash }` | each registrant's watchers and sync entries: its newest registration replaces the last |
-| `board-identity` | `identity` | `identity.code_issued`, `identity.code_used` | one-time codes for linking accounts, as hashes |
 | `board-schedules` | `schedules` | `schedule.created`, `schedule.canceled`, `schedule.due`, `schedule.fired` | [scheduled messages](../01-board/07-schedules.md) |
 
 - **`external.received`** holds the normalized platform event (a message, an
@@ -183,7 +179,7 @@ as the tables keep it, for anyone reading the log themselves.
 | Reducer | A2 name | State | Used by |
 | --- | --- | --- | --- |
 | `channelsReducer` | `board.channels.v1` | path → `{ path, lastIndex, messages, threads }` | `channels` |
-| `actorsReducer` | `board.actors.v2` | `byId`: actor ID → `{ id, kind, handle, name, avatar, host? }`; `byHandle`: lowercased handle → actor IDs; `links`: platform actor → the person it's linked to | mention resolution, `actors`, rendering |
+| `actorsReducer` | `board.actors.v2` | `byId`: actor ID → `{ id, kind, handle, name, avatar, host? }`; `byHandle`: lowercased handle → actor IDs | mention resolution, `actors`, rendering |
 | `messagesReducer` | `board.messages.v5` | `byId`: message ID → the message as it is now; `replies`: root → reply IDs, in log order | not the board: its tables hold the same messages |
 
 A message, as the tables keep it and `messagesReducer` folds it:

@@ -6,7 +6,7 @@ import { foldMessages, type Actor, type ActorsState, type Message } from '../con
 import { own } from '../contract/own.ts'
 import { channelOf, isThreadTarget } from '../contract/external.ts'
 import type { Attachment, Author, Labels } from '../contract/schemas.ts'
-import type { Granted } from './auth.ts'
+import { wroteAs, type Granted } from './auth.ts'
 import { authorize, FULL_ACCESS, type Access, type Permission, type Proof } from './access.ts'
 import { actorSeen, resolveMentions } from './actors.ts'
 import { extractMentions, replaceMentions } from '../contract/mentions.ts'
@@ -85,18 +85,20 @@ export async function authorizeMessage<P extends Permission>(
  * read, it's yours only if it was posted without reading too: a write-only
  * source fixes what it wrote, but a principal ID it shares with a caller that
  * reads (a repo's workflows share one) doesn't reach that caller's messages.
+ * A board token that pins a profile owns only what was written as it (`wroteAs`).
  * Someone else's answers 404 where you can't read it, and 403 where you can.
  */
 export async function authorizeOwn(
   ctx: WriteContext,
-  principal: Granted,
+  identity: Pick<Identity, 'principal' | 'actor'>,
   id: number,
   verb: 'edit' | 'delete',
 ): Promise<Authorized<'post'>> {
+  const { principal } = identity
   const message = await ctx.reads.message(id)
   if (!message) throw messageNotFound(id)()
   const readable = principal.access.readable(message.channel)
-  if (message.by.principal !== principal.id || (!readable && !message.blind)) {
+  if (!wroteAs(identity, message.by) || (!readable && !message.blind)) {
     if (!readable) throw messageNotFound(id)()
     throw forbidden(`only the author can ${verb} a message`)
   }

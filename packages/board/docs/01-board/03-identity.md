@@ -13,8 +13,7 @@ a host can recognize its own credentials too: see
 [A host's own verifier](./09-access.md#a-hosts-own-verifier).
 
 Only a few routes take no token: discovery, the built-in avatars, the OpenAPI
-document, the sync sign-in pages (`/identity/sign-in` and `/identity/signed-in`),
-and `/webhooks/:key`, which the platform's adapter authenticates instead. A
+document, and `/webhooks/:key`, which the platform's adapter authenticates instead. A
 board on `http()` also answers `POST /wake` without one: a wake-up only says
 to pull.
 
@@ -24,7 +23,7 @@ The CLI and `board()` in Node find a token themselves. The first match wins:
 
 | Where | How | Principal |
 | --- | --- | --- |
-| Explicit | `BOARD_TOKEN`: an OIDC JWT for the board's audience, from Vercel, GitHub Actions, or an issuer `access` names | depends on the issuer |
+| Explicit | `BOARD_TOKEN`: an OIDC JWT for the board's audience, from Vercel, GitHub Actions, or an issuer `access` or a grant names; or a [board token](./09-access.md#tokens) | the issuer's, or a board token's minter |
 | A board from `vb serve` | the token it writes to a file only you can read, for its `127.0.0.1` URL | `local:user:<your OS user>` |
 | GitHub Actions | the job's OIDC token, for the board's audience; needs `permissions: id-token: write` | `github:repo:<repository_id>` |
 | A Vercel deployment | `getVercelOidcToken({ audience })` from `@vercel/oidc`, when `VERCEL=1` | `vercel:project:<project_id>:<env>` |
@@ -268,6 +267,6 @@ exist ([Access](./09-access.md#what-a-caller-sees)). Mentions are stored as acto
 IDs, so a later handle change never reroutes an old one, and edits resolve them
 again. Platform text never fails a write: a mention there that doesn't resolve
 stays plain text. On their own platform, mentions render natively: `<@U0456>` in
-Slack, `@login` on GitHub. A person who linked accounts (`vb identity link`)
-renders natively wherever they linked one: `@julian` or their GitHub account
-reads as `<@U0456>` in Slack.
+Slack, `@login` on GitHub. Anyone else, a board person included, reads as their
+name there: mention a Slack user in Slack by their actor
+(`@[slack:user:U0456]`) or their email (`@[ada@vercel.com]`).

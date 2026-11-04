@@ -7,7 +7,7 @@ import type { BackendRoute } from './backend.ts'
 import { badRequest, HttpError } from './errors.ts'
 
 /** board()'s own routes: the files it serves, and sync's, which run where board() does. */
-export const BOARD_ROUTES = ['avatar', 'openapi', 'webhook', 'signIn', 'signedIn', 'identityUnlink', 'sync'] as const
+export const BOARD_ROUTES = ['avatar', 'openapi', 'webhook', 'sync'] as const
 export type BoardRoute = (typeof BOARD_ROUTES)[number]
 
 /** What a request is for: one of board()'s own routes, a protocol method, or one of the backend's routes. */
@@ -27,10 +27,10 @@ type Pattern = { method: string; pattern: RegExp; names: string[]; target: Targe
 
 /** Every protocol method, by the route it's served at. */
 export const METHODS: readonly Method[] = [
-  'discovery', 'me', 'channels', 'actors', 'identity', 'messages', 'threads', 'message', 'post', 'posted', 'edit', 'delete', 'react', 'label',
-  'schedule', 'schedules', 'cancelSchedule', 'upload', 'attachment', 'uploadStart', 'uploadFinish', 'watchers', 'register', 'matches', 'ack', 'events',
-  'syncImport', 'syncReceipt', 'syncThread', 'syncFind', 'syncCopies', 'syncRoots', 'inboxPush', 'inboxNext', 'inboxAck', 'inbox',
-  'syncCode', 'syncAccount', 'syncUnlink', 'typing', 'readSource', 'joinSource', 'synced', 'linked',
+  'discovery', 'me', 'channels', 'actors', 'messages', 'threads', 'message', 'post', 'posted', 'edit', 'delete', 'react', 'label',
+  'schedule', 'schedules', 'cancelSchedule', 'grants', 'createGrant', 'revokeGrant', 'tokens', 'createToken', 'revokeToken', 'upload', 'attachment', 'uploadStart', 'uploadFinish', 'watchers', 'register', 'matches', 'ack', 'events',
+  'syncImport', 'syncReceipt', 'syncThread', 'syncFind', 'syncCopies', 'inboxPush', 'inboxNext', 'inboxAck', 'inbox',
+  'typing', 'readSource', 'joinSource', 'synced', 'linked',
 ]
 
 const escape = (literal: string) => literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

@@ -548,18 +548,26 @@ function guarded(url: string, doFetch: typeof fetch, suppliedToken?: Resolvable<
     }
     // Without one, hosted workloads use project trust, never a person's saved bypass credentials.
     if (process.env.VERCEL === '1') {
+      let edgeless = false
       if (!headers.has('x-vercel-trusted-oidc-idp-token')) {
         const bearer = headers.get('authorization')?.match(/^Bearer (.+)$/i)?.[1]
         const token = bearer ?? (typeof suppliedToken === 'function' ? await suppliedToken() : suppliedToken)
           ?? (process.env.BOARD_TOKEN || await hostedToken(url))
-        headers.set('x-vercel-trusted-oidc-idp-token', token)
+        // The edge trusts OIDC tokens only: a board's own token gets through as this deployment's,
+        // and without one, goes as it is, which a board without Deployment Protection takes.
+        const edge = token.startsWith('board_') ? await hostedToken(url).catch(() => null) : token
+        if (edge === null) edgeless = true
+        else headers.set('x-vercel-trusted-oidc-idp-token', edge)
       }
       return through(doFetch, input, init, null).catch((error) => {
-        throw error instanceof Wall
-          ? new BoardError('protected', `${url} is behind Vercel Deployment Protection, and it rejected this deployment's Vercel OIDC token.`, error.status, {
+        if (!(error instanceof Wall)) throw error
+        throw edgeless
+          ? new BoardError('protected', `${url} is behind Vercel Deployment Protection, and this deployment has no Vercel OIDC token to get through it.`, error.status, {
+              hint: "Enable OIDC on its project, and add it to the board project's Deployment Protection Trusted Sources.",
+            })
+          : new BoardError('protected', `${url} is behind Vercel Deployment Protection, and it rejected this deployment's Vercel OIDC token.`, error.status, {
               hint: "Add this project and environment to the board project's Deployment Protection Trusted Sources.",
             })
-          : error
       })
     }
     const used = await (secret ??= readBypass(host))

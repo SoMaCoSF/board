@@ -8,15 +8,15 @@ import type {
   DeleteBody,
   EditBody,
   EventsPage,
+  GrantBody,
+  GrantView,
   EventsQuery,
-  IdentityView,
   InboxAckBody,
   InboxEntry,
   InboxItem,
   InboxNextQuery,
   InboxPushBody,
   InboxQuery,
-  LinkedAccount,
   LinkedQuery,
   LabelBody,
   MatchesQuery,
@@ -25,7 +25,6 @@ import type {
   MessagesPage,
   MessagesQuery,
   MessageView,
-  PersonView,
   PostBody,
   ReactBody,
   RegisterBody,
@@ -38,21 +37,18 @@ import type {
   SourceRead,
   SourceReadQuery,
   ThreadsPage,
-  SyncAccountBody,
-  SyncCodeBody,
-  SyncCodeView,
   SyncCopiesQuery,
   SyncCopiesView,
   SyncFindQuery,
   SyncFindView,
   SyncImportBody,
   SyncReceiptBody,
-  SyncRootsQuery,
   SyncThreadView,
-  SyncUnlinkBody,
   SyncedView,
   ThreadsQuery,
   ThreadView,
+  TokenBody,
+  TokenView,
   TypingBody,
   UploadStartBody,
   UploadTicket,
@@ -72,8 +68,7 @@ export type Protocol = {
   discovery: { input: Nothing; output: Discovery }
   me: { input: Nothing; output: Me }
   channels: { input: Nothing; output: { channels: ChannelView[]; cursor: string } }
-  actors: { input: Nothing; output: { actors: (Actor & { person?: PersonView })[]; cursor: string } }
-  identity: { input: Nothing; output: IdentityView }
+  actors: { input: Nothing; output: { actors: Actor[]; cursor: string } }
   messages: { input: Input<typeof MessagesQuery>; output: MessagesPage }
   threads: { input: Input<typeof ThreadsQuery>; output: ThreadsPage }
   message: { input: Id; output: ThreadView }
@@ -87,6 +82,18 @@ export type Protocol = {
   schedule: { input: Input<typeof ScheduleBody>; output: { schedule: ScheduleView; unknownMentions?: string[] } }
   schedules: { input: Input<typeof SchedulesQuery>; output: { schedules: ScheduleView[] } }
   cancelSchedule: { input: Id; output: { schedule: ScheduleView; canceled: boolean } }
+  /** The board's grants: needs `manage` in every channel. 501 `no_grants` where the board keeps none. */
+  grants: { input: Nothing; output: { grants: GrantView[] } }
+  /** Sets a grant, or the `can` of the one with its issuer and claims: `created` is false for that. */
+  createGrant: { input: Input<typeof GrantBody>; output: { grant: GrantView; created: boolean } }
+  /** `revoked` is false when it was already gone. */
+  revokeGrant: { input: Id; output: { revoked: boolean } }
+  /** The caller's tokens, or every one with `manage` in every channel. 501 `no_tokens` where the board issues none. */
+  tokens: { input: Nothing; output: { tokens: TokenView[] } }
+  /** A token acting as the caller, narrowed: the only time its secret shows. */
+  createToken: { input: Input<typeof TokenBody>; output: { token: TokenView; secret: string } }
+  /** It and every token minted with it stop. `revoked` is false when it was already gone. */
+  revokeToken: { input: Id; output: { revoked: boolean } }
   upload: { input: { data: Uint8Array; name: string | null; type: string | null }; output: { attachment: Attachment } }
   attachment: { input: Id; output: { attachment: Attachment; data: Uint8Array | ReadableStream<Uint8Array> } }
   /** A direct upload's ticket: where to `PUT` a file too big for `upload`. 501 `no_direct_uploads` when the blob store can't sign one. */
@@ -126,7 +133,6 @@ export type Protocol = {
   syncFind: { input: Input<typeof SyncFindQuery>; output: SyncFindView }
   /** Messages' copies on platforms that the caller's sync recorded, by target: another sync's never show. */
   syncCopies: { input: Input<typeof SyncCopiesQuery>; output: SyncCopiesView }
-  syncRoots: { input: Input<typeof SyncRootsQuery>; output: { roots: MessageView[] } }
   /** Platform events into the caller's inbox, deduplicated by their platform IDs. */
   inboxPush: { input: Key & Input<typeof InboxPushBody>; output: { ok: true } }
   /** The caller's next inbox events, leased, one platform thread at a time and in order. */
@@ -134,11 +140,6 @@ export type Protocol = {
   inboxAck: { input: Key & Id & Input<typeof InboxAckBody>; output: { ok: true } }
   /** Raw platform events, newest first, for debugging sync. */
   inbox: { input: Key & Input<typeof InboxQuery>; output: { events: InboxEntry[] } }
-  /** A code for linking the caller's account, and the sign-in that carries it when the entry signs people in. */
-  syncCode: { input: Input<typeof SyncCodeBody>; output: SyncCodeView }
-  /** 404 `bad_code` for a code that isn't live. */
-  syncAccount: { input: Input<typeof SyncAccountBody>; output: { person: string; link: LinkedAccount } }
-  syncUnlink: { input: Input<typeof SyncUnlinkBody>; output: { ok: true } }
 }
 
 export type Method = keyof Protocol

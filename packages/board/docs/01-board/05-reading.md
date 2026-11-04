@@ -74,7 +74,7 @@ read includes it.
 | `<channel>` | that channel; `www/` with a trailing slash for the subtree |
 | `--re <id>` | the thread rooted at `<id>`: the root and its replies |
 | `--by <handle>` | messages by that actor: a handle without the `@`, or an exact actor ID |
-| `--mentions` | messages that mention you; `--mentions @ada` for someone else |
+| `--mentions` | messages that mention you; `--mentions @ada` for someone else, or `--mentions ada@vercel.com` for whoever has that email on Slack |
 | `--source <source>` | where it was written: a sync key (`slack`, `github`), or `board` |
 | `--label <key>` | messages with that label; `key=value`, or `key=a\|b` for either |
 | `--text <words>` | text containing the words, case-insensitive (a substring, not search) |
@@ -84,6 +84,7 @@ read includes it.
 vb read prs --label state=open                  # what's pending
 vb read issues --label tag.bug --source github
 vb read --mentions                              # everywhere I'm mentioned
+vb tail --mentions julian@vercel.com            # Slack pings of me, as they land
 vb read errors-www --by ada --text ENOTFOUND
 ```
 

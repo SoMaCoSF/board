@@ -10,7 +10,6 @@ import { LINKS_PER_MESSAGE_MAX, type ExternalLink } from '../contract/external.t
 import { MESSAGE_TEXT_MAX } from '../contract/schemas.ts'
 import { createSlackAdapter } from '@chat-adapter/slack'
 import { connectSlackAdapter } from '@vercel/connect/chat'
-import { connectUserTokens, withUserTokens } from './users.ts'
 import type { SyncFn } from './fn.ts'
 
 type SlackChannel = { id?: string; name?: string; is_member?: boolean; is_private?: boolean; is_im?: boolean; is_mpim?: boolean; is_ext_shared?: boolean }
@@ -280,9 +279,8 @@ export type SlackEvent = z.infer<typeof SlackEvent>
 
 export type SlackOptions = {
   /**
-   * A Vercel Connect connector (`'slack/acme'`): board builds the Slack adapter,
-   * its Web API client, and people's sign-in, so messages they write post as them.
-   * Or your own Chat SDK adapter, wrapped in `withUserTokens` to post as people.
+   * A Vercel Connect connector (`'slack/acme'`): board builds the Slack adapter
+   * and its Web API client. Or your own Chat SDK adapter.
    */
   adapter: Adapter | string
   /** Not needed with a connector. */
@@ -326,10 +324,10 @@ function unconnected(error: unknown, connector: string | null): unknown {
   return new UnreadableError('not_connected', `Vercel Connect has no connector ${connector ?? 'for Slack'} on this project yet`)
 }
 
-/** A Slack adapter, client, and people's tokens, all from one Vercel Connect connector. */
+/** A Slack adapter and its client, from one Vercel Connect connector. */
 function fromConnector(connector: string) {
   const credentials = connectSlackAdapter(connector)
-  const adapter = withUserTokens(createSlackAdapter({ ...credentials, webClientOptions: SLACK_CLIENT }) as unknown as SlackWithTokens, connectUserTokens(connector))
+  const adapter = createSlackAdapter({ ...credentials, webClientOptions: SLACK_CLIENT }) as unknown as SlackWithTokens
   const botToken = credentials.botToken
   const client = async () => adapter.withBotToken!(typeof botToken === 'function' ? await botToken() : botToken, () => adapter.webClient!)
   return { adapter: adapter as Adapter, client }
@@ -342,7 +340,6 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
   constructor(given: SlackOptions, sync: SyncFn<SlackEvent>) {
     const connected = typeof given.adapter === 'string' ? fromConnector(given.adapter) : null
     const options = connected ? { ...given, adapter: connected.adapter, client: given.client ?? connected.client } : { ...given, adapter: given.adapter as Adapter }
-    const tokens = options.adapter as SlackWithTokens
     let directClient: SlackClient | undefined
     if (!options.client) {
       try {
@@ -717,24 +714,6 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
       // A Slack thread is named by its root message's ts.
       isRoot: (thread, messageId) => thread.slice(thread.lastIndexOf(':') + 1) === messageId,
       context: () => null,
-      ...(typeof tokens.withBotToken === 'function'
-        ? {
-            runAs: <T>(token: string, fn: () => Promise<T>) => tokens.withBotToken!(token, fn),
-            async whoAmI(token: string) {
-              const me = await tokens.withBotToken!(token, () => tokens.webClient!.auth!.test())
-              if (!me.user_id) throw new Error("Slack didn't say whose token this is")
-              const web = await client().catch(() => undefined)
-              const user = (await web?.users?.info({ user: me.user_id }).catch(() => undefined))?.user
-              const handle = user?.profile?.display_name || user?.name || me.user || me.user_id
-              return {
-                id: `slack:user:${me.user_id}`, handle,
-                name: user?.profile?.real_name || user?.real_name || handle,
-                avatar: user?.profile?.image_72 ?? user?.profile?.image_48 ?? null,
-                isBot: false,
-              }
-            },
-          }
-        : {}),
       async resolveTarget(target): Promise<ResolvedTarget> {
         const at = target.indexOf(':')
         const channel = await this.resolveChannel(at === -1 ? target : target.slice(0, at))
@@ -892,5 +871,4 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
     return SlackEvent.parse(envelope(this.platform, context.key, context.event, context.raw, context.id))
   }
 }
-export { withUserTokens, type UserTokens } from './users.ts'
 export { channels } from './fn.ts'

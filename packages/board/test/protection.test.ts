@@ -21,7 +21,7 @@ const { connect, handFetch, handLogin } = await import('../src/client/node.ts')
 /** A handle on the board at `url`, over http(), reaching it the way `vb` does, over the network `fetch` is. */
 const handle = ({ url, ...options }: { url: string } & NonNullable<Parameters<typeof connect>[1]>) =>
   board({ backend: http(url, { fetch: connect(url, options).fetch }) })
-const { BOARD_URL, personToken, testBoard } = await import('./harness.ts')
+const { BOARD_URL, caller, personToken, testBoard } = await import('./harness.ts')
 
 const HOST = new URL(BOARD_URL).host
 const SECRET = 'automation-bypass-secret'
@@ -168,6 +168,44 @@ describe('a board behind Vercel Deployment Protection, without VERCEL_AUTOMATION
       hint: expect.stringContaining('Enable OIDC'),
     })
     expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it("sends a board token to the board, and this deployment's OIDC token to the edge", async () => {
+    vi.stubEnv('VERCEL', '1')
+    const board = testBoard()
+    const { secret } = (await caller(board.fetch, await personToken())('POST', '/tokens', { name: 'agent', can: { 'dev/': ['read', 'post'] } })).body
+    const sent: Headers[] = []
+    const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init)
+      sent.push(new Headers(request.headers))
+      // Vercel's edge consumes the native header.
+      request.headers.delete('x-vercel-trusted-oidc-idp-token')
+      return board.fetch(request)
+    }) as typeof globalThis.fetch
+    await handle({ url: BOARD_URL, token: secret, fetch }).post('dev', 'from the agent')
+    expect(sent.at(-1)!.get('authorization')).toBe(`Bearer ${secret}`)
+    expect(sent.at(-1)!.get('x-vercel-trusted-oidc-idp-token')).toBe('runtime-token')
+  })
+
+  it('sends a board token without an edge token where this deployment has no OIDC, and says so when the edge wants one', async () => {
+    vi.stubEnv('VERCEL', '1')
+    runtimeToken.mockRejectedValue(new Error('OIDC is off'))
+    const board = testBoard()
+    const { secret } = (await caller(board.fetch, await personToken())('POST', '/tokens', { name: 'agent', can: { 'dev/': ['read', 'post'] } })).body
+    const sent: Headers[] = []
+    const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init)
+      sent.push(new Headers(request.headers))
+      return board.fetch(request)
+    }) as typeof globalThis.fetch
+    await handle({ url: BOARD_URL, token: secret, fetch }).post('dev', 'no protection here')
+    expect(sent.some((headers) => headers.has('x-vercel-trusted-oidc-idp-token'))).toBe(false)
+    const { fetch: guarded } = protectedBoard()
+    await expect(handle({ url: BOARD_URL, token: secret, fetch: guarded }).discovery()).rejects.toMatchObject({
+      code: 'protected',
+      message: expect.stringContaining('has no Vercel OIDC token'),
+      hint: expect.stringContaining('Enable OIDC'),
+    })
   })
 
   it('fails hosted trust with setup guidance instead of reading or creating a bypass', async () => {

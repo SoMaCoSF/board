@@ -1,12 +1,12 @@
 import type { z } from 'zod'
-import type { ActorView, Filters, LinkView, MessageView, BoardEventView, PersonView } from '../api/routes.ts'
+import type { ActorView, Filters, LinkView, MessageView, BoardEventView } from '../api/routes.ts'
 import type { ParsedFilters } from '../api/routes.ts'
 import type { BoardEvent } from '../contract/events.ts'
 import type { Link } from '../contract/external.ts'
 import { FULL_ACCESS, type Access } from './access.ts'
 import { hasCriteria } from './watch-spec.ts'
 import { channelsReducer } from '../contract/reducers.ts'
-import { foldActors, foldMessages, iso, linkedTo, personOf, type ActorsState, type Message, type MessagesState } from '../contract/folds.ts'
+import { foldActors, foldMessages, iso, type ActorsState, type Message, type MessagesState } from '../contract/folds.ts'
 import { own } from '../contract/own.ts'
 import { concernedMessageId } from '../store/project.ts'
 import type { MessageFilter } from '../store/types.ts'
@@ -18,18 +18,10 @@ export { concernedMessageId }
 /** Bookkeeping events, shown only with `all`: who's who, and delivery receipts. */
 const HIDDEN = new Set(['actor.seen', 'message.synced', 'message.files_synced'])
 
-/** The person a linked platform actor is, as views show it. */
-export function personView(actors: ActorsState, actor: string): PersonView | undefined {
-  const link = own(actors.links, actor)
-  const person = link ? own(actors.byId, link.to) : undefined
-  return link ? { id: link.to, handle: person?.handle ?? link.to, name: person?.name ?? link.to, avatar: person?.avatar ?? null } : undefined
-}
-
 export function actorView(actors: ActorsState, id: string): ActorView | null {
   const author = own(actors.byId, id)
   if (!author) return null
-  const person = personView(actors, id)
-  return { kind: author.kind, handle: author.handle, name: author.name, avatar: author.avatar, ...(person ? { person } : {}) }
+  return { kind: author.kind, handle: author.handle, name: author.name, avatar: author.avatar }
 }
 
 /**
@@ -117,31 +109,18 @@ export function view(message: Message, actors: ActorsState, reader: Reader): Mes
   }
 }
 
-/** Whether accounts are linked to `id`: then it's a person, even one who never wrote on the board. */
-const hasLinks = (actors: ActorsState, id: string) => Object.values(actors.links).some((link) => link.to === id)
-
 const actorSet = (value: string, actors: ActorsState): Set<string> =>
-  own(actors.byId, value) || own(actors.links, value) || hasLinks(actors, value) ? new Set([value]) : new Set(own(actors.byHandle, value.toLowerCase()) ?? [])
+  own(actors.byId, value) ? new Set([value]) : new Set(own(actors.byHandle, value.toLowerCase()) ?? [])
 
 /**
- * Who a `--by` or `--mentions` value covers. A person (`julian`, or one of their
- * linked accounts, `@julian` on Slack) is everyone they are: their own actor,
- * their agents (`julian/claude`), and every account linked to them. An agent
- * or an unlinked platform actor is just itself.
+ * Who a `--by` or `--mentions` value covers. A person (`julian`) is everyone they
+ * are: their own actor, and their agents (`julian/claude`). An agent or a platform
+ * actor is just itself.
  */
 export function whoIs(value: string, actors: ActorsState): { actors: Set<string>; principals: Set<string> } {
   const ids = actorSet(value, actors)
-  const out = new Set(ids)
-  const principals = new Set<string>()
-  for (const id of ids) {
-    const kind = own(actors.byId, id)?.kind
-    const person = own(actors.links, id) ? personOf(actors, id) : kind === 'person' || hasLinks(actors, id) ? id : null
-    if (person === null) continue
-    principals.add(person)
-    out.add(person)
-    for (const linked of linkedTo(actors, person)) out.add(linked)
-  }
-  return { actors: out, principals }
+  const principals = new Set([...ids].filter((id) => own(actors.byId, id)?.kind === 'person'))
+  return { actors: ids, principals }
 }
 
 /** Whether `author` is one of `who`: its actor, or an agent of one of its people. */
@@ -174,12 +153,12 @@ export function compileFilter(
   const by = filters.by === undefined ? null : whoIs(filters.by, context.actors)
   // A ref that names nothing on this board matches nothing, as in the tables.
   const re = filters.re === undefined ? undefined : (indexOf(filters.re) ?? -1)
-  // `me` is the caller's own actor, and the platform accounts linked to it.
+  // `me` is the caller's own actor.
   const mentions =
     filters.mentions === undefined
       ? null
       : filters.mentions === 'me'
-        ? new Set(context.me === null ? [] : [context.me, ...linkedTo(context.actors, context.me)])
+        ? new Set(context.me === null ? [] : [context.me])
         : whoIs(filters.mentions, context.actors).actors
   return (message) => {
     if (!message || !access.readable(message.channel)) return false
@@ -229,7 +208,7 @@ export function toMessageFilter(filters: ParsedFilters, context: { me: string | 
   if (filters.mentions !== undefined)
     out.mentions =
       filters.mentions === 'me'
-        ? context.me === null ? [] : [context.me, ...linkedTo(context.actors, context.me)]
+        ? context.me === null ? [] : [context.me]
         : [...whoIs(filters.mentions, context.actors).actors]
   if (filters.from !== undefined) out.from = filters.from
   if (filters.text !== undefined) out.text = filters.text.toLowerCase()

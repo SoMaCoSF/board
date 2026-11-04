@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import type { Adapter, Author as ChatAuthor, Chat, FileUpload, Message as ChatMessage, ReactionEvent } from 'chat'
+import type { Adapter, Author as ChatAuthor, Chat, FileUpload, Message as ChatMessage, ReactionEvent, StateAdapter } from 'chat'
 import type { Actor } from '../contract/folds.ts'
 import { LINKS_PER_MESSAGE_MAX, type ExternalAuthor, type ExternalFile, type ExternalLink } from '../contract/external.ts'
 import { SyncProvider, ResolvedTarget, type Receive, type ReceivedEvent, type ProviderOptions, type ProviderPost, type ProviderFile, type ProviderDelivery, type FileDelivery, type FetchedLink } from './provider.ts'
@@ -7,8 +7,8 @@ import type { ProviderEvent, SyncRoot } from './events.ts'
 import type { SyncFn } from './fn.ts'
 import type { SourceJoin, SourceRead } from '../api/routes.ts'
 import { createChat, markdownOf } from './chat.ts'
+import { ephemeralState } from './state.ts'
 import { externalAuthor } from './types.ts'
-import { userTokensOf } from './users.ts'
 export { externalAuthor } from './types.ts'
 
 export type ChatInput =
@@ -18,11 +18,21 @@ export type ChatInput =
 
 export type ChatTransport = Omit<ProviderOptions, 'uploadsFiles'> & {
   adapter: Adapter
+  /**
+   * Where Chat SDK and the adapter keep their state, like `createRedisState()`. In memory unless
+   * given, which is enough when the board's log is all an adapter needs to last.
+   */
+  state?: StateAdapter
   findByEmail?(email: string): Promise<ExternalAuthor | null>
   mention?(actor: Actor): string | null
   author?(author: ChatAuthor, raw: unknown): ExternalAuthor
-  resolveChannel(key: string): Promise<string>
-  resolveTarget(target: string): Promise<ResolvedTarget>
+  /** A channel's name as its native ID. Without it, a name is the ID. */
+  resolveChannel?(key: string): Promise<string>
+  /**
+   * A target's channel and kind, called on the provider. Without it, the adapter reads the target
+   * as a thread: one it reads as its own channel, or can't read, is a channel.
+   */
+  resolveTarget?(this: SyncProvider, target: string): Promise<ResolvedTarget>
   groupThread?(thread: string): string
   channelOf?(thread: string): string
   isRoot?(thread: string, message: string): boolean
@@ -55,11 +65,10 @@ export type ChatTransport = Omit<ProviderOptions, 'uploadsFiles'> & {
   /** What the adapter needs to fetch a file again, if not everything the event carried. */
   fileToFetch?(file: ExternalFile): ExternalFile
   startTyping?(thread: string, latest: string | null, status?: string): Promise<void>
-  /** Runs adapter calls with a person's token instead of the bot's: how a message posts as them. */
-  runAs?<T>(token: string, fn: () => Promise<T>): Promise<T>
-  /** The platform account a person's token belongs to. */
-  whoAmI?(token: string): Promise<ExternalAuthor>
 }
+
+/** A webhook being handled: what it brought, and what Chat SDK claimed and started for it. */
+type Receiving = { key: string; emit: Receive; body: string; claims: string[]; failures: unknown[]; tasks: Promise<unknown>[] }
 
 const externalFile = (file: NonNullable<ChatMessage['attachments']>[number]): ExternalFile => ({
   type: file.type,
@@ -73,13 +82,31 @@ const externalFile = (file: NonNullable<ChatMessage['attachments']>[number]): Ex
 export abstract class ChatSyncProvider<E extends ProviderEvent = ProviderEvent> extends SyncProvider<E> {
   protected readonly transport: ChatTransport
   private readonly chat: Chat
-  private readonly receiving = new AsyncLocalStorage<{ key: string; emit: Receive }>()
+  private readonly state: StateAdapter
+  private readonly receiving = new AsyncLocalStorage<Receiving>()
   private initialized: Promise<void> | undefined
 
   constructor(transport: ChatTransport, sync: SyncFn<E>) {
-    super({ ...transport, users: transport.users ?? userTokensOf(transport.adapter), uploadsFiles: !!transport.uploadFiles }, sync)
+    super({ ...transport, uploadsFiles: !!transport.uploadFiles }, sync)
     this.transport = transport
-    this.chat = createChat(transport.adapter)
+    this.state = transport.state ?? ephemeralState()
+    this.chat = createChat(transport.adapter, this.claiming(this.state))
+    // What Chat SDK processes while a webhook is handled finishes before it answers, so the board
+    // stores it first, even when the adapter doesn't hand it to `waitUntil` (Discord's forwarded
+    // reactions don't).
+    const chat = this.chat as unknown as Record<string, unknown>
+    // Waited on only: what the board couldn't store fails the webhook through `failures`, and Chat
+    // SDK's own errors stay as it handles them.
+    for (const name of ['processMessage', 'processMessageUpdated', 'processMessageDeleted', 'processReaction']) {
+      const original = chat[name]
+      // Loud, so a Chat SDK that renames one fails here rather than answering before it stores.
+      if (typeof original !== 'function') throw new Error(`Chat SDK has no ${name}: board can't wait for what it processes`)
+      chat[name] = (...args: unknown[]) => {
+        const task: unknown = original.apply(this.chat, args)
+        if (task instanceof Promise) this.receiving.getStore()?.tasks.push(task.catch(() => {}))
+        return task
+      }
+    }
     const onMessage = async (_thread: unknown, message: ChatMessage) => this.emit({ kind: 'message', message })
     this.chat.onNewMessage(/[\s\S]*/, onMessage)
     this.chat.onNewMention(onMessage)
@@ -160,23 +187,61 @@ export abstract class ChatSyncProvider<E extends ProviderEvent = ProviderEvent> 
   private async emit(input: ChatInput) {
     const context = this.receiving.getStore()
     if (!context) throw new Error('Chat SDK emitted an event outside a verified request')
-    await context.emit(await this.normalize(context.key, input))
+    try {
+      await context.emit(await this.normalize(context.key, input))
+    } catch (error) {
+      // Kept here too: an adapter may catch what its handlers throw (Telegram's does) and answer 200.
+      context.failures.push(error)
+      throw error
+    }
   }
 
-  override receive(key: string, request: Request, emit: Receive): Promise<Response> {
-    return this.receiving.run({ key, emit }, () => this.receiveRequest(key, request, emit))
+  /** The body of the webhook being handled, as the platform sent it: the same on a redelivery. */
+  protected delivery(): string | null {
+    return this.receiving.getStore()?.body ?? null
+  }
+
+  override async receive(key: string, request: Request, emit: Receive): Promise<Response> {
+    const claims: string[] = []
+    const body = await request.clone().text()
+    try {
+      return await this.receiving.run({ key, emit, body, claims, failures: [], tasks: [] }, () => this.receiveRequest(key, request, emit))
+    } catch (error) {
+      // The board couldn't store what came in, so the platform retries. Chat SDK and the adapter
+      // claimed it as handled (a message's dedupe key, Telegram's update ID): give that back, or
+      // they'd skip the retry and the event would be lost.
+      await Promise.allSettled(claims.map((claim) => this.state.delete(claim)))
+      throw error
+    }
+  }
+
+  /** `state`, noting each first claim (`setIfNotExists`) made while a webhook is handled. */
+  private claiming(state: StateAdapter): StateAdapter {
+    return new Proxy(state, {
+      get: (target, property) => {
+        if (property === 'setIfNotExists') {
+          return async (key: string, value: unknown, ttlMs?: number) => {
+            const claimed = await target.setIfNotExists(key, value, ttlMs)
+            if (claimed) this.receiving.getStore()?.claims.push(key)
+            return claimed
+          }
+        }
+        const value = Reflect.get(target, property, target)
+        return typeof value === 'function' ? value.bind(target) : value
+      },
+    })
   }
 
   private async receiveRequest(key: string, request: Request, emit: Receive): Promise<Response> {
-    const body = this.transport.intercept || this.transport.missed ? await request.clone().text() : null
-    const tasks: Promise<unknown>[] = []
+    const { body, tasks, failures } = this.receiving.getStore()!
     const webhooks = this.chat.webhooks as Record<string, (request: Request, options: { waitUntil(task: Promise<unknown>): void }) => Promise<Response>>
     const response = await webhooks[this.transport.adapter.name]!(request, { waitUntil: (task) => void tasks.push(task) })
     const results: PromiseSettledResult<unknown>[] = []
     while (tasks.length) results.push(...await Promise.allSettled(tasks.splice(0)))
+    if (failures.length) throw failures[0]
     const failed = results.find((result) => result.status === 'rejected')
     if (failed) throw failed.reason
-    if (response.ok && body !== null) {
+    if (response.ok && (this.transport.intercept || this.transport.missed)) {
       for (const input of this.transport.missed?.(request.headers, body) ?? []) await emit(await this.normalize(key, input))
       for (const received of this.transport.intercept?.(key, request.headers, body) ?? []) await emit(received)
     }
@@ -192,8 +257,20 @@ export abstract class ChatSyncProvider<E extends ProviderEvent = ProviderEvent> 
     return this.transport.adapter
   }
 
-  override resolveChannel(key: string) { return this.transport.resolveChannel(key) }
-  override async resolveTarget(target: string) { return ResolvedTarget.parse(await this.transport.resolveTarget.call(this, target)) }
+  override async resolveChannel(key: string) { return this.transport.resolveChannel ? this.transport.resolveChannel(key) : key }
+  override async resolveTarget(target: string) {
+    return ResolvedTarget.parse(this.transport.resolveTarget ? await this.transport.resolveTarget.call(this, target) : this.targetOf(target))
+  }
+  /** A target as the adapter reads it: a thread in its channel, or a channel. */
+  private targetOf(target: string): ResolvedTarget {
+    let channel: string
+    try {
+      channel = this.transport.channelOf?.(target) ?? this.toNative(this.transport.adapter.channelIdFromThreadId(this.toChat(target)))
+    } catch {
+      return { target, channel: target, kind: 'channel' }
+    }
+    return { target, channel, kind: channel === target ? 'channel' : 'thread' }
+  }
   override async findByEmail(email: string) { return this.transport.findByEmail?.(email) ?? null }
   override mention(actor: Actor) { return this.transport.mention?.(actor) ?? null }
   override async fetchRoot(thread: string): Promise<SyncRoot | null> {
@@ -229,26 +306,6 @@ export abstract class ChatSyncProvider<E extends ProviderEvent = ProviderEvent> 
     await this.ready()
     const sent = await (kind === 'channel' ? this.chat.channel(this.toChat(target)) : this.chat.thread(this.toChat(target))).post(files?.length ? { ...body, files: this.named(files) } : body)
     return { thread: this.toNative(sent.threadId), message: sent.id, ...(files?.length ? { files: this.transport.fileIds?.(sent.raw) ?? [] } : {}) }
-  }
-  override async whoAmI(token: string) {
-    if (!this.transport.whoAmI) return super.whoAmI(token)
-    await this.ready()
-    return this.transport.whoAmI(token)
-  }
-  /** As the person: ready first, so the adapter learns its own identity with the bot's token, never theirs. */
-  private async as<T>(token: string, fn: () => Promise<T>): Promise<T> {
-    if (!this.transport.runAs) throw new Error(`${this.platform} can't post as a person`)
-    await this.ready()
-    return this.transport.runAs(token, fn)
-  }
-  override async postAs(token: string, target: string, kind: ResolvedTarget['kind'], body: ProviderPost) {
-    return this.as(token, () => this.post(target, kind, body))
-  }
-  override async editAs(token: string, thread: string, message: string, body: ProviderPost) {
-    await this.as(token, () => this.edit(thread, message, body))
-  }
-  override async deleteAs(token: string, thread: string, message: string) {
-    await this.as(token, () => this.delete(thread, message))
   }
   override async edit(thread: string, message: string, { as: _sender, files, ...body }: ProviderPost) {
     await (await this.ready()).editMessage(this.toChat(thread), message, files ? { ...body, files: this.named(files) } : body)

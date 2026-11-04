@@ -635,13 +635,13 @@ describe('registering', () => {
 
   it('hashes watchers and sync entries in code-unit order, the same in every locale', () => {
     const spec = { tail: 'feedback', when: 'matches' as const }
-    const entry = (key: string) => ({ key, platform: 'slack', signIn: false })
+    const entry = (key: string) => ({ key, platform: 'slack' })
     // A locale's collation puts `a` before `B`; code units put `B` (U+0042) before `a` (U+0061).
     const canonical = canonicalWatchers({ a: spec, B: spec }, [entry('a'), entry('B')])
     expect(JSON.parse(canonical)).toEqual([
       ['B', 'feedback', 'matches'],
       ['a', 'feedback', 'matches'],
-      ['sync', [['B', 'slack', false], ['a', 'slack', false]]],
+      ['sync', [['B', 'slack'], ['a', 'slack']]],
     ])
     expect(canonicalWatchers({ B: spec, a: spec }, [entry('B'), entry('a')])).toBe(canonical)
   })

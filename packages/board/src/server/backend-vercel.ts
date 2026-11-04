@@ -1303,6 +1303,38 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       })
       return { ok: true }
     },
+    // Grants and tokens are the API's, in the protocol's shapes: what it doesn't keep yet, it answers.
+    // A caller this board serves gets none of them, since it reaches the API as these credentials.
+    async grants(caller, _input, signal) {
+      checkCaller('grants', caller)
+      const who = whoOf(caller)
+      return api<Protocol['grants']['output']>(who, 'GET', await onBoard(who, '/grants'), signal ? { signal } : {})
+    },
+    async createGrant(caller, input, signal) {
+      checkCaller('createGrant', caller)
+      const who = whoOf(caller)
+      return api<Protocol['createGrant']['output']>(who, 'POST', await onBoard(who, '/grants'), { body: { operationId: operationId(), ...input }, ...(signal ? { signal } : {}) })
+    },
+    async revokeGrant(caller, { id }, signal) {
+      checkCaller('revokeGrant', caller)
+      const who = whoOf(caller)
+      return api<Protocol['revokeGrant']['output']>(who, 'POST', await onBoard(who, `/grants/${encodeURIComponent(id)}/revoke`), { body: { operationId: operationId() }, ...(signal ? { signal } : {}) })
+    },
+    async tokens(caller, _input, signal) {
+      checkCaller('tokens', caller)
+      const who = whoOf(caller)
+      return api<Protocol['tokens']['output']>(who, 'GET', await onBoard(who, '/tokens'), signal ? { signal } : {})
+    },
+    async createToken(caller, input, signal) {
+      checkCaller('createToken', caller)
+      const who = whoOf(caller)
+      return api<Protocol['createToken']['output']>(who, 'POST', await onBoard(who, '/tokens'), { body: { operationId: operationId(), ...input }, ...(signal ? { signal } : {}) })
+    },
+    async revokeToken(caller, { id }, signal) {
+      checkCaller('revokeToken', caller)
+      const who = whoOf(caller)
+      return api<Protocol['revokeToken']['output']>(who, 'POST', await onBoard(who, `/tokens/${encodeURIComponent(id)}/revoke`), { body: { operationId: operationId() }, ...(signal ? { signal } : {}) })
+    },
     async schedule(caller, input, signal) {
       if (input.attachments?.length) throw notSupported('files on scheduled messages')
       const who = whoOf(caller)

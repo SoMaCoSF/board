@@ -5,12 +5,8 @@ import type {
   Discovery,
   EventsPage,
   FiltersInput,
-  IdentityView,
   InboxEntry,
   InboxItem,
-  LinkedAccount,
-  SyncAccountInput,
-  SyncCodeView,
   SyncCopiesView,
   SyncFindInput,
   SyncFindView,
@@ -29,6 +25,10 @@ import type {
   RegistrationView,
   ScheduleView,
   SchedulesQueryInput,
+  GrantInput,
+  GrantView,
+  TokenInput,
+  TokenView,
   ThreadsPage,
   ThreadsQueryInput,
   ThreadSummaryView,
@@ -303,12 +303,7 @@ export function createBoardClient(options: ClientOptions) {
     discovery: () => call<Discovery>('GET', '/', { auth: false }),
     me: () => call<Me>('GET', '/me'),
     channels: async () => (await call<{ channels: ChannelView[] }>('GET', '/channels')).channels,
-    actors: async () => (await call<{ actors: (Actor & { person?: ActorView['person'] })[] }>('GET', '/actors')).actors,
-
-    /** Your linked platform accounts, and the sync entries you haven't linked (`unlinked`). */
-    identity: () => call<IdentityView>('GET', '/identity'),
-    /** Unlinks one of your accounts, by actor ID or handle. History keeps its messages as they were. */
-    unlinkAccount: (account: string) => call<{ ok: true; actor: string }>('POST', '/identity/unlink', { body: { actor: account } }),
+    actors: async () => (await call<{ actors: Actor[] }>('GET', '/actors')).actors,
 
     messages: (query: Filters & Omit<MessagesQueryInput, keyof FiltersInput> = {}) =>
       call<MessagesPage>('GET', `/messages${queryString(query)}`),
@@ -344,6 +339,26 @@ export function createBoardClient(options: ClientOptions) {
     /** Stops a schedule: yours, or any with manage in its channel. `canceled` is false when it was already done or canceled. */
     cancelSchedule: (id: string) =>
       call<{ schedule: ScheduleView; canceled: boolean }>('POST', `/schedules/${path(id)}/cancel`, { body: {} }),
+    /**
+     * Lets in callers with an OIDC token from `issuer` that carries every one of `claims`, to do
+     * what `can` says (read, post, react, and label everywhere when left out). Setting the same
+     * issuer and claims again changes its `can`: `created` says which. Needs manage in every channel.
+     */
+    createGrant: (input: GrantInput) => call<{ grant: GrantView; created: boolean }>('POST', '/grants', { body: input }),
+    /** The board's grants. Needs manage in every channel. */
+    grants: async () => (await call<{ grants: GrantView[] }>('GET', '/grants')).grants,
+    /** `revoked` is false when it was already gone. Its principals' next requests are refused. */
+    revokeGrant: (id: string) => call<{ revoked: boolean }>('POST', `/grants/${path(id)}/revoke`, { body: {} }),
+    /**
+     * A token that acts as you, narrowed to `can`, writing as `profile` and `session` when they're
+     * given: for a widget, a sandbox, a script. `secret` shows only here. It lives 30 days, or
+     * `expires`, at most 90.
+     */
+    createToken: (input: TokenInput) => call<{ token: TokenView; secret: string }>('POST', '/tokens', { body: input }),
+    /** Your live tokens, or everyone's with manage in every channel. Never their secrets. */
+    tokens: async () => (await call<{ tokens: TokenView[] }>('GET', '/tokens')).tokens,
+    /** It and every token minted with it stop. `revoked` is false when it was already revoked. */
+    revokeToken: (id: string) => call<{ revoked: boolean }>('POST', `/tokens/${path(id)}/revoke`, { body: {} }),
     /**
      * Stores a file on the board, for a post or reply's `attachments`. Up to 4 MB goes in one
      * request; bigger, up to 100 MB, goes straight to the board's blob store on a URL the board
@@ -397,9 +412,8 @@ export function createBoardClient(options: ClientOptions) {
     label: (id: string, change: { set?: Record<string, string>; unset?: string[]; if?: Record<string, string | null> }) =>
       call<{ ok: true }>('POST', `/messages/${path(id)}/labels`, { body: change }),
     /**
-     * Shows typing in the platform threads the message's thread is synced to
-     * (on WhatsApp, also marking the latest inbound message read). Ephemeral:
-     * nothing goes in the log. Answers the external threads that took it.
+     * Shows typing in the platform threads the message's thread is synced to.
+     * Ephemeral: nothing goes in the log. Answers the external threads that took it.
      * `status` replaces "Typing…" on Slack ("running tests…").
      */
     typing: async (id: string, status?: string) =>
@@ -457,15 +471,12 @@ export function createBoardClient(options: ClientOptions) {
     syncReceipt: (body: SyncReceiptInput) => call<{ ok: true; attached?: boolean }>('POST', '/sync/receipts', { body }),
     /** A board thread's sync, by its key. */
     syncThread: (thread: string) => call<SyncThreadView>('GET', `/sync/threads/${path(thread)}`),
-    /** What platform IDs are on the board: a thread, a message, who an account is, a person's accounts. */
+    /** What platform IDs are on the board: a thread, or a message. */
     syncFind: (query: SyncFindInput, opts: { signal?: AbortSignal } = {}) =>
       call<SyncFindView>('GET', `/sync/find${queryString(query)}`, opts.signal ? { signal: opts.signal } : {}),
     /** Messages' copies on platforms, by message and target. */
     syncCopies: async (messages: string[]) =>
       (await call<SyncCopiesView>('GET', `/sync/copies?${messages.map((id) => `message=${encodeURIComponent(id)}`).join('&')}`)).copies,
-    /** A person's roots since `since`. */
-    syncRoots: async (by: string, since: Date | number) =>
-      (await call<{ roots: MessageView[] }>('GET', `/sync/roots${queryString({ by, since: since instanceof Date ? since.getTime() : since })}`)).roots,
     /** Pushes platform events into your inbox for sync key `key`; each platform ID lands once. */
     inboxPush: (key: string, events: { id: string; event: InboxItem['event']; raw: unknown }[]) =>
       call<{ ok: true }>('POST', `/inbox/${path(key)}`, { body: { events } }),
@@ -475,16 +486,6 @@ export function createBoardClient(options: ClientOptions) {
     /** How an inbox event went: done, or an error to try it again. */
     inboxAck: (key: string, id: string, body: { lease: string; error?: string }) =>
       call<{ ok: true }>('POST', `/inbox/${path(key)}/${path(id)}/ack`, { body }),
-    /**
-     * A one-time code for linking your account on sync entry `sync`, to post from that account where
-     * the board syncs, and `signIn` when the entry signs people in: open it (only you) and approve.
-     * Only people get one, each for themselves. `identity()` shows the link once it's made.
-     */
-    syncCode: (sync: string) => call<SyncCodeView>('POST', '/sync/codes', { body: { sync } }),
-    /** Links a platform account to whoever a code was issued to: one posted from it, or carried through its sign-in. */
-    syncAccount: (body: SyncAccountInput) => call<{ person: string; link: LinkedAccount }>('POST', '/sync/accounts', { body }),
-    /** Unlinks a platform account: your own, or anyone's with `sync`. */
-    syncUnlink: (account: string) => call<{ ok: true }>('POST', '/sync/accounts/unlink', { body: { account } }),
 
     /** Live events. Reconnects from the last seen index whenever the stream closes. */
     async *events(
@@ -537,7 +538,7 @@ export function createBoardClient(options: ClientOptions) {
   }
 }
 
-export type { ActorView, BoardEventView, ChannelView, Discovery, EventsPage, IdentityView, Me, MessagesPage, MessageView, ScheduleView, ThreadsPage, ThreadSummaryView, ThreadView }
+export type { ActorView, BoardEventView, ChannelView, Discovery, EventsPage, Me, MessagesPage, MessageView, ScheduleView, ThreadsPage, ThreadSummaryView, ThreadView }
 
 async function toError(response: Response): Promise<BoardError> {
   try {

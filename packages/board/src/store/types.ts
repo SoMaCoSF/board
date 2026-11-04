@@ -65,8 +65,6 @@ export interface MessageTables {
   messageOf(externalThread: string, platformMessage: string): Promise<number | null>
   /** Every platform thread a board thread lives in. */
   externalThreads(): Promise<string[]>
-  /** A person's own roots posted at or after `since` (epoch ms). */
-  recentRoots(principal: string, since: number): Promise<Message[]>
   /** The messages that carry an attachment, by ID. A deleted message carries none. */
   withAttachment(attachment: string): Promise<Message[]>
   close(): Promise<void>

@@ -6,7 +6,7 @@ import { externalMessageKey, isThreadTarget } from '../contract/external.ts'
 import type { ExternalAuthor, ExternalEvent, ExternalFile, ExternalLink, Origin } from '../contract/external.ts'
 import { fileSize, typeOf } from '../contract/files.ts'
 import { ATTACHMENT_BYTES_MAX, ATTACHMENTS_PER_MESSAGE_MAX, IMPORT_BYTES_MAX, MESSAGE_TEXT_MAX, toStorable, type Attachment } from '../contract/schemas.ts'
-import type { BoardEventView, InboxItem, LinkedAccount, LinkView, MessageView, SyncThreadView } from '../api/routes.ts'
+import type { BoardEventView, InboxItem, LinkView, MessageView, SyncThreadView } from '../api/routes.ts'
 import type { Method, Protocol } from '../api/protocol.ts'
 import { afterRetry } from '../server/attempts.ts'
 import type { Caller, InboxDelivery, ProtocolMethods } from '../server/backend.ts'
@@ -40,8 +40,8 @@ export type SyncHost = {
   client(platform: { author: ExternalAuthor; key: string } & EventSource, trigger: string): BoardClient
 }
 
-/** The actors sync renders with: who each is, and the person a linked account belongs to. */
-type Actors = { byId: Record<string, Actor>; links: Record<string, string> }
+/** The actors sync renders with: who each is. */
+type Actors = { byId: Record<string, Actor> }
 
 /** `files`: a message with files may have no text. */
 const clampText = (raw: string, files = false) => {
@@ -83,20 +83,6 @@ type ImportLink = Omit<LinkView, 'message'> & { message: string | null }
 const linkKey = (link: ImportLink) => JSON.stringify([link.url, link.message, link.snapshot, link.unavailable])
 /** Whether two link lists say the same, whatever order their keys were written in. */
 const sameLinks = (a: ImportLink[], b: ImportLink[]) => a.length === b.length && a.every((link, i) => linkKey(link) === linkKey(b[i]!))
-
-/**
- * A one-time code for linking an account: a platform message that is only a live
- * code is claimed, not imported.
- */
-const CODE = /^\s*`?(vb-[a-z0-9]{4}-[a-z0-9]{4})`?\s*$/i
-
-/**
- * How long a board message written by someone who posts as themselves may still be
- * on its way out: their copy comes back through the webhook looking like any of
- * their messages, and until its receipt lands, it's held back rather than imported twice.
- */
-const ECHO_WINDOW_MS = 60_000
-const ECHO_ATTEMPTS = 6
 
 /** Tries per file before it's noted instead: a retry repeats the whole message, so keep it short. */
 const FILE_ATTEMPTS = 3
@@ -212,15 +198,10 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
   /** The actors sync renders with, as the board has them now. */
   async function actorsNow(): Promise<Actors> {
     const { actors } = await call('actors', {})
-    const state: Actors = { byId: {}, links: {} }
-    for (const { person, ...actor } of actors) {
-      state.byId[actor.id] = { id: actor.id, kind: actor.kind, handle: actor.handle, name: actor.name, avatar: actor.avatar }
-      if (person) state.links[actor.id] = person.id
-    }
+    const state: Actors = { byId: {} }
+    for (const actor of actors) state.byId[actor.id] = { id: actor.id, kind: actor.kind, handle: actor.handle, name: actor.name, avatar: actor.avatar }
     return state
   }
-
-  const linkedTo = (actors: Actors, person: string) => Object.entries(actors.links).filter(([, to]) => to === person).map(([actor]) => actor)
 
   // --- channels ---------------------------------------------------------------
 
@@ -482,10 +463,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
       if (copied !== null) {
         const origin = (await messageOf(copied))?.origin
         if (!origin || origin.message !== event.message || (origin.subthread ?? origin.thread) !== (event.subthread ?? event.thread)) return
-      } else if (platform.users && meta.attempt < ECHO_ATTEMPTS && (await deliveringAsPerson(linked, event)))
-        throw new Error(`holding ${event.message} until ${event.author.id}'s board message there has its receipt`)
-      const code = event.author.isBot ? undefined : CODE.exec(event.text)?.[1]
-      if (code && (await claimCode(key, event, code))) return
+      }
     }
     const author: ExternalAuthor = 'author' in event ? event.author : { id: `${platform.platform}:system`, handle: platform.platform, name: platform.platform, avatar: null, isBot: true }
     // Built when it's first read: an import that never reads it never needs what its schema asks of the payload.
@@ -551,86 +529,6 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
         await platform.post(native(thread), 'thread', { markdown: text })
       },
     }
-  }
-
-  /**
-   * Whether a board message by the person behind `event`'s author (an account they
-   * signed in with) may be on its way there as them, without a receipt yet: then
-   * `event` could be that very copy. In a thread the board knows (`thread`), that's
-   * any of the person's messages still going to it; anywhere else, a new thread of
-   * theirs still going to `event`'s channel, whose platform thread the board learns
-   * only from the receipt.
-   */
-  async function deliveringAsPerson(thread: string | undefined, event: Extract<ExternalEvent, { kind: 'message' }>) {
-    const person = (await find({ account: event.author.id })).person
-    if (!person || person.method !== 'consent') return false
-    const now = Date.now()
-    const pending = (message: MessageView, target: string, copies: Record<string, unknown>) =>
-      message.by.principal === person.id && message.by.profile === null && message.from === null &&
-      !message.deleted && !message.noSync && now - Date.parse(message.createdAt) < ECHO_WINDOW_MS &&
-      !copies[target] && !message.undelivered[target]
-    if (thread !== undefined) {
-      const synced = await syncOf(thread)
-      if (!synced) return false
-      const targets = synced.targets.filter((target) => synced.external[target] === event.thread)
-      const messages = await threadOf(synced.root)
-      const copies = await copiesOf(messages.map((message) => message.id))
-      return messages.some((message) => targets.some((target) => pending(message, target, copies[message.id] ?? {})))
-    }
-    // A new thread of theirs: one of their roots from the echo window, still on its way to this channel.
-    const { roots } = await call('syncRoots', { by: person.id, since: now - ECHO_WINDOW_MS })
-    const copies = await copiesOf(roots.map((root) => root.id))
-    for (const root of roots) {
-      const synced = await syncOf(root.thread)
-      if (synced?.targets.includes(event.channel) && !synced.external[event.channel] && pending(root, event.channel, copies[root.id] ?? {}))
-        return true
-    }
-    return false
-  }
-
-  /** A live code, posted from `event`'s account through the entry it was issued for: link them. */
-  async function claimCode(key: string, event: Extract<ExternalEvent, { kind: 'message' }>, code: string) {
-    try {
-      await call('syncAccount', { sync: key, account: event.author, code, message: externalMessageKey(event.subthread ?? event.thread, event.message) })
-    } catch (error) {
-      if (missing(error)) return false
-      throw error
-    }
-    await platformOf(key).react(native(event.subthread ?? event.thread), event.message, 'check', true).catch((error: unknown) =>
-      console.warn(`[board] couldn't confirm a linking code on ${key}:`, describe(error)),
-    )
-    return true
-  }
-
-  /** Whether entry `key` signs people in: its sign-in links the account, and lets the board post as them. */
-  const signsIn = (key: string) => platformOf(key).users !== null
-
-  /**
-   * A sign-in on entry `key` for `subject`, the person a code was issued to: the platform's URL,
-   * which sends them to `callback` once they've approved.
-   */
-  async function signIn(key: string, subject: string, callback?: string): Promise<string> {
-    const platform = platformOf(key)
-    if (!platform.users) throw badRequest(`${key} can't sign people in: link it with a code`)
-    return platform.users.authorize(subject, callback ? { callback } : {})
-  }
-
-  /** The account `subject` signed in with on entry `key`, or null while they haven't. */
-  async function signedIn(key: string, subject: string): Promise<ExternalAuthor | null> {
-    const platform = platformOf(key)
-    if (!platform.users) throw badRequest(`${key} can't sign people in: link it with a code`)
-    const token = await platform.users.token(subject)
-    if (!token) return null
-    const account = await platform.whoAmI(token)
-    if (!account.id.startsWith(`${platform.platform}:user:`)) throw badRequest(`${key} named an account that isn't a ${platform.platform} user`)
-    return account
-  }
-
-  /** Links the account `subject` signed in with to them, by the code they carried through: null while they haven't. */
-  async function redeemSignIn(key: string, subject: string, code: string): Promise<LinkedAccount | null> {
-    const account = await signedIn(key, subject)
-    if (!account) return null
-    return (await call('syncAccount', { sync: key, account, code, method: 'consent' })).link
   }
 
   async function applyIncoming(key: string, item: InboxDelivery, meta: { id: string; attempt: number }, channel: string, overrides: SyncOverrides): Promise<SyncResult> {
@@ -811,67 +709,10 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
     })
   }
 
-  /**
-   * How `platform` mentions an actor: its own account, its person's, or any account
-   * its person linked there. An agent is just itself.
-   */
+  /** How `platform` mentions an actor: natively when it's the platform's own account, or null. */
   function nativeMention(platform: SyncProvider, actor: string, actors: Actors): string | null {
-    const native = (id: string) => {
-      const account = actors.byId[id]
-      return account ? platform.mention(account) : null
-    }
-    const person = actors.links[actor] ?? actor
-    const direct = native(actor) ?? (person === actor ? null : native(person))
-    if (direct) return direct
-    for (const id of linkedTo(actors, person)) {
-      const linked = native(id)
-      if (linked) return linked
-    }
-    return null
-  }
-
-  /**
-   * A person's own token on `platform`, to post `message` as them: only for what they
-   * wrote on the board themselves, not their agents, and null when they haven't
-   * signed in. A token that can't be had is the bot's turn, never a failed delivery.
-   * A new post (`linked`) goes as them only once they've linked the account they signed
-   * in with, so its echo is recognized as theirs and `vb identity unlink` stops it. Their
-   * copies already out there stay theirs to change.
-   */
-  async function personToken(platform: SyncProvider, message: MessageView, linked: boolean): Promise<string | null> {
-    if (!platform.users || message.from !== null || message.by.profile !== null || !message.by.principal.startsWith('vercel:user:')) return null
-    if (linked) {
-      const { accounts } = await find({ person: message.by.principal })
-      if (!accounts.some((account) => account.method === 'consent' && account.id.startsWith(`${platform.platform}:user:`))) return null
-    }
-    try {
-      return await platform.users.token(message.by.principal)
-    } catch (error) {
-      console.warn(`[board] no ${platform.platform} token for ${message.by.principal}; posting #${message.id} as the app:`, describe(error))
-      return null
-    }
-  }
-
-  /** What a message says as its author: no name in front, since it's theirs. */
-  function renderAsPerson(target: string, message: MessageView, actors: Actors) {
-    const platform = platformOf(keyOf(target))
-    const markdown = textFor(platform, message, actors, displayText(message.text, message.by.actor))
-    const lines = message.attachments.length > 0 && !platform.uploadsFiles
-    return { markdown: lines ? `${markdown}\n${attachmentNotes(message)}` : markdown }
-  }
-
-  /** Posts as the message's author when they've signed in; null to post as the app. */
-  async function postAsPerson(target: string, place: string, kind: ResolvedTarget['kind'], message: MessageView, actors: Actors) {
-    const platform = platformOf(keyOf(target))
-    if (!message.text.trim()) return null
-    const token = await personToken(platform, message, true)
-    if (!token) return null
-    try {
-      return await platform.postAs(token, native(place), kind, renderAsPerson(target, message, actors))
-    } catch (error) {
-      console.warn(`[board] couldn't post #${message.id} to ${target} as its author; posting as the app:`, describe(error))
-      return null
-    }
+    const account = actors.byId[actor]
+    return account ? platform.mention(account) : null
   }
 
   /** A board message as markdown for a platform, which converts it to its own format: by `renderer`, or the provider's own. */
@@ -946,12 +787,6 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
         files = null
       }
     } else {
-      const asPerson = await postAsPerson(target, place, 'thread', message, actors)
-      if (asPerson) {
-        const external: ExternalCopy = { thread: place, message: asPerson.message, asUser: true }
-        await recordDelivery(message, target, external)
-        return external
-      }
       if (!body.markdown.trim()) throw badRequest('a renderer must return text unless the message has media')
       sentId = (await platform.post(native(place), 'thread', body)).message
     }
@@ -965,7 +800,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
       kind: 'message',
       message: message.id,
       target,
-      external: { thread: copy.thread, message: copy.message, ...(copy.asUser ? { asUser: true as const } : {}) },
+      external: { thread: copy.thread, message: copy.message },
       ...(copy.files !== undefined ? { files: copy.files } : {}),
     })
   }
@@ -1122,14 +957,8 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
         const mediaOnly = !body.markdown.trim() && root.attachments.length > 0 && platform.uploadsFiles
         if (!body.markdown.trim() && !mediaOnly) throw badRequest('a renderer must return text unless the message has media')
         let uploaded: string[] | null | undefined
-        let postedAsPerson = false
         const post = async () => {
           if (!mediaOnly) {
-            const asPerson = await postAsPerson(target, target, 'channel', root, actors)
-            if (asPerson) {
-              postedAsPerson = true
-              return asPerson
-            }
             if (root.attachments.length === 0 || !platform.startsThreadsWithFiles) return platform.post(native(target), 'channel', body)
           }
           try {
@@ -1145,7 +974,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
         }
         const sent = await post()
         externalThread = `${keyOf(target)}:${sent.thread}`
-        const external: ExternalCopy = { thread: externalThread, message: sent.message, ...(uploaded !== undefined ? { files: uploaded } : {}), ...(postedAsPerson ? { asUser: true as const } : {}) }
+        const external: ExternalCopy = { thread: externalThread, message: sent.message, ...(uploaded !== undefined ? { files: uploaded } : {}) }
         await recordDelivery(root, target, external)
         await deliverFiles(root, target, external, actors, renderer)
       } catch (error) {
@@ -1221,19 +1050,9 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
         await offer(keyOf(target), event, message, target, async (renderer) => {
           const platform = platformOf(keyOf(target))
           const thread = native(copy.thread)
-          // A copy posted as its author is theirs to change: only their token can.
-          const theirs = copy.asUser && (event.type === 'message.edited' || event.type === 'message.deleted')
-          const token = theirs ? await personToken(platform, message, false) : null
-          if (theirs && !token) {
-            console.warn(`[board] skipped ${event.type} on ${target}: #${message.id} was posted as its author, and their token is gone`)
-            return
-          }
-          if (event.type === 'message.edited')
-            if (token) await platform.editAs(token, thread, copy.message, renderAsPerson(target, message, actors))
-            else await platform.edit(thread, copy.message, renderFor(target, message, actors, copy.files === null, renderer))
+          if (event.type === 'message.edited') await platform.edit(thread, copy.message, renderFor(target, message, actors, copy.files === null, renderer))
           else if (event.type === 'message.deleted') {
-            if (token) await platform.deleteAs(token, thread, copy.message)
-            else await platform.delete(thread, copy.message)
+            await platform.delete(thread, copy.message)
             // The files went as a message of their own.
             if (copy.files?.length) await platform.deleteFiles(copy.files)
           }
@@ -1381,10 +1200,6 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
     findByEmail,
     handleWebhook,
     inboxChannel,
-    signsIn,
-    signIn,
-    signedIn,
-    redeemSignIn,
     typing,
     readSource,
     joinSource,

@@ -9,7 +9,7 @@ const DEEPSEC_TIMEOUT = "30m";
 /**
  * A person's :security: reaction on a PR thread's root (from Slack) has Eve run deepsec on the
  * PR's diff and report back, reacting :secure: when it comes out clean. Anyone in the channel
- * can ask, the same rule as :shipit:. On a thread that isn't a PR, the watcher says so itself.
+ * can ask. On a thread that isn't a PR, the watcher says so itself.
  */
 export function security(options: { tellEve: typeof tellEve }): Watcher {
   return {

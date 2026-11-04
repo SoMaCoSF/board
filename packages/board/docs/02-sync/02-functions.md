@@ -104,7 +104,7 @@ What `deliver()` sends depends on the event:
 | `labels.changed` | An edit of its copy, when the labels change what it renders to. |
 
 A new root comes once more, with `target` and `channel` null, for each platform
-that can start a thread in a channel (Slack can; GitHub and WhatsApp can't).
+that can start a thread in a channel (Slack and Linear can; GitHub can't).
 That's when `start` puts it there: the board records the channel, and the
 `thread.synced` that follows comes back through the function to be delivered.
 `start` never sends a thread back to the channel its root came from. A root
@@ -123,7 +123,6 @@ each one does: a sync function, or a board channel as a string.
 | --- | --- | --- | --- |
 | `channels` | `@vercel/board/sync-slack`, `@vercel/board/sync` | Slack channels, by name (`'#prs'`) or ID | `mirror` |
 | `repos` | `@vercel/board/sync-github` | Repos (`'owner/repo'`), or `{ pulls, issues }` to route each | `into` |
-| `numbers` | `@vercel/board/sync-kapso` | WhatsApp phone number IDs | `mirror` |
 | `teams` | `@vercel/board/sync-linear` | Linear team keys (`'ENG'`) | `mirror` |
 
 Each routes an event by its `channel`. A new root goes to every channel's
@@ -198,11 +197,11 @@ reads it. Fields every event has:
 | Field | Value |
 | --- | --- |
 | `id` | The inbox event's ID. Stable across retries: use it as an idempotency key. |
-| `platform`, `key` | `slack`, `github`, or `whatsapp`, and the entry's key. |
+| `platform`, `key` | `slack`, `github`, `linear`, or a `chatSdk()` entry's platform, and the entry's key. |
 | `channel`, `thread` | External IDs with the key prefix: `slack:C0123ABC`, `slack:C0123ABC:1727000000.123456`. `thread` is what `vb sync` accepts as a target. |
 | `subthread` | The precise sub-thread, when the adapter grouped it: a GitHub review thread. Otherwise `null`. |
 | `kind` | `message`, `edited`, `deleted`, `reaction`, or `lifecycle`. |
-| `type` | The narrower name: `message` (Slack, WhatsApp), `comment` (GitHub), `message.edited`, `message.deleted`, `reaction.added`, `reaction.removed`, or a lifecycle type like `pr.opened`. |
+| `type` | The narrower name: `message` (Slack, `chatSdk()`), `comment` (GitHub, Linear), `message.edited`, `message.deleted`, `reaction.added`, `reaction.removed`, or a lifecycle type like `pr.opened`. |
 | `raw` | The platform's payload. |
 
 Then, by kind:
@@ -220,8 +219,8 @@ Then, by kind:
 GitHub events also carry `subject: { type: 'pull_request' | 'issue', repo, number }`,
 comments and reactions included. The types are exported: `SlackEvent` from
 `@vercel/board/sync-slack`, `GitHubEvent` and `GitHubPayload` from
-`@vercel/board/sync-github`, `WhatsAppEvent` from `@vercel/board/sync-kapso`, and `LinearEvent` from
-`@vercel/board/sync-linear`.
+`@vercel/board/sync-github`, `LinearEvent` from `@vercel/board/sync-linear`, and
+`ChatSdkEvent` from `@vercel/board/sync-chat-sdk`.
 
 ## Permalinks
 
@@ -326,7 +325,7 @@ returns markdown:
 
 ```ts
 // in board({ sync: { … } }): post the text alone, without the author label
-kapso({ adapter, markRead }, render(({ message }) => message.text, numbers({ '16315558151': 'support' }))),
+slack('slack/acme', render(({ message }) => message.text, channels({ '#prs': 'prs' }))),
 ```
 
 The default is `**${label}**: ${message.text}`, where the label is the author's
@@ -356,8 +355,8 @@ renders to, board edits that copy, so a PR's root in Slack can show its state:
     : `**${label}**: ${message.text}`
 ```
 
-`mentionOf(actor)` returns how the platform mentions an actor (`<@U0456>` in
-Slack), through any account their person linked, or null. The default label is
+`mentionOf(actor)` returns how the platform mentions one of its own actors
+(`<@U0456>` in Slack), or null for anyone else. The default label is
 the author's name, so nobody gets pinged unless a renderer asks:
 
 ```ts

@@ -83,7 +83,8 @@ export function ddl(dialect: Db['dialect']): string[] {
   key text primary key,
   message_id ${big} not null
 )`,
-    'create index if not exists board_messages_recent on board_messages (by_principal, created_at) where re is null',
+    // A person's recent roots were for telling their own posts' echoes apart, which nothing does now.
+    'drop index if exists board_messages_recent',
     ...(dialect === 'postgres' ? ['drop function if exists board_apply(text, bigint, boolean, jsonb, jsonb, jsonb)', APPLY_FUNCTION] : []),
   ]
 }
@@ -538,14 +539,6 @@ where v.message_id in (${p.list([...new Set(ids)])})
 where exists (select 1 from board_terms t where t.message_id = m.id and t.term = '${ATTACHMENT}' and t.value = $1)
 order by m.id`,
         values: [clean(attachment)],
-      })
-      return rows.map((found) => parse(found)!)
-    },
-
-    async recentRoots(principal, since) {
-      const rows = await db.all({
-        text: 'select data from board_messages where by_principal = $1 and re is null and created_at >= $2 order by id',
-        values: [principal, since],
       })
       return rows.map((found) => parse(found)!)
     },

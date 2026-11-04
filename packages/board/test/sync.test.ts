@@ -1311,6 +1311,41 @@ describe('sync', () => {
     )
   })
 
+  it('finds what mentions the Slack user with an email: --mentions ada@vercel.com, from before anyone pinged them', async () => {
+    const lookupByEmail = vi.fn(async ({ email }: { email: string }) => {
+      if (email !== 'ada@vercel.com') throw new Error('users_not_found')
+      return { user: { id: 'U_ADA', name: 'ada', profile: { display_name: 'ada', real_name: 'Ada Lovelace' } } }
+    })
+    const conversations = { list: async () => ({ channels: [] }), info: async () => ({}), join: async () => ({}) }
+    const { board, webhook } = setup({ slackClient: { conversations, users: { info: async () => ({}), lookupByEmail } } })
+    const token = await personToken()
+    const julian = caller(board.fetch, token, { 'x-board-handle': 'julian' })
+    const { cursor } = (await julian('GET', '/events?wait=0')).body
+
+    // `vb tail` (a stream) and `vb wait` (a long poll) for Ada's mentions, before the board has
+    // ever seen Ada; then someone pings her in Slack.
+    const controller = new AbortController()
+    const stream = await board.fetch(new Request(`${BOARD_URL}/events?mentions=ada@vercel.com&after=${cursor}`, {
+      headers: { authorization: `Bearer ${token}`, accept: 'text/event-stream' },
+      signal: controller.signal,
+    }))
+    const waiting = julian('GET', `/events?mentions=ada@vercel.com&after=${cursor}&wait=10`)
+    await webhook('slack', { type: 'message', threadId: 'slack:C2:600', id: '600', text: 'hello', user: 'U_JB' })
+    await webhook('slack', { type: 'message', threadId: 'slack:C2:600', id: '601', text: '@ada can you look?', user: 'U_JB' })
+
+    const { events } = (await waiting).body
+    expect(events.map((event: { message?: unknown }) => event.message)).toMatchObject([{ text: '@ada can you look?', mentions: ['slack:user:U_ADA'] }])
+    const reader = stream.body!.getReader()
+    let streamed = ''
+    while (!streamed.includes('event: board')) streamed += new TextDecoder().decode((await reader.read()).value)
+    controller.abort()
+    expect(JSON.parse(streamed.match(/^data: (.*)$/m)![1]!).message).toMatchObject({ text: '@ada can you look?', mentions: ['slack:user:U_ADA'] })
+    expect((await julian('GET', '/messages?mentions=ada@vercel.com')).body.messages).toMatchObject([{ mentions: ['slack:user:U_ADA'] }])
+    expect((await julian('GET', '/messages?mentions=nobody@vercel.com')).body.messages).toEqual([])
+    // Slack is asked once per email for a few minutes, not at every page.
+    expect(lookupByEmail.mock.calls.filter(([{ email }]) => email === 'ada@vercel.com')).toHaveLength(1)
+  })
+
   it('attaches an existing thread to a new target and backfills it', async () => {
     const { board, s } = setup()
     const julian = caller(board.fetch, await personToken())
@@ -1416,6 +1451,11 @@ describe('sync', () => {
     expect(JSON.stringify((await front('POST', `/schedules/${scheduled.id}/cancel`, {})).body)).not.toContain('U_ADA')
     // The post still mentions Ada, for those who read feedback.
     expect((await julian('GET', '/messages?channel=feedback')).body.messages[0]).toMatchObject({ text: 'checkout is slow, cc @[slack:user:U_ADA]', mentions: ['slack:user:U_ADA'] })
+
+    // Nor does it get to look an email up by reading for it.
+    const asked = lookupByEmail.mock.calls.length
+    await front('GET', '/messages?mentions=grace@vercel.com')
+    expect(lookupByEmail.mock.calls.length).toBe(asked)
   })
 
   it('skips a Slack channel name that does not resolve, and syncs the rest', async () => {

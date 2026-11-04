@@ -98,9 +98,9 @@
       "types": "./dist/sync.d.mts",
       "default": "./dist/sync.mjs"
     },
-    "./sync/chat": {
-      "types": "./dist/sync.chat.d.mts",
-      "default": "./dist/sync.chat.mjs"
+    "./sync-chat-sdk": {
+      "types": "./dist/sync-chat-sdk.d.mts",
+      "default": "./dist/sync-chat-sdk.mjs"
     },
     "./sync-slack": {
       "types": "./dist/sync-slack.d.mts",
@@ -109,10 +109,6 @@
     "./sync-github": {
       "types": "./dist/sync-github.d.mts",
       "default": "./dist/sync-github.mjs"
-    },
-    "./sync-kapso": {
-      "types": "./dist/sync-kapso.d.mts",
-      "default": "./dist/sync-kapso.mjs"
     },
     "./sync-linear": {
       "types": "./dist/sync-linear.d.mts",
@@ -146,12 +142,13 @@
   },
   "devDependencies": {
     "@base-ui/react": "^1.8.0",
+    "@chat-adapter/discord": "4.41.1",
     "@chat-adapter/github": "^4.41.1",
     "@chat-adapter/linear": "^4.41.1",
     "@chat-adapter/slack": "^4.41.1",
+    "@chat-adapter/telegram": "4.41.1",
     "@chat-adapter/tests": "^4.41.1",
     "@electric-sql/pglite": "0.3.15",
-    "@kapso/chat-adapter": "^0.1.1",
     "@types/node": "^26.6.3",
     "@types/pg": "8.15.5",
     "@types/react": "^19.3.0",

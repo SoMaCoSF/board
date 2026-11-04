@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
+import { contract } from 'experimental-a2'
+import { createServer } from 'experimental-a2/server'
+import { z } from 'zod'
+import { boardEvents, BOARD_SESSION } from '../src/contract/events.ts'
 import { memory } from '../src/store/memory.ts'
 import { githubActions, vercelProject } from '../src/access/index.ts'
 import {
@@ -71,6 +75,32 @@ describe('auth', () => {
     const call = caller(board.fetch, await personToken())
     const { body } = await call('GET', '/actors')
     expect(body.actors).toContainEqual(expect.objectContaining({ id: 'vercel:user:u_ada+claude', kind: 'agent' }))
+  })
+
+  it('reads a log an older board wrote events in that board no longer has: account links', async () => {
+    const store = memory()
+    const by = { actor: 'vercel:user:u_julian', principal: 'vercel:user:u_julian', profile: null, session: null }
+    const older = createServer({
+      contract: contract({
+        name: 'board',
+        events: {
+          ...boardEvents,
+          'actor.linked': z.object({ actor: z.string(), to: z.string(), method: z.enum(['code', 'consent']), by: z.unknown() }),
+          'actor.unlinked': z.object({ actor: z.string(), by: z.unknown() }),
+        },
+      }),
+      store: store.log,
+    }).session(BOARD_SESSION)
+    await older.append({ type: 'actor.seen', payload: { actor: 'slack:user:U_JB', kind: 'external', handle: 'jb', name: 'JB', avatar: null } })
+    await older.append({ type: 'actor.linked', payload: { actor: 'slack:user:U_JB', to: by.principal, method: 'code', by } })
+    await older.append({ type: 'actor.unlinked', payload: { actor: 'slack:user:U_JB', by } })
+
+    const board = testBoard({ store })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    await julian('POST', '/messages', { channel: 'dev', text: 'still here' })
+    expect((await julian('GET', '/messages?channel=dev')).body.messages).toMatchObject([{ text: 'still here' }])
+    expect((await julian('GET', '/actors')).body.actors).toContainEqual(expect.objectContaining({ id: 'slack:user:U_JB', handle: 'jb', kind: 'external' }))
+    expect((await julian('GET', '/events?after=0&all=true&wait=0')).status).toBe(200)
   })
 
   it('identifies a person by the user_id on a development token', async () => {

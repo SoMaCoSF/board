@@ -1,24 +1,25 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { createHash, randomBytes } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import type { z } from 'zod'
 import { A2Error, idempotentId, reducer } from 'experimental-a2'
 import { consumer, createServer, type A2Scheduler, type ConsumerContext } from 'experimental-a2/server'
-import { boardContract, IDENTITY_SESSION, identityContract, inboxContract, INBOXES_SESSION, inboxSession, SCHEDULES_SESSION, type InboxEvent } from '../contract/contract.ts'
+import { boardContract, inboxContract, INBOXES_SESSION, inboxSession, SCHEDULES_SESSION, type InboxEvent } from '../contract/contract.ts'
 import { BOARD_SESSION, type BoardEvent, type BoardEvents } from '../contract/events.ts'
+import { createTrust } from './trust.ts'
 import type { ExternalAuthor, Link, Origin } from '../contract/external.ts'
-import { actorsReducer, channelsReducer, identityCodesReducer } from '../contract/reducers.ts'
-import { linkedTo, type Actor, type ExternalCopy, type IdentityCode, type Message } from '../contract/folds.ts'
+import { actorsReducer, channelsReducer } from '../contract/reducers.ts'
+import { type Actor, type ExternalCopy, type Message } from '../contract/folds.ts'
 import { ATTACHMENT_BYTES_MAX, IMPORT_BYTES_MAX, platformAvatar, RemoteWatcherId, type Labels } from '../contract/schemas.ts'
-import type { Discovery, InboxEntry, LinkedAccount, Me, ScheduleView } from '../api/routes.ts'
+import type { Discovery, InboxEntry, Me, ScheduleView } from '../api/routes.ts'
 import type { Protocol } from '../api/protocol.ts'
 import { FULL_ACCESS, type Access, type Permission } from './access.ts'
 import { authenticates, type Granted } from './auth.ts'
 import { actorSeen } from './actors.ts'
-import { SYNC, type Backend, type BackendRoute, type BoardBinding, type Caller, type ProtocolMethods, type SelfCaller } from './backend.ts'
+import { SYNC, type Backend, type BackendRoute, type BoardBinding, type Caller, type ProtocolMethods, type SelfCaller, type Trust } from './backend.ts'
 import { BoardError } from '../client/client.ts'
-import { attachmentBody, attachmentNotFound, finishUpload, readUpload, startUpload, writeUpload, type BlobStore } from './blob.ts'
+import { attachmentBody, attachmentNotFound, finishUpload, ownUpload, readUpload, startUpload, writeUpload, type BlobStore, type Uploader } from './blob.ts'
 import { badRequest, forbidden, HttpError, notFound, toErrorResponse } from './errors.ts'
-import { eventView, foldEvent, indexOf, loadBefore, OWN_CODE, personView, pollFeed, readableFilter, ref, toMessageFilter, view, viewedBy, viewLinkedIds } from './feed.ts'
+import { eventView, foldEvent, indexOf, loadBefore, OWN_CODE, pollFeed, readableFilter, ref, toMessageFilter, view, viewedBy, viewLinkedIds } from './feed.ts'
 import { createReads, tablesConsumer } from './reads.ts'
 import { createdBy, createSchedules, type Schedule } from './schedules.ts'
 import type { BoardStore, MessageFilter } from '../store/types.ts'
@@ -164,18 +165,6 @@ function externalIdentity(author: ExternalAuthor, records: boolean): Identity {
   }
 }
 
-/**
- * A one-time code for linking an account: `vb-` and eight letters and digits that
- * can't be misread. Only its hash is kept.
- */
-const CODE_LETTERS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
-const CODE_TTL_MS = 10 * 60_000
-const newCode = () => {
-  const letters = [...randomBytes(8)].map((byte) => CODE_LETTERS[byte % CODE_LETTERS.length]).join('')
-  return `vb-${letters.slice(0, 4)}-${letters.slice(4)}`
-}
-const hashCode = (code: string) => createHash('sha256').update(code.toUpperCase()).digest('base64url')
-
 /** The board events sync delivers: what a platform shows, and a thread's new targets. */
 const DELIVERED = ['thread.synced', 'message.posted', 'message.edited', 'message.deleted', 'reaction.added', 'reaction.removed', 'labels.changed'] as const
 
@@ -315,8 +304,8 @@ function build(options: A2Options & { store: BoardStore }, binding: BoardBinding
     ...(options.scheduler ? { scheduler: options.scheduler } : {}),
     consumers: [inbound],
   })
-  const identityServer = createServer({ contract: identityContract, store: log })
-  const codes = identityServer.session(IDENTITY_SESSION)
+  // Who the board trusts beside its code's rules: grants, and the tokens it issued.
+  const access = createTrust({ store: log, issuers: () => binding.issuers(), accessNow: (principal) => binding.accessNow(principal) })
   const inboxes = inboxServer.session(INBOXES_SESSION)
   /** The inboxes this instance knows have an `inbox.opened`, so most pushes write nothing more. */
   const opened = new Set<string>()
@@ -330,8 +319,8 @@ function build(options: A2Options & { store: BoardStore }, binding: BoardBinding
    * Whether `principal` may have a file: one it uploaded, or one a message it
    * can read carries. A deleted message drops its files, so it no longer counts.
    */
-  async function attachmentReadable(principal: Granted, id: string, uploadedBy: string | null) {
-    if (principal.access.readsAll || uploadedBy === principal.id) return true
+  async function attachmentReadable(principal: Granted, id: string, uploader: Uploader) {
+    if (principal.access.readsAll || ownUpload(uploader, principal)) return true
     await reads.ensure()
     return (await reads.tables.withAttachment(id)).some((message) => principal.access.readable(message.channel))
   }
@@ -368,8 +357,8 @@ function build(options: A2Options & { store: BoardStore }, binding: BoardBinding
   const attachmentsFor = (principal: Granted, ids: readonly string[] | undefined) =>
     Promise.all(
       [...new Set(ids ?? [])].map(async (id) => {
-        const { attachment, uploadedBy } = await readUpload(blob, id)
-        if (!(await attachmentReadable(principal, id, uploadedBy))) throw attachmentNotFound(id)
+        const { attachment, ...uploader } = await readUpload(blob, id)
+        if (!(await attachmentReadable(principal, id, uploader))) throw attachmentNotFound(id)
         return attachment
       }),
     )
@@ -467,8 +456,8 @@ function build(options: A2Options & { store: BoardStore }, binding: BoardBinding
         audience: url,
         team_id: teamId,
         project_id: id,
-        // Its own sync's entries, and those of the syncs registered here, which link accounts here too.
-        sync: (await linkable()).map(({ key, platform }) => ({ key, platform })),
+        // Its own sync's entries, and those of the syncs registered here.
+        sync: await syncEntries(),
       }
       return body
     },
@@ -509,27 +498,8 @@ function build(options: A2Options & { store: BoardStore }, binding: BoardBinding
       const actors = Object.values(state.byId)
         .filter((a) => seen === null || seen(a.id))
         .sort((a, b) => a.handle.localeCompare(b.handle))
-        .map(({ host: _host, ...a }) => {
-          const person = personView(state, a.id)
-          return person ? { ...a, person } : a
-        })
+        .map(({ host: _host, ...a }) => a)
       return { actors, cursor: ref(index) }
-    },
-    async identity(caller) {
-      const { principal } = (await identityOf(caller))
-      const { state, index } = await session.state(actorsReducer)
-      const links = linkedTo(state, principal.id).map((id) => ({
-        actor: id,
-        handle: state.byId[id]?.handle ?? null,
-        name: state.byId[id]?.name ?? null,
-        method: state.links[id]!.method,
-        at: state.links[id]!.at,
-      }))
-      // The entries this board links accounts on that have none of the caller's yet.
-      const unlinked = (await linkable())
-        .filter((entry) => !links.some((link) => link.actor.startsWith(`${entry.platform}:user:`)))
-        .map((entry) => entry.key)
-      return { principal: principal.id, links, unlinked, cursor: ref(index) }
     },
     async messages(caller, query) {
       const { principal, actor } = (await identityOf(caller))
@@ -584,13 +554,13 @@ function build(options: A2Options & { store: BoardStore }, binding: BoardBinding
     },
     async edit(caller, { id, text, revision }) {
       const identity = await identityOf(caller)
-      const authorized = await authorizeOwn(writes, identity.principal, messageAt(id), 'edit')
+      const authorized = await authorizeOwn(writes, identity, messageAt(id), 'edit')
       const { unknownMentions } = await writeEdit(writes, { identity, authorized, text, revision })
       return { ok: true as const, ...(unknownMentions ? { unknownMentions } : {}) }
     },
     async delete(caller, { id, revision }) {
       const identity = (await identityOf(caller))
-      const authorized = await authorizeOwn(writes, identity.principal, messageAt(id), 'delete')
+      const authorized = await authorizeOwn(writes, identity, messageAt(id), 'delete')
       await writeDelete(writes, { identity, authorized, revision })
       return { ok: true }
     },
@@ -621,7 +591,7 @@ function build(options: A2Options & { store: BoardStore }, binding: BoardBinding
         const at = messageAt(query.re)
         root = (await authorizeMessage(writes, principal.access, 'read', at)).message.re ?? at
       }
-      const visible = (schedule: Schedule) => principal.access.readable(schedule.channel) || createdBy(schedule, principal)
+      const visible = (schedule: Schedule) => principal.access.readable(schedule.channel) || createdBy(schedule, { principal, actor })
       return { schedules: (await schedules.list({ ...query, ...(root !== undefined ? { root } : {}) }, visible)).map((schedule) => blindSchedule(schedule, principal.access, actor.id)) }
     },
     async cancelSchedule(caller, { id }) {
@@ -629,27 +599,33 @@ function build(options: A2Options & { store: BoardStore }, binding: BoardBinding
       const answer = await schedules.cancel(identity, scheduleAt(id))
       return { ...answer, schedule: blindSchedule(answer.schedule, identity.principal.access, identity.actor.id) }
     },
+    grants: async (caller) => access.grants(await identityOf(caller)),
+    createGrant: async (caller, body) => access.createGrant(await identityOf(caller), body),
+    revokeGrant: async (caller, input) => access.revokeGrant(await identityOf(caller), input),
+    tokens: async (caller) => access.tokens(await identityOf(caller)),
+    createToken: async (caller, body) => access.createToken(await identityOf(caller), body),
+    revokeToken: async (caller, input) => access.revokeToken(await identityOf(caller), input),
     async upload(caller, { data, name, type }) {
       const { principal } = (await identityOf(caller))
       // A file is no use until a post or an import carries it, so uploading needs `post` or `sync` somewhere.
       if (!principal.access.anywhere('post') && !principal.access.anywhere('sync')) throw forbidden("this token can't post anywhere, so it can't upload")
       // Sync's own imports are fetched in this process, with no request to fit under, so they may be bigger.
       const max = ownSync(caller) ? IMPORT_BYTES_MAX : ATTACHMENT_BYTES_MAX
-      return { attachment: await writeUpload(blob, { data, name, type, uploadedBy: principal.id }, max) }
+      return { attachment: await writeUpload(blob, { data, name, type, uploadedBy: principal.id, uploadedWith: await access.chain(principal) }, max) }
     },
     async uploadStart(caller, { name, type, size }) {
       const { principal } = (await identityOf(caller))
       if (!principal.access.anywhere('post') && !principal.access.anywhere('sync')) throw forbidden("this token can't post anywhere, so it can't upload")
-      return startUpload(blob, { name: name ?? null, type: type ?? null, size, uploadedBy: principal.id })
+      return startUpload(blob, { name: name ?? null, type: type ?? null, size, uploadedBy: principal.id, uploadedWith: await access.chain(principal) })
     },
     async uploadFinish(caller, { id }) {
       const { principal } = (await identityOf(caller))
-      return { attachment: await finishUpload(blob, id, principal.id) }
+      return { attachment: await finishUpload(blob, id, principal) }
     },
     async attachment(caller, { id }) {
       const { principal } = (await identityOf(caller))
-      const { attachment, uploadedBy } = await readUpload(blob, id)
-      if (!(await attachmentReadable(principal, attachment.id, uploadedBy))) throw attachmentNotFound(attachment.id)
+      const { attachment, ...uploader } = await readUpload(blob, id)
+      if (!(await attachmentReadable(principal, attachment.id, uploader))) throw attachmentNotFound(attachment.id)
       return { attachment, data: await attachmentBody(blob, attachment.id) }
     },
     async watchers(caller) {
@@ -666,7 +642,7 @@ function build(options: A2Options & { store: BoardStore }, binding: BoardBinding
       // A registered watcher sees only what its registrant may read.
       if (!principal.access.anywhere('read'))
         throw forbidden("this token can't read anywhere, so a watcher it registers would see nothing")
-      // A sync's entries are where the board links people's accounts, its sign-in included: only for one that may sync.
+      // A sync's entries speak for platform users, and discovery lists them: only for one that may sync.
       if ((body.sync?.length ?? 0) > 0 && !principal.access.anywhere('sync')) throw forbidden("this token can't register a sync: it needs sync somewhere")
       // A key names one sync's platform locations: this board's own sync's keys are its own.
       const taken = body.sync?.find((entry) => binding.sync.some((own) => own.key === entry.key))
@@ -923,13 +899,6 @@ function build(options: A2Options & { store: BoardStore }, binding: BoardBinding
       const { tables } = store
       let thread: string | null = null
       let message: string | null = null
-      let holder: string | null = null
-      if (query.code !== undefined) {
-        // Whose a live code is, for a sign-in that carries it through an entry the caller syncs.
-        const issued = (await codes.state(identityCodesReducer)).state[hashCode(query.code)]
-        const keys = new Set((await entriesOf(caller, principal.id)).map((entry) => entry.key))
-        if (issued && issued.usedBy === null && Date.parse(issued.expiresAt) >= Date.now() && keys.has(issued.sync)) holder = issued.principal
-      }
       if (query.post !== undefined) {
         // An import the caller's sync made: a retry's, found before it goes through the middleware again.
         const landed = await reads.byEventId(importId(caller, principal.id, query.post), signal)
@@ -950,18 +919,7 @@ function build(options: A2Options & { store: BoardStore }, binding: BoardBinding
           if (found && principal.access.can('sync', found.channel)) message = ref(found.id)
         }
       }
-      const { state: actors } = query.account !== undefined || query.person !== undefined ? await session.state(actorsReducer) : { state: null }
-      // Who's linked to whom holds board-wide: a sync learns it only for users of the platforms it syncs.
-      const platforms = actors ? (await entriesOf(caller, principal.id)).map((entry) => `${entry.platform}:`) : []
-      const ours = (account: string) => platforms.some((platform) => account.startsWith(platform))
-      const link = query.account !== undefined && ours(query.account) ? actors?.links[query.account] : undefined
-      return {
-        thread,
-        message,
-        person: link ? { id: link.to, method: link.method } : null,
-        accounts: query.person === undefined || !actors ? [] : linkedTo(actors, query.person).filter(ours).map((id) => ({ id, method: actors.links[id]!.method })),
-        holder,
-      }
+      return { thread, message }
     },
 
     async syncCopies(caller, query) {
@@ -985,15 +943,6 @@ function build(options: A2Options & { store: BoardStore }, binding: BoardBinding
           out[ref(id)] = Object.fromEntries(Object.entries(copies.get(id) ?? {}).filter(([, copy]) => mine(copy)).map(([target, { by: _by, ...copy }]) => [target, copy]))
       }
       return { copies: out }
-    },
-
-    async syncRoots(caller, { by, since }) {
-      const { principal } = (await needSync(caller, 'look up a sync'))
-      await reads.ensure()
-      const roots = (await store.tables.recentRoots(by, since)).filter((root) => principal.access.can('sync', root.channel))
-      const { state: actors } = await session.state(actorsReducer)
-      const reader = await reads.reader(principal.access, roots)
-      return { roots: roots.map((root) => view(root, actors, reader)) }
     },
 
     async inboxPush(caller, { key, events }) {
@@ -1073,50 +1022,6 @@ function build(options: A2Options & { store: BoardStore }, binding: BoardBinding
         }
       return { events: entries.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)).slice(0, limit ?? 50) }
     },
-
-    async syncCode(caller, { sync }) {
-      // A person's own, for themselves: no one gets a code for someone else.
-      const identity = await identityOf(caller)
-      if (identity.principal.kind !== 'person') throw forbidden('only people link platform accounts')
-      const entry = (await linkable()).find((candidate) => candidate.key === sync)
-      if (!entry) throw notFound(`no sync entry named ${sync}`)
-      const principal = identity.principal.id
-      const code = newCode()
-      const expiresAt = new Date(Date.now() + CODE_TTL_MS).toISOString()
-      await codes.append({ type: 'identity.code_issued', payload: { hash: hashCode(code), principal, sync, expiresAt } })
-      // An entry that signs people in does it where its sync runs, which redeems the code the sign-in carries.
-      const signIn = entry.signIn && entry.url !== null ? `${entry.url}/identity/sign-in?${new URLSearchParams({ sync, code })}` : null
-      return { code, expiresAt, ...(signIn ? { signIn } : {}) }
-    },
-
-    async syncAccount(caller, body) {
-      const { principal } = await needSync(caller, 'link accounts', true)
-      const { account } = body
-      // A platform user of the entry the code was issued for, which the caller syncs.
-      await speaksFor(caller, principal.id, account, body.sync)
-      const hash = hashCode(body.code)
-      const issued = (await codes.state(identityCodesReducer)).state[hash]
-      const bad = () => notFound("that code isn't live: it expired, was used, or was issued for another sync entry", 'bad_code')
-      if (!issued || issued.sync !== body.sync) throw bad()
-      // A used code claims again only for a retry of the message that used it.
-      const usedHere = (used: IdentityCode | undefined) => used?.usedBy === account.id && used.usedIn === (body.message ?? null)
-      if (issued.usedBy === null ? Date.parse(issued.expiresAt) < Date.now() : !usedHere(issued)) throw bad()
-      await codes.append({ type: 'identity.code_used', id: `used:${hash}`, payload: { hash, actor: account.id, ...(body.message !== undefined ? { message: body.message } : {}) } })
-      // Two posts of it at once: the one the log took first wins.
-      if (!usedHere((await codes.state(identityCodesReducer)).state[hash])) throw bad()
-      const linked = externalIdentity(account, recordsActors(caller, principal))
-      return { person: issued.principal, link: await link(linked, issued.principal, body.method ?? 'code', `link:${hash}`) }
-    },
-
-    async syncUnlink(caller, { account }) {
-      const { principal, author } = (await identityOf(caller))
-      const { state } = await session.state(actorsReducer)
-      const found = state.links[account]
-      // Your own account, or anyone's for a caller that speaks for platform users in every channel: a link holds board-wide.
-      if (!found || (found.to !== principal.id && !principal.access.everywhere('sync'))) throw notFound(`${account} isn't linked`, 'not_linked')
-      await session.append({ type: 'actor.unlinked', payload: { actor: account, by: author } })
-      return { ok: true }
-    },
   }
 
   /**
@@ -1138,27 +1043,22 @@ function build(options: A2Options & { store: BoardStore }, binding: BoardBinding
   }
 
   /**
-   * The sync entries this board links accounts on, by key, each with the URL where its sync runs,
-   * once that's known: its own sync's, then those of the syncs registered here that may still sync.
-   * A key its own sync has is its own. A key two registered syncs claim is neither's to sign people
-   * in for: a person links it by posting the code where either syncs.
+   * The sync entries this board lists in its discovery: its own sync's, then those of the syncs
+   * registered here that may still sync. A key its own sync has is its own.
    */
-  async function linkable(): Promise<(SyncEntrySpec & { url: string | null })[]> {
-    const found = new Map<string, SyncEntrySpec & { url: string | null }>()
-    for (const entry of binding.sync) found.set(entry.key, { ...entry, url: binding.url() })
-    const claimed = new Map<string, (SyncEntrySpec & { url: string | null })[]>()
+  async function syncEntries(): Promise<SyncEntrySpec[]> {
+    const found = new Map<string, SyncEntrySpec>()
+    for (const { key, platform } of binding.sync) found.set(key, { key, platform })
     for (const registration of Object.values((await registry.state()).byOwner)) {
       if (registration.sync.length === 0) continue
       if (!(await binding.accessNow(registration.principal))?.anywhere('sync')) continue
-      for (const entry of registration.sync)
-        if (!found.has(entry.key)) (claimed.get(entry.key) ?? claimed.set(entry.key, []).get(entry.key)!).push({ ...entry, url: registration.url })
+      for (const { key, platform } of registration.sync) if (!found.has(key)) found.set(key, { key, platform })
     }
-    for (const [key, claims] of claimed) found.set(key, claims.length === 1 ? claims[0]! : { ...claims[0]!, signIn: false, url: null })
     return [...found.values()]
   }
 
   /**
-   * Whether a caller may write as, or link, `author`: a platform user, never anyone this board
+   * Whether a caller may write as `author`: a platform user, never anyone this board
    * signs in, on a platform it syncs: the one of entry `from`, when it names one.
    */
   async function speaksFor(caller: Caller, principal: string, author: { id: string }, from: string | null) {
@@ -1329,30 +1229,12 @@ function build(options: A2Options & { store: BoardStore }, binding: BoardBinding
     opened.add(channel)
   }
 
-  /** Records that platform user `identity` is `to`, unless it already is. `id` makes a retry a no-op. */
-  async function link(identity: Identity, to: string, method: 'code' | 'consent', id?: string): Promise<LinkedAccount> {
-    const { actor: account, author: by } = identity
-    const { state: actors } = await session.state(actorsReducer)
-    const seen = identity.records === false ? null : actorSeen(account, actors)
-    const existing = actors.links[account.id]
-    // A code is news even for an account already linked (`id` keeps its retries single); a sign-in check isn't.
-    if (existing?.to === to && !id) {
-      if (seen) await session.append(seen)
-      return { actor: account.id, handle: account.handle, name: account.name, method: existing.method, at: existing.at }
-    }
-    await session.append(
-      ...(seen ? [{ ...seen, ...(id ? { id: `${id}:seen` } : {}) }] : []),
-      { type: 'actor.linked' as const, ...(id ? { id } : {}), payload: { actor: account.id, to, method, by } },
-    )
-    return { actor: account.id, handle: account.handle, name: account.name, method, at: new Date().toISOString() }
-  }
-
-  // The inbox's second and the watchers' last, where tests and tools look for them. The identity
-  // session has no consumers or timers.
+  // The inbox's second and the watchers' last, where tests and tools look for them.
   const servers = [server, inboxServer, schedules.server, registry.server, watchers.server]
   return {
     methods,
     schedules,
+    trust: access.trust,
     /** The scheduler's callback, for every A2 server behind the board. */
     scheduler: options.scheduler
       ? options.scheduler.handler(...servers)
@@ -1406,6 +1288,12 @@ export function a2(options: A2Options = {}) {
     routes: [] as BackendRoute[],
     // The board lives here: board() lets its people and own deployments in by default.
     keeps: true,
+    // Its grants and tokens, in its log: board() checks requests against them.
+    trust: {
+      grants: async () => (await ready()).trust.grants(),
+      token: async (hash: string) => (await ready()).trust.token(hash),
+      live: async (id: string) => (await ready()).trust.live(id),
+    } satisfies Trust,
     bind(given: BoardBinding) {
       if (binding) throw new Error('a2: this backend already serves a board: create one a2() per board()')
       binding = given

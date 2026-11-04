@@ -11,7 +11,7 @@ import type { Board } from '../server/board.ts'
  */
 
 /** What a check is about, for the report's headings. */
-export type CheckGroup = 'core' | 'schedules' | 'attachments' | 'watchers' | 'sync'
+export type CheckGroup = 'core' | 'schedules' | 'grants' | 'tokens' | 'attachments' | 'watchers' | 'sync'
 
 export type CheckResult = {
   group: CheckGroup
@@ -31,6 +31,12 @@ export type ConformanceReport = {
 export type ConformanceOptions = {
   /** Where it posts. Default `conformance`. */
   channel?: string
+  /**
+   * The same board, with a board token's secret as the credential (as `BOARD_TOKEN` sends it):
+   * the tokens check calls it so to see that a token does only what its `can` says. Without it,
+   * that check is skipped.
+   */
+  withToken?: (secret: string) => Board
 }
 
 class Mismatch extends Error {}
@@ -55,6 +61,17 @@ async function rejects(attempt: Promise<unknown>, status: number, code: string, 
   throw new Mismatch(`${what}: expected ${status} ${code}, and it succeeded`)
 }
 
+/** That `attempt` is refused with `status`, whatever code the board gives it. */
+async function refused(attempt: Promise<unknown>, status: number, what: string) {
+  try {
+    await attempt
+  } catch (error) {
+    if (error instanceof BoardError && error.status === status) return
+    throw new Mismatch(`${what}: expected ${status}, got ${error instanceof BoardError ? `${error.status} ${error.code}` : String(error)}`)
+  }
+  throw new Mismatch(`${what}: expected ${status}, and it succeeded`)
+}
+
 /** Where a registration is woken, to put back after a check replaces it: its path (and branch) on a board that wakes by path, or its url. */
 function wokenAt(registered: RegistrationView | undefined): { url: string | null } | { path: string; branch?: string } {
   if (!registered?.path) return { url: registered?.url ?? null }
@@ -77,19 +94,35 @@ type Context = {
   root?: MessageView
   reply?: MessageView
   posted: string[]
+  withToken?: (secret: string) => Board
 }
 
 type Check = { group: CheckResult['group']; name: string; run: (ctx: Context) => Promise<void | string> }
 
 /**
  * The groups a board may keep none of, saying so with a 501: a board on `a2()` without a scheduler
- * answers `no_scheduler`, and without a blob store `no_files`.
+ * answers `no_scheduler`, and without a blob store `no_files`; one whose `access` is one function keeps
+ * no grants, `no_grants`. A board that's meant to keep something and doesn't yet answers otherwise,
+ * and fails.
  */
-const OPTIONAL = new Set<CheckGroup>(['schedules', 'attachments'])
+const OPTIONAL = new Set<CheckGroup>(['schedules', 'grants', 'tokens', 'attachments'])
 
 const needRoot = (ctx: Context) => {
   check(ctx.root && ctx.reply, "posting failed, so there's nothing to read")
   return { root: ctx.root, reply: ctx.reply }
+}
+
+/** A grant for a project that doesn't exist, from an environment its deployments would have: it lets nobody in. */
+const grantFor = (ctx: Context) => ({ issuer: 'vercel', claims: { environment: 'preview', project_id: `prj_conformance${ctx.labels.conformance}` } })
+
+/** Sets the check's grant, or says why it can't: changing who the board trusts takes `manage` in every channel. */
+async function firstGrant(ctx: Context): Promise<Awaited<ReturnType<Board['createGrant']>> | { skip: string }> {
+  try {
+    return await ctx.board.createGrant(grantFor(ctx))
+  } catch (error) {
+    if (error instanceof BoardError && error.status === 403) return { skip: "this token can't change the board's grants" }
+    throw error
+  }
 }
 
 /** The sync key the sync checks register, a platform of their own, so nothing reaches a real one. */
@@ -400,6 +433,146 @@ const CHECKS: Check[] = [
     },
   },
   {
+    group: 'grants',
+    name: 'grants a project, lists it, takes the same grant again as one, and revokes it',
+    run: async (ctx) => {
+      const asked = grantFor(ctx)
+      const first = await firstGrant(ctx)
+      if ('skip' in first) return first.skip
+      try {
+        isRef(first.grant.id, "a grant's id")
+        same(first.created, true, 'a new grant: created')
+        same(first.grant.issuer, 'vercel', "the grant's issuer")
+        same(first.grant.claims.project_id, asked.claims.project_id, "the grant's project_id")
+        check(first.grant.can['*']?.includes('post'), `a grant with no can should let them post everywhere, got ${show(first.grant.can)}`)
+        same(first.grant.by, ctx.me.actor, "the grant's by")
+        const again = await ctx.board.createGrant(asked)
+        same(again.created, false, 'the same issuer and claims again: created')
+        same(again.grant.id, first.grant.id, 'the same issuer and claims again: its id')
+        same((await ctx.board.grants()).filter((grant) => grant.id === first.grant.id).length, 1, 'grants listing it')
+      } catch (error) {
+        await ctx.board.revokeGrant(first.grant.id).catch(() => {})
+        throw error
+      }
+      same((await ctx.board.revokeGrant(first.grant.id)).revoked, true, 'revoking it')
+      same((await ctx.board.revokeGrant(first.grant.id)).revoked, false, 'revoking it again')
+      check(!(await ctx.board.grants()).some((grant) => grant.id === first.grant.id), "grants shouldn't list it once it's revoked")
+    },
+  },
+  {
+    group: 'grants',
+    name: "changes a grant's can when it's set again",
+    run: async (ctx) => {
+      const first = await firstGrant(ctx)
+      if ('skip' in first) return first.skip
+      const { grant } = first
+      try {
+        const narrowed = await ctx.board.createGrant({ ...grantFor(ctx), can: { [ctx.channel]: ['post'] } })
+        same(narrowed.created, false, 'setting its can: created')
+        same(narrowed.grant.id, grant.id, 'setting its can: its id')
+        same(show(narrowed.grant.can), show({ [ctx.channel]: ['post'] }), "the grant's can")
+      } finally {
+        await ctx.board.revokeGrant(grant.id).catch(() => {})
+      }
+    },
+  },
+  {
+    group: 'grants',
+    name: "grants a GitHub repository's workflows, and another team's project",
+    run: async (ctx) => {
+      const first = await firstGrant(ctx)
+      if ('skip' in first) return first.skip
+      const made = [first.grant.id]
+      try {
+        const github = await ctx.board.createGrant({ issuer: 'github', claims: { repository: `acme/conformance-${ctx.labels.conformance}` }, can: { [ctx.channel]: ['post'] } })
+        made.push(github.grant.id)
+        same(github.grant.issuer, 'github', "the GitHub grant's issuer")
+        const theirs = await ctx.board.createGrant({
+          issuer: 'vercel',
+          claims: { environment: 'production', owner_id: `team_conformance${ctx.labels.conformance}`, project_id: `prj_conformance${ctx.labels.conformance}x` },
+        })
+        made.push(theirs.grant.id)
+        same(theirs.grant.claims.owner_id, `team_conformance${ctx.labels.conformance}`, "another team's grant's owner_id")
+        const listed = new Set((await ctx.board.grants()).map((grant) => grant.id))
+        check(made.every((id) => listed.has(id)), `grants should list ${made.join(', ')}`)
+      } finally {
+        for (const id of made) await ctx.board.revokeGrant(id).catch(() => {})
+      }
+    },
+  },
+  {
+    group: 'grants',
+    name: "keeps two environments of one project as two grants, and revokes one without the other",
+    run: async (ctx) => {
+      const first = await firstGrant(ctx)
+      if ('skip' in first) return first.skip
+      const made = [first.grant.id]
+      try {
+        const production = await ctx.board.createGrant({ ...grantFor(ctx), claims: { ...grantFor(ctx).claims, environment: 'production' } })
+        made.push(production.grant.id)
+        same(production.created, true, 'another environment: created')
+        check(production.grant.id !== first.grant.id, 'another environment should be another grant')
+        same((await ctx.board.revokeGrant(first.grant.id)).revoked, true, 'revoking the preview grant')
+        const listed = (await ctx.board.grants()).map((grant) => grant.id)
+        check(listed.includes(production.grant.id) && !listed.includes(first.grant.id), `grants should list ${production.grant.id} and not ${first.grant.id}, got ${show(listed)}`)
+      } finally {
+        for (const id of made) await ctx.board.revokeGrant(id).catch(() => {})
+      }
+    },
+  },
+  {
+    group: 'tokens',
+    name: 'mints a token, shows its secret only then, lists it, and revokes it',
+    run: async (ctx) => {
+      const name = `conformance-${ctx.labels.conformance}`
+      const { token, secret } = await ctx.board.createToken({ name, can: { [ctx.channel]: ['read'] }, expires: '1h' })
+      try {
+        isRef(token.id, "a token's id")
+        check(typeof secret === 'string' && secret.length >= 32, `a token's secret should be a string of at least 32 characters, got ${typeof secret}`)
+        same(token.name, name, "the token's name")
+        same(show(token.can), show({ [ctx.channel]: ['read'] }), "the token's can")
+        const left = Date.parse(token.expiresAt) - Date.now()
+        check(left > 55 * 60_000 && left <= 60 * 60_000 + 5_000, `a token minted for 1h should expire in an hour, got ${token.expiresAt}`)
+        const listed = await ctx.board.tokens()
+        check(listed.some((found) => found.id === token.id), `tokens should list ${token.id}`)
+        check(!JSON.stringify(listed).includes(secret), "tokens shouldn't show a token's secret")
+      } catch (error) {
+        await ctx.board.revokeToken(token.id).catch(() => {})
+        throw error
+      }
+      same((await ctx.board.revokeToken(token.id)).revoked, true, 'revoking it')
+      same((await ctx.board.revokeToken(token.id)).revoked, false, 'revoking it again')
+      check(!(await ctx.board.tokens()).some((found) => found.id === token.id), "tokens shouldn't list it once it's revoked")
+    },
+  },
+  {
+    group: 'tokens',
+    name: "lets a token do what its can says, as whoever minted it, and nothing once it's revoked",
+    run: async (ctx) => {
+      if (!ctx.withToken) return "this run can't call the board with a token's secret"
+      const { root } = needRoot(ctx)
+      const { token, secret } = await ctx.board.createToken({ name: `conformance-${ctx.labels.conformance}-reads`, can: { [ctx.channel]: ['read'] }, expires: '1h' })
+      const holder = ctx.withToken(secret)
+      try {
+        const me = await holder.me()
+        same(me.principal, ctx.me.principal, "a token's principal, its minter's")
+        const want = { [ctx.channel]: ['read'] }
+        check(show(me.can) === show(want), `what a token that may only read says it may do: expected ${show(want)}, got ${show(me.can)}`)
+        same((await holder.thread(root.id)).message.id, root.id, 'a thread read with a token that may read it')
+        const posting = holder.post(ctx.channel, { text: 'conformance: a token that may only read', labels: ctx.labels, noSync: true }).then((message) => {
+          ctx.posted.push(message.id)
+          return message
+        })
+        await refused(posting, 403, 'a post with a token that may only read')
+      } catch (error) {
+        await ctx.board.revokeToken(token.id).catch(() => {})
+        throw error
+      }
+      same((await ctx.board.revokeToken(token.id)).revoked, true, 'revoking it')
+      await refused(holder.me(), 401, 'a request with a revoked token')
+    },
+  },
+  {
     group: 'attachments',
     name: 'takes a file, posts it, and gives it back',
     run: async (ctx) => {
@@ -596,20 +769,6 @@ const CHECKS: Check[] = [
       same(thread.replies.find((m) => m.id === reply.id)?.noSync, true, "a reply's noSync, read back")
     },
   },
-  {
-    group: 'sync',
-    name: 'finds no one for a platform account nobody linked',
-    run: async (ctx) => {
-      let found
-      try {
-        found = await ctx.board.syncFind({ account: `${SYNC_KEY}:user:${ctx.labels.conformance}` })
-      } catch (error) {
-        if (error instanceof BoardError && error.status === 403) return "this token can't look up a sync here"
-        throw error
-      }
-      same(found.person, null, 'who an account nobody linked is')
-    },
-  },
 ]
 
 /** Runs the checks against `board`, in order, and reports each. It never throws for what the board answers. */
@@ -638,6 +797,7 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
     start: (await board.messages({ channel, limit: 1 })).cursor,
     me,
     posted: [],
+    ...(options.withToken ? { withToken: options.withToken } : {}),
   }
   try {
     for (const { group, name, run } of CHECKS) {

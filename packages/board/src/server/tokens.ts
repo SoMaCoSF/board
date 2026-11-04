@@ -3,6 +3,7 @@ import {
   GITHUB_ISSUER,
   issuerName,
   markVerified,
+  privateHost,
   TOKENS,
   trustedIssuers,
   VERCEL_ISSUER,
@@ -35,13 +36,22 @@ const issuerMatches = (iss: string, accepted: string | RegExp) =>
 
 const remoteKeys = new Map<string, JWTVerifyGetKey>()
 
+/**
+ * An issuer's keys, by OIDC Discovery 1.0: its document under the issuer, naming that issuer
+ * (§4.3), and its keys at an https `jwks_uri` (§3), which must be on the internet, as a grant's
+ * issuer must. Like jose's own fetch of the keys, it follows no redirect.
+ */
 async function keysFor(iss: string): Promise<JWTVerifyGetKey> {
   const cached = remoteKeys.get(iss)
   if (cached) return cached
-  const response = await fetch(`${iss.replace(/\/+$/, '')}/.well-known/openid-configuration`)
-  if (!response.ok) throw unauthorized(`cannot load keys for issuer ${iss}`)
-  const { jwks_uri } = (await response.json()) as { jwks_uri: string }
-  const keys = createRemoteJWKSet(new URL(jwks_uri))
+  const unknown = (why: string) => unauthorized(`cannot load keys for issuer ${iss}: ${why}`)
+  const response = await fetch(`${iss.replace(/\/+$/, '')}/.well-known/openid-configuration`, { redirect: 'manual' })
+  if (response.status !== 200) throw unknown(`its discovery answered ${response.status}`)
+  const config = (await response.json().catch(() => null)) as { issuer?: unknown; jwks_uri?: unknown } | null
+  if (config?.issuer !== iss) throw unknown("its discovery names another issuer")
+  const jwks = typeof config.jwks_uri === 'string' ? URL.parse(config.jwks_uri) : null
+  if (jwks?.protocol !== 'https:' || privateHost(jwks.hostname)) throw unknown("its jwks_uri isn't an https URL on the internet")
+  const keys = createRemoteJWKSet(jwks)
   remoteKeys.set(iss, keys)
   return keys
 }

@@ -60,8 +60,8 @@ export const GET = team.fetch, POST = team.fetch
 
 A board on `http()` keeps nothing:
 
-- **It answers only wake-ups and webhooks,** and the sign-in routes of the
-  sync it runs. Anything else, discovery included, answers 404 `<its URL>
+- **It answers only wake-ups and webhooks.** Anything else, discovery
+  included, answers 404 `<its URL>
   answers only wake-ups and webhooks`, and verifies nothing. People and the
   CLI use the other board, by its URL. With an
   `access` of its own, it serves its callers too, as a gateway: see

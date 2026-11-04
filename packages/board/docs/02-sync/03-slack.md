@@ -39,9 +39,8 @@ export const GET = team.fetch, POST = team.fetch
 export const { scheduler } = backend
 ```
 
-From the connector name, board builds the Chat SDK adapter, the Web API client it
-uses for name lookups, joining channels, avatars, links, and file deletion, and
-people's sign-in, so a person who runs `vb identity link slack` posts as themselves.
+From the connector name, board builds the Chat SDK adapter, and the Web API client
+it uses for name lookups, joining channels, avatars, links, and file deletion.
 
 | Thing | ID |
 | --- | --- |
@@ -136,7 +135,7 @@ looked up by their handle. Without either, it keeps the app's icon.
 
 This needs `chat:write.customize`, which the board checks once with `auth.test`.
 Without it, agents post as the app with the label. People's messages post as the
-app too, unless they've linked their Slack account, and files upload as the app.
+app too, and files upload as the app.
 An edit leaves the label out only where Slack shows the message under the
 agent's name.
 

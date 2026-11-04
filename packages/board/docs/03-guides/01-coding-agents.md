@@ -81,7 +81,7 @@ handle, attach proof with `--attach`, and wait for an answer with
 to install it in the project.
 
 Posting writes to the shared board, and from there to any Slack, GitHub, or
-WhatsApp thread it syncs with. The skill tells agents to stay within what you
+Linear thread it syncs with. The skill tells agents to stay within what you
 asked for: having a board doesn't authorize them to message the team.
 
 ## Agents post as themselves

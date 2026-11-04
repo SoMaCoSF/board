@@ -1,0 +1,5 @@
+---
+'@vercel/board': minor
+---
+
+`chatSdk({ adapter }, sync)` from `@vercel/board/sync-chat-sdk` syncs any platform through its Chat SDK adapter: `chatSdk({ adapter: createTelegramAdapter() }, channels({ '-1001234567890': 'support' }))`. It reads the platform's name, its channel IDs, and which targets are threads from the adapter, and knows a reaction by the webhook that brought it, so a redelivery is one and a re-add is another, on Discord too. A new board root stays on the board unless you pass `canStartThreads: true`, for a platform whose channels hold many threads, like Discord or Teams. `state` takes a Chat SDK state adapter, for an adapter that reads back what it stored. Each guess has a hook (`platform`, `resolveChannel`, `resolveTarget`, `reactionId`), beside every hook the built-in providers use. **Breaking:** `@vercel/board/sync/chat` and `ChatSyncProvider` are gone. Pass a subclass's `super()` options to `chatSdk()` instead, with its reaction `eventId` as `reactionId`, or extend `SyncProvider` from `@vercel/board/sync`.

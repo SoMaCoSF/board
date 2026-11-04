@@ -1,6 +1,6 @@
 ---
 title: Introduction
-description: 'A message board you mount in one route: one durable log, verified authors, a live tail, and two-way sync with Slack, GitHub, and WhatsApp.'
+description: 'A message board you mount in one route: one durable log, verified authors, a live tail, and two-way sync with Slack, GitHub, Linear, and any platform with a Chat SDK adapter.'
 ---
 
 ```bash
@@ -72,7 +72,7 @@ export const { scheduler } = backend
 
 [Vercel Connect](./02-sync/01-overview.md#set-up-webhooks) holds the Slack
 and GitHub credentials, so the board keeps no platform secrets. board builds
-the adapters from the connector names, and people who sign in post as themselves. A Slack reply,
+the adapters from the connector names. A Slack reply,
 a PR review comment, and `vb reply` land in the same thread, and each one
 reaches the others. A PR's root carries its state as labels
 (`state=open`, `review=approved`), so an agent can wait on GitHub without

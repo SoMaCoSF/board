@@ -1,12 +1,12 @@
 ---
 title: Overview
-description: Connect board threads to Slack, GitHub, and WhatsApp threads, in both directions.
+description: Connect board threads to Slack, GitHub, Linear, and any platform with a Chat SDK adapter, in both directions.
 ---
 
 ## How sync works
 
 A board thread syncs with a set of external threads: a Slack thread, a GitHub PR,
-a WhatsApp conversation. A message written in the thread, wherever it was written,
+a Linear issue. A message written in the thread, wherever it was written,
 is delivered to every one of those external threads except the one it came from.
 Replies, reactions, edits, and deletes follow the same path.
 
@@ -18,8 +18,8 @@ attach    vb sync ─▶ receipt: thread.synced ─▶ sync ─▶ Slack (root +
 
 Each platform takes one sync function, which board calls for every event in
 both directions: it imports what comes in, and delivers what goes out. Helpers
-build it from the platform's own things (Slack channels, GitHub repos, WhatsApp
-numbers), each mapped to a board channel or to a function of your own.
+build it from the platform's own things (Slack channels, GitHub repos, Linear
+teams), each mapped to a board channel or to a function of your own.
 
 Sync runs in `board()`, wherever the board lives. It keeps its records on the
 backend through routes every backend answers: imports as platform authors,
@@ -76,7 +76,8 @@ A Vercel Queues trigger makes that function private, which is why it can't share
 the board's public route. [Mounting](../01-board/01-mounting.md#the-scheduler-route)
 covers the store, the scheduler, and their routes. To pass your own Chat SDK
 adapter instead of a connector, see [Slack](./03-slack.md#your-own-adapter) and
-[GitHub](./04-github.md#setup).
+[GitHub](./04-github.md#setup). Any other Chat SDK adapter syncs through
+[`chatSdk()`](./06-providers.md#any-chat-sdk-adapter).
 
 ## Sync functions
 
@@ -88,7 +89,7 @@ map, where a string is a board channel:
 | --- | --- |
 | `channels({ '#prs': 'prs' })` (Slack) | `mirror('prs')`: a two-way mirror. What comes in lands in `prs`, and a root posted in `prs` starts a thread in #prs. |
 | `repos({ 'acme/www': 'prs' })` (GitHub) | `into('prs')`: PRs and issues come in, and nothing goes back unless a function sends it. |
-| `numbers({ '16315558151': 'support' })` (WhatsApp) | `mirror('support')`. |
+| `teams({ ENG: 'dev' })` (Linear) | `mirror('dev')`. |
 
 A map's value can also be a function of your own, and the whole thing can be:
 see [Sync functions](./02-functions.md).
@@ -99,7 +100,7 @@ IDs (`acme:C0999XYZ:1727.9`), in sync targets, in `--source` filters, and in the
 webhook path (`/webhooks/acme`).
 
 **Map keys** are the platform's names or IDs: `'#prs'` or `'C0123ABC'` for
-Slack, `'owner/repo'` for GitHub, a phone number ID for WhatsApp.
+Slack, `'owner/repo'` for GitHub, a team key (`'ENG'`) for Linear.
 
 - Slack names resolve through one cached channel listing. IDs survive renames;
   a renamed channel stops matching by name on the next cold start.
@@ -113,12 +114,12 @@ Slack, `'owner/repo'` for GitHub, a phone number ID for WhatsApp.
 1. **Delivery.** Every message, edit, delete, and reaction in a thread goes to
    the sync function once for each external thread it's synced with, except the
    one it came from, and `deliver()` sends it. Where a platform can't do
-   something (WhatsApp edits, GitHub typing), that delivery is skipped.
+   something (GitHub typing), that delivery is skipped.
 2. **Starting threads.** A root posted on the board, by anyone or any watcher,
    goes to the sync function of each platform that can start threads in a
    channel, which may `start` one; `mirror` does in its channel. Slack and
-   Linear can; on Linear a root opens an issue. GitHub and WhatsApp can't, so
-   roots never open an issue or a conversation there.
+   Linear can; on Linear a root opens an issue. GitHub can't, so roots never
+   open an issue there.
 3. **Inbound.** A platform event goes to the sync function when its thread is
    already synced, or when its channel is one the helpers route (their keys;
    a function of your own at the top gets every channel). The function decides
@@ -212,10 +213,7 @@ export const GET = team.fetch, POST = team.fetch
 
 A [sync function](./02-functions.md)'s writes land on the other board as the
 platform user, and its reads are this deployment's. This board registers its
-entries there, so the other board lists them and links accounts on them. People
-link the other board, so `vb identity link slack` gets its code there; this
-board's sync redeems it when it comes in from Slack, and an entry that signs
-people in does it here, at the sign-in the code's `signIn` names. Two
+entries there, so the other board lists them in its discovery. Two
 boards that sync the same platform channel into one board each import its
 events and each deliver to it, so give each channel one syncer.
 
@@ -223,14 +221,10 @@ events and each deliver to it, so give each channel one syncer.
 the platform threads and messages that sync imports and delivers, so:
 
 - **The other board's own sync keeps its keys.** A board here can't register
-  one of them (409 `sync_key_taken`): name yours another (`acme`). That board's
-  sync signs people in for them.
-- **One board here that registers a key** signs people in for it, at its own
-  `/identity/sign-in`, while it may still sync there.
-- **Two that register one key** sign no one in: a person links by posting
-  the code where either syncs. They share the key's platform threads on the
-  other board, though each sees and changes only the copies it made, so give
-  each key one sync.
+  one of them (409 `sync_key_taken`): name yours another (`acme`).
+- **Two that register one key** share its platform threads on the other
+  board, though each sees and changes only the copies it made, so give each
+  key one sync.
 
 ## Set up webhooks
 
@@ -256,7 +250,7 @@ branch, a custom environment).
 **Without Connect,** create the app on the platform yourself, point its webhook
 at the same route, and pass the platform's own secrets to the Chat SDK adapter.
 Each platform page has the steps: [Slack](./03-slack.md#setup),
-[GitHub](./04-github.md#setup), [WhatsApp](./05-whatsapp.md#setup),
+[GitHub](./04-github.md#setup),
 [Linear](./07-linear.md#setup).
 
 ## When delivery fails
@@ -292,9 +286,8 @@ await team.typing('812', 'running tests…')
 Shows typing in every platform thread the board thread is synced to, through
 the sync the board that keeps the log runs beside it, so `vb typing` on the
 board you link shows it there. A board on `http()` also shows it through its
-own sync. Slack shows the status under the thread, WhatsApp shows "typing…" and
-marks the latest inbound message read, and GitHub has no typing. Nothing is
-written to the log. It needs `post` and `read` in the thread's channel.
+own sync. Slack shows the status under the thread, and GitHub has no typing.
+Nothing is written to the log. It needs `post` and `read` in the thread's channel.
 
 ## Debug it
 

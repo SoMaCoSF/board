@@ -5,7 +5,6 @@ import { vercelProject } from '../src/access/index.ts'
 import { http } from '../src/backend-http/index.ts'
 import { slack, type SlackEvent } from '../src/sync/slack.ts'
 import { channels, type SyncUnit } from '../src/sync/fn.ts'
-import { withUserTokens, type UserTokens } from '../src/sync/users.ts'
 import { fakePlatform, withSlackClient } from './sync-fixtures.ts'
 import { bearer, BOARD_URL, caller, deploymentToken, personToken, PROJECT_ID, TEAM_ID, testAuth, testBoard } from './harness.ts'
 import { fakeQueue } from './queue.ts'
@@ -23,13 +22,9 @@ type Read = { id: string; text: string; from: string | null; by: { actor: string
  * calling each other in-process: the team's board wakes the project's at `<SUPPORT_URL>/wake`, and the
  * project's pushes, pulls, and writes back over HTTP. The project may do everything in `can`.
  */
-/** Slack's Web API as a person's token sees it: every token is Julian's. */
-const juliansSlack = { auth: { test: async () => ({ user_id: 'U_JULIAN', user: 'jb' }) }, users: { info: async () => ({ user: { id: 'U_JULIAN', name: 'jb', profile: { display_name: 'jb', real_name: 'Julian' } } }) } }
-
-function setup(options: { can?: Parameters<typeof vercelProject>[0]['can']; channels?: Record<string, SyncUnit<SlackEvent>>; middleware?: Middleware[]; users?: UserTokens; client?: () => Promise<never> } = {}) {
+function setup(options: { can?: Parameters<typeof vercelProject>[0]['can']; channels?: Record<string, SyncUnit<SlackEvent>>; middleware?: Middleware[]; client?: () => Promise<never> } = {}) {
   const queue = fakeQueue()
-  // With people's tokens, Slack runs calls with one through `withBotToken`.
-  const s = fakePlatform('slack', options.users ? (adapter) => void Object.assign(adapter, { withBotToken: <T>(_token: string, fn: () => T) => fn(), webClient: juliansSlack }) : undefined)
+  const s = fakePlatform('slack')
   let project: ReturnType<typeof board>
   const route = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = new Request(input, init)
@@ -51,8 +46,8 @@ function setup(options: { can?: Parameters<typeof vercelProject>[0]['can']; chan
     sync: {
       slack: slack(
         {
-          adapter: options.users ? withUserTokens(s.adapter, options.users) : s.adapter,
-          ...(options.client ? { client: options.client } : options.users ? { client: async () => juliansSlack as never } : {}),
+          adapter: s.adapter,
+          ...(options.client ? { client: options.client } : {}),
         },
         channels(options.channels ?? { C1: 'firehose' }),
       ),
@@ -126,22 +121,6 @@ describe('sync on a board on http()', () => {
     await julian('POST', `/messages/${reply.id}/reactions`, { emoji: 'rocket' })
     await vi.waitFor(() => expect(s.edits.map((edit) => [edit.messageId, edit.text])).toEqual([[s.posts[0]!.id, JSON.stringify({ markdown: '**julian**: looking into it' })]]))
     await vi.waitFor(() => expect(s.reactions).toEqual([{ threadId: 'slack:C1:100', messageId: s.posts[0]!.id, emoji: 'rocket', added: true }]))
-  })
-
-  it('links a Slack account through a code from the board it uses, which its registration tells of the entry', async () => {
-    const { team, backend, webhook, s } = setup()
-    const here = await julianOn(team.fetch)
-    // The team's board knows the project syncs Slack from its registration, and says so.
-    await backend.registerWatchers()
-    expect((await (await team.fetch(new Request(BOARD_URL))).json()).sync).toEqual([{ key: 'slack', platform: 'slack' }])
-    // The code comes from the board that keeps the log, for the person asking: the project's entry signs no one in.
-    const challenge = (await here('POST', '/sync/codes', { sync: 'slack' })).body
-    expect(challenge).toEqual({ code: expect.stringMatching(/^vb-[A-Z2-9]{4}-[A-Z2-9]{4}$/), expiresAt: expect.any(String) })
-    await webhook({ type: 'message', threadId: 'slack:C1:100', id: '100', text: challenge.code, user: 'U_JULIAN', name: 'jb' })
-    await vi.waitFor(async () => expect((await here('GET', '/identity')).body.links).toEqual([expect.objectContaining({ actor: 'slack:user:U_JULIAN', method: 'code' })]))
-    // The code was claimed, not imported, and Slack shows it worked.
-    expect(await read(here, 'firehose')).toEqual([])
-    await vi.waitFor(() => expect(s.reactions).toEqual([{ threadId: 'slack:C1:100', messageId: '100', emoji: 'check', added: true }]))
   })
 
   it("lands a callback's own writes on the board it uses, as the Slack user its event came from", async () => {
@@ -292,19 +271,15 @@ describe('the sync permission', () => {
       ['GET', `/sync/threads/${root.thread}`],
       ['GET', '/sync/find?thread=slack:C1:1'],
       ['GET', `/sync/copies?message=${root.id}`],
-      ['GET', '/sync/roots?by=vercel:user:u_julian&since=0'],
       ['POST', '/inbox/slack', { events: [{ id: '1', event, raw: {} }] }],
       ['GET', '/inbox/slack/next'],
       ['POST', '/inbox/slack/1/ack', { lease: 'l1' }],
       ['GET', '/inbox/slack'],
-      ['POST', '/sync/codes', { sync: 'slack' }],
-      ['POST', '/sync/accounts', { sync: 'slack', account: author, code: 'vb-AAAA-BBBB' }],
     ] as const) {
       const denied = await support(method, path, body)
       expect(denied.status, `${method} ${path}`).toBe(403)
     }
     expect(await read(julian, 'firehose')).toHaveLength(1)
-    expect((await julian('GET', '/identity')).body.links).toEqual([])
   })
 
   it("lets a caller with it in another subtree import there, and not here", async () => {
@@ -346,8 +321,6 @@ describe('the sync permission', () => {
     expect((await support('POST', '/sync/imports', { op: 'post', author, from: 'github', channel: 'firehose', text: 'as Ada' })).body.error.message).toBe(
       "this token doesn't sync github here: its board registers its sync entries",
     )
-    // Nor link an account that isn't one.
-    expect((await support('POST', '/sync/accounts', { sync: 'slack', account: { ...author, id: 'vercel:user:u_julian' }, code: 'vb-AAAA-BBBB' })).status).toBe(403)
     expect(await read(julian, 'firehose')).toEqual([])
     expect((await as('slack:user:U_ADA')).status).toBe(200)
     expect((await read(julian, 'firehose')).map((m) => m.by.actor)).toEqual(['slack:user:U_ADA'])
@@ -380,131 +353,30 @@ describe('the sync permission', () => {
     await vi.waitFor(() => expect(s.channelPosts.map((post) => post.text)).toEqual([JSON.stringify({ markdown: '**Ada (slack)**: export is broken' })]))
   })
 
-  it("issues codes only to people, for themselves, and links an account only by one", async () => {
-    const team = testBoard({ access: [vercelProject({ project: 'prj_support', can: 'all' })] })
-    const support = caller(team.fetch, await supportToken())
-    const julian = await julianOn(team.fetch)
-    expect((await support('POST', '/watchers', { watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })).status).toBe(200)
-    // A sync can't get a code at all, for itself or anyone else, and there's no linking by naming someone.
-    expect((await support('POST', '/sync/codes', { sync: 'slack', person: 'vercel:user:u_julian' })).body.error.message).toBe('only people link platform accounts')
-    expect((await support('POST', '/sync/accounts', { sync: 'slack', account: author, person: 'vercel:user:u_julian' })).status).toBe(400)
-    expect((await support('POST', '/sync/accounts', { sync: 'slack', account: author, code: 'vb-AAAA-BBBB' })).body.error.code).toBe('bad_code')
-    // A person gets one for a key the board knows, and only it links an account, to them.
-    expect((await julian('POST', '/sync/codes', { sync: 'nothing' })).status).toBe(404)
-    const { code } = (await julian('POST', '/sync/codes', { sync: 'slack', person: 'vercel:user:u_ada' })).body
-    expect((await support('POST', '/sync/accounts', { sync: 'slack', account: author, code })).body).toMatchObject({ person: 'vercel:user:u_julian', link: { actor: author.id, method: 'code' } })
-    expect((await julian('GET', '/identity')).body.links.map((link: { actor: string }) => link.actor)).toEqual([author.id])
-  })
-
-  it("signs a person in where the project's sync runs, carrying a code from the board that keeps the log", async () => {
-    const signedIn = new Map<string, string>()
-    const users = {
-      authorize: async (principal: string, options: { callback?: string } = {}) =>
-        `https://connect.test/authorize?${new URLSearchParams({ subject: principal, ...(options.callback ? { callback: options.callback } : {}) })}`,
-      token: async (principal: string) => signedIn.get(principal) ?? null,
-    }
-    const { team, project, backend } = setup({ users })
-    await backend.registerWatchers()
-    const julian = await julianOn(team.fetch)
-    // The team's board sends the person to the project's sign-in, with a code of their own in it.
-    const challenge = (await julian('POST', '/sync/codes', { sync: 'slack' })).body
-    expect(challenge).toMatchObject({ code: expect.stringMatching(/^vb-/), signIn: expect.stringMatching(new RegExp(`^${SUPPORT_URL}/identity/sign-in\\?sync=slack&code=vb-`)) })
-    // The project sends them to Slack as whoever the code is for, and back to itself.
-    const start = await project.fetch(new Request(challenge.signIn))
-    expect(start.status).toBe(302)
-    const at = new URL(start.headers.get('location')!)
-    expect(at.searchParams.get('subject')).toBe('vercel:user:u_julian')
-    const back = at.searchParams.get('callback')!
-    expect(back).toMatch(new RegExp(`^${SUPPORT_URL}/identity/signed-in\\?`))
-    // Until Slack says they approved, nothing links.
-    expect((await project.fetch(new Request(back))).status).toBe(409)
-    signedIn.set('vercel:user:u_julian', 'xoxp-julian')
-    expect(await (await project.fetch(new Request(back))).text()).toContain('Linked')
-    expect((await julian('GET', '/identity')).body.links).toEqual([expect.objectContaining({ actor: 'slack:user:U_JULIAN', method: 'consent' })])
-    // The code is spent: the link can't be replayed.
-    expect((await project.fetch(new Request(challenge.signIn))).status).toBe(404)
-  })
-
-  it('registers sync entries only for a token that may sync, and signs people in only through one that still may', async () => {
-    // A project that may only read, one that may sync in support/, and one whose sync the team can take away.
+  it('registers sync entries only for a token that may sync, and lists those of the ones that still may', async () => {
+    // A project that may only read, and one whose sync the team can take away.
     let other: 'all' | null = 'all'
     const team = testBoard({
       access: [
         vercelProject({ project: 'prj_reader', can: { '*': ['read'] } }),
-        vercelProject({ project: 'prj_support', can: { 'support/': 'all' } }),
         (principal) => (principal.id === 'vercel:project:prj_other:production' ? other : undefined),
       ],
     })
     const reader = caller(team.fetch, await deploymentToken('reader', 'prj_reader', 'production'))
-    const support = caller(team.fetch, await supportToken())
     const otherOne = caller(team.fetch, await deploymentToken('other', 'prj_other', 'production'))
-    const julian = await julianOn(team.fetch)
-    const entry = { key: 'slack', platform: 'slack', signIn: true }
-    const registering = (as: typeof support, url: string) => as('POST', '/watchers', { url, watch: {}, sync: [entry] })
-    // Reading is enough to register watchers, not a sync: its sign-in would get a person's live code.
-    const refused = await registering(reader, 'https://reader.test/api/board')
+    const listed = async () => (await team.fetch(new Request(BOARD_URL)).then((r) => r.json())).sync
+    const sync = [{ key: 'slack', platform: 'slack' }]
+    // Reading is enough to register watchers, not a sync.
+    const refused = await reader('POST', '/watchers', { url: 'https://reader.test/api/board', watch: {}, sync })
     expect([refused.status, refused.body.error.message]).toEqual([403, "this token can't register a sync: it needs sync somewhere"])
     expect((await reader('POST', '/watchers', { url: 'https://reader.test/api/board', watch: {} })).status).toBe(200)
-    expect((await julian('POST', '/sync/codes', { sync: 'slack' })).status).toBe(404)
-    // One sync that claims the key signs people in where it runs.
-    expect((await registering(support, SUPPORT_URL)).status).toBe(200)
-    expect((await julian('POST', '/sync/codes', { sync: 'slack' })).body.signIn).toMatch(new RegExp(`^${SUPPORT_URL}/identity/sign-in\\?`))
-    // Two that claim it: neither is the key's to sign in for, and a code links by posting it.
-    expect((await registering(otherOne, 'https://other.test/api/board')).status).toBe(200)
-    const both = (await julian('POST', '/sync/codes', { sync: 'slack' })).body
-    expect([both.code, both.signIn]).toEqual([expect.stringMatching(/^vb-/), undefined])
-    expect((await team.fetch(new Request(BOARD_URL)).then((r) => r.json())).sync).toEqual([{ key: 'slack', platform: 'slack' }])
-    // One that may no longer sync claims nothing.
+    expect(await listed()).toEqual([])
+    expect((await otherOne('POST', '/watchers', { url: 'https://other.test/api/board', watch: {}, sync })).status).toBe(200)
+    expect(await listed()).toEqual(sync)
+    // One that may no longer sync isn't listed.
     other = null
-    expect((await julian('POST', '/sync/codes', { sync: 'slack' })).body.signIn).toMatch(new RegExp(`^${SUPPORT_URL}/`))
+    expect(await listed()).toEqual([])
   })
-
-  it("unlinks another's account only for a caller that syncs in every channel", async () => {
-    const team = testBoard({
-      access: [vercelProject({ project: 'prj_support', can: { 'support/': 'all' } }), vercelProject({ project: 'prj_all', can: 'all' })],
-    })
-    const support = caller(team.fetch, await supportToken())
-    const everywhere = caller(team.fetch, await deploymentToken('all', 'prj_all', 'production'))
-    const julian = await julianOn(team.fetch)
-    expect((await support('POST', '/watchers', { watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })).status).toBe(200)
-    const link = async () => {
-      const { code } = (await julian('POST', '/sync/codes', { sync: 'slack' })).body
-      expect((await support('POST', '/sync/accounts', { sync: 'slack', account: author, code })).status).toBe(200)
-    }
-    const links = async () => (await julian('GET', '/identity')).body.links.map((found: { actor: string }) => found.actor)
-    await link()
-    // Sync in support/ speaks for platform users there, not for who everyone on the board is.
-    const denied = await support('POST', '/sync/accounts/unlink', { account: author.id })
-    expect([denied.status, denied.body.error.code]).toEqual([404, 'not_linked'])
-    expect(await links()).toEqual([author.id])
-    expect((await everywhere('POST', '/sync/accounts/unlink', { account: author.id })).status).toBe(200)
-    expect(await links()).toEqual([])
-    // And a person unlinks their own.
-    await link()
-    expect((await julian('POST', '/sync/accounts/unlink', { account: author.id })).status).toBe(200)
-    expect(await links()).toEqual([])
-  })
-
-  it("tells a sync who an account is, and a person's accounts, only on the platforms it syncs", async () => {
-    const team = testBoard({
-      access: [vercelProject({ project: 'prj_support', can: { 'support/': 'all' } }), vercelProject({ project: 'prj_code', can: { 'code/': 'all' } })],
-    })
-    const support = caller(team.fetch, await supportToken())
-    const code = caller(team.fetch, await deploymentToken('code', 'prj_code', 'production'))
-    const julian = await julianOn(team.fetch)
-    expect((await support('POST', '/watchers', { watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })).status).toBe(200)
-    expect((await code('POST', '/watchers', { watch: {}, sync: [{ key: 'github', platform: 'github' }] })).status).toBe(200)
-    const github = { id: 'github:user:42', handle: 'jb', name: 'Julian', avatar: null, isBot: false }
-    for (const [sync, as, account] of [['slack', support, author], ['github', code, github]] as const) {
-      const { code: issued } = (await julian('POST', '/sync/codes', { sync })).body
-      expect((await as('POST', '/sync/accounts', { sync, account, code: issued })).status).toBe(200)
-    }
-    const find = async (query: string) => (await support('GET', `/sync/find?${query}`)).body
-    expect((await find(`account=${author.id}`)).person).toMatchObject({ id: 'vercel:user:u_julian' })
-    expect((await find(`account=${github.id}`)).person).toBeNull()
-    expect((await find('person=vercel:user:u_julian')).accounts.map((found: { id: string }) => found.id)).toEqual([author.id])
-  })
-
   it('takes provenance only on the sync routes: a post never says who it is by', async () => {
     const team = testBoard({ access: [vercelProject({ project: 'prj_support', can: 'all' })] })
     const support = caller(team.fetch, await supportToken())
@@ -613,7 +485,7 @@ describe('whose records are whose', () => {
     const registry = team.servers[3]!.session(REGISTRY_SESSION) as unknown as { append(event: { type: string; payload: unknown }): Promise<unknown> }
     await registry.append({
       type: 'watchers.registered',
-      payload: { owner: SUPPORT, principal: { id: SUPPORT, kind: 'deployment', handle: 'support' }, url: null, watch: {}, sync: [{ ...entry, signIn: false }], hash: 'before' },
+      payload: { owner: SUPPORT, principal: { id: SUPPORT, kind: 'deployment', handle: 'support' }, url: null, watch: {}, sync: [entry], hash: 'before' },
     })
     const root = (await julian('POST', '/messages', { channel: 'firehose', text: 'deploy failed' })).body.message
     await vi.waitFor(async () => expect((await julian('GET', `/messages/${root.id}`)).body.message.undelivered).toEqual({}))
@@ -658,7 +530,6 @@ describe('whose records are whose', () => {
       ['POST', '/inbox/slack', { events: [pushed] }],
       ['GET', '/inbox/slack/next', undefined],
       ['POST', '/inbox/slack/e1/ack', { lease: 'l1' }],
-      ['POST', '/sync/accounts', { sync: 'slack', account: author, code: 'vb-ABCD-EFGH' }],
     ] as const) {
       const refused = await narrowed(method, path, body)
       expect([refused.status, refused.body.error?.message], path).toEqual([403, expect.stringContaining('narrowed with x-board-scope')])

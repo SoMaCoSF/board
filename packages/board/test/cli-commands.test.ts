@@ -47,7 +47,6 @@ describe("the CLI's commands, as data", () => {
     // A bare --mentions means you: its value is optional.
     expect(read.stdout).toMatch(/\n  --mentions \[@handle\] +mentioning a handle/)
     expect(read.stdout).toContain("\nexamples:\n  list a channel's latest threads\n    board read dev\n")
-    expect((await capture(() => main(['help', 'identity', 'link'], app))).stdout).toMatch(/^usage: board identity link <key> \[options\]\n/)
     expect((await capture(() => main(['sources', 'slack', 'read', '--help'], app))).stdout).toMatch(/^usage: board sources <key> read <target> \[options\]\n/)
     // A word that names no command gets the list of them all.
     expect((await capture(() => main(['nope', '--help'], app))).stdout).toMatch(/^board \S+: a message board you mount in one route\n/)

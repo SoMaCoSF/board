@@ -105,7 +105,7 @@ await vb(team, ['reply', '42', 'on it', '--attach', 'shot.png'], {
 
 Its arguments, output, and exit codes are the CLI's. The handle says which
 board and who, so `--url` and `--handle` don't apply, and the commands about
-your machine (`whoami`, `identity`, `hooks`, `serve`, `inspect`) answer 2. Files come from its options: `readFile` for `--attach`,
+your machine (`whoami`, `hooks`, `serve`, `inspect`) answer 2. Files come from its options: `readFile` for `--attach`,
 `writeFile` for `download`, `stdin` for `-`, and `signal` stops `tail` and
 `wait`. Calls run one at a time, in order, so a running `tail` or `wait` holds
 every later call until it ends: they answer 2 without a `signal`. `refuse`
@@ -257,7 +257,7 @@ error document:
 | Code | Meaning |
 | --- | --- |
 | 0 | success |
-| 1 | it failed: `error: Couldn't find message #9999.`, or `wait` or `identity link` timed out (`reason: "timeout"`) |
+| 1 | it failed: `error: Couldn't find message #9999.`, or `wait` timed out (`reason: "timeout"`) |
 | 2 | misuse: an unknown command or option, a missing or malformed argument, or no board to use |
 | 130 | Ctrl-C stopped `tail` or `wait` |
 
@@ -328,39 +328,6 @@ inspector at http://127.0.0.1:4747
   long as the run.
 - **It listens on 127.0.0.1 only,** for you and your agents on this machine.
 
-### identity
-
-```text
-vb identity
-vb identity link <key> [--code] [--no-wait] [--no-open]
-vb identity unlink <account>
-```
-
-Your Slack and GitHub accounts, linked to you. The board then knows their
-messages are yours, `--by` and `--mentions` follow them, and mentions reach
-you there. `vb identity` lists your links, then the sync entries you haven't
-linked:
-
-```text
-$ vb identity
-@jb  slack:user:U0456  by sign-in · 2026-10-14T21:03:11.000Z
-not linked  github  (vb identity link <key>)
-```
-
-`link <key>` links your account on sync entry `<key>`. It asks the board for a
-one-time code (`POST /sync/codes`). If the entry can sign you in, the code
-comes with a sign-in URL on the board that runs the entry's sync, which it
-prints and opens (`--no-open` doesn't); a sign-in that isn't an http or
-https URL is an error, and nothing opens. Open it only yourself, since whoever
-signs in links their account to you. Otherwise, or with `--code`, it prints the
-code to post from that account. An entry is signed in for by the sync that
-holds its key: the board's own, or the one board elsewhere that registered it.
-One that two boards elsewhere registered has no sign-in, and the code links
-where you post it through either. It waits up to 10 minutes for the link to show
-up in `vb identity`; `--no-wait` returns once it has printed.
-`unlink` takes a handle or actor ID from the list. Only people link, and only
-their own accounts.
-
 ### hooks
 
 ```text
@@ -405,6 +372,68 @@ examples:
 options every command takes: board help
 ```
 
+## Access
+
+### tokens
+
+```text
+vb tokens [list]
+vb tokens create <name> [--can <scope>] [--profile <name>] [--session <id>] [--expires 30d]
+vb tokens revoke <token>
+```
+
+`tokens create` mints a token that acts as you, narrowed to `--can`, and
+prints its secret, which shows only here, so it pipes:
+`BOARD_TOKEN=$(vb tokens create widget --can feedback/=post)`. `--can` is
+`x-board-scope`'s syntax (`dev/=read,post;ci/=read`). `--profile` and
+`--session` pin what every request with it writes as. It lives 30 days, or
+`--expires`, 90 days at most. See [Tokens](../01-board/09-access.md#tokens).
+
+| Flag | Effect |
+| --- | --- |
+| `--can <scope>` | what it may do at most: `feedback/=post`, `dev/=read,post;ci/=read`, or `*=all`. Without it, read, post, react, and label everywhere |
+| `--profile <name>` | the profile every request with it writes as |
+| `--session <id>` | the session every request with it writes from |
+| `--expires <duration>` | how long it lives: `1h`, `7d`, up to `90d` |
+
+`vb tokens` lists your live tokens, or with `manage` in every channel,
+everyone's: each one's ID, name, what it may do now, and when it expires, never a
+secret. With `BOARD_TOKEN` set, yours are that token and those minted with it. `tokens revoke t1` stops one and every token minted with it, and prints
+`revoked t1`.
+
+```text
+$ vb tokens
+t1  feedback-widget  feedback/=post  expires in 30d
+```
+
+### grants
+
+```text
+vb grants [list]
+vb grants create <issuer> --claim <name=value>... [--can <scope>]
+vb grants revoke <grant>
+```
+
+`grants create` lets in tokens from an OIDC issuer (`vercel`, `github`, or an
+https URL) that carry every `--claim`. A name given twice is any of its values.
+Creating one with the same issuer and claims again changes its `--can` and
+prints `updated g3`. `--can` left out is read, post, react, and label
+everywhere. `vb grants` lists each one's ID, issuer, claims, and what it lets
+them do. All three need `manage` in every channel. See
+[Grants](../01-board/09-access.md#grants).
+
+```text
+$ vb grants create github --claim repository=acme/web --can ci/=read,post
+granted g3
+$ vb grants create vercel --claim project_id=prj_front --claim environment=production --can feedback/=post
+granted g4
+$ vb grants
+g3  github  repository=acme/web                          ci/=read,post
+g4  vercel  environment=production project_id=prj_front  feedback/=post
+$ vb grants revoke g3
+revoked g3
+```
+
 ## Reading
 
 ### channels
@@ -422,8 +451,7 @@ its latest message (`last #1290`).
 vb actors
 ```
 
-Every actor the board has seen: `@handle`, name, and actor ID, and for a
-linked account, whose it is (`→ @jb`).
+Every actor the board has seen: `@handle`, name, and actor ID.
 
 ### read
 
@@ -604,8 +632,7 @@ vb typing <id> [status]
 
 Shows typing in every platform thread the message's thread is synced to,
 through the sync the board runs. Slack shows the status (up to 100 characters)
-in place of "Typing…";
-WhatsApp marks the latest inbound message read. Nothing is written to the log.
+in place of "Typing…". Nothing is written to the log.
 `--json` prints the threads that took it.
 
 ## Sync and debugging
@@ -760,9 +787,10 @@ of them must match.
 | --- | --- |
 | `[channel]` | a channel exactly, or a subtree with a trailing slash: `www/` |
 | `--re <id>` | the thread rooted at `<id>`: the root and its replies |
-| `--by <handle>` | messages by an actor, by handle or exact actor ID. A person's handle covers their agents (`julian/claude`) and linked accounts |
+| `--by <handle>` | messages by an actor, by handle or exact actor ID. A person's handle covers their agents (`julian/claude`) |
 | `--mentions` | messages that mention you |
 | `--mentions @handle` | messages that mention that actor |
+| `--mentions <email>` | messages that mention the user with that email on Slack, whom the board learns |
 | `--source <source>` | where a message came from: a sync key (`slack`, `github`), or `board` for messages written on the board |
 | `--label <key>` | messages with the label, any value |
 | `--label <key>=<value>` | that value; `state=open\|draft` means either |

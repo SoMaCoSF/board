@@ -1,22 +1,29 @@
-import type { Access } from './access.ts'
+import { compileAccess, parseScope, scopeOf, type Access } from './access.ts'
 import { resolveActor } from './actors.ts'
 import {
+  BOARD_TOKEN_PREFIX,
   createAuthority,
+  tokenHash,
   fromTokens,
+  GITHUB_ISSUER,
+  grantIssuers,
   hostPrincipal,
   issuersOf,
+  VERCEL_ISSUER,
   verifiesTokens,
   type AccessFunction,
   type AccessRule,
   type Authenticate,
   type AuthenticateContext,
   type CallerRequest,
+  type Claims,
   type HostPrincipal,
   type Known,
+  type Pinned,
   type Principal,
   type RuleFunction,
 } from './auth.ts'
-import type { Identity } from './backend.ts'
+import type { Identity, Trust } from './backend.ts'
 import { HttpError, RejectedError, unauthorized } from './errors.ts'
 import type { ProjectIdentity } from './identity.ts'
 
@@ -71,10 +78,12 @@ export type Policy = ReturnType<typeof createPolicy>
  * principals its backend stores. `keeps`: the backend keeps the board, so the defaults let its
  * people and own deployments in when `access` is left out.
  */
-export function createPolicy(options: PolicyOptions, keeps: boolean, serving: (() => Promise<Serving>) | null) {
+export function createPolicy(options: PolicyOptions, keeps: boolean, serving: (() => Promise<Serving>) | null, trust: Trust | null = null) {
   /** Whether requests are served at all: a board on `http()` serves none without an `access` of its own. */
   const open = keeps || options.access !== undefined
   const access = options.access ?? []
+  // A board whose `access` is one function decides alone: it keeps no grants.
+  const grants = trust && typeof access !== 'function' ? () => trust.grants() : null
 
   /** The board's own Vercel project and team, from `project` or the environment, asked once. */
   let own: Promise<{ id: string | null; teamId: string | null }> | null = null
@@ -106,8 +115,32 @@ export function createPolicy(options: PolicyOptions, keeps: boolean, serving: ((
 
   // What callers may do, under this board's rules: requests, and stored principals. A board whose
   // verifier is the built-in one alone takes no host's principals.
-  const authority = createAuthority({ access, project, hosts: options.authenticate !== undefined && !verifiesTokens(options.authenticate) })
-  const context: AuthenticateContext = { project, issuers: typeof access === 'function' ? [] : issuersOf(access) }
+  const authority = createAuthority({ access, project, hosts: options.authenticate !== undefined && !verifiesTokens(options.authenticate), grants })
+  const ruleIssuers = typeof access === 'function' ? [] : issuersOf(access)
+  /** One for every request, so a verifier keeps what it built: its issuers change only when grants name new ones. */
+  const context: { project: AuthenticateContext['project']; issuers: readonly string[] } = { project, issuers: ruleIssuers }
+
+  /**
+   * Trusts the issuers grants name, before a token from one is verified: only for a token from an
+   * issuer neither Vercel, GitHub, nor a rule is, so most requests read no grants for it.
+   */
+  async function learnIssuers(credential: string) {
+    if (!grants) return
+    const iss = issuerOf(credential)
+    // A grant's issuer is https: a local board's own (`vb serve`'s) never is.
+    if (iss === null || !iss.startsWith('https://') || iss === GITHUB_ISSUER || VERCEL_ISSUER.test(iss) || ruleIssuers.includes(iss)) return
+    const named = grantIssuers(await grants())
+    const issuers = [...ruleIssuers, ...named.filter((issuer) => !ruleIssuers.includes(issuer))]
+    if (issuers.join('\n') !== context.issuers.join('\n')) context.issuers = issuers
+  }
+
+  /** Who a board token is: the principal that minted it, narrowed, until it's revoked or expires. */
+  async function tokenPrincipal(secret: string): Promise<Principal> {
+    if (!trust) throw unauthorized("this board issues no tokens: send a board token to the board that minted it")
+    const found = await trust.token(await tokenHash(secret))
+    if (!found || found.expiresAt.getTime() <= Date.now()) throw unauthorized("invalid token: revoked, expired, or not this board's")
+    return { ...found.minter, expiresAt: found.expiresAt, token: found.id, pinned: found.pinned }
+  }
   /** Verified principals by credential, until they expire, so a stream's polls don't verify from scratch. */
   const verified = new Map<string, { principal: Promise<Principal>; until: number }>()
   /** And by request, for one with no credential (a session cookie), for as long as it's served. */
@@ -134,7 +167,8 @@ export function createPolicy(options: PolicyOptions, keeps: boolean, serving: ((
       principal.then(
         (found) => {
           // A host's principals may lose access any time, so only a token's are kept: until it expires.
-          if (found.facts?.issuer === 'host' || found.expiresAt === null) return
+          // A board token is revoked any time, so it's looked up again on every request.
+          if (found.facts?.issuer === 'host' || found.expiresAt === null || found.token !== undefined) return
           if (verified.size >= 1000) verified.delete(verified.keys().next().value!)
           verified.set(key, { principal, until: found.expiresAt.getTime() })
         },
@@ -144,6 +178,9 @@ export function createPolicy(options: PolicyOptions, keeps: boolean, serving: ((
   }
 
   async function verify(request: CallerRequest): Promise<Principal> {
+    // The board's own tokens are its to check, whatever verifies the rest.
+    if (request.credential?.startsWith(BOARD_TOKEN_PREFIX)) return tokenPrincipal(request.credential)
+    if (request.credential !== null) await learnIssuers(request.credential)
     const authenticate = await verifier()
     let result: Awaited<ReturnType<Authenticate>>
     try {
@@ -163,6 +200,10 @@ export function createPolicy(options: PolicyOptions, keeps: boolean, serving: ((
   return {
     open,
     project,
+    /** The OIDC issuers the rules name. */
+    issuers: ruleIssuers,
+    /** Whether grants decide anything here: not where `access` is one function, which decides alone. */
+    takesGrants: typeof access !== 'function',
     discoveryIdentity,
     /**
      * Who a request is, and what it may do now: verified, under the rules, with the profile it
@@ -171,11 +212,41 @@ export function createPolicy(options: PolicyOptions, keeps: boolean, serving: ((
      */
     async identify(request: CallerRequest): Promise<Identity> {
       const found = await principalOf(request)
-      const principal = request.claims.scope === null ? found : { ...found, scope: request.claims.scope }
-      const { author, actor } = resolveActor(principal, request.claims, request.audience)
+      const claims = found.pinned ? pinnedClaims(found.pinned, request.claims) : request.claims
+      // A token's own scope and the request's both narrow: neither widens the other.
+      const scope = found.scope === undefined ? (claims.scope ?? undefined) : claims.scope === null ? found.scope : scopeOf(compileAccess(parseScope(found.scope)).narrow(parseScope(claims.scope)))
+      const principal = scope === undefined ? found : { ...found, scope }
+      const { author, actor } = resolveActor(principal, claims, request.audience)
       return { principal: { ...principal, access: await authority.grant(principal) }, author, actor }
     },
-    /** What a stored principal (a schedule's creator, a watcher's registrant) may do now: null once nothing. */
-    accessNow: (principal: Known): Promise<Access | null> => authority.accessNow(principal),
+    /** What a stored principal (a schedule's creator, a watcher's registrant) may do now: null once nothing, its board token's revoking included. */
+    async accessNow(principal: Known): Promise<Access | null> {
+      if (principal.token !== undefined && !(await trust?.live(principal.token))) return null
+      return authority.accessNow(principal)
+    },
+  }
+}
+
+/** A board token's pins, over what the request says: its profile and session win, and a person's name is the minter's. */
+function pinnedClaims(pinned: Pinned, claims: Claims): Claims {
+  return {
+    ...claims,
+    ...(pinned.profile !== null ? { profile: pinned.profile, avatar: pinned.avatar } : {}),
+    ...(pinned.session !== null ? { session: pinned.session } : {}),
+    handle: pinned.handle,
+    name: pinned.name,
+  }
+}
+
+/** A JWT's `iss`, read but not verified: which issuer's keys would check it. Null for anything else. */
+function issuerOf(credential: string): string | null {
+  const payload = credential.split('.')[1]
+  if (payload === undefined) return null
+  try {
+    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(payload.length / 4) * 4, '='))
+    const { iss } = JSON.parse(json) as { iss?: unknown }
+    return typeof iss === 'string' ? iss : null
+  } catch {
+    return null
   }
 }

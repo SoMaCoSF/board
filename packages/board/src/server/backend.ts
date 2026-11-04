@@ -5,7 +5,7 @@ import type { ExternalEvent } from '../contract/external.ts'
 import type { Actor } from '../contract/folds.ts'
 import type { Author } from '../contract/schemas.ts'
 import type { Access } from './access.ts'
-import type { Granted, Known } from './auth.ts'
+import type { Granted, Known, Pinned, StoredGrant } from './auth.ts'
 import type { Board } from './board.ts'
 import type { WatcherContext } from './watcher.ts'
 import type { WriteOrigin } from './origin.ts'
@@ -70,8 +70,8 @@ export type Subscription =
   /** Sync's outbound: every post, change, and thread sync in every channel, as its own code sees them. */
   | { kind: 'sync' }
 
-/** One of board()'s sync entries: its key, its platform, and whether it can sign people in. */
-export type SyncEntry = { key: string; platform: string; signIn: boolean }
+/** One of board()'s sync entries: its key and its platform. */
+export type SyncEntry = { key: string; platform: string }
 
 /** A platform event sync pushed to an inbox, as the backend delivers it back. */
 export type InboxDelivery = { event: ExternalEvent; raw: unknown }
@@ -123,6 +123,8 @@ export type BoardBinding = {
   accessNow(principal: Known): Promise<Access | null>
   /** The board's own Vercel project and team, as board() knows them: what discovery names, for clients to mint tokens with. */
   project(): Promise<{ id: string | null; teamId: string | null }>
+  /** The OIDC issuers board()'s rules name, which no grant's issuer may share principals with. */
+  issuers(): readonly string[]
   /**
    * A handle through board(), as `caller`: what a backend writes for someone outside a request
    * goes through it, so board()'s middleware sees it, a schedule's send as its creator, say. A
@@ -131,6 +133,29 @@ export type BoardBinding = {
   handle(caller: Caller): Board
   /** The board's own URL, where a board elsewhere can wake it, once it's known. */
   url(): string | null
+}
+
+/** A token a backend issued, as board() checks a request that carries it. */
+export type StoredToken = {
+  id: string
+  name: string
+  /** Who minted it, as a schedule keeps its creator: what it may do is worked out again on every request, narrowed by its scope. */
+  minter: Known
+  pinned: Pinned
+  expiresAt: Date
+}
+
+/**
+ * What a backend that keeps the board keeps of who it trusts: its grants, and the tokens it
+ * issued. board() reads them on the requests they decide, as they are then, so a revoke takes
+ * effect on the next request.
+ */
+export type Trust = {
+  grants(): Promise<readonly StoredGrant[]>
+  /** The token whose secret hashes to `hash`, while it and every token it was minted with are live: null otherwise. */
+  token(hash: string): Promise<StoredToken | null>
+  /** Whether token `id` and every token it was minted with are live: a schedule made with one stops when it doesn't. */
+  live(id: string): Promise<boolean>
 }
 
 /**
@@ -154,6 +179,8 @@ export interface Backend extends ProtocolMethods {
    * board() screens a schedule's message once, when it's made. True when left out.
    */
   readonly sendsSchedulesHere?: boolean
+  /** Its grants and tokens, for a backend that keeps them (`a2()`): board() checks requests against them. */
+  readonly trust?: Trust
   /**
    * board() calls it once, when it's created, before any request: what background work needs
    * from the board (its subscriptions, its sync, its policy, a handle through it). It does no I/O.

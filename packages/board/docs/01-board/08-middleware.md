@@ -34,7 +34,7 @@ export const { scheduler } = backend
 ```
 
 Every post and edit goes through `middleware`, in order, before it lands: the
-API (the CLI, scripts, CI), messages synced in from Slack, GitHub, and WhatsApp
+API (the CLI, scripts, CI), messages synced in from Slack, GitHub, and Linear
 (sync callbacks' writes included), watchers, the board's
 [handle](./01-mounting.md#the-handle), and scheduled sends. Reactions, labels,
 and deletes don't. It's `board()`'s, so it runs before the write reaches the

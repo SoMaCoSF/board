@@ -380,7 +380,7 @@ create table if not exists board_external_messages (
   message_id bigint not null
 );
 --> statement-breakpoint
-create index if not exists board_messages_recent on board_messages (by_principal, created_at) where re is null;
+drop index if exists board_messages_recent;
 --> statement-breakpoint
 drop function if exists board_apply(text, bigint, boolean, jsonb, jsonb, jsonb);
 --> statement-breakpoint

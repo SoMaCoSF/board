@@ -21,23 +21,11 @@ const { github, repos } = await import('../src/sync/github.ts')
 const { channels } = await import('../src/sync/fn.ts')
 
 describe('a Vercel Connect connector as the adapter', () => {
-  it("builds Slack's adapter and client, and signs people in through Connect as their board principal", async () => {
+  it("builds Slack's adapter and its client", async () => {
     const provider = slack({ adapter: 'slack/acme' }, channels({ C1: 'firehose' }))
     const adapter = (provider as unknown as { transport: { adapter: { name: string; withBotToken?: unknown } } }).transport.adapter
     expect(adapter.name).toBe('slack')
     expect(typeof adapter.withBotToken).toBe('function')
-    expect(provider.users).not.toBeNull()
-
-    expect(await provider.users!.authorize('vercel:user:u_julian')).toBe('https://connect.test/slack/acme?subject=vercel:user:u_julian')
-    expect(connect.startAuthorization).toHaveBeenCalledWith('slack/acme', { subject: { type: 'user', id: 'vercel:user:u_julian' } })
-    // Not signed in yet: no token, so the app posts.
-    expect(await provider.users!.token('vercel:user:u_julian')).toBeNull()
-    connect.getToken.mockResolvedValueOnce('xoxp-julian')
-    expect(await provider.users!.token('vercel:user:u_julian')).toBe('xoxp-julian')
-    expect(connect.getToken).toHaveBeenLastCalledWith('slack/acme', { subject: { type: 'user', id: 'vercel:user:u_julian' } })
-    // Anything else Connect says is an error, which delivery treats as "post as the app".
-    connect.getToken.mockRejectedValueOnce(new Error('connect is down'))
-    await expect(provider.users!.token('vercel:user:u_julian')).rejects.toThrow('connect is down')
   })
 
   it('gives up on a Slack call that stays rate-limited after a few tries, within a function', async () => {
@@ -62,12 +50,11 @@ describe('a Vercel Connect connector as the adapter', () => {
     }
   }, 30_000)
 
-  it("builds GitHub's adapter with the bot's user ID, and the same sign-in", async () => {
+  it("builds GitHub's adapter with the bot's user ID", async () => {
     const provider = github({ adapter: 'github/acme', botUserId: 338721338 }, repos({ 'vercel-labs/board': 'prs' }))
     const adapter = (provider as unknown as { transport: { adapter: { name: string; botUserId?: string | number } } }).transport.adapter
     expect(adapter.name).toBe('github')
     expect(String(adapter.botUserId)).toBe('338721338')
-    expect(await provider.users!.authorize('vercel:user:u_monto')).toBe('https://connect.test/github/acme?subject=vercel:user:u_monto')
   })
 
   it("finds the app's bot user ID itself, from GraphQL's viewer, when botUserId isn't set", async () => {
@@ -95,10 +82,5 @@ describe('a Vercel Connect connector as the adapter', () => {
     await adapter.initialize({})
     expect(graphql).not.toHaveBeenCalled()
     expect(adapter.botUserId).toBe('42')
-  })
-
-  it('keeps a plain adapter posting as the app', async () => {
-    const { fakePlatform } = await import('./sync-fixtures.ts')
-    expect(slack({ adapter: fakePlatform('slack').adapter }, channels({})).users).toBeNull()
   })
 })

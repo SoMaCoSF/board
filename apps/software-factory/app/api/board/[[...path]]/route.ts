@@ -42,8 +42,7 @@ const factory = board({
   // Shadow mode: a flagged one is labeled guard=injection, and nothing is dropped yet.
   middleware: [guard({ mode: "shadow" })],
   sync: {
-    // Connect connectors: board builds the adapters, and people who sign in
-    // (`vb identity link slack`) post as themselves.
+    // Connect connectors: board builds the adapters.
     slack: slack(
       "slack/vboard-factory",
       render(

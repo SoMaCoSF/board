@@ -110,7 +110,7 @@ function history(seed: number, length: number): BoardEvent[] {
         // A root's receipt in a channel target says which platform thread it started.
         const to = r.pick(['slack:C1', 'github:o/r:7'])
         const external = target.re === null && to === 'slack:C1' ? `slack:C1:${target.id}` : to === 'slack:C1' ? `slack:C1:${target.re}` : to
-        push('message.synced', { id: target.id, thread: target.thread, target: to, external: { thread: external, message: `${target.id}.9`, ...(r.chance(0.2) ? { asUser: true } : {}) } })
+        push('message.synced', { id: target.id, thread: target.thread, target: to, external: { thread: external, message: `${target.id}.9` } })
       } else if (kind === 'files') push('message.files_synced', { id: target.id, thread: target.thread, target: r.pick(['slack:C1', 'slack:C9']), files: r.chance(0.2) ? null : ['F1'] })
       else {
         const to = r.pick(['slack:C1', 'github:o/r:7', 'slack:C1'])
@@ -124,7 +124,7 @@ function history(seed: number, length: number): BoardEvent[] {
 /** The board as the old full-state fold saw it, through `index`. */
 function fold(events: readonly BoardEvent[], index = Infinity) {
   const messages: MessagesState = { byId: {}, replies: {} }
-  const actors: ActorsState = { byId: {}, byHandle: {}, links: {} }
+  const actors: ActorsState = { byId: {}, byHandle: {} }
   const sync: SyncState = { threads: {}, byExternalThread: {}, copies: {}, byExternalMessage: {} }
   for (const event of events) {
     if (event.index > index) break
@@ -268,19 +268,6 @@ function conformance(open: () => Promise<MessageTables>) {
       const at = key.lastIndexOf('|')
       expect(await tables.messageOf(key.slice(0, at), key.slice(at + 1))).toBe(message)
     }
-    await tables.close()
-  })
-
-  it("find a person's roots since a time, for the echo check", async () => {
-    const events = history(10, 300)
-    const tables = await applied(events)
-    const roots = Object.values(fold(events).messages.byId).filter((m) => m.re === null)
-    const times = roots.map((m) => Date.parse(m.createdAt))
-    for (const principal of new Set(AUTHORS.map((a) => a.principal)))
-      for (const since of [0, times[10]!, times.at(-3)!, times.at(-1)! + 1]) {
-        const expected = roots.filter((m) => m.by.principal === principal && Date.parse(m.createdAt) >= since)
-        expect(await tables.recentRoots(principal, since)).toEqual(expected)
-      }
     await tables.close()
   })
 
@@ -510,7 +497,6 @@ describe.skipIf(!redisUrl)('the Redis tables', () => {
     await tables.threads({ channel: { path: 'dev', subtree: false } }, { limit: 10 })
     await tables.messagesAt([1, 2], 3)
     await tables.copiesOf([1])
-    await tables.recentRoots(by.principal, 0)
   }
   const shebang = (script: string) => /^#!lua flags=([^\n]*)\n/.exec(script)?.[1] ?? null
   /** The scripts that ran on `prefix`'s keys, from a log of commands. */

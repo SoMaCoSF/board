@@ -4,7 +4,6 @@ import type { MessageView, SourceJoin, SourceRead } from '../api/routes.ts'
 import { ExternalEvent, type ExternalAuthor, type ExternalFile, type ExternalLink, type Link } from '../contract/external.ts'
 import type { ProviderEvent, SyncRoot } from './events.ts'
 import { routesOf, type Routes, type Sync, type SyncFn } from './fn.ts'
-import type { UserTokens } from './users.ts'
 
 export const ResolvedTarget = z.object({ target: z.string().min(1), channel: z.string().min(1), kind: z.enum(['channel', 'thread']) }).strict()
 export type ResolvedTarget = z.infer<typeof ResolvedTarget>
@@ -16,7 +15,7 @@ export type RenderInput = {
   /** The message as clients see it: its IDs are refs. */
   message: Readonly<MessageView>
   author: Readonly<Actor> | null
-  /** How this platform mentions an actor, through linked accounts; null when it can't. */
+  /** How this platform mentions an actor when it's one of its own (`<@U123>`); null for anyone else. */
   mentionOf: (actor: string) => string | null
   label: string
   target: string
@@ -65,8 +64,6 @@ export type ProviderOptions = {
   uploadsFiles?: boolean
   /** Whether a new thread's root can carry its files in the same message as its text. */
   startsThreadsWithFiles?: boolean
-  /** People's own tokens, to post as them and to link accounts by signing in. */
-  users?: UserTokens | null
 }
 
 export const ReceivedEvent = z.object({ event: ExternalEvent, raw: z.unknown(), dedupe: z.string().min(1) })
@@ -85,8 +82,6 @@ export abstract class SyncProvider<E extends ProviderEvent = ProviderEvent> {
   readonly startsThreadsWithFiles: boolean
   // A method's parameter is checked both ways, so a SlackProvider is still a SyncProvider.
   private readonly fn: { run(sync: Sync<E>): unknown }
-  /** People's tokens, when the adapter has them: messages they write post as them. */
-  readonly users: UserTokens | null
   protected readonly options: ProviderOptions
 
   constructor(options: ProviderOptions, sync: SyncFn<E>) {
@@ -95,7 +90,6 @@ export abstract class SyncProvider<E extends ProviderEvent = ProviderEvent> {
     const routes = routesOf(sync)
     if (routes) routed.set(this, routes)
     this.options = options
-    this.users = options.users ?? null
     this.platform = options.platform
     this.canStartThreads = options.canStartThreads ?? false
     this.singleReaction = options.singleReaction ?? false
@@ -107,15 +101,6 @@ export abstract class SyncProvider<E extends ProviderEvent = ProviderEvent> {
   abstract resolveChannel(key: string): Promise<string>
   abstract resolveTarget(target: string): Promise<ResolvedTarget>
   abstract post(target: string, kind: ResolvedTarget['kind'], body: ProviderPost): Promise<ProviderDelivery>
-
-  /** The platform account a person's token belongs to. */
-  async whoAmI(_token: string): Promise<ExternalAuthor> { throw new Error(`${this.platform} can't post as a person`) }
-  /** `post`, as the person whose token this is. */
-  async postAs(_token: string, _target: string, _kind: ResolvedTarget['kind'], _body: ProviderPost): Promise<ProviderDelivery> {
-    throw new Error(`${this.platform} can't post as a person`)
-  }
-  async editAs(_token: string, _thread: string, _message: string, _body: ProviderPost): Promise<void> {}
-  async deleteAs(_token: string, _thread: string, _message: string): Promise<void> {}
 
   async findByEmail(_email: string): Promise<ExternalAuthor | null> { return null }
   mention(_actor: Actor): string | null { return null }

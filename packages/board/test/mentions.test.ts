@@ -32,7 +32,7 @@ describe('extractMentions', () => {
 })
 
 describe('resolveMentions', () => {
-  const nobody: ActorsState = { byId: {}, byHandle: {}, links: {} }
+  const nobody: ActorsState = { byId: {}, byHandle: {} }
 
   it('takes names every object has as names nobody has', () => {
     expect(resolveMentions('thanks @constructor', nobody)).toEqual({ mentions: [], unknown: ['constructor'] })

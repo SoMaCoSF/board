@@ -43,8 +43,10 @@ export type CliCommand = {
   readonly subcommands?: readonly CliCommand[]
   /** Its arguments come before its subcommand, as in `sources <key> read <target>`. */
   readonly argumentsBeforeSubcommand?: true
-  /** It does something without a subcommand too, as `identity` lists your links. */
+  /** It does something without a subcommand too, as `sources` lists the sync entries. */
   readonly runsWithoutSubcommand?: true
+  /** The subcommand its command runs when given none, as `channels` runs `channels list`. */
+  readonly default?: true
   /** Out of help: it still runs, for what calls it. */
   readonly hidden?: true
 }
@@ -56,7 +58,7 @@ export const options = {
   // Filters: what `read`, `tail`, and `wait` match, and a watcher's `tail`.
   re: { type: 'string', value: 'id', description: "in a thread: its root's ID" },
   by: { type: 'string', value: 'handle', description: 'by an author: a handle, me, or an actor ID' },
-  mentions: { type: 'string', value: '@handle', optionalValue: true, description: 'mentioning a handle, or you without one' },
+  mentions: { type: 'string', value: '@handle', optionalValue: true, description: 'mentioning a handle or email, or you without one' },
   label: { type: 'string', multiple: true, value: 'k[=v|w]', description: "with a label on the message or its thread's root" },
   source: { type: 'string', value: 'source', description: 'from a source: a sync key such as slack, or board' },
   text: { type: 'string', value: 'words', description: 'containing these words' },
@@ -86,8 +88,6 @@ export const options = {
   remove: { type: 'boolean', description: 'take the reaction back' },
   all: { type: 'boolean', short: 'a', description: 'everything, not only what most want' },
   timeout: { type: 'string', value: 'duration', description: 'how long to wait (default: 30m)' },
-  code: { type: 'boolean', description: 'post a code from your account instead of signing in' },
-  'no-wait': { type: 'boolean', description: "start linking, and don't wait for it to finish" },
   'no-open': { type: 'boolean', description: "don't open the browser" },
   in: { type: 'string', value: 'duration', description: 'once, this long from now, e.g. 1d' },
   at: { type: 'string', value: 'time', description: 'at a time: once, or with --every, the first' },
@@ -95,6 +95,11 @@ export const options = {
   until: { type: 'string', short: 'u', value: 'time', description: 'repeating until a time' },
   for: { type: 'string', value: 'duration', description: 'repeating for this long, e.g. 24h' },
   times: { type: 'string', value: 'N', description: 'repeating this many times' },
+  can: { type: 'string', value: 'scope', description: 'what it may do (default: *=read,post,react,label)' },
+  claim: { type: 'string', multiple: true, value: 'k=v', description: 'a claim its tokens carry; the same name again is any of them' },
+  profile: { type: 'string', value: 'name', description: 'the profile every request with it writes as' },
+  session: { type: 'string', value: 'id', description: 'the session every request with it writes from' },
+  expires: { type: 'string', value: 'duration', description: 'how long it lives (default: 30d, at most 90d)' },
   port: { type: 'string', value: 'N', description: 'the port to listen on' },
   dir: { type: 'string', value: 'dir', description: 'where the board keeps its log (default: .board/)' },
   'no-inspect': { type: 'boolean', description: "don't start the inspector" },
@@ -144,6 +149,78 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
     examples: [{ name: 'see who you are on the board', value: 'whoami' }],
   },
   {
+    group: 'you',
+    name: 'tokens',
+    description: 'tokens that act as you, narrowed, for a widget, a sandbox, or a script',
+    arguments: [],
+    options: [],
+    runsWithoutSubcommand: true,
+    examples: [{ name: 'list your tokens', value: 'tokens' }],
+    subcommands: [
+      {
+        name: 'list',
+        default: true,
+        description: "your live tokens, or with manage, everyone's",
+        arguments: [],
+        options: [],
+        examples: [{ name: 'list your tokens', value: 'tokens list' }],
+      },
+      {
+        name: 'create',
+        description: 'mint one, and print its secret once',
+        arguments: [{ name: 'name', required: true, description: 'what it is for, e.g. feedback-widget' }],
+        options: [option('can'), option('profile'), option('session'), option('expires')],
+        examples: [
+          { name: 'a token that only posts feedback', value: 'tokens create feedback-widget --can feedback/=post' },
+          { name: "a week's token for a sandbox agent", value: 'tokens create sandbox-7 --can dev/=read,post,react --profile lemur --expires 7d' },
+        ],
+      },
+      {
+        name: 'revoke',
+        description: 'stop one, and every token minted with it',
+        arguments: [{ name: 'token', required: true, description: 'its ID, as tokens shows it (t12)' }],
+        options: [],
+        examples: [{ name: 'revoke a token', value: 'tokens revoke t12' }],
+      },
+    ],
+  },
+  {
+    group: 'the board',
+    name: 'grants',
+    description: "who the board lets in beside its code's rules: tokens from an OIDC issuer with these claims",
+    arguments: [],
+    options: [],
+    runsWithoutSubcommand: true,
+    examples: [{ name: 'list the grants', value: 'grants' }],
+    subcommands: [
+      {
+        name: 'list',
+        default: true,
+        description: "the board's grants",
+        arguments: [],
+        options: [],
+        examples: [{ name: 'list the grants', value: 'grants list' }],
+      },
+      {
+        name: 'create',
+        description: 'let them in, or change what they may do',
+        arguments: [{ name: 'issuer', required: true, description: 'vercel, github, or an https URL' }],
+        options: [option('claim'), option('can')],
+        examples: [
+          { name: 'let a workflow post in ci/', value: 'grants create github --claim repository=acme/web --can ci/=read,post' },
+          { name: "let a project's production post feedback", value: 'grants create vercel --claim project_id=prj_123 --claim environment=production --can feedback/=post' },
+        ],
+      },
+      {
+        name: 'revoke',
+        description: 'stop letting them in',
+        arguments: [{ name: 'grant', required: true, description: 'its ID, as grants shows it (g3)' }],
+        options: [],
+        examples: [{ name: 'revoke a grant', value: 'grants revoke g3' }],
+      },
+    ],
+  },
+  {
     group: 'the board',
     name: 'channels',
     description: 'channels, grouped by path prefix',
@@ -158,31 +235,6 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
     arguments: [],
     options: [],
     examples: [{ name: 'list who has written here', value: 'actors' }],
-  },
-  {
-    group: 'the board',
-    name: 'identity',
-    description: 'your linked Slack and GitHub accounts',
-    arguments: [],
-    options: [],
-    runsWithoutSubcommand: true,
-    examples: [{ name: 'list your linked accounts', value: 'identity' }],
-    subcommands: [
-      {
-        name: 'link',
-        description: 'link your account on a sync entry: sign in, or post a code from it',
-        arguments: [{ name: 'key', required: true, description: 'the sync entry, e.g. slack' }],
-        options: [option('code'), option('no-wait'), option('no-open')],
-        examples: [{ name: 'link your Slack account', value: 'identity link slack' }],
-      },
-      {
-        name: 'unlink',
-        description: 'unlink one, by handle or actor ID',
-        arguments: [{ name: 'account', required: true, description: 'a handle or actor ID from identity' }],
-        options: [],
-        examples: [{ name: 'unlink an account', value: 'identity unlink @ada' }],
-      },
-    ],
   },
   {
     group: 'messages',
@@ -297,7 +349,7 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
   {
     group: 'messages',
     name: 'typing',
-    description: "show typing in the thread's synced platform threads (marks WhatsApp read)",
+    description: "show typing in the thread's synced platform threads",
     arguments: [id(), { name: 'status', required: false, description: 'what Slack shows instead of "Typing…"' }],
     options: [],
     examples: [{ name: 'show typing while you work', value: 'typing 812 "looking into it"' }],

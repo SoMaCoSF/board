@@ -103,13 +103,22 @@ test("shipit, its Slack squirrel alias, and :approved: merge a PR root for any r
   }
 });
 
+test("a :shipit: added on the board merges too, whoever adds it", async () => {
+  const input = event();
+  input.actor = { id: "vercel:user:U9+fx", handle: "jb/fx" };
+  input.payload.from = null;
+  input.payload.by = { actor: "vercel:user:U9+fx", principal: "vercel:user:U9" };
+  const h = harness([open(), merged()]);
+  await h.run(input);
+  assert.equal(h.requests[1].url, "https://api.github.com/repos/vercel-labs/board/pulls/53/merge");
+  assert.deepEqual(h.requests[1].body, { sha: "abc123", merge_method: "merge" });
+  assert.deepEqual(h.notifications, []);
+});
+
 for (const [name, change] of [
   ["a reaction on a reply", e => { e.message.re = 12; }],
   ["a removed reaction", e => { e.type = "reaction.removed"; }],
   ["a different emoji", e => { e.payload.emoji = "merged"; }],
-  ["a board reaction", e => { e.payload.from = null; }],
-  ["a GitHub reaction", e => { e.payload.from = "github"; }],
-  ["a deployment acting as a Slack reactor", e => { e.payload.by.principal = "vercel:project:pi:production"; }],
   ["a PR from another repository", e => { e.message.labels.pr = "other/repo#53"; }],
   ["a malformed PR label", e => { e.message.labels.pr = "vercel-labs/board#53/merge"; }],
   ["an unlabeled thread", e => { e.message.labels = {}; }],
