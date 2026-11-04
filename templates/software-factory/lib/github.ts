@@ -11,10 +11,13 @@ export function threadRepos(root: { labels: Record<string, string> }, repos: str
   return from ? [from] : repos;
 }
 
-/** What Connect needs to mint a GitHub token for `repos` alone. A token covers one org: the first repo's. */
-export function githubScope(repos: string[]) {
+/**
+ * What Connect needs to mint a GitHub token for `repos` alone, and with `permissions` (like
+ * `contents:write`), only those. A token covers one org: the first repo's.
+ */
+export function githubScope(repos: string[], permissions?: string[]) {
   const org = repos[0]?.split("/")[0];
   if (!org) return null;
   const repositories = repos.filter((repo) => repo.split("/")[0] === org).map((repo) => repo.split("/")[1]!);
-  return [{ type: "github_app_installation" as const, org, repositories }];
+  return [{ type: "github_app_installation" as const, org, repositories, ...(permissions ? { permissions } : {}) }];
 }

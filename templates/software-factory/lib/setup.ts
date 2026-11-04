@@ -55,6 +55,10 @@ const TITLES: Record<StepId, string> = { vercel: "Vercel", github: "GitHub", sla
 
 const step = (id: StepId, rest: Omit<Step, "id" | "title">): Step => ({ id, title: TITLES[id], ...rest });
 
+/** One command that creates a connector for this project and sends its webhooks to the board, from any directory. */
+const createConnector = (service: "github" | "slack", connector: string, project: Project) =>
+  `vercel connect create ${service} --name ${connector.split("/")[1] ?? "factory"} --triggers --trigger-project ${project?.name ?? "<project>"} --trigger-path /api/board/webhooks/${service}${project ? ` --scope ${project.team}` : ""}`;
+
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error)).split("\n")[0]!.slice(0, 200);
 
 type Project = { team: string; name: string } | null;
@@ -178,7 +182,7 @@ async function vercelStep(deps: Deps, local: boolean, project: Project): Promise
   });
 }
 
-type Repo = { full_name: string; permissions?: { push?: boolean } };
+type Repo = { full_name: string };
 
 /** The connector, the repos its app is on, and among them this factory's own, which the agent changes to improve itself. */
 async function githubStep(deps: Deps, project: Project): Promise<Step> {
@@ -190,19 +194,10 @@ async function githubStep(deps: Deps, project: Project): Promise<Step> {
     if (token instanceof Error && token.name === "ConnectorInstallationRequiredError") {
       return step("github", { status: "todo", summary: "", fix: [{ text: `Install ${connector}'s app on your repos, this one included.` }] });
     }
-    const name = connector.split("/")[1] ?? "factory";
     return step("github", {
       status: "todo",
       summary: "",
-      fix: [
-        {
-          text: "Create a GitHub connector and attach it to this project.",
-          commands: [
-            `vercel connect create github --name ${name} --triggers`,
-            `vercel connect attach ${connector} --project ${project?.name ?? "<project>"} --triggers --trigger-path /api/board/webhooks/github`,
-          ],
-        },
-      ],
+      fix: [{ text: "Create a GitHub connector for this project, and install its app on your repos, this one included.", commands: [createConnector("github", connector, project)] }],
     });
   }
 
@@ -242,18 +237,21 @@ async function githubStep(deps: Deps, project: Project): Promise<Step> {
   if (!repo && total_count > repositories.length) {
     return step("github", { status: "error", summary: `The app has over ${repositories.length} repos; couldn't find ${own} among them.`, rows });
   }
-  if (!repo || repo.permissions?.push === false) {
+  if (!repo) {
+    return step("github", { status: "todo", summary: "", rows, fix: [{ text: `Install the app on ${own} too, so the agent can change its own code.`, ...(install ? { link: install } : {}) }] });
+  }
+  // GitHub lists an app's repos with every permission false, so ask for what the agent's turns ask
+  // for (agent/lib/credentials.ts): a token for this repo alone, here one that can write to it, which
+  // GitHub only issues when the app may.
+  const writable = await deps.connect(connector, githubScope([repo.full_name], ["contents:write"])!).catch((error: unknown) => error);
+  if (typeof writable !== "string") {
     return step("github", {
       status: "todo",
       summary: "",
-      rows,
+      rows: [...rows, ["write access", message(writable)]],
       fix: [{ text: `Give the app write access to ${own}, so the agent can change its own code.`, ...(install ? { link: install } : {}) }],
     });
   }
-  // The agent's GitHub token covers one thread's repos at a time (agent/lib/credentials.ts), so Connect
-  // has to mint one for a single repo: this one, as the agent's turns ask for it.
-  const scoped = await deps.connect(connector, githubScope([repo.full_name])!).catch((error: unknown) => error);
-  if (typeof scoped !== "string") return step("github", { status: "error", summary: `Couldn't get a token for ${repo.full_name} alone: ${message(scoped)}`, rows });
   return step("github", { status: "done", summary: `Works on ${total_count === 1 ? "1 repo" : `${total_count} repos`}, its own code included.${unmapped}`, rows });
 }
 
@@ -265,19 +263,12 @@ async function slackStep(deps: Deps, project: Project): Promise<Step> {
   if (typeof token !== "string") {
     if (!deps.env.VERCEL_ENV && !deps.env.VERCEL_OIDC_TOKEN) return step("slack", { optional: true, status: "todo", summary: "", fix: [SIGN_IN] });
     // The board already syncs through this connector, and picks it up within a minute of its attach: no redeploy.
-    const name = connector.split("/")[1] ?? "factory";
     return step("slack", {
       optional: true,
       status: "skipped",
       summary: `Mirror ${channel} into the board.`,
       fix: [
-        {
-          text: "Create a Slack connector and attach it to this project.",
-          commands: [
-            `vercel connect create slack --name ${name} --triggers`,
-            `vercel connect attach ${connector} --project ${project?.name ?? "<project>"} --triggers --trigger-path /api/board/webhooks/slack`,
-          ],
-        },
+        { text: "Create a Slack connector for this project.", commands: [createConnector("slack", connector, project)] },
         { text: `Then invite the app to ${channel}.` },
       ],
     });

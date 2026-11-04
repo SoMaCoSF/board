@@ -85,19 +85,21 @@ test("GitHub names the repos the app is on that come into no channel", async () 
   assert.equal(github!.summary, "Works on 2 repos, its own code included. acme/web isn't in repoChannels, so its PRs and issues stay off the board.");
 });
 
-test("GitHub asks Connect for a token for the factory's own repo alone, as the agent's turns do", async () => {
+test("GitHub asks Connect for a token that writes to the factory's own repo alone, as the agent's turns do", async () => {
   const asked: unknown[] = [];
   const { github } = byId(await setup(fake({ deps: { connect: async (connector, scope) => (asked.push(scope ?? null), connector.startsWith("slack/") ? notFound(connector) : "app-token") } }).deps));
   assert.equal(github!.status, "done");
-  assert.deepEqual(asked.filter(Boolean), [[{ type: "github_app_installation", org: "acme", repositories: ["factory"] }]]);
+  assert.deepEqual(asked.filter(Boolean), [[{ type: "github_app_installation", org: "acme", repositories: ["factory"], permissions: ["contents:write"] }]]);
 });
 
-test("GitHub isn't done when Connect won't mint a token for one repo", async () => {
+test("GitHub isn't done until the app can write to the factory's own repo", async () => {
+  // GitHub refuses a token with contents:write for an app that can't write there.
   const { github } = byId(
-    await setup(fake({ deps: { connect: async (connector, scope) => (scope ? Promise.reject(new Error("authorization_details not supported")) : connector.startsWith("slack/") ? notFound(connector) : "app-token") } }).deps),
+    await setup(fake({ deps: { connect: async (connector, scope) => (scope ? Promise.reject(new Error("GitHub installation token failed")) : connector.startsWith("slack/") ? notFound(connector) : "app-token") } }).deps),
   );
-  assert.equal(github!.status, "error");
-  assert.equal(github!.summary, "Couldn't get a token for acme/factory alone: authorization_details not supported");
+  assert.equal(github!.status, "todo");
+  assert.equal(github!.fix?.[0]?.text, "Give the app write access to acme/factory, so the agent can change its own code.");
+  assert.deepEqual(links(github!), ["https://github.com/apps/acme-factory/installations/new"]);
 });
 
 test("GitHub says nothing more when every repo the app is on comes in", async () => {
@@ -158,8 +160,7 @@ test("a GitHub connector that isn't attached says how to create and attach it, a
   const { github } = byId(await setup(fake({ deps: { connect: async () => Promise.reject(new Error("connector not found")) } }).deps));
   assert.equal(github!.status, "todo");
   assert.deepEqual(commands(github!), [
-    "vercel connect create github --name factory --triggers",
-    "vercel connect attach github/factory --project factory --triggers --trigger-path /api/board/webhooks/github",
+    "vercel connect create github --name factory --triggers --trigger-project factory --trigger-path /api/board/webhooks/github --scope acme",
   ]);
 });
 
@@ -175,26 +176,26 @@ test("GitHub isn't done until the app is on the factory's own repo", async () =>
   assert.deepEqual(links(github!), ["https://github.com/apps/acme-factory/installations/new"]);
 });
 
-test("an app that can read the factory's repo but not push to it isn't done", async () => {
+test("an app GitHub lists with every permission false is done once it can write", async () => {
+  // How GitHub answers /installation/repositories for an app's token, whatever the app may do.
   const { github } = byId(
     await setup(
       fake({
         routes: {
           "https://api.github.com/installation/repositories": () =>
-            json({ total_count: 1, repositories: [{ full_name: "acme/factory", permissions: { push: false } }] }),
+            json({ total_count: 1, repositories: [{ full_name: "acme/factory", permissions: { admin: false, push: false, pull: false } }] }),
         },
       }).deps,
     ),
   );
-  assert.equal(github!.status, "todo");
+  assert.equal(github!.status, "done");
 });
 
 test("Slack without its connector shows how to create and attach it, and nothing to redeploy", async () => {
   const { slack } = byId(await setup(fake().deps));
   assert.equal(slack!.status, "skipped");
   assert.deepEqual(commands(slack!), [
-    "vercel connect create slack --name factory --triggers",
-    "vercel connect attach slack/factory --project factory --triggers --trigger-path /api/board/webhooks/slack",
+    "vercel connect create slack --name factory --triggers --trigger-project factory --trigger-path /api/board/webhooks/slack --scope acme",
   ]);
 });
 
