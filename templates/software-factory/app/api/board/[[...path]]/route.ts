@@ -6,7 +6,7 @@ import { channels, slack } from "@vercel/board/sync-slack";
 import { wakeAgent } from "@/agent/lib/wake";
 import { ownRepo } from "@/lib/github";
 import { queues, store } from "./a2";
-import { withoutForks } from "./github";
+import { withoutForksOrOwn } from "./github";
 
 // SSE streams close just before this, and clients reconnect from their cursor.
 export const maxDuration = 300;
@@ -35,7 +35,7 @@ export const factory = board({
   backend,
   sync: {
     // Nothing goes back to GitHub: the agent comments there itself, with gh.
-    github: github(connectors.github, repos(withoutForks(repoChannels))),
+    github: github(connectors.github, repos(withoutForksOrOwn(repoChannels))),
     slack: slack(connectors.slack, channels(slackChannels)),
   },
   watch: {
