@@ -1,0 +1,392 @@
+{
+  "botUserId": "U00FAKEBOT01",
+  "teamId": "T00FAKE00AA",
+  "channel": "C00FAKECHAN1",
+  "users": {
+    "U00FAKEUSER1": {
+      "id": "U00FAKEUSER1",
+      "team_id": "T00FAKE00AA",
+      "name": "ada",
+      "real_name": "Ada Lovelace",
+      "profile": {
+        "display_name": "ada",
+        "real_name": "Ada Lovelace",
+        "image_72": "https://avatars.slack-edge.com/fake/ada_72.png"
+      }
+    },
+    "U00FAKEUSER2": {
+      "id": "U00FAKEUSER2",
+      "team_id": "T00FAKE00AA",
+      "name": "bob",
+      "real_name": "Bob Bobson",
+      "profile": {
+        "display_name": "bob",
+        "real_name": "Bob Bobson",
+        "image_72": "https://avatars.slack-edge.com/fake/bob_72.png"
+      }
+    }
+  },
+  "urlVerification": {
+    "token": "xAbCdEfGhIjKlMnOpQrStUvW",
+    "challenge": "3eZbrw1aBm2rZgRNFdxV2595E9CY3gmdALWMmHkvFXO7tYXAYM8P",
+    "type": "url_verification"
+  },
+  "root": {
+    "token": "xAbCdEfGhIjKlMnOpQrStUvW",
+    "team_id": "T00FAKE00AA",
+    "context_team_id": "T00FAKE00AA",
+    "api_app_id": "A00FAKEAPP01",
+    "event": {
+      "user": "U00FAKEUSER1",
+      "type": "message",
+      "ts": "1767224888.280449",
+      "client_msg_id": "0f0c7e6a-fake-4d2b-9d5e-000000000001",
+      "text": "export is broken on prod",
+      "team": "T00FAKE00AA",
+      "blocks": [
+        {
+          "type": "rich_text",
+          "block_id": "Fk1x",
+          "elements": [
+            {
+              "type": "rich_text_section",
+              "elements": [
+                {
+                  "type": "text",
+                  "text": "export is broken on prod"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "channel": "C00FAKECHAN1",
+      "event_ts": "1767224888.280449",
+      "channel_type": "channel"
+    },
+    "type": "event_callback",
+    "event_id": "Ev00FAKE0001",
+    "event_time": 1767224888,
+    "authorizations": [
+      {
+        "enterprise_id": null,
+        "team_id": "T00FAKE00AA",
+        "user_id": "U00FAKEBOT01",
+        "is_bot": true,
+        "is_enterprise_install": false
+      }
+    ],
+    "is_ext_shared_channel": false,
+    "event_context": "4-fake-Ev00FAKE0001"
+  },
+  "reply": {
+    "token": "xAbCdEfGhIjKlMnOpQrStUvW",
+    "team_id": "T00FAKE00AA",
+    "context_team_id": "T00FAKE00AA",
+    "api_app_id": "A00FAKEAPP01",
+    "event": {
+      "user": "U00FAKEUSER2",
+      "type": "message",
+      "ts": "1767224901.701849",
+      "client_msg_id": "0f0c7e6a-fake-4d2b-9d5e-000000000002",
+      "text": "same here, started an hour ago",
+      "team": "T00FAKE00AA",
+      "blocks": [
+        {
+          "type": "rich_text",
+          "block_id": "Fk1x",
+          "elements": [
+            {
+              "type": "rich_text_section",
+              "elements": [
+                {
+                  "type": "text",
+                  "text": "same here, started an hour ago"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "thread_ts": "1767224888.280449",
+      "parent_user_id": "U00FAKEUSER1",
+      "channel": "C00FAKECHAN1",
+      "event_ts": "1767224901.701849",
+      "channel_type": "channel"
+    },
+    "type": "event_callback",
+    "event_id": "Ev00FAKE0002",
+    "event_time": 1767224901,
+    "authorizations": [
+      {
+        "enterprise_id": null,
+        "team_id": "T00FAKE00AA",
+        "user_id": "U00FAKEBOT01",
+        "is_bot": true,
+        "is_enterprise_install": false
+      }
+    ],
+    "is_ext_shared_channel": false,
+    "event_context": "4-fake-Ev00FAKE0002"
+  },
+  "edit": {
+    "token": "xAbCdEfGhIjKlMnOpQrStUvW",
+    "team_id": "T00FAKE00AA",
+    "context_team_id": "T00FAKE00AA",
+    "api_app_id": "A00FAKEAPP01",
+    "event": {
+      "type": "message",
+      "subtype": "message_changed",
+      "message": {
+        "user": "U00FAKEUSER2",
+        "type": "message",
+        "edited": {
+          "user": "U00FAKEUSER2",
+          "ts": "1767224950.000000"
+        },
+        "client_msg_id": "0f0c7e6a-fake-4d2b-9d5e-000000000002",
+        "text": "same here, started two hours ago",
+        "team": "T00FAKE00AA",
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "Fk1x",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "same here, started two hours ago"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "ts": "1767224901.701849",
+        "thread_ts": "1767224888.280449",
+        "parent_user_id": "U00FAKEUSER1",
+        "source_team": "T00FAKE00AA",
+        "user_team": "T00FAKE00AA"
+      },
+      "previous_message": {
+        "user": "U00FAKEUSER2",
+        "type": "message",
+        "ts": "1767224901.701849",
+        "client_msg_id": "0f0c7e6a-fake-4d2b-9d5e-000000000002",
+        "text": "same here, started an hour ago",
+        "team": "T00FAKE00AA",
+        "thread_ts": "1767224888.280449",
+        "parent_user_id": "U00FAKEUSER1"
+      },
+      "channel": "C00FAKECHAN1",
+      "hidden": true,
+      "ts": "1767224950.000100",
+      "event_ts": "1767224950.000100",
+      "channel_type": "channel"
+    },
+    "type": "event_callback",
+    "event_id": "Ev00FAKE0003",
+    "event_time": 1767224950,
+    "authorizations": [
+      {
+        "enterprise_id": null,
+        "team_id": "T00FAKE00AA",
+        "user_id": "U00FAKEBOT01",
+        "is_bot": true,
+        "is_enterprise_install": false
+      }
+    ],
+    "is_ext_shared_channel": false,
+    "event_context": "4-fake-Ev00FAKE0003"
+  },
+  "deleted": {
+    "token": "xAbCdEfGhIjKlMnOpQrStUvW",
+    "team_id": "T00FAKE00AA",
+    "context_team_id": "T00FAKE00AA",
+    "api_app_id": "A00FAKEAPP01",
+    "event": {
+      "type": "message",
+      "subtype": "message_deleted",
+      "previous_message": {
+        "user": "U00FAKEUSER2",
+        "type": "message",
+        "ts": "1767224901.701849",
+        "client_msg_id": "0f0c7e6a-fake-4d2b-9d5e-000000000002",
+        "text": "same here, started two hours ago",
+        "team": "T00FAKE00AA",
+        "thread_ts": "1767224888.280449",
+        "parent_user_id": "U00FAKEUSER1"
+      },
+      "channel": "C00FAKECHAN1",
+      "hidden": true,
+      "deleted_ts": "1767224901.701849",
+      "event_ts": "1767225000.000200",
+      "ts": "1767225000.000200",
+      "channel_type": "channel"
+    },
+    "type": "event_callback",
+    "event_id": "Ev00FAKE0004",
+    "event_time": 1767225000,
+    "authorizations": [
+      {
+        "enterprise_id": null,
+        "team_id": "T00FAKE00AA",
+        "user_id": "U00FAKEBOT01",
+        "is_bot": true,
+        "is_enterprise_install": false
+      }
+    ],
+    "is_ext_shared_channel": false,
+    "event_context": "4-fake-Ev00FAKE0004"
+  },
+  "reactionAdded": {
+    "token": "xAbCdEfGhIjKlMnOpQrStUvW",
+    "team_id": "T00FAKE00AA",
+    "context_team_id": "T00FAKE00AA",
+    "api_app_id": "A00FAKEAPP01",
+    "event": {
+      "type": "reaction_added",
+      "user": "U00FAKEUSER2",
+      "reaction": "eyes",
+      "item": {
+        "type": "message",
+        "channel": "C00FAKECHAN1",
+        "ts": "1767224888.280449"
+      },
+      "item_user": "U00FAKEUSER1",
+      "event_ts": "1767225010.000300"
+    },
+    "type": "event_callback",
+    "event_id": "Ev00FAKE0005",
+    "event_time": 1767225010,
+    "authorizations": [
+      {
+        "enterprise_id": null,
+        "team_id": "T00FAKE00AA",
+        "user_id": "U00FAKEBOT01",
+        "is_bot": true,
+        "is_enterprise_install": false
+      }
+    ],
+    "is_ext_shared_channel": false,
+    "event_context": "4-fake-Ev00FAKE0005"
+  },
+  "reactionRemoved": {
+    "token": "xAbCdEfGhIjKlMnOpQrStUvW",
+    "team_id": "T00FAKE00AA",
+    "context_team_id": "T00FAKE00AA",
+    "api_app_id": "A00FAKEAPP01",
+    "event": {
+      "type": "reaction_removed",
+      "user": "U00FAKEUSER2",
+      "reaction": "eyes",
+      "item": {
+        "type": "message",
+        "channel": "C00FAKECHAN1",
+        "ts": "1767224888.280449"
+      },
+      "item_user": "U00FAKEUSER1",
+      "event_ts": "1767225020.000400"
+    },
+    "type": "event_callback",
+    "event_id": "Ev00FAKE0006",
+    "event_time": 1767225020,
+    "authorizations": [
+      {
+        "enterprise_id": null,
+        "team_id": "T00FAKE00AA",
+        "user_id": "U00FAKEBOT01",
+        "is_bot": true,
+        "is_enterprise_install": false
+      }
+    ],
+    "is_ext_shared_channel": false,
+    "event_context": "4-fake-Ev00FAKE0006"
+  },
+  "botAlert": {
+    "token": "xAbCdEfGhIjKlMnOpQrStUvW",
+    "team_id": "T00FAKE00AA",
+    "context_team_id": "T00FAKE00AA",
+    "api_app_id": "A00FAKEAPP01",
+    "event": {
+      "type": "message",
+      "subtype": "bot_message",
+      "text": "",
+      "ts": "1767225100.000500",
+      "bot_id": "B00FAKEALRT1",
+      "username": "Datadog",
+      "icons": {
+        "image_48": "https://avatars.slack-edge.com/fake/datadog_48.png"
+      },
+      "attachments": [
+        {
+          "id": 1,
+          "color": "d00000",
+          "fallback": "[Triggered] chat api p99 latency above 5s",
+          "title": "[Triggered] chat api p99 latency above 5s",
+          "title_link": "https://app.datadoghq.com/monitors/00000000",
+          "text": "p99 latency is 6.2s over the last 5m on service:chat-api"
+        }
+      ],
+      "channel": "C00FAKECHAN1",
+      "event_ts": "1767225100.000500",
+      "channel_type": "channel"
+    },
+    "type": "event_callback",
+    "event_id": "Ev00FAKE0007",
+    "event_time": 1767225100,
+    "authorizations": [
+      {
+        "enterprise_id": null,
+        "team_id": "T00FAKE00AA",
+        "user_id": "U00FAKEBOT01",
+        "is_bot": true,
+        "is_enterprise_install": false
+      }
+    ],
+    "is_ext_shared_channel": false,
+    "event_context": "4-fake-Ev00FAKE0007"
+  },
+  "echoTemplate": {
+    "token": "xAbCdEfGhIjKlMnOpQrStUvW",
+    "team_id": "T00FAKE00AA",
+    "context_team_id": "T00FAKE00AA",
+    "api_app_id": "A00FAKEAPP01",
+    "event": {
+      "bot_id": "B00FAKEBOT01",
+      "type": "message",
+      "text": "",
+      "user": "U00FAKEBOT01",
+      "ts": "{{ts}}",
+      "app_id": "A00FAKEAPP01",
+      "team": "T00FAKE00AA",
+      "bot_profile": {
+        "id": "B00FAKEBOT01",
+        "app_id": "A00FAKEAPP01",
+        "name": "board",
+        "team_id": "T00FAKE00AA"
+      },
+      "thread_ts": "1767224888.280449",
+      "parent_user_id": "U00FAKEUSER1",
+      "channel": "C00FAKECHAN1",
+      "event_ts": "{{ts}}",
+      "channel_type": "channel"
+    },
+    "type": "event_callback",
+    "event_id": "Ev00FAKE0008",
+    "event_time": 1767225200,
+    "authorizations": [
+      {
+        "enterprise_id": null,
+        "team_id": "T00FAKE00AA",
+        "user_id": "U00FAKEBOT01",
+        "is_bot": true,
+        "is_enterprise_install": false
+      }
+    ],
+    "is_ext_shared_channel": false,
+    "event_context": "4-fake-Ev00FAKE0008"
+  }
+}
