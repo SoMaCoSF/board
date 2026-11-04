@@ -40,7 +40,11 @@ async function githubToken(getToken: typeof import("@vercel/connect").getToken, 
     .thread(board.thread)
     .then((view) => view.message)
     .catch(() => null);
-  const repos = threadRepos(root ?? { labels: {} }, board.repos);
+  if (!root) {
+    console.warn(`[factory] couldn't read thread ${board.thread}, so the agent can't reach GitHub this turn`);
+    return null;
+  }
+  const repos = threadRepos(root, board.repos);
   const scope = githubScope(repos);
   if (!scope || !board.github) {
     console.warn(`[factory] no repo to scope a GitHub token to for thread ${board.thread} (repoChannels in the board route), so the agent can't reach GitHub this turn`);

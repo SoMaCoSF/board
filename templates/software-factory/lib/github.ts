@@ -5,10 +5,18 @@ export function ownRepo(env: Env = process.env): string | null {
   return env.VERCEL_GIT_REPO_OWNER && env.VERCEL_GIT_REPO_SLUG ? `${env.VERCEL_GIT_REPO_OWNER}/${env.VERCEL_GIT_REPO_SLUG}` : null;
 }
 
-/** The repos a thread's GitHub token covers: its own (`pr=` or `issue=` on the root), else all of `repos`. */
-export function threadRepos(root: { labels: Record<string, string> }, repos: string[]): string[] {
-  const from = (root.labels.pr ?? root.labels.issue)?.replace(/#\d+$/, "");
-  return from ? [from] : repos;
+/**
+ * The repos a thread's GitHub token covers. A thread synced from GitHub covers its own repo alone,
+ * read from where the board says its root came from (`origin`, which only the board writes, unlike
+ * labels), and only when that's one of `repos`. Any other thread covers all of `repos`. No root, as
+ * when reading it failed, covers nothing.
+ */
+export function threadRepos(root: { origin?: { thread?: string | null } | null } | null, repos: string[]): string[] {
+  if (!root) return [];
+  // github:<owner>/<repo>:<number>, its sync's key first.
+  const from = root.origin?.thread?.match(/^[^:]+:([^/:]+\/[^/:]+):/)?.[1]?.toLowerCase();
+  if (!from) return repos;
+  return repos.filter((repo) => repo.toLowerCase() === from);
 }
 
 /**
