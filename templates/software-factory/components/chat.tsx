@@ -1,15 +1,16 @@
 "use client";
 
-import type { FormEvent, KeyboardEvent, ReactNode } from "react";
+import type { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, ReactNode } from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { board, type MessageView } from "@vercel/board";
+import { board, type Attachment, type MessageView } from "@vercel/board";
 import { http } from "@vercel/board/backend-http";
-import { ArrowUp, Loader, X } from "lucide-react";
+import { ArrowUp, FileText, Loader, Paperclip, SmilePlus, X } from "lucide-react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 // The launcher's chat: a board handle in the page, on `http()` to the launcher's proxy, which acts as
-// `launcher` in one channel. Everything here is the handle's API: messages, events, post, reply.
+// `launcher` in one channel. Everything here is the handle's API: messages, events, post, reply,
+// react, upload, and download.
 
 type Board = ReturnType<typeof board>;
 
@@ -40,18 +41,114 @@ const MARKDOWN: Components = {
   a: ({ node: _, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
 };
 
-function Message({ message, agent, now }: { message: MessageView; agent: string; now: number }): ReactNode {
+/** Reactions are stored by short name. These show as themselves; any other shows as `:name:`. */
+const EMOJI: Record<string, string> = { thumbs_up: "👍", eyes: "👀", party: "🎉", check: "✅", heart: "❤️", rocket: "🚀", fire: "🔥", pray: "🙏" };
+const PICK = ["thumbs_up", "eyes", "party", "heart", "check"];
+
+/** What the board takes in one request; bigger files go to its blob store, which this chat doesn't do. */
+const FILE_BYTES_MAX = 4 * 1024 * 1024;
+
+const size = (bytes: number) => (bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`);
+
+type Context = { team: Board | null; me: string | null; react: (id: string, emoji: string, remove: boolean) => void };
+
+/** The reactions on a message, each a toggle for yours, and while `picking`, a few to add. */
+function Reactions({ message, context, picking, done }: { message: MessageView; context: Context; picking: boolean; done: () => void }): ReactNode {
+  const given = Object.entries(message.reactions).filter(([, who]) => who.length > 0);
+  if (given.length === 0 && !picking) return null;
+  return (
+    <div className="chat-reactions">
+      {given.map(([emoji, who]) => {
+        const mine = context.me !== null && who.includes(context.me);
+        return (
+          <button key={emoji} type="button" className="chat-reaction" data-mine={mine ? "" : undefined} onClick={() => context.react(message.id, emoji, mine)}>
+            {EMOJI[emoji] ?? `:${emoji}:`} {who.length}
+          </button>
+        );
+      })}
+      {picking
+        ? PICK.filter((emoji) => !given.some(([name]) => name === emoji)).map((emoji) => (
+            <button
+              key={emoji}
+              type="button"
+              className="chat-reaction"
+              data-pick=""
+              onClick={() => {
+                context.react(message.id, emoji, false);
+                done();
+              }}
+            >
+              {EMOJI[emoji]}
+            </button>
+          ))
+        : null}
+    </div>
+  );
+}
+
+/** A file on a message: images and videos inline, from a `blob:` URL the page fetches through the proxy; anything else as a chip that saves it. */
+function FileView({ file, team }: { file: Attachment; team: Board | null }): ReactNode {
+  const media = /^image\/(png|jpeg|gif|webp|avif)$/.test(file.type) ? "image" : /^video\/(mp4|webm)$/.test(file.type) ? "video" : null;
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!media || !team) return;
+    let live = true;
+    let made: string | null = null;
+    team
+      .download(file.id)
+      .then(async (response) => {
+        if (!response.ok) return;
+        made = URL.createObjectURL(await response.blob());
+        if (live) setUrl(made);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+      if (made) URL.revokeObjectURL(made);
+    };
+  }, [file.id, media, team]);
+  async function save() {
+    if (!team) return;
+    const response = await team.download(file.id);
+    if (!response.ok) return;
+    const link = Object.assign(document.createElement("a"), { href: URL.createObjectURL(await response.blob()), download: file.name });
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 10_000);
+  }
+  const title = `${file.name} · ${size(file.size)}`;
+  if (media === "image") return <a className="chat-media" href={url ?? undefined} target="_blank" rel="noreferrer" title={title}>{url ? <img src={url} alt={file.name} /> : null}</a>;
+  if (media === "video") return <span className="chat-media" title={title}>{url ? <video src={url} controls preload="metadata" /> : null}</span>;
+  return (
+    <button type="button" className="chat-file" title={`Save ${file.name}`} onClick={() => void save()}>
+      <FileText size={12} aria-hidden /> {file.name} <span>{size(file.size)}</span>
+    </button>
+  );
+}
+
+function Message({ message, agent, now, context }: { message: MessageView; agent: string; now: number; context: Context }): ReactNode {
+  const [picking, setPicking] = useState(false);
   return (
     <div className="chat-message" data-agent={message.by.profile === agent ? "" : undefined}>
       <div className="chat-meta">
         <span className="chat-author">{message.author?.name ?? message.by.profile ?? message.by.actor}</span>
         <time dateTime={message.createdAt}>{ago(message.createdAt, now)}</time>
+        <button type="button" className="chat-react" aria-label="React" aria-pressed={picking} onClick={() => setPicking((open) => !open)}>
+          <SmilePlus size={13} aria-hidden />
+        </button>
       </div>
       <div className="chat-text">
         <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN}>
           {message.text}
         </Markdown>
       </div>
+      {message.attachments.length ? (
+        <div className="chat-files">
+          {message.attachments.map((file) => (
+            <FileView key={file.id} file={file} team={context.team} />
+          ))}
+        </div>
+      ) : null}
+      <Reactions message={message} context={context} picking={picking} done={() => setPicking(false)} />
     </div>
   );
 }
@@ -63,6 +160,9 @@ export function Chat({ channel, agent }: { channel: string; agent: string }): Re
   const [error, setError] = useState<string | null>(null);
   const [target, setTarget] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
+  const [me, setMe] = useState<string | null>(null);
+  const picker = useRef<HTMLInputElement>(null);
   const [sending, setSending] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const log = useRef<HTMLDivElement>(null);
@@ -73,6 +173,7 @@ export function Chat({ channel, agent }: { channel: string; agent: string }): Re
       backend: http(`${location.origin}/api/launcher/board`, { fetch: (input, init) => fetch(input, { ...init, credentials: "same-origin" }) }),
     });
     setTeam(handle);
+    handle.me().then((who) => setMe(who.actor), () => {});
     const controller = new AbortController();
     (async () => {
       // Follow first, then read: a message that lands in between comes in both, and merging keeps one.
@@ -109,17 +210,27 @@ export function Chat({ channel, agent }: { channel: string; agent: string }): Re
     if (el && pinned.current) el.scrollTop = el.scrollHeight;
   }, [threads]);
 
+  function attach(picked: Iterable<File>) {
+    const all = [...picked];
+    const big = all.find((file) => file.size > FILE_BYTES_MAX);
+    if (big) setError(`${big.name} is ${size(big.size)}: the chat takes files of at most 4 MB.`);
+    setFiles((known) => [...known, ...all.filter((file) => file.size <= FILE_BYTES_MAX)]);
+  }
+
   async function send(event?: FormEvent) {
     event?.preventDefault();
     const text = draft.trim();
-    if (!text || !team || sending) return;
+    if ((!text && files.length === 0) || !team || sending) return;
     setSending(true);
     setError(null);
     try {
-      const sent = target ? await team.reply(target, text) : await team.post(channel, text);
+      const attachments = await Promise.all(files.map((file) => team.upload({ data: file, name: file.name })));
+      const input = { text, ...(attachments.length ? { attachments } : {}) };
+      const sent = target ? await team.reply(target, input) : await team.post(channel, input);
       setMessages((known) => merge(known, [sent]));
       setTarget(sent.re ?? sent.id);
       setDraft("");
+      setFiles([]);
       pinned.current = true;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -127,6 +238,16 @@ export function Chat({ channel, agent }: { channel: string; agent: string }): Re
       setSending(false);
     }
   }
+
+  const context: Context = {
+    team,
+    me,
+    react: (id, emoji, remove) => {
+      if (!team) return;
+      // The new view comes back on the events stream, like anyone else's reaction.
+      team.react(id, emoji, { remove }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)));
+    },
+  };
 
   function keys(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) void send(event);
@@ -155,11 +276,11 @@ export function Chat({ channel, agent }: { channel: string; agent: string }): Re
             const waiting = last.by.profile !== agent && now - Date.parse(last.createdAt) < 10 * 60_000;
             return (
               <article key={root.id} className="chat-thread" data-target={target === root.id ? "" : undefined}>
-                <Message message={root} agent={agent} now={now} />
+                <Message message={root} agent={agent} now={now} context={context} />
                 {replies.length ? (
                   <div className="chat-replies">
                     {replies.map((reply) => (
-                      <Message key={reply.id} message={reply} agent={agent} now={now} />
+                      <Message key={reply.id} message={reply} agent={agent} now={now} context={context} />
                     ))}
                   </div>
                 ) : null}
@@ -180,7 +301,15 @@ export function Chat({ channel, agent }: { channel: string; agent: string }): Re
           })
         )}
       </div>
-      <form className="composer" onSubmit={send}>
+      <form
+        className="composer"
+        onSubmit={send}
+        onDragOver={(event: DragEvent) => event.preventDefault()}
+        onDrop={(event: DragEvent) => {
+          event.preventDefault();
+          attach(event.dataTransfer.files);
+        }}
+      >
         {target ? (
           <div className="composer-target">
             <span>in #{target}</span>
@@ -189,8 +318,39 @@ export function Chat({ channel, agent }: { channel: string; agent: string }): Re
             </button>
           </div>
         ) : null}
+        {files.length ? (
+          <div className="composer-files">
+            {files.map((file, i) => (
+              <span key={`${file.name}-${i}`} className="chat-file">
+                <FileText size={12} aria-hidden /> {file.name} <span>{size(file.size)}</span>
+                <button type="button" aria-label={`Remove ${file.name}`} onClick={() => setFiles((known) => known.filter((_, j) => j !== i))}>
+                  <X size={12} aria-hidden />
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : null}
         <div className="composer-row">
+          <input
+            ref={picker}
+            type="file"
+            multiple
+            hidden
+            onChange={(event) => {
+              if (event.target.files) attach(event.target.files);
+              event.target.value = "";
+            }}
+          />
+          <button type="button" className="attach" aria-label="Attach files" onClick={() => picker.current?.click()}>
+            <Paperclip size={14} aria-hidden />
+          </button>
           <textarea
+            onPaste={(event: ClipboardEvent) => {
+              if (event.clipboardData.files.length) {
+                event.preventDefault();
+                attach(event.clipboardData.files);
+              }
+            }}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={keys}
@@ -198,7 +358,7 @@ export function Chat({ channel, agent }: { channel: string; agent: string }): Re
             rows={1}
             aria-label="Message"
           />
-          <button type="submit" className="send" disabled={!draft.trim() || sending || !team} aria-label="Send">
+          <button type="submit" className="send" disabled={(!draft.trim() && files.length === 0) || sending || !team} aria-label="Send">
             {sending ? <Loader size={14} aria-hidden className="spin" /> : <ArrowUp size={14} aria-hidden />}
           </button>
         </div>
