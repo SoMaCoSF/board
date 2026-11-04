@@ -43,7 +43,7 @@ function slackWith(scopes: string[] | null, existing: { ts: string; username?: s
   return { provider, posted, viaAdapter, edits, client }
 }
 
-describe("an agent's messages in Slack", () => {
+describe("messages written on the board, in Slack", () => {
   it('go out under its own name, with its picture, and without the name repeated in the text', async () => {
     const { provider, posted, viaAdapter } = slackWith(['chat:write', 'chat:write.customize'])
     const sent = await provider.post(thread, 'thread', { markdown, as })
@@ -76,7 +76,7 @@ describe("an agent's messages in Slack", () => {
     expect(client.auth!.test).toHaveBeenCalledTimes(1)
   })
 
-  it("keep going through the adapter for a person's messages and for files", async () => {
+  it("keep going through the adapter for a post with no sender, like a copy from GitHub, and for files", async () => {
     const { provider, posted, viaAdapter } = slackWith(['chat:write.customize'])
     await provider.post(thread, 'thread', { markdown: '**Ada**: hi' })
     await provider.post(thread, 'thread', { markdown, as, files: [{ data: Buffer.from('x'), filename: 'a.txt' }] })

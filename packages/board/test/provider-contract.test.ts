@@ -291,17 +291,18 @@ providerContract('Chat SDK bridge', chatFixture)
 providerContract('chatSdk() with no hooks', chatSdkFixture)
 
 describe('who a post is from', () => {
-  it("gives a platform an agent's name and avatar to post under, and nothing for a person", async () => {
+  it("gives a platform the name and avatar of whoever wrote a post, a person or an agent", async () => {
     const provider = new NativeProvider(async (sync) => { await sync.import('tickets') }, {})
     const board = testBoard({ sync: { tickets: provider } })
     const token = await personToken()
-    const person = caller(board.fetch, token)
+    const person = caller(board.fetch, token, { 'x-board-name': encodeURIComponent('Julián Benegas'), 'x-board-avatar': 'https://example.com/julian.png' })
     const agent = caller(board.fetch, token, { 'x-board-profile': 'clever-lemur', 'x-board-avatar': 'https://example.com/lemur.png' })
     await person('POST', '/messages', { channel: 'tickets', text: 'from a person' })
     await vi.waitFor(() => expect(provider.posts).toHaveLength(1))
     await agent('POST', '/messages', { channel: 'tickets', text: 'from an agent' })
     await vi.waitFor(() => expect(provider.posts).toHaveLength(2))
-    expect(provider.posts[0]!.body.as).toBeUndefined()
+    expect(provider.posts[0]!.body.as).toEqual({ name: 'Julián Benegas', avatar: 'https://example.com/julian.png' })
+    expect(provider.posts[0]!.body.markdown).toBe('**Julián Benegas**: from a person')
     const as = provider.posts[1]!.body.as
     expect(as).toEqual({ name: expect.stringMatching(/^clever-lemur via /), avatar: 'https://example.com/lemur.png' })
     expect(provider.posts[1]!.body.markdown).toBe(`**${as!.name}**: from an agent`)
