@@ -61,7 +61,7 @@ function fake(options: { env?: Record<string, string | undefined>; routes?: Rout
     // Every connector but Slack's, which a test connects when it needs one.
     connect: async (connector) => (connector.startsWith("slack/") ? notFound(connector) : "app-token"),
     credits: async () => 5,
-    messages: async (query) => (query.from === "github" ? [message("12", null)] : query.from ? [] : [message("12", null), message("13", "factory", "12")]),
+    messages: async () => [message("12", null), message("13", "factory", "12")],
     ...options.deps,
   };
   return { deps, requests };
@@ -118,6 +118,24 @@ test("an open production shows only how to protect it, and asks nothing of GitHu
   assert.deepEqual(links(byId(steps).vercel!), ["https://vercel.com/acme/factory/settings/deployment-protection"]);
   assert.deepEqual(requests, ["https://factory.acme.dev/icon.svg"]);
   assert.equal(read, false);
+});
+
+test("an open preview shows only how to protect it, even while production is closed", async () => {
+  const { deps, requests } = fake({
+    deps: { host: "factory-git-fix-acme.vercel.app" },
+    routes: { "https://factory-git-fix-acme.vercel.app/icon.svg": () => new Response("<svg/>", { status: 200 }) },
+  });
+  const steps = await setup(deps);
+  assert.deepEqual(statuses(steps), { vercel: "todo", github: "locked", slack: "locked", try: "locked" });
+  assert.deepEqual(requests, ["https://factory-git-fix-acme.vercel.app/icon.svg"]);
+});
+
+test("a protection check that fails shows nothing else, as if the deployment were open", async () => {
+  const { deps, requests } = fake({ deps: { host: "unreachable.acme.dev" } });
+  const steps = await setup(deps);
+  assert.deepEqual(statuses(steps), { vercel: "error", github: "locked", slack: "locked", try: "locked" });
+  assert.match(byId(steps).vercel!.summary, /Couldn't check that this deployment is protected/);
+  assert.deepEqual(requests, ["https://unreachable.acme.dev/icon.svg"]);
 });
 
 test("a protected production without an automation bypass isn't ready, but shows the rest", async () => {
@@ -214,7 +232,7 @@ test("Slack's app in its channel, by name, is done", async () => {
 test("try waits until someone posts and the agent replies", async () => {
   const nothing = byId(await setup(fake({ deps: { messages: async () => [] } }).deps));
   assert.equal(nothing.try!.status, "waiting");
-  const unanswered = byId(await setup(fake({ deps: { messages: async (query) => (query.from === "slack" ? [] : [message("12", null)]) } }).deps));
+  const unanswered = byId(await setup(fake({ deps: { messages: async () => [message("12", null)] } }).deps));
   assert.equal(unanswered.try!.status, "waiting");
 });
 

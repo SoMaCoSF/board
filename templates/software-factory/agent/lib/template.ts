@@ -4,7 +4,7 @@ import pkg from "../../package.json" with { type: "json" };
 // with each @vercel/board release, under the same version: package.json's `version` is the release
 // this factory last took the template from, which the update-template skill moves forward.
 
-export const UPSTREAM = { repo: "vercel-labs/vboard", path: "templates/software-factory" } as const;
+export const UPSTREAM = { repo: "vercel-labs/board", path: "templates/software-factory" } as const;
 
 export const CURRENT: string = pkg.version;
 

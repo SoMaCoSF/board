@@ -38,6 +38,8 @@ export type Synced = { connectors: { github: string; slack: string }; repoChanne
 export type Deps = {
   env: Env;
   synced: Synced;
+  /** The host the checks were asked on: what strangers could reach. Production's when unknown. */
+  host?: string | null;
   fetch: typeof fetch;
   /** This deployment's OIDC token. */
   oidc(): Promise<string>;
@@ -45,8 +47,8 @@ export type Deps = {
   connect(connector: string, scope?: Scope): Promise<string>;
   /** AI Gateway's balance, in dollars. */
   credits(): Promise<number>;
-  /** The board's latest messages in a channel, newest last, optionally only those synced from one platform. */
-  messages(query: { channel: string; from?: string; limit: number }): Promise<MessageView[]>;
+  /** The board's latest messages in a channel, newest last. */
+  messages(query: { channel: string; limit: number }): Promise<MessageView[]>;
 };
 
 const TITLES: Record<StepId, string> = { vercel: "Vercel", github: "GitHub", slack: "Slack", try: "Try it" };
@@ -79,7 +81,7 @@ function dashboard(project: Project) {
  * asks again.
  */
 export async function closed(host: string | undefined, request: typeof fetch): Promise<boolean | Error> {
-  if (!host) return new Error("no production URL");
+  if (!host) return new Error("no host to check");
   const status = await request(`https://${host}/icon.svg`, { redirect: "manual", cache: "no-store", signal: AbortSignal.timeout(10_000) }).then(
     (response) => response.status,
     (error: unknown) => (error instanceof Error ? error : new Error(String(error))),
@@ -93,15 +95,16 @@ export const gated = (steps: Step[]) => steps.some((step) => step.status === "lo
 
 const SIGN_IN: Fix = { text: "Link this directory and pull its environment, then restart the dev server.", commands: ["vercel link", "vercel env pull"] };
 
-/** Every step, in order. Until production turns strangers away, the rest show only their titles. */
+/** Every step, in order. Until this deployment is known to turn strangers away, the rest show only their titles. */
 export async function setup(deps: Deps): Promise<Step[]> {
   const local = !deps.env.VERCEL_ENV;
   const token = await deps.oidc().catch(() => null);
   const project = token ? projectOf(token) : null;
   const vercel = await vercelStep(deps, local, project);
-  if (!local && vercel.status === "locked") {
+  // Open, or not known to be closed: anyone may be reading.
+  if (!local && (vercel.status === "locked" || vercel.status === "error")) {
     const rest: StepId[] = ["github", "slack", "try"];
-    return [{ ...vercel, status: "todo" }, ...rest.map((id) => step(id, { status: "locked", summary: "", optional: id === "slack" }))];
+    return [{ ...vercel, status: vercel.status === "locked" ? "todo" : "error" }, ...rest.map((id) => step(id, { status: "locked", summary: "", optional: id === "slack" }))];
   }
   const [github, slack, tryIt] = await Promise.all([githubStep(deps, project), slackStep(deps, project), tryStep(deps)]);
   return [vercel, github, slack, tryIt];
@@ -125,8 +128,8 @@ async function vercelStep(deps: Deps, local: boolean, project: Project): Promise
         fix: [{ text: "Turn on OIDC Federation, then redeploy.", link: { href: links.settings("security"), label: "Security" } }],
       });
     }
-    const shut = await closed(deps.env.VERCEL_PROJECT_PRODUCTION_URL, deps.fetch);
-    if (shut instanceof Error) return step("vercel", { status: "error", summary: `Couldn't check production: ${message(shut)}` });
+    const shut = await closed(deps.host ?? deps.env.VERCEL_PROJECT_PRODUCTION_URL, deps.fetch);
+    if (shut instanceof Error) return step("vercel", { status: "error", summary: `Couldn't check that this deployment is protected: ${message(shut)}` });
     const bypass = !!deps.env.VERCEL_AUTOMATION_BYPASS_SECRET;
     rows.push(["protection", shut ? "on" : "off"], ["automation bypass", bypass ? "set" : "missing"]);
     const protection = { href: links.settings("deployment-protection"), label: "Deployment Protection" };

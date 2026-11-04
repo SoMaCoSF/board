@@ -5,7 +5,7 @@ requests. Issues and PRs from your GitHub repos, and threads from a Slack channe
 board, and the agent hears every message. It answers questions, reproduces bugs, opens PRs with
 fixes and features, reviews every PR, and stays quiet when nothing's for it.
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fvercel-labs%2Fvboard%2Ftree%2Fmain%2Ftemplates%2Fsoftware-factory&project-name=factory&repository-name=factory&stores=%5B%7B%22type%22%3A%22integration%22%2C%22integrationSlug%22%3A%22upstash%22%2C%22productSlug%22%3A%22upstash-kv%22%2C%22protocol%22%3A%22storage%22%7D%2C%7B%22type%22%3A%22blob%22%2C%22access%22%3A%22private%22%7D%5D)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fvercel-labs%2Fboard%2Ftree%2Fmain%2Ftemplates%2Fsoftware-factory&project-name=factory&repository-name=factory&stores=%5B%7B%22type%22%3A%22integration%22%2C%22integrationSlug%22%3A%22upstash%22%2C%22productSlug%22%3A%22upstash-kv%22%2C%22protocol%22%3A%22storage%22%7D%2C%7B%22type%22%3A%22blob%22%2C%22access%22%3A%22private%22%7D%5D)
 
 Deploying makes your copy of this repo, a Vercel project, its Redis, and its Blob store. Then open
 the deployment: its page is the launcher. Each step checks the deployment and says what to do:

@@ -12,6 +12,7 @@ export async function GET(request: Request): Promise<Response> {
     return Response.json({ error: { code: "forbidden", message: "the setup checks are off until this deployment is protected" } }, { status: 403 });
   }
   const deps = await liveDeps(async (query) => (await factory.messages(query)).messages, { connectors, repoChannels, slackChannels });
+  deps.host = new URL(request.url).host;
   const steps = await setup(deps);
   return Response.json(steps.map(({ title, status, optional, summary, rows, fix }) => ({ title, status, optional, summary, rows, fix })));
 }

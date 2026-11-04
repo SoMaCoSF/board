@@ -1,4 +1,4 @@
-# This app is its own pnpm root, in its own repo and inside vercel-labs/vboard alike.
+# This app is its own pnpm root, in its own repo and inside vercel-labs/board alike.
 # pnpm holds back releases newer than a day; the board this template ships with is let through.
 minimumReleaseAgeExclude:
   - '@vercel/board@0.30.0'

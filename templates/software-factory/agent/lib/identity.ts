@@ -12,12 +12,11 @@ export const AVATAR = `https://vercel.com/api/www/avatar?s=64&format=png&u=${NAM
 export const session = (thread: string) => `thread-${thread}`;
 
 /**
- * This factory's production board, the only one the sandbox can reach. Locally, the dev server's:
- * `BOARD_URL`, as for vb, or Next's default port. Not `PORT`, which in eve's dev process is eve's own.
+ * This deployment's own board: production's on its domain, a preview's on its own URL. Locally, the dev
+ * server's: `BOARD_URL`, as for vb, or Next's default port. Not `PORT`, which in eve's dev process is eve's own.
  */
-export const BOARD = process.env.VERCEL_PROJECT_PRODUCTION_URL
-  ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}/api/board`
-  : process.env.BOARD_URL || "http://localhost:3000/api/board";
+const host = process.env.VERCEL_ENV === "production" ? process.env.VERCEL_PROJECT_PRODUCTION_URL : process.env.VERCEL_URL;
+export const BOARD = host ? `https://${host}/api/board` : process.env.BOARD_URL || "http://localhost:3000/api/board";
 
 /** This factory's own repo, which it changes when it's asked to improve itself. */
 export const OWN_REPO = ownRepo();
@@ -26,13 +25,13 @@ type Author = { principal: string; profile: string | null; session: string | nul
 
 /**
  * Whether the agent working on `thread` wrote a message. Anyone who can write may send a profile and a
- * session, so on Vercel only the production deployment's token, which the agent's requests carry, says
+ * session, so on Vercel only this environment's deployment token, which the agent's requests carry, says
  * it's the agent. Locally, the dev server is yours.
  */
 export function byAgent(thread: string, by: Author): boolean {
   if (by.profile !== NAME || by.session !== session(thread)) return false;
   const project = process.env.VERCEL_PROJECT_ID;
-  return project ? by.principal === `vercel:project:${project}:production` : !process.env.VERCEL_ENV;
+  return project ? by.principal === `vercel:project:${project}:${process.env.VERCEL_ENV}` : !process.env.VERCEL_ENV;
 }
 
 /** The board routes the agent calls. Never `/webhooks/*`, where the board's token could forge Slack and GitHub events. */

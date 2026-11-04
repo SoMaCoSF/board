@@ -25,6 +25,7 @@ export function policy(tokens: { gateway: string; github: string | null }): Netw
     : {};
   return {
     allow: {
+      // For code the agent runs, like a repo's tests calling AI Gateway. Eve's own model calls run in the function.
       "ai-gateway.vercel.sh": [{ transform: [{ headers: { "x-api-key": tokens.gateway, authorization: `Bearer ${tokens.gateway}` } }] }],
       ...github,
       "*": [],

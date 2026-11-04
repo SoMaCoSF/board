@@ -5,7 +5,7 @@ description: Bring a new release of the software factory template into this fact
 
 # Update the template
 
-This factory started as a copy of `templates/software-factory` in `vercel-labs/vboard`, at the
+This factory started as a copy of `templates/software-factory` in `vercel-labs/board`, at the
 release in its `package.json` `version`. Since then it has changed on its own. An update is a
 three-way merge: the template at that version (the base), the template at the new version, and
 this repo as it is now.
@@ -17,7 +17,7 @@ this repo as it is now.
    ```bash
    base=$(node -p "require('./package.json').version")
    next=<the thread's template label>
-   git fetch --depth=1 https://github.com/vercel-labs/vboard \
+   git fetch --depth=1 https://github.com/vercel-labs/board \
      "refs/tags/@vercel/board@$base:refs/template/base" \
      "refs/tags/@vercel/board@$next:refs/template/next"
    ```

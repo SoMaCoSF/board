@@ -1,3 +1,4 @@
+import { headers } from "next/headers";
 import type { ReactNode } from "react";
 import { NAME } from "@/agent/lib/identity";
 import { connectors, factory, repoChannels, slackChannels } from "@/app/api/board/[[...path]]/route";
@@ -12,6 +13,8 @@ export const dynamic = "force-dynamic";
 
 export default async function Launcher(): Promise<ReactNode> {
   const deps = await liveDeps(async (query) => (await factory.messages(query)).messages, { connectors, repoChannels, slackChannels });
+  // The host this page is open on: a preview can be open while production is closed.
+  deps.host = (await headers()).get("host");
   const steps = await setup(deps);
   const required = steps.filter((step) => !step.optional);
   const done = required.filter((step) => step.status === "done").length;
