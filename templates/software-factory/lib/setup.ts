@@ -268,7 +268,7 @@ async function slackStep(deps: Deps, project: Project): Promise<Step> {
       status: "skipped",
       summary: `Mirror ${channel} into the board.`,
       fix: [
-        { text: "Create a Slack connector for this project. On the page it opens, under Advanced, add channels:join to the bot scopes, so the agent can join a public channel when asked.", commands: [createConnector("slack", connector, project)] },
+        { text: "Create a Slack connector for this project.", commands: [createConnector("slack", connector, project)] },
         { text: `Then invite the app to ${channel}.` },
       ],
     });
@@ -277,10 +277,9 @@ async function slackStep(deps: Deps, project: Project): Promise<Step> {
     const response = await deps.fetch(`https://slack.com/api/${method}${query}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) });
     const data = (await response.json()) as T & { ok: boolean; error?: string };
     if (!data.ok) throw new Error(`Slack's ${method}: ${data.error ?? response.status}`);
-    // What the app's token can do: Slack lists it on every answer.
-    return Object.assign(data, { scopes: (response.headers.get("x-oauth-scopes") ?? "").split(",") });
+    return data;
   };
-  type Checked = [{ team: string; user: string; scopes: string[] }, { channels: { id: string; name: string }[] }];
+  type Checked = [{ team: string; user: string }, { channels: { id: string; name: string }[] }];
   const checked: Checked | Error = await Promise.all([
     slack<Checked[0]>("auth.test"),
     // Public channels only: Connect's Slack app can read those (channels:read), not private ones (groups:read).
@@ -290,12 +289,9 @@ async function slackStep(deps: Deps, project: Project): Promise<Step> {
   const [who, mine] = checked;
   const missing = wanted.filter((name) => !mine.channels.some((candidate) => candidate.id === name || candidate.name === name.replace(/^#/, "")));
   const rows: [string, string][] = [["workspace", who.team], ["app", `@${who.user}`]];
-  const fix: Fix[] = [];
-  if (missing.length) fix.push({ text: `Invite the app to ${missing.join(", ")}, a public channel:`, commands: [`/invite @${who.user}`] });
-  if (!who.scopes.includes("channels:join")) {
-    fix.push({ text: "So the agent can join a public channel when asked, add channels:join to the app's bot scopes in the connector's settings, then reinstall it.", commands: [`vercel connect open ${connector}${project ? ` --scope ${project.team}` : ""}`] });
+  if (missing.length) {
+    return step("slack", { optional: true, status: "todo", summary: "", rows, fix: [{ text: `Invite the app to ${missing.join(", ")}, a public channel:`, commands: [`/invite @${who.user}`] }] });
   }
-  if (fix.length) return step("slack", { optional: true, status: "todo", summary: missing.length ? "" : `Mirrors ${channel}.`, rows, fix });
   return step("slack", { optional: true, status: "done", summary: `Mirrors ${channel}.`, rows });
 }
 

@@ -28,6 +28,7 @@ the deployment: its page is the launcher. Each step checks the deployment and sa
 | `agent/` | The agent, an [eve](https://www.npmjs.com/package/eve) agent mounted at `/eve/v1` |
 | `agent/lib/wake.ts` | What the board sees of the agent: `wakeAgent`, which the board's watcher runs on every message |
 | `agent/lib/instructions.ts` | What the agent does with what it hears: edit it to change how it works |
+| `agent/instrumentation/otel.ts` | Traces each session with its content, for the project's Agent Runs. Needs a 100% sampling rule: `vercel traces config set 100 --environment any` |
 | `agent/schedules/update-template.ts` | A daily check for a new release of this template |
 | `agent/skills/git-push/` | The sandbox's `git`: pushes go through GitHub's API, which signs the agent's commits |
 
