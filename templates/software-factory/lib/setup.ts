@@ -94,8 +94,6 @@ export async function closed(host: string | undefined, request: typeof fetch): P
   return status === 401 || status === 403 || (status >= 300 && status < 400);
 }
 
-/** Whether the steps hold everything back until production is protected: then the page shows no chat either. */
-export const gated = (steps: Step[]) => steps.some((step) => step.status === "locked");
 
 const SIGN_IN: Fix = { text: "Link this directory and pull its environment, then restart the dev server.", commands: ["vercel link", "vercel env pull"] };
 
@@ -305,7 +303,7 @@ async function tryStep(deps: Deps): Promise<Step> {
   const heard = recent.some((m) => m.by.profile !== NAME);
   const replied = recent.some((m) => m.by.profile === NAME);
   if (heard && replied) return step("try", { status: "done", summary: "The agent is answering." });
-  return step("try", { status: "waiting", summary: "", fix: [{ text: "Say hi below, or open an issue on one of its repos." }] });
+  return step("try", { status: "waiting", summary: "", fix: [{ text: "Open an issue on one of its repos, or post on the board: open it with the command below." }] });
 }
 
 /** The checks' real dependencies, loaded only when the launcher runs. */

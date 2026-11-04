@@ -36,8 +36,7 @@ pnpm build
   route syncs and says what to do. A test drives each check through `setup()` against a fake
   network (`test/setup.test.ts`).
 - **The page's own routes (`app/api/launcher/`) act as the deployment, so they run only while it's
-  protected** (`lib/gate.ts`), and take writes only from the page itself. The chat posts as
-  `launcher`, only in `dev/factory`.
+  protected** (`lib/gate.ts`), and write nothing.
 - **Real credentials never enter the sandbox.** `agent/lib/credentials.ts` puts them in its network
   policy, which swaps them in on the way out. Keep it that way.
 - **GitHub signs the agent's commits, so there's no signing key.** The sandbox's `git`

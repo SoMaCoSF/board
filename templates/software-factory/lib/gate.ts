@@ -17,9 +17,3 @@ export async function open(host: string): Promise<boolean> {
   checked.set(host, result);
   return result.open;
 }
-
-/** Whether a write came from this deployment's own page, on the host it was sent to. */
-export function sameOrigin(request: Request): boolean {
-  const origin = request.headers.get("origin");
-  return !!origin && new URL(origin).host === new URL(request.url).host;
-}

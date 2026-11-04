@@ -1,12 +1,10 @@
 import { headers } from "next/headers";
 import type { ReactNode } from "react";
-import { NAME } from "@/agent/lib/identity";
 import { connectors, factory, repoChannels, slackChannels } from "@/app/api/board/[[...path]]/route";
-import { Chat } from "@/components/chat";
 import { Copy } from "@/components/copy";
 import { Refresh } from "@/components/refresh";
 import { Stepper } from "@/components/stepper";
-import { gated, liveDeps, setup } from "@/lib/setup";
+import { liveDeps, setup } from "@/lib/setup";
 
 // Every load checks this deployment as it is now.
 export const dynamic = "force-dynamic";
@@ -37,13 +35,6 @@ export default async function Launcher(): Promise<ReactNode> {
         </div>
       </section>
       <Stepper steps={steps} current={current?.id} />
-      {/* Until production is protected, anyone could read the chat: it stays off. */}
-      {gated(steps) ? null : (
-        <section className="talk">
-          <h2>Talk to it</h2>
-          <Chat channel="dev/factory" agent={NAME} />
-        </section>
-      )}
       <section className="next">
         <h2>Watch the board</h2>
         <div className="command">
