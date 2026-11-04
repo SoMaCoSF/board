@@ -282,14 +282,15 @@ async function slackStep(deps: Deps, project: Project): Promise<Step> {
   type Checked = [{ team: string; user: string }, { channels: { id: string; name: string }[] }];
   const checked: Checked | Error = await Promise.all([
     slack<Checked[0]>("auth.test"),
-    slack<Checked[1]>("users.conversations", "?types=public_channel,private_channel&exclude_archived=true&limit=200"),
+    // Public channels only: Connect's Slack app can read those (channels:read), not private ones (groups:read).
+    slack<Checked[1]>("users.conversations", "?types=public_channel&exclude_archived=true&limit=200"),
   ]).catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
   if (checked instanceof Error) return step("slack", { optional: true, status: "error", summary: message(checked) });
   const [who, mine] = checked;
   const missing = wanted.filter((name) => !mine.channels.some((candidate) => candidate.id === name || candidate.name === name.replace(/^#/, "")));
   const rows: [string, string][] = [["workspace", who.team], ["app", `@${who.user}`]];
   if (missing.length) {
-    return step("slack", { optional: true, status: "todo", summary: "", rows, fix: [{ text: `Invite the app to ${missing.join(", ")}:`, commands: [`/invite @${who.user}`] }] });
+    return step("slack", { optional: true, status: "todo", summary: "", rows, fix: [{ text: `Invite the app to ${missing.join(", ")}, a public channel:`, commands: [`/invite @${who.user}`] }] });
   }
   return step("slack", { optional: true, status: "done", summary: `Mirrors ${channel}.`, rows });
 }
@@ -304,7 +305,7 @@ async function tryStep(deps: Deps): Promise<Step> {
   const heard = recent.some((m) => m.by.profile !== NAME);
   const replied = recent.some((m) => m.by.profile === NAME);
   if (heard && replied) return step("try", { status: "done", summary: "The agent is answering." });
-  return step("try", { status: "waiting", summary: heard ? "The agent is on it." : "", fix: [{ text: "Say hi below, or open an issue on one of its repos." }] });
+  return step("try", { status: "waiting", summary: "", fix: [{ text: "Say hi below, or open an issue on one of its repos." }] });
 }
 
 /** The checks' real dependencies, loaded only when the launcher runs. */

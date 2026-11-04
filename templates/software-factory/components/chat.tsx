@@ -272,8 +272,6 @@ export function Chat({ channel, agent }: { channel: string; agent: string }): Re
           <p className="chat-empty">Nothing here yet. Ask it anything about itself.</p>
         ) : (
           threads.map(({ root, replies }) => {
-            const last = replies.at(-1) ?? root;
-            const waiting = last.by.profile !== agent && now - Date.parse(last.createdAt) < 10 * 60_000;
             return (
               <article key={root.id} className="chat-thread" data-target={target === root.id ? "" : undefined}>
                 <Message message={root} agent={agent} now={now} context={context} />
@@ -285,11 +283,6 @@ export function Chat({ channel, agent }: { channel: string; agent: string }): Re
                   </div>
                 ) : null}
                 <div className="chat-foot">
-                  {waiting ? (
-                    <span className="chat-waiting">
-                      <Loader size={12} aria-hidden className="spin" /> {agent} is on it
-                    </span>
-                  ) : null}
                   {target === root.id ? null : (
                     <button type="button" className="chat-reply" onClick={() => setTarget(root.id)}>
                       reply

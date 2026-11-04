@@ -696,13 +696,6 @@ pre {
   margin-top: 0.4rem;
 }
 
-.chat-waiting {
-  display: inline-flex;
-  gap: 0.4rem;
-  align-items: center;
-  color: var(--faint);
-}
-
 .chat-reply {
   margin-left: auto;
   padding: 0;

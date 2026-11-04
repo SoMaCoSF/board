@@ -21,7 +21,7 @@ const PRODUCTION = {
   BLOB_READ_WRITE_TOKEN: "blob-token",
 };
 
-type Routes = Record<string, (init?: RequestInit) => Response>;
+type Routes = Record<string, (init?: RequestInit, url?: string) => Response>;
 
 const ROUTES: Routes = {
   "https://factory.acme.dev/icon.svg": () => new Response("", { status: 401 }),
@@ -55,7 +55,7 @@ function fake(options: { env?: Record<string, string | undefined>; routes?: Rout
       requests.push(url);
       const route = Object.entries(routes).find(([prefix]) => url.startsWith(prefix));
       if (!route) throw new Error(`no route for ${url}`);
-      return route[1](init);
+      return route[1](init, url);
     }) as typeof fetch,
     oidc: async () => jwt({ owner: "acme", project: "factory" }),
     // Every connector but Slack's, which a test connects when it needs one.
@@ -199,12 +199,16 @@ test("Slack without its connector shows how to create and attach it, and nothing
   ]);
 });
 
+/** Slack's users.conversations as Connect's Slack app gets it: channels:read, but not groups:read. */
+const conversations = (...channels: { id: string; name: string }[]) => (_init?: RequestInit, url = "") =>
+  url.includes("private_channel") ? json({ ok: false, error: "missing_scope", needed: "groups:read" }) : json({ ok: true, channels });
+
 test("Slack set up without its app in the channel says to invite it, and blocks nothing", async () => {
   const { deps, requests } = fake({
     deps: { connect: async () => "app-token" },
     routes: {
       "https://slack.com/api/auth.test": () => json({ ok: true, team: "Acme", user: "factory" }),
-      "https://slack.com/api/users.conversations": () => json({ ok: true, channels: [{ id: "C1", name: "general" }] }),
+      "https://slack.com/api/users.conversations": conversations({ id: "C1", name: "general" }),
     },
   });
   const steps = await setup(deps);
@@ -222,7 +226,7 @@ test("Slack's app in its channel, by name, is done", async () => {
         deps: { connect: async () => "app-token" },
         routes: {
           "https://slack.com/api/auth.test": () => json({ ok: true, team: "Acme", user: "factory" }),
-          "https://slack.com/api/users.conversations": () => json({ ok: true, channels: [{ id: "C2", name: "factory" }] }),
+          "https://slack.com/api/users.conversations": conversations({ id: "C2", name: "factory" }),
         },
       }).deps,
     ),
