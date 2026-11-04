@@ -6,7 +6,7 @@ import { githubScope, threadRepos } from "../../lib/github";
 import { environment } from "../sandbox";
 import type { BoardTask } from "./board";
 import { BOARD, NAME } from "./identity";
-import { expiresAt, stale } from "./tokens";
+import { stale } from "./tokens";
 import { agentBoard } from "./vb-tool";
 
 // Real credentials go in the sandbox's network policy, which adds them on the way out. Anything the
@@ -15,8 +15,8 @@ import { agentBoard } from "./vb-tool";
 const GITHUB_MS = 30 * 60_000;
 const GIT_EMAIL = `${NAME}@users.noreply.github.com`;
 
-/** What the sandbox's requests get on the way out: AI Gateway, and GitHub when this thread has a token. */
-export function policy(tokens: { gateway: string; github: string | null }): NetworkPolicy {
+/** What the sandbox's requests get on the way out: GitHub, when this thread has a token, and nothing else. */
+export function policy(tokens: { github: string | null }): NetworkPolicy {
   const github: Record<string, NetworkPolicyRule[]> = tokens.github
     ? {
         "api.github.com": [{ transform: [{ headers: { authorization: `Bearer ${tokens.github}` } }] }],
@@ -25,8 +25,6 @@ export function policy(tokens: { gateway: string; github: string | null }): Netw
     : {};
   return {
     allow: {
-      // For code the agent runs, like a repo's tests calling AI Gateway. Eve's own model calls run in the function.
-      "ai-gateway.vercel.sh": [{ transform: [{ headers: { "x-api-key": tokens.gateway, authorization: `Bearer ${tokens.gateway}` } }] }],
       ...github,
       "*": [],
     },
@@ -63,13 +61,13 @@ export async function give(ctx: Pick<ToolContext, "getSandbox">, board: BoardTas
   const sandbox = await ctx.getSandbox(environment);
   const [{ getToken }, { getVercelOidcToken }] = await Promise.all([import("@vercel/connect"), import("@vercel/oidc")]);
   const bypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
-  const [gateway, boardToken] = await Promise.all([getVercelOidcToken(), getVercelOidcToken({ audience: BOARD })]);
+  const boardToken = await getVercelOidcToken({ audience: BOARD });
   const github = await githubToken(getToken, board, boardToken, bypass);
-  await sandbox.setNetworkPolicy(policy({ gateway, github }) as SandboxNetworkPolicy);
+  await sandbox.setNetworkPolicy(policy({ github }) as SandboxNetworkPolicy);
   const git = await sandbox.run({
     command: `git config --global user.name ${JSON.stringify(NAME)} && git config --global user.email ${GIT_EMAIL}`,
   });
   if (git.exitCode !== 0) throw new Error(`git config failed: ${git.stderr.slice(-300)}`);
   // Without GitHub, the next turn's start asks again: the connector may be set up by then.
-  given.update(() => ({ until: Math.min(expiresAt(gateway), ...(github ? [now + GITHUB_MS] : [])) }));
+  given.update(() => ({ until: github ? now + GITHUB_MS : Infinity }));
 }

@@ -42,7 +42,6 @@ export default defineSandbox(() =>
     timeout: 45 * 60_000,
     networkPolicy: "deny-all",
     env: {
-      AI_GATEWAY_API_KEY: "from-the-network-policy",
       GH_TOKEN: "from-the-network-policy",
     },
   }),
