@@ -36,7 +36,8 @@ export const factory = board({
   sync: {
     // Nothing goes back to GitHub: the agent comments there itself, with gh.
     github: github(connectors.github, repos(withoutForksOrOwn(repoChannels, appLogin(connectors.github)))),
-    slack: slack(connectors.slack, channels(slackChannels)),
+    // join: vb sources slack join <channel> adds the app to a public channel, when someone asks. Needs channels:join.
+    slack: slack({ adapter: connectors.slack, join: true }, channels(slackChannels)),
   },
   watch: {
     // Every message in dev and the channels under it, with GitHub access to the repos above.

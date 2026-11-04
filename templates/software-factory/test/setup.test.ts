@@ -197,7 +197,12 @@ test("Slack without its connector shows how to create and attach it, and nothing
   assert.deepEqual(commands(slack!), [
     "vercel connect create slack --name factory --triggers --trigger-project factory --trigger-path /api/board/webhooks/slack --scope acme",
   ]);
+  assert.match(slack!.fix![0]!.text, /channels:join/);
 });
+
+/** Slack's auth.test, with the scopes Slack lists on every answer. */
+const authTest = (scopes = "channels:read,channels:join,chat:write") => () =>
+  new Response(JSON.stringify({ ok: true, team: "Acme", user: "factory" }), { headers: { "content-type": "application/json", "x-oauth-scopes": scopes } });
 
 /** Slack's users.conversations as Connect's Slack app gets it: channels:read, but not groups:read. */
 const conversations = (...channels: { id: string; name: string }[]) => (_init?: RequestInit, url = "") =>
@@ -207,7 +212,7 @@ test("Slack set up without its app in the channel says to invite it, and blocks 
   const { deps, requests } = fake({
     deps: { connect: async () => "app-token" },
     routes: {
-      "https://slack.com/api/auth.test": () => json({ ok: true, team: "Acme", user: "factory" }),
+      "https://slack.com/api/auth.test": authTest(),
       "https://slack.com/api/users.conversations": conversations({ id: "C1", name: "general" }),
     },
   });
@@ -225,13 +230,30 @@ test("Slack's app in its channel, by name, is done", async () => {
       fake({
         deps: { connect: async () => "app-token" },
         routes: {
-          "https://slack.com/api/auth.test": () => json({ ok: true, team: "Acme", user: "factory" }),
+          "https://slack.com/api/auth.test": authTest(),
           "https://slack.com/api/users.conversations": conversations({ id: "C2", name: "factory" }),
         },
       }).deps,
     ),
   );
   assert.equal(slack!.status, "done");
+});
+
+test("Slack's app without channels:join says how to add it, since the agent can't join a channel without it", async () => {
+  const { slack } = byId(
+    await setup(
+      fake({
+        deps: { connect: async () => "app-token" },
+        routes: {
+          "https://slack.com/api/auth.test": authTest("channels:read,chat:write"),
+          "https://slack.com/api/users.conversations": conversations({ id: "C2", name: "factory" }),
+        },
+      }).deps,
+    ),
+  );
+  assert.equal(slack!.status, "todo");
+  assert.deepEqual(commands(slack!), ["vercel connect open slack/factory --scope acme"]);
+  assert.match(slack!.fix!.map((fix) => fix.text).join(" "), /channels:join/);
 });
 
 test("try waits until someone posts and the agent replies", async () => {
