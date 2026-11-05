@@ -1806,6 +1806,7 @@ board tokens [list]                            yours, or with manage, everyone's
 board tokens create <name> [--can <scope>] [--profile <name>] [--session <id>] [--expires 30d]   prints the secret, once
 board tokens revoke <token>                    e.g. t12; it and every token minted with it
 board grants [list]                            the board's grants; needs manage
+board grants create vercel (--projects | --project <prj_id>) --environment <env> [--claim <name=value>]... [--can <scope>]   the board's team unless --claim owner_id names one
 board grants create <issuer> --claim <name=value>... [--can <scope>]   vercel, github, or an https URL; needs manage
 board grants revoke <grant>                    e.g. g3
 board edit <id> ("<text>" | --text-file <path>) [--if-revision N]   only if no one has edited or deleted it since revision N

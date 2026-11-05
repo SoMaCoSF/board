@@ -414,6 +414,7 @@ t1  feedback-widget  feedback/=post  expires in 30d
 
 ```text
 vb grants [list]
+vb grants create vercel (--projects | --project <prj_id>) --environment <env> [--claim <name=value>]... [--can <scope>]
 vb grants create <issuer> --claim <name=value>... [--can <scope>]
 vb grants revoke <grant>
 ```
@@ -426,14 +427,27 @@ everywhere. `vb grants` lists each one's ID, issuer, claims, and what it lets
 them do. All three need `manage` in every channel. See
 [Grants](../01-board/09-access.md#grants).
 
+For `vercel`, `--projects` is every project on the board's team and
+`--project` is one, by its ID. `--environment` says where they run:
+`production`, `preview`, or `development`, or for one project, its custom
+environment's ID. Either keeps the grant to the board's own team, which the
+board's discovery names, unless `--claim owner_id=<team>` names another. A
+board that names no team, such as `vb serve` outside a directory linked to a
+Vercel project, takes the team as that claim. `--claim` alone is as written:
+`--claim project_id=prj_front --claim environment=production` is that project
+on any team. `vb grants` says who a Vercel grant lets in, in words.
+
 ```text
+$ vb grants create vercel --projects --environment production
+granted g1
+$ vb grants create vercel --project prj_front --environment preview --can feedback/=post
+granted g2
 $ vb grants create github --claim repository=acme/web --can ci/=read,post
 granted g3
-$ vb grants create vercel --claim project_id=prj_front --claim environment=production --can feedback/=post
-granted g4
 $ vb grants
-g3  github  repository=acme/web                          ci/=read,post
-g4  vercel  environment=production project_id=prj_front  feedback/=post
+g1  vercel  every project, production  *=read,post,react,label
+g2  vercel  prj_front, preview         feedback/=post
+g3  github  repository=acme/web        ci/=read,post
 $ vb grants revoke g3
 revoked g3
 ```

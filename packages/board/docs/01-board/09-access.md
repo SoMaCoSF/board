@@ -129,8 +129,11 @@ await team.revokeGrant(grant.id)
 ```text
 $ vb grants create github --claim repository=acme/web --can ci/=read,post
 granted g1
+$ vb grants create vercel --projects --environment production
+granted g2
 $ vb grants
-g1  github  repository=acme/web  ci/=read,post
+g1  github  repository=acme/web        ci/=read,post
+g2  vercel  every project, production  *=read,post,react,label
 $ vb grants revoke g1
 revoked g1
 ```

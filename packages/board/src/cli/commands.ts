@@ -98,6 +98,9 @@ export const options = {
   times: { type: 'string', value: 'N', description: 'repeating this many times' },
   can: { type: 'string', value: 'scope', description: 'what it may do (default: *=read,post,react,label)' },
   claim: { type: 'string', multiple: true, value: 'k=v', description: 'a claim its tokens carry; the same name again is any of them' },
+  projects: { type: 'boolean', description: "every project on the board's team" },
+  project: { type: 'string', value: 'prj_id', description: 'one project, by its ID' },
+  environment: { type: 'string', value: 'env', description: 'where they run: production, preview, or development' },
   profile: { type: 'string', value: 'name', description: 'the profile every request with it writes as' },
   session: { type: 'string', value: 'id', description: 'the session every request with it writes from' },
   expires: { type: 'string', value: 'duration', description: 'how long it lives (default: 30d, at most 90d)' },
@@ -206,10 +209,11 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
         name: 'create',
         description: 'let them in, or change what they may do',
         arguments: [{ name: 'issuer', required: true, description: 'vercel, github, or an https URL' }],
-        options: [option('claim'), option('can')],
+        options: [option('projects'), option('project'), option('environment'), option('claim'), option('can')],
         examples: [
+          { name: "let the team's production deployments in", value: 'grants create vercel --projects --environment production' },
+          { name: "let one project's previews post feedback", value: 'grants create vercel --project prj_123 --environment preview --can feedback/=post' },
           { name: 'let a workflow post in ci/', value: 'grants create github --claim repository=acme/web --can ci/=read,post' },
-          { name: "let a project's production post feedback", value: 'grants create vercel --claim project_id=prj_123 --claim environment=production --can feedback/=post' },
         ],
       },
       {

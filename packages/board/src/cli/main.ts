@@ -418,6 +418,47 @@ function claimPairs(values: string[] | undefined): Record<string, string | strin
   return Object.fromEntries(Object.entries(claims).map(([name, list]) => [name, list.length === 1 ? list[0]! : list]))
 }
 
+/** A Vercel project's ID, as `--project` takes it: a name would take Vercel's projects API to look up. */
+const PROJECT_ID = /^prj_[A-Za-z0-9]+$/
+
+/**
+ * A vercel grant's claims: `--projects` (every project on the team) or `--project` (one), in
+ * `--environment`, with any `--claim`. With either, a grant that names no team is kept to the
+ * board's own, as its discovery names it. `--claim` alone is as written.
+ */
+async function vercelClaims(board: Board): Promise<Record<string, string | string[]>> {
+  const claims = claimPairs(flags.claim)
+  const { projects, project, environment } = flags
+  if (projects && project !== undefined) throw usage('--projects is every project on the team, and --project one of them: pass one.')
+  if (projects && claims.project_id !== undefined) throw usage('--projects is every project on the team, so it takes no --claim project_id.')
+  if (project !== undefined && !PROJECT_ID.test(project))
+    throw usage(`--project takes a project's ID, like prj_123, and ${project} isn't one. The project's settings show it.`)
+  const add = (name: string, value: string | undefined) => {
+    if (value === undefined) return
+    const had = claims[name]
+    claims[name] = had === undefined ? value : [...new Set([...[had].flat(), value])]
+  }
+  add('project_id', project)
+  add('environment', environment)
+  if (!projects && claims.project_id === undefined && claims.owner_id === undefined)
+    throw usage("Missing the projects to let in: pass --projects for every project on the board's team, or --project with one's ID.", { reason: 'missing_arguments' })
+  if (claims.environment === undefined)
+    throw usage('Missing the environment its deployments run in: pass --environment production, preview, or development.', { reason: 'missing_arguments' })
+  if ((projects || project !== undefined) && claims.owner_id === undefined) {
+    const team = (await board.discovery()).team_id
+    if (!team)
+      throw new Failed({
+        class: 'missing_input',
+        reason: 'missing_team',
+        actionRequired: true,
+        message: "Can't tell which team the board is on, to keep the grant to it.",
+        next: [{ instruction: 'Name the team', argv: rerun('--claim', 'owner_id=<TEAM_ID>') }],
+      })
+    claims.owner_id = team
+  }
+  return claims
+}
+
 /** A time flag: anything `Date` reads, as ISO. */
 function instant(flag: string, value: string): string {
   const time = new Date(value)
@@ -1027,9 +1068,13 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       const [verb, ...rest] = args
       if (verb === undefined || verb === 'list') {
         if (rest.length > 0) throw usage(`grants list takes no arguments: ${rest[0]} is one too many.`)
-        const list = await client().grants()
+        const board = client()
+        const list = await board.grants()
         if (flags.json) return result({ grants: list }), 0
-        out(list.length === 0 ? 'no grants' : formatGrants(list))
+        // A grant's team goes unsaid when it's the board's own. Without the board's, each is named.
+        const named = list.some((grant) => grant.issuer === 'vercel' && grant.claims.owner_id !== undefined)
+        const team = named ? await board.discovery().then((found) => found.team_id, () => null) : null
+        out(list.length === 0 ? 'no grants' : formatGrants(list, team))
         return 0
       }
       if (verb === 'revoke') {
@@ -1043,10 +1088,13 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       const [issuer, extra] = rest
       if (!issuer) throw usage('Missing the issuer to grant: vercel, github, or an https URL.', { reason: 'missing_arguments' })
       if (extra !== undefined) throw usage(`grants create takes one issuer, and its claims as --claim name=value: ${extra} is one too many.`)
-      const claims = claimPairs(flags.claim)
+      if (issuer !== 'vercel' && (flags.projects || flags.project !== undefined || flags.environment !== undefined))
+        throw usage(`--projects, --project, and --environment are for vercel grants: name ${issuer}'s claims with --claim name=value.`)
+      const board = client()
+      const claims = issuer === 'vercel' ? await vercelClaims(board) : claimPairs(flags.claim)
       if (Object.keys(claims).length === 0)
         throw usage(`Missing the claims ${issuer}'s tokens must carry: pass --claim name=value.`, { reason: 'missing_arguments' })
-      const { grant, created } = await client().createGrant({ issuer, claims, ...(flags.can !== undefined ? { can: canFlag(flags.can) } : {}) })
+      const { grant, created } = await board.createGrant({ issuer, claims, ...(flags.can !== undefined ? { can: canFlag(flags.can) } : {}) })
       if (flags.json) result({ grant, outcome: created ? 'granted' : 'updated' })
       else out(`${created ? 'granted' : 'updated'} ${grant.id}`)
       return 0

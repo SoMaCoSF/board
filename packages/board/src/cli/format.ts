@@ -186,15 +186,38 @@ const table = (rows: string[][]) => {
   return rows.map((row) => row.map((cell, column) => (column === row.length - 1 ? cell : cell.padEnd(widths[column]!))).join('  ').trimEnd()).join('\n')
 }
 
-/** Each grant on a row: its ID, its issuer, the claims it matches, and what it lets do. */
-export function formatGrants(grants: GrantView[]): string {
+/** A grant's claims as written: `event_name=push|schedule repository=acme/web`. */
+const rawClaims = (claims: GrantView['claims']) =>
+  Object.entries(claims)
+    .map(([name, value]) => `${name}=${typeof value === 'string' ? value : value.join('|')}`)
+    .join(' ')
+
+/** Values a claim is any of, in words: `production and preview`. */
+const anyOf = (value: string | string[]) => [value].flat().join(' and ')
+
+/**
+ * Who a Vercel grant lets in, in words: its projects (`every project` without one), their team
+ * when it isn't the board's own, and the environment: `every project, production`,
+ * `prj_front on team_partner, production`. Any other claim follows as written.
+ */
+function vercelWho(claims: GrantView['claims'], team: string | null): string {
+  const { project_id: project, owner_id: owner, environment, ...rest } = claims
+  const projects = project === undefined ? 'every project' : anyOf(project)
+  const elsewhere = owner !== undefined && owner !== team ? ` on ${anyOf(owner)}` : ''
+  const extra = rawClaims(rest)
+  return [`${projects}${elsewhere}`, ...(environment !== undefined ? [anyOf(environment)] : []), ...(extra ? [extra] : [])].join(', ')
+}
+
+/**
+ * Each grant on a row: its ID, its issuer, who it lets in, and what it lets them do. A Vercel
+ * grant says who in words, beside `team`, the board's own; any other its claims as written.
+ */
+export function formatGrants(grants: GrantView[], team: string | null = null): string {
   return table(
     grants.map((grant) => [
       grant.id,
       grant.issuer,
-      Object.entries(grant.claims)
-        .map(([name, value]) => `${name}=${typeof value === 'string' ? value : value.join('|')}`)
-        .join(' '),
+      grant.issuer === 'vercel' ? vercelWho(grant.claims, team) : rawClaims(grant.claims),
       formatCan(grant.can),
     ]),
   )
