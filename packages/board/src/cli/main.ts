@@ -1091,8 +1091,8 @@ async function run(command: string | undefined, args: string[]): Promise<number>
         const list = await board.grants()
         if (flags.json) return result({ grants: list }), 0
         // A grant's team goes unsaid when it's the board's own. Without the board's, each is named.
-        const named = list.some((grant) => grant.issuer === 'vercel' && grant.claims.owner_id !== undefined)
-        const team = named ? await board.discovery().then((found) => found.team_id, () => null) : null
+        const teamed = list.some((grant) => grant.issuer === 'vercel' && grant.claims.owner_id !== undefined)
+        const team = teamed ? await board.discovery().then((found) => found.team_id, () => null) : null
         out(list.length === 0 ? 'no grants' : formatGrants(list, team))
         return 0
       }
@@ -1131,11 +1131,13 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       const issuer = grantIssuer(kind)
       if (issuer !== 'vercel' && (flags.projects || flags.project !== undefined || flags.environment !== undefined))
         throw usage(`--projects, --project, and --environment are for vercel grants: name ${issuer}'s claims with --claim name=value.`)
+      // What it may do, checked before the board is asked anything.
+      const can = flags.can === undefined ? undefined : canFlag(flags.can)
       const board = client()
       const claims = issuer === 'vercel' ? await vercelClaims(board) : claimPairs(flags.claim)
       if (Object.keys(claims).length === 0)
         throw usage(`Missing the claims ${issuer}'s tokens must carry: pass --claim name=value.`, { reason: 'missing_arguments' })
-      const { grant, created } = await board.createGrant({ issuer, claims, ...(flags.can !== undefined ? { can: canFlag(flags.can) } : {}) })
+      const { grant, created } = await board.createGrant({ issuer, claims, ...(can !== undefined ? { can } : {}) })
       if (flags.json) result({ grant, outcome: created ? 'granted' : 'updated' })
       else out(`${created ? 'granted' : 'updated'} ${grant.id}`)
       return 0
