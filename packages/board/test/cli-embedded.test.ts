@@ -307,7 +307,7 @@ describe('the embedded CLI', () => {
     }
   })
 
-  it("shows what Vercel's API says you may do on a team's board, and when your credentials stop working", async () => {
+  it("shows what Vercel's API says you may do on a team's board, by your team role or your credentials, and when they stop working", async () => {
     const home = await isolated()
     vi.stubEnv('VERCEL_AUTH_TOKEN', 'user:u_jb')
     const api = fakeMessageboard({ me: { 'user:u_jb': { can: { 'dev/': ['read', 'post'], 'ci/': ['read'] }, expiresAt: Date.now() + 90 * 60_000 } } })
@@ -319,6 +319,15 @@ describe('the embedded CLI', () => {
       expect(whoami.code).toBe(0)
       expect(whoami.stdout).toMatch(/^token +expires in 1h 30m$/m)
       expect(whoami.stdout).toMatch(/^can +dev\/  read post\n +ci\/ +read$/m)
+      // The team's owner may do everything, which whoami doesn't spell out, with no expiry; a viewer reads.
+      const roles = fakeMessageboard({ roles: { u_jb: 'owner', u_ada: 'viewer' } })
+      fetching.mockImplementation(async (input, init) => roles.fetch(input, init))
+      const owner = await capture(() => main(['whoami', '--scope', 'test'], { name: 'board', commands: local }))
+      expect(owner).toMatchObject({ code: 0, stdout: expect.stringMatching(/^Julián Benegas \(vercel:user:u_jb\)\n/) })
+      expect(owner.stdout).not.toMatch(/^(can|token) /m)
+      vi.stubEnv('VERCEL_AUTH_TOKEN', 'user:u_ada')
+      const viewer = await capture(() => main(['whoami', '--scope', 'test'], { name: 'board', commands: local }))
+      expect(viewer.stdout).toMatch(/^can +\*  read$/m)
     } finally {
       fetching.mockRestore()
       process.chdir(cwd)

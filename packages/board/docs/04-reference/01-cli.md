@@ -304,21 +304,21 @@ token   expires in 0h 59m
 can     ci/  read post
 ```
 
-On a team's board in Vercel's API, what you can do and when your
-credentials stop working are what Vercel's API says:
+On a team's board in Vercel's API, what you can do is what Vercel's API says.
+A person may do what their team role lets them: everything for an owner, a
+member, or a developer, which `whoami` doesn't spell out, and read for a
+viewer. A project may read, post, react, and label everywhere:
 
 ```text
 $ vb whoami --scope test
 Julián Benegas (vercel:user:u_jb)
 board   https://api.vercel.com/v1/messageboard/boards/brd_test?teamId=team_test
 source  the Vercel CLI
-token   expires in 1h 30m
-can     dev/  read post
-        ci/   read
+can     *  read
 ```
 
-Where the API says neither, you can read, post, react, and label everywhere,
-and nothing says when your credentials stop.
+Credentials the API says expire show when, as `token`. Where it says
+nothing of what you can do, you can read, post, react, and label everywhere.
 
 See [Access](../01-board/09-access.md).
 

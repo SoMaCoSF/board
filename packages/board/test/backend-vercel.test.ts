@@ -389,22 +389,23 @@ describe('vercel()', () => {
   })
 
   it('says what the API says its credentials may do, and until when, and what any it lets in may when it says neither', async () => {
-    const expiresAt = Date.now() + 59 * 60_000
-    const api = fakeMessageboard({
-      me: {
-        // Permissions board doesn't know are dropped; its own are kept as the API gives them.
-        'project:prj_pong:production': { can: { 'pings/': ['read', 'post'], 'dev/': ['read', 'fly'] }, expiresAt },
-        'user:u_jb': { can: { '*': ['read'] }, expiresAt: null },
-      },
-    })
     const said = async (handle: ReturnType<typeof handleOn>) => {
-      const { can, expiresAt: until } = await handle.me()
-      return { can, expiresAt: until }
+      const { can, expiresAt } = await handle.me()
+      return { can, expiresAt }
     }
-    expect(await said(handleOn(api, 'project:prj_pong:production'))).toEqual({ can: { 'pings/': ['read', 'post'], 'dev/': ['read'] }, expiresAt: new Date(expiresAt).toISOString() })
-    expect(await said(handleOn(api))).toEqual({ can: { '*': ['read'] }, expiresAt: null })
+    const everything = { can: { '*': ['read', 'post', 'react', 'label', 'sync', 'manage'] }, expiresAt: null }
+    // A person may do what their team role lets them; a project, what any credentials the API lets in may.
+    const api = fakeMessageboard({ roles: { u_jb: 'owner', u_ada: 'viewer' } })
+    expect(await said(handleOn(api, 'user:u_jb'))).toEqual(everything)
+    expect(await said(handleOn(api, 'user:u_ada'))).toEqual({ can: { '*': ['read'] }, expiresAt: null })
+    expect(await said(handleOn(api, 'project:prj_pong:production'))).toEqual({ can: { '*': ['read', 'post', 'react', 'label'] }, expiresAt: null })
+    for (const role of ['member', 'developer'] as const) expect(await said(handleOn(fakeMessageboard({ roles: { u_jb: role } })))).toEqual(everything)
+    // Credentials it says less of, and until when, as it will of board tokens: board's own permissions, as it gives them.
+    const expiresAt = Date.now() + 59 * 60_000
+    const narrowed = fakeMessageboard({ me: { 'user:u_jb': { can: { 'pings/': ['read', 'post'], 'dev/': ['read', 'fly'] }, expiresAt } } })
+    expect(await said(handleOn(narrowed))).toEqual({ can: { 'pings/': ['read', 'post'], 'dev/': ['read'] }, expiresAt: new Date(expiresAt).toISOString() })
     // An API that says neither, as before it sent them: what any credentials it lets in may do, with no expiry.
-    expect(await said(handleOn(fakeMessageboard({ me: false })))).toEqual({ can: { '*': ['read', 'post', 'react', 'label'] }, expiresAt: null })
+    expect(await said(handleOn(fakeMessageboard({ me: false }), 'user:u_jb'))).toEqual({ can: { '*': ['read', 'post', 'react', 'label'] }, expiresAt: null })
   })
 
   it("sends a board token you set, in Node, ahead of VERCEL_TOKEN and the deployment's OIDC token", async () => {
