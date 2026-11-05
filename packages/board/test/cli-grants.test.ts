@@ -121,3 +121,45 @@ describe('cli grants for Vercel projects', () => {
     }
   })
 })
+
+describe('cli grants for other issuers', () => {
+  beforeEach(revokeAll, 30_000)
+
+  it("grants another issuer's tokens with oidc --issuer, and takes the issuer as the first argument as the same grant", async () => {
+    const github = await vb(['grants', 'create', 'oidc', '--issuer', 'github', '--claim', 'repository=acme/web', '--can', 'ci/=read'])
+    expect(github).toMatchObject({ code: 0, stdout: expect.stringMatching(/^granted g\d+\n$/), stderr: '' })
+    const gitlab = await vb(['grants', 'create', 'oidc', '--issuer', 'https://gitlab.com', '--claim', 'project_path=acme/api', '--can', 'deploys=post'])
+    expect(gitlab.code).toBe(0)
+    const [, githubId] = github.stdout.trim().split(' ')
+    const [, gitlabId] = gitlab.stdout.trim().split(' ')
+    // What it always took names the same issuers: setting each again changes its can.
+    expect((await vb(['grants', 'create', 'github', '--claim', 'repository=acme/web', '--can', 'ci/=read,post'])).stdout).toBe(`updated ${githubId}\n`)
+    expect((await vb(['grants', 'create', 'https://gitlab.com', '--claim', 'project_path=acme/api', '--can', 'deploys=read,post'])).stdout).toBe(`updated ${gitlabId}\n`)
+    expect(JSON.parse((await vb(['grants', '--json'])).stdout).grants).toMatchObject([
+      { id: githubId, issuer: 'github', claims: { repository: 'acme/web' }, can: { 'ci/': ['read', 'post'] } },
+      { id: gitlabId, issuer: 'https://gitlab.com', claims: { project_path: 'acme/api' }, can: { deploys: ['read', 'post'] } },
+    ])
+  }, 30_000)
+
+  it('says what an oidc grant needs before it asks the board', async () => {
+    const misuse = async (args: string[]) => {
+      const ran = await vb(['grants', 'create', ...args])
+      return [ran.code, ran.stderr.split('\n\n')[0]]
+    }
+    expect(await misuse(['oidc', '--claim', 'repository=acme/web'])).toEqual([2, 'error: Missing the issuer: pass --issuer with its https URL, or github for GitHub Actions.'])
+    expect(await misuse(['oidc', '--issuer', 'vercel', '--claim', 'project_id=prj_front'])).toEqual([
+      2,
+      "error: --issuer is another issuer than Vercel's: grant Vercel's projects with grants create vercel.",
+    ])
+    expect(await misuse(['github', '--issuer', 'https://gitlab.com', '--claim', 'repository=acme/web'])).toEqual([
+      2,
+      'error: --issuer is for grants create oidc: github names its issuer already.',
+    ])
+    const unknown = await vb(['grants', 'create', 'gitlab', '--claim', 'project_path=acme/api'])
+    expect(unknown).toMatchObject({ code: 2, stdout: '' })
+    expect(unknown.stderr).toBe(
+      "error: grants create takes vercel or oidc, and gitlab is neither.\n\n  Grant another issuer's tokens:\n    vb grants create oidc --issuer <URL> --claim <CLAIM>\n  See how to use it:\n    vb grants --help\n",
+    )
+    expect(await claims()).toEqual([])
+  }, 30_000)
+})

@@ -98,6 +98,7 @@ export const options = {
   times: { type: 'string', value: 'N', description: 'repeating this many times' },
   can: { type: 'string', value: 'scope', description: 'what it may do (default: *=read,post,react,label)' },
   claim: { type: 'string', multiple: true, value: 'k=v', description: 'a claim its tokens carry; the same name again is any of them' },
+  issuer: { type: 'string', value: 'url|github', description: "the issuer's https URL, or github for GitHub Actions" },
   projects: { type: 'boolean', description: "every project on the board's team" },
   project: { type: 'string', value: 'prj_id', description: 'one project, by its ID' },
   environment: { type: 'string', value: 'env', description: 'where they run: production, preview, or development' },
@@ -208,12 +209,13 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
       {
         name: 'create',
         description: 'let them in, or change what they may do',
-        arguments: [{ name: 'issuer', required: true, description: 'vercel, github, or an https URL' }],
-        options: [option('projects'), option('project'), option('environment'), option('claim'), option('can')],
+        arguments: [{ name: 'issuer', required: true, description: "vercel for Vercel's projects, or oidc for another issuer's tokens" }],
+        options: [option('projects'), option('project'), option('environment'), option('issuer'), option('claim'), option('can')],
         examples: [
           { name: "let the team's production deployments in", value: 'grants create vercel --projects --environment production' },
           { name: "let one project's previews post feedback", value: 'grants create vercel --project prj_123 --environment preview --can feedback/=post' },
-          { name: 'let a workflow post in ci/', value: 'grants create github --claim repository=acme/web --can ci/=read,post' },
+          { name: 'let a workflow post in ci/', value: 'grants create oidc --issuer github --claim repository=acme/web --can ci/=read,post' },
+          { name: "let a GitLab project's main branch post deploys", value: 'grants create oidc --issuer https://gitlab.com --claim project_path=acme/api --claim ref=main --can deploys=post' },
         ],
       },
       {

@@ -415,14 +415,17 @@ t1  feedback-widget  feedback/=post  expires in 30d
 ```text
 vb grants [list]
 vb grants create vercel (--projects | --project <prj_id>) --environment <env> [--claim <name=value>]... [--can <scope>]
-vb grants create <issuer> --claim <name=value>... [--can <scope>]
+vb grants create oidc --issuer <url|github> --claim <name=value>... [--can <scope>]
 vb grants update <grant> --can <scope>
 vb grants revoke <grant>
 ```
 
-`grants create` lets in tokens from an OIDC issuer (`vercel`, `github`, or an
-https URL) that carry every `--claim`. A name given twice is any of its values.
-Creating one with the same issuer and claims again changes its `--can` and
+`grants create` lets in tokens from an OIDC issuer that carry every `--claim`:
+`vercel` for Vercel's, or `oidc` for another issuer, which `--issuer` names by
+its https URL, or `github` for GitHub Actions. `grants create github` and
+`grants create <url>` still work, the same as `oidc --issuer` with them. A
+name given twice is any of its values. Creating one with the same issuer and
+claims again changes its `--can` and
 prints `updated g3`, and so does `grants update g3 --can <scope>`, which finds
 them by the grant's ID. `--can` left out is read, post, react, and label
 everywhere. `vb grants` lists each one's ID, issuer, claims, and what it lets
@@ -444,7 +447,7 @@ $ vb grants create vercel --projects --environment production
 granted g1
 $ vb grants create vercel --project prj_front --environment preview --can feedback/=post
 granted g2
-$ vb grants create github --claim repository=acme/web --can ci/=read,post
+$ vb grants create oidc --issuer github --claim repository=acme/web --can ci/=read,post
 granted g3
 $ vb grants
 g1  vercel  every project, production  *=read,post,react,label

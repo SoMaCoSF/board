@@ -418,6 +418,24 @@ function claimPairs(values: string[] | undefined): Record<string, string | strin
   return Object.fromEntries(Object.entries(claims).map(([name, list]) => [name, list.length === 1 ? list[0]! : list]))
 }
 
+/**
+ * The issuer `grants create <kind>` lets in: `vercel`, or for `oidc`, `--issuer`'s, an https URL or
+ * `github` for GitHub Actions. `github` or a URL in `oidc`'s place names its own, as it always has.
+ */
+function grantIssuer(kind: string): string {
+  if (kind === 'oidc') {
+    if (flags.issuer === undefined)
+      throw usage('Missing the issuer: pass --issuer with its https URL, or github for GitHub Actions.', { reason: 'missing_arguments' })
+    if (flags.issuer === 'vercel') throw usage("--issuer is another issuer than Vercel's: grant Vercel's projects with grants create vercel.")
+    return flags.issuer
+  }
+  if (flags.issuer !== undefined) throw usage(`--issuer is for grants create oidc: ${kind} names its issuer already.`)
+  if (kind === 'vercel' || kind === 'github' || /^[a-z][a-z\d+.-]*:\/\//i.test(kind)) return kind
+  throw usage(`grants create takes vercel or oidc, and ${kind} is neither.`, {
+    next: [{ instruction: "Grant another issuer's tokens", argv: [...cli(), 'grants', 'create', 'oidc', '--issuer', '<URL>', '--claim', '<CLAIM>'] }, helpRecovery()],
+  })
+}
+
 /** A Vercel project's ID, as `--project` takes it: a name would take Vercel's projects API to look up. */
 const PROJECT_ID = /^prj_[A-Za-z0-9]+$/
 
@@ -545,7 +563,8 @@ function doing(): string {
     case 'actors':
       return `list ${command}`
     case 'grants':
-      return a === 'create' ? `grant ${b ?? 'an issuer'}` : a === 'revoke' || a === 'update' ? `${a} grant ${b}` : 'list grants'
+      if (a === 'create') return `grant ${(b === 'oidc' ? flags.issuer : b) ?? 'an issuer'}`
+      return a === 'revoke' || a === 'update' ? `${a} grant ${b}` : 'list grants'
     case 'tokens':
       return a === 'create' ? `mint token ${b ?? ''}`.trimEnd() : a === 'revoke' ? `revoke token ${b}` : 'list tokens'
     case 'sources':
@@ -1106,9 +1125,10 @@ async function run(command: string | undefined, args: string[]): Promise<number>
         return 0
       }
       if (verb !== 'create') throw usage(`Unknown command ${verb} for ${named()} grants.`, { reason: 'unknown_command' })
-      const [issuer, extra] = rest
-      if (!issuer) throw usage('Missing the issuer to grant: vercel, github, or an https URL.', { reason: 'missing_arguments' })
-      if (extra !== undefined) throw usage(`grants create takes one issuer, and its claims as --claim name=value: ${extra} is one too many.`)
+      const [kind, extra] = rest
+      if (!kind) throw usage("Missing whose tokens to grant: vercel for Vercel's projects, or oidc with --issuer.", { reason: 'missing_arguments' })
+      if (extra !== undefined) throw usage(`grants create takes vercel or oidc, and its claims as --claim name=value: ${extra} is one too many.`)
+      const issuer = grantIssuer(kind)
       if (issuer !== 'vercel' && (flags.projects || flags.project !== undefined || flags.environment !== undefined))
         throw usage(`--projects, --project, and --environment are for vercel grants: name ${issuer}'s claims with --claim name=value.`)
       const board = client()
