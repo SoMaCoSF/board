@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { board } from '../src/server/index.ts'
+import { board, HttpError, type Backend } from '../src/server/index.ts'
+import { a2, memoryBlob } from '../src/backend-a2/index.ts'
+import { memory } from '../src/store/memory.ts'
+import { oidcTokens } from '../src/access/index.ts'
 import { http } from '../src/backend-http/index.ts'
 import { conformance } from '../src/conformance/index.ts'
 import { vercelProject } from '../src/access/index.ts'
-import { bearer, BOARD_URL, caller, deploymentToken, personToken, testBoard } from './harness.ts'
+import { bearer, BOARD_URL, caller, deploymentToken, personToken, PROJECT_ID, TEAM_ID, testAuth, testBoard } from './harness.ts'
 import { fakeQueue } from './queue.ts'
 
 type Fetch = (request: Request) => Promise<Response>
@@ -86,6 +89,24 @@ describe('the conformance kit', () => {
     expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'schedules', 'grants', 'tokens', 'attachments', 'watchers', 'sync'])
     const { messages } = await client.messages({ channel: 'conformance', limit: 500 })
     expect(messages.filter((message) => !message.deleted)).toEqual([])
+  })
+
+  it("skips another team's grant, as needing cross-team access, on a board that can't let another team in, and passes the rest", async () => {
+    const kept = a2({ store: memory(), blob: memoryBlob(), scheduler: fakeQueue().scheduler })
+    // a2()'s board, except that another team's project can't be let in.
+    const backend: Backend = {
+      ...kept,
+      async createGrant(caller, input, signal) {
+        if (input.issuer === 'vercel' && input.claims.owner_id !== undefined) throw new HttpError(501, 'no_cross_team', 'this board lets in only its own team')
+        return kept.createGrant(caller, input, signal)
+      },
+    }
+    const team = board({ backend, project: { id: PROJECT_ID, teamId: TEAM_ID }, authenticate: oidcTokens(testAuth), url: BOARD_URL })
+    const report = await conformance(team, { withToken: withToken(team.fetch) })
+    expect(report.checks.filter((check) => check.status !== 'passed')).toEqual([
+      { group: 'grants', name: "grants another team's project", status: 'skipped', detail: 'needs cross-team access: this board lets in only its own team' },
+    ])
+    expect(report.ok).toBe(true)
   })
 
   it("passes through a board's own handle, in-process", async () => {

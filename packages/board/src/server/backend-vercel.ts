@@ -1452,6 +1452,12 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     async createGrant(caller, input, signal) {
       checkCaller('createGrant', caller)
       const who = whoOf(caller)
+      // A board in Vercel's API lets in its own team's projects: another team's needs access across teams, which it has none of yet.
+      const owners = input.issuer === 'vercel' ? [input.claims.owner_id ?? []].flat() : []
+      if (owners.length > 0) {
+        const team = (await self(who)).teamId
+        if (owners.some((owner) => owner !== team)) throw new HttpError(501, 'no_cross_team', "Vercel's boards don't let another team's projects in yet")
+      }
       return api<Protocol['createGrant']['output']>(who, 'POST', await onBoard(who, '/grants'), { body: { operationId: operationId(), ...input }, ...(signal ? { signal } : {}) })
     },
     async revokeGrant(caller, { id }, signal) {

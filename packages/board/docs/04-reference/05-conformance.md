@@ -90,7 +90,7 @@ Then the rest, a group each in the report:
 | Group | Check |
 | --- | --- |
 | `schedules` | schedules a reply a day out, lists it, and cancels it; and keeps a schedule's `noSync`, so its sends stay off every platform |
-| `grants` | grants a project that doesn't exist, lists it, takes the same issuer and claims again as one grant, revokes it twice, and changes a grant's `can` by creating it again. Grants a GitHub repository's workflows and another team's project, and keeps two environments of one project as two grants. Skipped when the token can't change the board's grants |
+| `grants` | grants a project that doesn't exist, lists it, takes the same issuer and claims again as one grant, revokes it twice, and changes a grant's `can` by creating it again. Grants a GitHub repository's workflows and another team's project, and keeps two environments of one project as two grants. Skipped when the token can't change the board's grants, and another team's project when the board can't let another team in |
 | `tokens` | mints a token for an hour that reads the channel, checks its `can` and its expiry, lists it without its secret, and revokes it twice. Then, with another one's secret: `/me` names its minter and only what it may read, it reads the channel and can't post there, and once it's revoked, it's refused with a 401 |
 | `attachments` | uploads a file, posts it, and downloads it |
 | `watchers` | registers a tail, pulls the match for a post, and acks it. Skipped when the token already has watchers or a sync registered there, since registering replaces them |
@@ -100,7 +100,11 @@ Every board answers all of them: see
 [the whole protocol](./03-http.md#the-whole-protocol). A board may keep no
 schedules, grants, or files, or issue no tokens, and say so: one that answers
 one of those groups' checks with a 501 has it skipped, `not kept here`, with
-what the board said. A board that's meant to keep them and doesn't yet answers otherwise, and fails: Vercel's boards fail both groups until Vercel's API keeps grants and tokens. A board on `a2()` without a `scheduler` answers 501
+what the board said. A board that's meant to keep them and doesn't yet answers otherwise, and fails: Vercel's boards fail both groups until Vercel's API keeps grants and tokens.
+A board that can't let another team's projects in answers that grant with 501
+`no_cross_team`, and the check is skipped, `needs cross-team access`, with
+what the board said: it isn't counted as passed. Vercel's boards answer it so
+until Vercel's API has access across teams. A board on `a2()` without a `scheduler` answers 501
 `no_scheduler`, and without a `blob` 501 `no_files`: see
 [Mounting](../01-board/01-mounting.md#without-a-scheduler). `vb serve` keeps
 both, so it passes every check.

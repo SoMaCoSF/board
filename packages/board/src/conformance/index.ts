@@ -125,6 +125,12 @@ async function firstGrant(ctx: Context): Promise<Awaited<ReturnType<Board['creat
   }
 }
 
+/**
+ * What a board answers, with a 501, to a grant for another team's project when it can't let
+ * another team in: the kit skips that check, as needing cross-team access.
+ */
+const CROSS_TEAM = 'no_cross_team'
+
 /** The sync key the sync checks register, a platform of their own, so nothing reaches a real one. */
 const SYNC_KEY = 'conformance'
 
@@ -515,7 +521,7 @@ const CHECKS: Check[] = [
   },
   {
     group: 'grants',
-    name: "grants a GitHub repository's workflows, and another team's project",
+    name: "grants a GitHub repository's workflows",
     run: async (ctx) => {
       const first = await firstGrant(ctx)
       if ('skip' in first) return first.skip
@@ -524,16 +530,34 @@ const CHECKS: Check[] = [
         const github = await ctx.board.createGrant({ issuer: 'github', claims: { repository: `acme/conformance-${ctx.labels.conformance}` }, can: { [ctx.channel]: ['post'] } })
         made.push(github.grant.id)
         same(github.grant.issuer, 'github', "the GitHub grant's issuer")
-        const theirs = await ctx.board.createGrant({
-          issuer: 'vercel',
-          claims: { environment: 'production', owner_id: `team_conformance${ctx.labels.conformance}`, project_id: `prj_conformance${ctx.labels.conformance}x` },
-        })
-        made.push(theirs.grant.id)
-        same(theirs.grant.claims.owner_id, `team_conformance${ctx.labels.conformance}`, "another team's grant's owner_id")
         const listed = new Set((await ctx.board.grants()).map((grant) => grant.id))
         check(made.every((id) => listed.has(id)), `grants should list ${made.join(', ')}`)
       } finally {
         for (const id of made) await ctx.board.revokeGrant(id).catch(() => {})
+      }
+    },
+  },
+  {
+    group: 'grants',
+    name: "grants another team's project",
+    run: async (ctx) => {
+      let theirs: Awaited<ReturnType<Board['createGrant']>>
+      try {
+        theirs = await ctx.board.createGrant({
+          issuer: 'vercel',
+          claims: { environment: 'production', owner_id: `team_conformance${ctx.labels.conformance}`, project_id: `prj_conformance${ctx.labels.conformance}x` },
+        })
+      } catch (error) {
+        // A board that can't let another team in says so: it isn't passed, and it isn't failed either.
+        if (error instanceof BoardError && error.status === 501 && error.code === CROSS_TEAM) return `needs cross-team access: ${error.message}`
+        if (error instanceof BoardError && error.status === 403) return "this token can't change the board's grants"
+        throw error
+      }
+      try {
+        same(theirs.grant.claims.owner_id, `team_conformance${ctx.labels.conformance}`, "another team's grant's owner_id")
+        check((await ctx.board.grants()).some((grant) => grant.id === theirs.grant.id), `grants should list ${theirs.grant.id}`)
+      } finally {
+        await ctx.board.revokeGrant(theirs.grant.id).catch(() => {})
       }
     },
   },

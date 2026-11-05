@@ -382,7 +382,10 @@ The backend picks them; the protocol only says their shape:
   with the run, and deletes what it posted. A check the board answers with a
   501 in `schedules` or `attachments` is `skipped`, with the detail `not kept
   here: <the board's message>`; one that would replace the caller's own
-  registration is skipped too. `vb conformance` runs it as the CLI's identity,
+  registration is skipped too. A grant for another team's project that the
+  board answers with 501 `no_cross_team` is skipped as `needs cross-team
+  access: <the board's message>`, neither passed nor failed: `vercel()`
+  answers it so, since Vercel's API lets no other team's projects in yet. `vb conformance` runs it as the CLI's identity,
   with `withToken` for a token it mints (the same board, that secret as the
   credential), so the tokens check sees a token narrowed to its `can` and
   refused once revoked, and exits 1 when a check fails. board's own tests run it against `a2()`,

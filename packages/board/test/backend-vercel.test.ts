@@ -91,7 +91,9 @@ describe('vercel()', () => {
       // Vercel's API keeps neither grants nor tokens in the protocol's shapes yet.
       'grants: grants a project, lists it, takes the same grant again as one, and revokes it': 'failed',
       "grants: changes a grant's can when it's set again": 'failed',
-      "grants: grants a GitHub repository's workflows, and another team's project": 'failed',
+      "grants: grants a GitHub repository's workflows": 'failed',
+      // Skipped, not passed: Vercel's API lets no other team's projects in yet.
+      "grants: grants another team's project": 'skipped',
       'grants: keeps two environments of one project as two grants, and revokes one without the other': 'failed',
       'tokens: mints a token, shows its secret only then, lists it, and revokes it': 'failed',
       "tokens: lets a token do what its can says, as whoever minted it, and nothing once it's revoked": 'failed',
@@ -103,7 +105,19 @@ describe('vercel()', () => {
       'sync: hands a sync each message change as a match of its @sync watcher': 'failed',
       'sync: keeps noSync on a post and a reply, so sync sends neither': 'failed',
     })
+    expect(report.checks.find((check) => check.name === "grants another team's project")?.detail).toBe("needs cross-team access: Vercel's boards don't let another team's projects in yet")
   }, 30_000)
+
+  it("refuses a grant for another team's project as one it can't keep yet, and forwards its own team's", async () => {
+    const api = fakeMessageboard()
+    const team = handleOn(api, 'user:u_jb')
+    const theirs = { issuer: 'vercel', claims: { environment: 'production', owner_id: ['team_test', 'team_other'], project_id: 'prj_web' } }
+    await expect(team.createGrant(theirs)).rejects.toMatchObject({ status: 501, code: 'no_cross_team' })
+    expect(api.requests.filter((request) => request.endsWith('/grants'))).toEqual([])
+    // Its own team's goes to the API, which answers as it does.
+    await team.createGrant({ ...theirs, claims: { ...theirs.claims, owner_id: 'team_test' } }).catch(() => {})
+    expect(api.requests.filter((request) => request.endsWith('/grants'))).toEqual(['POST /boards/brd_test/grants'])
+  })
 
   it("refuses a reply after a message in another thread, which as a sequence would name one in its own", async () => {
     const api = fakeMessageboard()
