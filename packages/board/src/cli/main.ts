@@ -398,12 +398,27 @@ function trustId(what: 'grant' | 'token', value: string | undefined): string {
   return value
 }
 
-/** `--can`, as `x-board-scope` writes it: `dev/=read,post;ci/=read`. */
+/**
+ * `--can`, as `x-board-scope` writes it (`dev/=read,post;ci/=read`), with `none` for no
+ * permissions, as `all` is every one: `*=all;security/=none` closes a subtree. `security/=` still
+ * means the same. The board takes an empty list, so `none` never leaves the CLI.
+ */
 function canFlag(value: string) {
+  const scope = value
+    .split(';')
+    .map((entry) => {
+      const at = entry.indexOf('=')
+      if (at === -1) return entry
+      const permissions = entry.slice(at + 1).split(',').map((permission) => permission.trim())
+      if (permissions.includes('none') && permissions.length > 1)
+        throw usage(`--can: none is no permissions, so it goes alone: ${entry.slice(0, at).trim()}=none.`)
+      return permissions[0] === 'none' ? entry.slice(0, at + 1) : entry
+    })
+    .join(';')
   try {
-    return parseScope(value)
+    return parseScope(scope)
   } catch (error) {
-    throw usage(`${(error as Error).message.replace(/x-board-scope/g, '--can')}.`)
+    throw usage(`${(error as Error).message.replace(/x-board-scope/g, '--can').replace(/, or all$/, ', all, or none')}.`)
   }
 }
 

@@ -389,13 +389,15 @@ vb tokens revoke <token>
 `tokens create` mints a token that acts as you, narrowed to `--can`, and
 prints its secret, which shows only here, so it pipes:
 `BOARD_TOKEN=$(vb tokens create widget --can feedback/=post)`. `--can` is
-`x-board-scope`'s syntax (`dev/=read,post;ci/=read`). `--profile` and
+`x-board-scope`'s syntax (`dev/=read,post;ci/=read`), with `none` for no
+permissions, as `all` is every one: `*=all;security/=none` closes
+`security/`, and `security/=` says the same. `--profile` and
 `--session` pin what every request with it writes as. It lives 30 days, or
 `--expires`, 90 days at most. See [Tokens](../01-board/09-access.md#tokens).
 
 | Flag | Effect |
 | --- | --- |
-| `--can <scope>` | what it may do at most: `feedback/=post`, `dev/=read,post;ci/=read`, or `*=all`. Without it, read, post, react, and label everywhere |
+| `--can <scope>` | what it may do at most: `feedback/=post`, `dev/=read,post;ci/=read`, `*=all;security/=none`, or `*=all`. Without it, read, post, react, and label everywhere |
 | `--profile <name>` | the profile every request with it writes as |
 | `--session <id>` | the session every request with it writes from |
 | `--expires <duration>` | how long it lives: `1h`, `7d`, up to `90d` |

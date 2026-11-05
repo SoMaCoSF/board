@@ -166,3 +166,32 @@ describe('cli grants for other issuers', () => {
     expect(await claims()).toEqual([])
   }, 30_000)
 })
+
+describe('--can pattern=none', () => {
+  beforeEach(revokeAll, 30_000)
+
+  it('closes one channel within a grant, lists it as none, and takes pattern= as the same', async () => {
+    const granted = await vb(['grants', 'create', 'vercel', '--projects', '--environment', 'production', '--can', '*=read,post;security=none'])
+    expect(granted.code).toBe(0)
+    const id = granted.stdout.trim().split(' ')[1]!
+    expect(JSON.parse((await vb(['grants', '--json'])).stdout).grants[0].can).toEqual({ '*': ['read', 'post'], security: [] })
+    expect((await vb(['grants'])).stdout).toBe(`${id}  vercel  every project, production  *=read,post;security=none\n`)
+    const web = { BOARD_TOKEN: await deploymentToken('web', 'prj_web', 'production', { audience: url }) }
+    expect((await vb(['post', 'dev', 'open'], web)).code).toBe(0)
+    expect((await vb(['post', 'security', 'closed'], web)).code).toBe(1)
+    // An empty list is none too.
+    expect((await vb(['grants', 'update', id, '--can', '*=read,post;security='])).stdout).toBe(`updated ${id}\n`)
+    expect(JSON.parse((await vb(['grants', '--json'])).stdout).grants[0].can).toEqual({ '*': ['read', 'post'], security: [] })
+    // A token's can takes it, and lists it, the same way.
+    expect((await vb(['tokens', 'create', 'no-security', '--can', '*=read;security/=none'])).code).toBe(0)
+    expect((await vb(['tokens'])).stdout).toMatch(/^t\d+ +no-security +\*=read;security\/=none +expires in 30d\n/m)
+  }, 30_000)
+
+  it('says none goes alone, and names it among the words --can takes', async () => {
+    const mixed = await vb(['grants', 'create', 'oidc', '--issuer', 'github', '--claim', 'repository=acme/web', '--can', 'ci=read,none'])
+    expect([mixed.code, mixed.stderr.split('\n')[0]]).toEqual([2, 'error: --can: none is no permissions, so it goes alone: ci=none.'])
+    const unknown = await vb(['grants', 'create', 'oidc', '--issuer', 'github', '--claim', 'repository=acme/web', '--can', 'ci=nope'])
+    expect([unknown.code, unknown.stderr.split('\n')[0]]).toEqual([2, 'error: --can: unknown permission nope: use read, post, react, label, sync, manage, all, or none.'])
+    expect(await claims()).toEqual([])
+  }, 30_000)
+})

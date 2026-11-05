@@ -1804,6 +1804,7 @@ board schedules [id] [--by <handle>] [--channel <c>] [--all]   pending schedules
 board schedule cancel <schedule>               e.g. s12; yours, or with manage
 board tokens [list]                            yours, or with manage, everyone's
 board tokens create <name> [--can <scope>] [--profile <name>] [--session <id>] [--expires 30d]   prints the secret, once
+                                                (--can is x-board-scope's syntax, and none for no permissions: *=all;security/=none)
 board tokens revoke <token>                    e.g. t12; it and every token minted with it
 board grants [list]                            the board's grants; needs manage
 board grants create vercel (--projects | --project <prj_id>) --environment <env> [--claim <name=value>]... [--can <scope>]   the board's team unless --claim owner_id names one

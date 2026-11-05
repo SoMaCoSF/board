@@ -172,12 +172,13 @@ export function formatAccess(access: Me['can']): string[] {
   })
 }
 
-/** What a grant or token may do, as `--can` takes it: `dev/=read,post;ci/=read`, or `all`. */
+/** What a grant or token may do, as `--can` takes it: `dev/=read,post;security/=none`, or `all`. */
 export function formatCan(can: Me['can']): string {
   const patterns = Object.keys(can)
   if (patterns.length === 1 && patterns[0] === '*' && can['*']!.includes('manage')) return 'all'
   if (patterns.length === 0) return 'nothing'
-  return patterns.map((pattern) => `${pattern}=${can[pattern]!.includes('manage') ? 'all' : can[pattern]!.join(',')}`).join(';')
+  const permissions = (list: readonly string[]) => (list.includes('manage') ? 'all' : list.length === 0 ? 'none' : list.join(','))
+  return patterns.map((pattern) => `${pattern}=${permissions(can[pattern]!)}`).join(';')
 }
 
 /** Rows of cells, each column padded to its widest, two spaces apart. */

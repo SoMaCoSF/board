@@ -158,6 +158,10 @@ revoked g1
   are another grant.
 - **`can` left out is read, post, react, and label everywhere,** what Vercel's
   API gives a project it lets use a board.
+- **`none` closes a channel within one grant.** Its most specific pattern
+  decides, so `--can '*=read,post;security/=none'` reads and posts everywhere
+  but `security/`. Another grant that matches the same tokens can still open
+  it, since grants only add.
 - **Grants add to the rules.** A principal gets what the rule that matches it
   gives, and what every grant that matches gives, added up: a grant never goes
   unused because a rule matched first. People and the board's own deployments
@@ -507,7 +511,8 @@ through the binding's `handle(caller)`, so the middleware sees it.
 | `feedback/` | `feedback` and everything under it, like `vb tail feedback/` |
 
 - **The most specific pattern decides:** an exact channel, then the longest
-  subtree, then `*`. `{ '*': 'all', 'security/': [] }` hides one subtree.
+  subtree, then `*`. `{ '*': 'all', 'security/': [] }` hides one subtree,
+  which `vb`'s `--can` writes as `*=all;security/=none`.
 - **A list means every channel:** `can: ['post']` is `{ '*': ['post'] }`.
 - **Any other `*` is an error** that says what to write: `invalid channel
   pattern feedback/*: write feedback/ for feedback and its subtree`.
