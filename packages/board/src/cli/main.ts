@@ -545,7 +545,7 @@ function doing(): string {
     case 'actors':
       return `list ${command}`
     case 'grants':
-      return a === 'create' ? `grant ${b ?? 'an issuer'}` : a === 'revoke' ? `revoke grant ${b}` : 'list grants'
+      return a === 'create' ? `grant ${b ?? 'an issuer'}` : a === 'revoke' || a === 'update' ? `${a} grant ${b}` : 'list grants'
     case 'tokens':
       return a === 'create' ? `mint token ${b ?? ''}`.trimEnd() : a === 'revoke' ? `revoke token ${b}` : 'list tokens'
     case 'sources':
@@ -1082,6 +1082,27 @@ async function run(command: string | undefined, args: string[]): Promise<number>
         const { revoked } = await client().revokeGrant(id)
         if (flags.json) result({ grant: id, outcome: revoked ? 'revoked' : 'unchanged' })
         else out(revoked ? `revoked ${id}` : `${id} is already gone`)
+        return 0
+      }
+      if (verb === 'update') {
+        const id = trustId('grant', rest[0])
+        if (rest.length > 1) throw usage(`grants update takes one grant: ${rest[1]} is one too many.`)
+        if (flags.can === undefined) throw usage(`Missing what ${id} lets them do now: pass --can, like --can ci/=read,post.`, { reason: 'missing_arguments' })
+        const can = canFlag(flags.can)
+        const board = client()
+        // A grant is its issuer and claims: setting those again changes its can, on every board.
+        const found = (await board.grants()).find((grant) => grant.id === id)
+        if (!found)
+          throw new Failed({
+            class: 'not_found',
+            reason: 'grant_not_found',
+            message: `Couldn't find grant ${id}.`,
+            next: [{ instruction: "See the board's grants", argv: [...cli(), 'grants'] }],
+          })
+        const { grant, created } = await board.createGrant({ issuer: found.issuer, claims: found.claims, can })
+        // One revoked since it was listed comes back as a new grant: say so.
+        if (flags.json) result({ grant, outcome: created ? 'granted' : 'updated' })
+        else out(`${created ? 'granted' : 'updated'} ${grant.id}`)
         return 0
       }
       if (verb !== 'create') throw usage(`Unknown command ${verb} for ${named()} grants.`, { reason: 'unknown_command' })

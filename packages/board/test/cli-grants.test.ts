@@ -78,6 +78,28 @@ describe('cli grants for Vercel projects', () => {
     expect(await claims()).toEqual([])
   }, 30_000)
 
+  it("changes a grant's can by its ID, keeping who it lets in, and points to the grants for one it can't find", async () => {
+    const granted = await vb(['grants', 'create', 'vercel', '--projects', '--environment', 'production', '--can', 'dev/=read'])
+    const id = granted.stdout.trim().split(' ')[1]!
+    const web = { BOARD_TOKEN: await deploymentToken('web', 'prj_web', 'production', { audience: url }) }
+    expect((await vb(['post', 'dev', 'not yet'], web)).code).toBe(1)
+
+    expect(await vb(['grants', 'update', id, '--can', 'dev/=read,post'])).toEqual({ code: 0, stdout: `updated ${id}\n`, stderr: '' })
+    expect(JSON.parse((await vb(['grants', '--json'])).stdout).grants).toMatchObject([
+      { id, issuer: 'vercel', claims: { environment: 'production', owner_id: TEAM_ID }, can: { 'dev/': ['read', 'post'] } },
+    ])
+    expect((await vb(['post', 'dev', 'now'], web)).code).toBe(0)
+
+    expect(await vb(['grants', 'update', 'g999', '--can', 'dev/=read'])).toEqual({
+      code: 1,
+      stdout: '',
+      stderr: "error: Couldn't find grant g999.\n\n  See the board's grants:\n    vb grants\n",
+    })
+    const bare = await vb(['grants', 'update', id])
+    expect([bare.code, bare.stderr.split('\n')[0]]).toEqual([2, `error: Missing what ${id} lets them do now: pass --can, like --can ci/=read,post.`])
+    expect(JSON.parse((await vb(['grants', '--json'])).stdout).grants).toHaveLength(1)
+  }, 30_000)
+
   it("asks for the team where the board doesn't say which it's on", async () => {
     vi.stubEnv('VERCEL_ORG_ID', '')
     try {

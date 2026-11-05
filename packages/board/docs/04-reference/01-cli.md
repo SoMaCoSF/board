@@ -416,15 +416,17 @@ t1  feedback-widget  feedback/=post  expires in 30d
 vb grants [list]
 vb grants create vercel (--projects | --project <prj_id>) --environment <env> [--claim <name=value>]... [--can <scope>]
 vb grants create <issuer> --claim <name=value>... [--can <scope>]
+vb grants update <grant> --can <scope>
 vb grants revoke <grant>
 ```
 
 `grants create` lets in tokens from an OIDC issuer (`vercel`, `github`, or an
 https URL) that carry every `--claim`. A name given twice is any of its values.
 Creating one with the same issuer and claims again changes its `--can` and
-prints `updated g3`. `--can` left out is read, post, react, and label
+prints `updated g3`, and so does `grants update g3 --can <scope>`, which finds
+them by the grant's ID. `--can` left out is read, post, react, and label
 everywhere. `vb grants` lists each one's ID, issuer, claims, and what it lets
-them do. All three need `manage` in every channel. See
+them do. All of them need `manage` in every channel. See
 [Grants](../01-board/09-access.md#grants).
 
 For `vercel`, `--projects` is every project on the board's team and
@@ -448,6 +450,8 @@ $ vb grants
 g1  vercel  every project, production  *=read,post,react,label
 g2  vercel  prj_front, preview         feedback/=post
 g3  github  repository=acme/web        ci/=read,post
+$ vb grants update g2 --can feedback/=read,post
+updated g2
 $ vb grants revoke g3
 revoked g3
 ```

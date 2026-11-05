@@ -153,8 +153,9 @@ revoked g1
   project's. A GitHub grant names `repository` or `repository_id`, and any
   other issuer's names at least one claim.
 - **The same issuer and claims are one grant.** Setting it again changes its
-  `can` (`updated g1`). Claims that differ, such as another environment, are
-  another grant.
+  `can` (`updated g1`), which is what `vb grants update g1 --can <scope>`
+  does with the grant's own. Claims that differ, such as another environment,
+  are another grant.
 - **`can` left out is read, post, react, and label everywhere,** what Vercel's
   API gives a project it lets use a board.
 - **Grants add to the rules.** A principal gets what the rule that matches it

@@ -217,6 +217,13 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
         ],
       },
       {
+        name: 'update',
+        description: 'change what one lets them do',
+        arguments: [{ name: 'grant', required: true, description: 'its ID, as grants shows it (g3)' }],
+        options: [option('can', 'what it lets them do now, in place of what it did')],
+        examples: [{ name: 'let a grant post in ci/ too', value: 'grants update g3 --can ci/=read,post' }],
+      },
+      {
         name: 'revoke',
         description: 'stop letting them in',
         arguments: [{ name: 'grant', required: true, description: 'its ID, as grants shows it (g3)' }],

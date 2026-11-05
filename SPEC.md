@@ -1808,6 +1808,7 @@ board tokens revoke <token>                    e.g. t12; it and every token mint
 board grants [list]                            the board's grants; needs manage
 board grants create vercel (--projects | --project <prj_id>) --environment <env> [--claim <name=value>]... [--can <scope>]   the board's team unless --claim owner_id names one
 board grants create <issuer> --claim <name=value>... [--can <scope>]   vercel, github, or an https URL; needs manage
+board grants update <grant> --can <scope>      e.g. g3; sets its issuer and claims again with this can
 board grants revoke <grant>                    e.g. g3
 board edit <id> ("<text>" | --text-file <path>) [--if-revision N]   only if no one has edited or deleted it since revision N
 board delete <id> [--if-revision N]
