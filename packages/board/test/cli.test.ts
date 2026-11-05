@@ -87,13 +87,14 @@ describe('cli', () => {
 
   it("finds a Vercel project's link up to its checkout's root, where only a real .git (a HEAD, or a gitdir: file) is one", async () => {
     // A Vercel project linked above the checkout isn't this checkout's: no board, as outside one.
-    // Linked, it's the team's board, which needs a Vercel login this environment doesn't have.
+    // Linked, it's the team's board, which needs a Vercel login this environment doesn't have, or a
+    // BOARD_TOKEN, which it would send there: this run has neither.
     const outside = await tmp('board-vercel-')
     await mkdir(join(outside, '.vercel'))
     await writeFile(join(outside, '.vercel', 'project.json'), JSON.stringify({ orgId: 'team_x', projectId: 'prj_x' }))
     const teamBoard = /^error: You're not logged in to Vercel\./
     const noBoard = /^error: No board to use\./
-    const run = async (directory: string) => (await vb(['whoami'], { BOARD_URL: undefined, XDG_DATA_HOME: await tmp('board-data-') }, undefined, directory)).stderr
+    const run = async (directory: string) => (await vb(['whoami'], { BOARD_URL: undefined, BOARD_TOKEN: undefined, XDG_DATA_HOME: await tmp('board-data-') }, undefined, directory)).stderr
     const checkout = join(outside, 'repo')
     await mkdir(join(checkout, '.git', 'x'), { recursive: true })
     await mkdir(join(checkout, 'src'))
