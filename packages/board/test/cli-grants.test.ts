@@ -91,6 +91,9 @@ describe('cli grants for Vercel projects', () => {
         stderr: "error: Can't tell which team the board is on, to keep the grant to it.\n\n  Name the team:\n    vb grants create vercel --projects --environment production --claim 'owner_id=<TEAM_ID>'\n",
       })
       expect(await team.grants()).toEqual([])
+      // What it may do is checked first, before the board is asked which team it's on.
+      const can = await embedded(team, ['grants', 'create', 'vercel', '--projects', '--environment', 'production', '--can', 'dev/*=post'])
+      expect([can.code, can.stderr.split('\n')[0]]).toEqual([2, 'error: invalid channel pattern dev/*: write dev/ for dev and its subtree.'])
       // Naming it is enough.
       expect((await embedded(team, ['grants', 'create', 'vercel', '--projects', '--environment', 'production', '--claim', 'owner_id=team_acme'])).code).toBe(0)
       expect((await team.grants()).map((grant) => grant.claims)).toEqual([{ environment: 'production', owner_id: 'team_acme' }])
