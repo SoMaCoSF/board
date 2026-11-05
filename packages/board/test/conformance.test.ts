@@ -110,6 +110,21 @@ describe('the conformance kit', () => {
     expect(tokenUse(await conformance(await clientOf(board.fetch)))).toMatchObject({ status: 'skipped', detail: "this run can't call the board with a token's secret" })
   })
 
+  it('fails a board that takes a Vercel grant for every project on Vercel, and revokes what it took', async () => {
+    const board = testBoard({ scheduler: fakeQueue().scheduler })
+    // A board that fills in a project for a Vercel grant that names neither a project nor a team.
+    const lax: Fetch = async (request) => {
+      if (request.method !== 'POST' || !new URL(request.url).pathname.endsWith('/grants')) return board.fetch(request)
+      const body = await request.json()
+      if (body.issuer === 'vercel' && !body.claims.project_id && !body.claims.owner_id) body.claims.project_id = 'prj_anything'
+      return board.fetch(new Request(request, { body: JSON.stringify(body) }))
+    }
+    const report = await conformance(await clientOf(lax))
+    const team = report.checks.find((check) => check.name === 'grants every project on a team in one environment, and never every project on Vercel')
+    expect(team).toMatchObject({ status: 'failed', detail: 'a Vercel grant that names neither project_id nor owner_id: expected 400 invalid_grant, and it succeeded' })
+    expect(await (await clientOf(board.fetch)).grants()).toEqual([])
+  })
+
   it("leaves a token's registration as it was: one with watchers or a sync is skipped, and an empty one keeps its URL", async () => {
     const board = testBoard({ scheduler: fakeQueue().scheduler, access: [vercelProject({ project: 'prj_v0', can: 'all' })] })
     const v0 = caller(board.fetch, await deploymentToken('v0', 'prj_v0', 'production'))

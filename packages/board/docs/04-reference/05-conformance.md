@@ -90,7 +90,7 @@ Then the rest, a group each in the report:
 | Group | Check |
 | --- | --- |
 | `schedules` | schedules a reply a day out, lists it, and cancels it; and keeps a schedule's `noSync`, so its sends stay off every platform |
-| `grants` | grants a project that doesn't exist, lists it, takes the same issuer and claims again as one grant, revokes it twice, and changes a grant's `can` by creating it again. Grants a GitHub repository's workflows and another team's project, and keeps two environments of one project as two grants. Skipped when the token can't change the board's grants |
+| `grants` | grants a project that doesn't exist, lists it, takes the same issuer and claims again as one grant, revokes it twice, and changes a grant's `can` by creating it again. Grants a GitHub repository's workflows, another team's project, and every project on a team that doesn't exist, in one environment. Refuses a Vercel grant that names neither a project nor a team, and one for a whole team in a custom environment, with 400 `invalid_grant`, and revokes any it took. Keeps two environments of one project as two grants. Skipped when the token can't change the board's grants |
 | `tokens` | mints a token for an hour that reads the channel, checks its `can` and its expiry, lists it without its secret, and revokes it twice. Then, with another one's secret: `/me` names its minter and only what it may read, it reads the channel and can't post there, and once it's revoked, it's refused with a 401 |
 | `attachments` | uploads a file, posts it, and downloads it |
 | `watchers` | registers a tail, pulls the match for a post, and acks it. Skipped when the token already has watchers or a sync registered there, since registering replaces them |

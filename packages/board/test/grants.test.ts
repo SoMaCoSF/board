@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { githubActions, oidc, vercelProject, type Known } from '../src/server/auth.ts'
-import { caller, deploymentToken, oidcToken, OIDC_ISS, personToken, PROJECT_ID, testBoard, testKeys, workflowToken } from './harness.ts'
+import { caller, deploymentToken, oidcToken, OIDC_ISS, personToken, PROJECT_ID, TEAM_ID, testBoard, testKeys, workflowToken } from './harness.ts'
 
 /** A person, and a caller with `token`, on one board: the person sets grants, the caller tries the board. */
 async function setUp(options: Parameters<typeof testBoard>[0] = {}) {
@@ -34,6 +34,20 @@ describe('grants', () => {
     // Its previews aren't the grant's: the environment is a claim like any other.
     const preview = await as(deploymentToken('other', 'prj_other', 'preview', { teamId: 'team_other' }))
     expect((await preview('POST', '/messages', { channel: 'feedback', text: 'from a preview' })).status).toBe(403)
+  })
+
+  it('lets every project on a team in, in the environment it names, and no other environment or team', async () => {
+    const { person, as } = await setUp()
+    const set = await person('POST', '/grants', { issuer: 'vercel', claims: { owner_id: TEAM_ID, environment: 'production' }, can: { 'feedback/': ['post'] } })
+    expect(set.status).toBe(200)
+    const post = async (token: Promise<string>) => (await (await as(token))('POST', '/messages', { channel: 'feedback', text: 'hi' })).status
+    // Any of the team's projects, the ones made after the grant included.
+    expect(await post(deploymentToken('web', 'prj_web', 'production'))).toBe(201)
+    expect(await post(deploymentToken('docs', 'prj_docs', 'production'))).toBe(201)
+    expect(await post(deploymentToken('web', 'prj_web', 'preview'))).toBe(403)
+    expect(await post(deploymentToken('web', 'prj_partner', 'production', { teamId: 'team_partner' }))).toBe(403)
+    // One project's custom environment is still that project's to name.
+    expect((await person('POST', '/grants', { issuer: 'vercel', claims: { project_id: 'prj_web', environment: 'env_staging' } })).status).toBe(200)
   })
 
   it("adds up every grant that matches, and gives what a grant without can gives: read, post, react, and label", async () => {
@@ -149,6 +163,11 @@ describe('grants', () => {
     const invalid = [400, 'invalid_grant']
     // Vercel and GitHub sign tokens for everyone they serve: a grant names who, and a preview says so outright.
     expect(await refused({ issuer: 'vercel', claims: { project_id: 'prj_front' } })).toEqual(invalid)
+    expect(await refused({ issuer: 'vercel', claims: { owner_id: TEAM_ID } })).toEqual(invalid)
+    // Neither a project nor a team would be every project on Vercel, and a custom environment's ID is one project's.
+    expect(await refused({ issuer: 'vercel', claims: { environment: 'production' } })).toEqual(invalid)
+    expect(await refused({ issuer: 'vercel', claims: { owner_id: TEAM_ID, environment: 'env_staging' } })).toEqual(invalid)
+    expect(await refused({ issuer: 'vercel', claims: { owner_id: TEAM_ID, environment: ['production', 'env_staging'] } })).toEqual(invalid)
     expect(await refused({ issuer: 'github', claims: { event_name: 'push' } })).toEqual(invalid)
     expect(await refused({ issuer: OIDC_ISS, claims: {} })).toEqual(invalid)
     // Its keys are fetched from the issuer, so never from the board's own network.

@@ -91,6 +91,7 @@ describe('vercel()', () => {
       'grants: grants a project, lists it, takes the same grant again as one, and revokes it': 'failed',
       "grants: changes a grant's can when it's set again": 'failed',
       "grants: grants a GitHub repository's workflows, and another team's project": 'failed',
+      'grants: grants every project on a team in one environment, and never every project on Vercel': 'failed',
       'grants: keeps two environments of one project as two grants, and revokes one without the other': 'failed',
       'tokens: mints a token, shows its secret only then, lists it, and revokes it': 'failed',
       "tokens: lets a token do what its can says, as whoever minted it, and nothing once it's revoked": 'failed',

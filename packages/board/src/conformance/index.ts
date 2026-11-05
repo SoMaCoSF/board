@@ -116,9 +116,9 @@ const needRoot = (ctx: Context) => {
 const grantFor = (ctx: Context) => ({ issuer: 'vercel', claims: { environment: 'preview', project_id: `prj_conformance${ctx.labels.conformance}` } })
 
 /** Sets the check's grant, or says why it can't: changing who the board trusts takes `manage` in every channel. */
-async function firstGrant(ctx: Context): Promise<Awaited<ReturnType<Board['createGrant']>> | { skip: string }> {
+async function firstGrant(ctx: Context, spec: Parameters<Board['createGrant']>[0] = grantFor(ctx)): Promise<Awaited<ReturnType<Board['createGrant']>> | { skip: string }> {
   try {
-    return await ctx.board.createGrant(grantFor(ctx))
+    return await ctx.board.createGrant(spec)
   } catch (error) {
     if (error instanceof BoardError && error.status === 403) return { skip: "this token can't change the board's grants" }
     throw error
@@ -532,6 +532,35 @@ const CHECKS: Check[] = [
         same(theirs.grant.claims.owner_id, `team_conformance${ctx.labels.conformance}`, "another team's grant's owner_id")
         const listed = new Set((await ctx.board.grants()).map((grant) => grant.id))
         check(made.every((id) => listed.has(id)), `grants should list ${made.join(', ')}`)
+      } finally {
+        for (const id of made) await ctx.board.revokeGrant(id).catch(() => {})
+      }
+    },
+  },
+  {
+    group: 'grants',
+    name: 'grants every project on a team in one environment, and never every project on Vercel',
+    run: async (ctx) => {
+      const team = `team_conformance${ctx.labels.conformance}`
+      const first = await firstGrant(ctx, { issuer: 'vercel', claims: { environment: 'production', owner_id: team } })
+      if ('skip' in first) return first.skip
+      const made = [first.grant.id]
+      try {
+        same(first.created, true, 'a grant for every project on a team: created')
+        same(first.grant.claims.owner_id, team, "the team's grant's owner_id")
+        same(first.grant.claims.project_id, undefined, "the team's grant's project_id")
+        // Neither a project nor a team is every project on Vercel, and a custom environment's ID is one project's.
+        const refusals = [
+          [{ environment: 'production' }, 'a Vercel grant that names neither project_id nor owner_id'],
+          [{ environment: `env_conformance${ctx.labels.conformance}`, owner_id: team }, "a grant for every project on a team in one project's custom environment"],
+        ] as const
+        for (const [claims, what] of refusals)
+          await rejects(
+            ctx.board.createGrant({ issuer: 'vercel', claims }).then(({ grant }) => made.push(grant.id)),
+            400,
+            'invalid_grant',
+            what,
+          )
       } finally {
         for (const id of made) await ctx.board.revokeGrant(id).catch(() => {})
       }

@@ -883,13 +883,17 @@ await team.revokeToken(token.id)
   its values. It's plain data, so Vercel's API keeps the same shape: the rule
   builders (`vercelProject()`, `githubActions()`) match more loosely (a name or
   an ID, a workflow by its path) and stay in code.
-- **It names who it lets in.** A Vercel grant names `project_id` and
-  `environment` (a preview runs any branch, so a grant says outright whether
-  previews get in), and a GitHub grant `repository` or `repository_id`, since
-  those issuers sign tokens for everyone they serve. Any other issuer's names
-  at least one claim, as `oidc()` does. Anything else is 400 `invalid_grant`.
-  `owner_id` keeps a project's grant to its team; without it, a project ID
-  matches on any team, as it does in a rule.
+- **It names who it lets in.** A Vercel grant names `environment` (a preview
+  runs any branch, so a grant says outright whether previews get in) and
+  `project_id`, `owner_id`, or both, and a GitHub grant `repository` or
+  `repository_id`, since those issuers sign tokens for everyone they serve.
+  Any other issuer's names at least one claim, as `oidc()` does. Anything
+  else is 400 `invalid_grant`. `owner_id` keeps a project's grant to its
+  team; without it, a project ID matches on any team, as it does in a rule.
+  `owner_id` without `project_id` is every project on that team, ones made
+  later included, in an environment every project has: `production`,
+  `preview`, or `development`, since a custom environment's ID is one
+  project's. Neither would be every project on Vercel.
 - **A grant is its issuer and claims.** Setting one again changes its `can`
   and answers `created: false`; claims that differ (another environment) are
   another grant. `can` left out is `{ '*': ['read', 'post', 'react', 'label'] }`,

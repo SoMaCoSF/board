@@ -340,6 +340,8 @@ const GRANT_VALUES_MAX = 32
 const GRANT_VALUE_MAX = 1000
 
 const invalidGrant = (message: string) => badRequest(message, 'invalid_grant')
+/** The environments every Vercel project has: the only ones a grant for every project on a team may name. */
+const TEAM_ENVIRONMENTS: readonly string[] = ['production', 'preview', 'development']
 
 /** Whether `host` names something on the board's own network rather than on the internet. */
 export function privateHost(host: string): boolean {
@@ -387,8 +389,16 @@ export function checkGrant(spec: GrantSpec, trusted: readonly string[]): { issue
     const sorted = (values as string[]).sort()
     claims[name] = sorted.length === 1 ? sorted[0]! : sorted
   }
-  if (issuer === 'vercel' && (claims.project_id === undefined || claims.environment === undefined))
-    throw invalidGrant('a Vercel grant names project_id and environment: a preview runs any branch, so it says outright whether they get in')
+  if (issuer === 'vercel') {
+    if (claims.environment === undefined)
+      throw invalidGrant('a Vercel grant names environment: a preview runs any branch, so it says outright whether they get in')
+    if (claims.project_id === undefined && claims.owner_id === undefined)
+      throw invalidGrant('a Vercel grant names project_id, or owner_id for every project on a team: Vercel signs tokens for every project')
+    // A custom environment's ID is one project's, so across a team it names none.
+    const custom = [claims.environment].flat().filter((environment) => !TEAM_ENVIRONMENTS.includes(environment))
+    if (claims.project_id === undefined && custom.length > 0)
+      throw invalidGrant(`a grant for every project on a team names environment production, preview, or development: ${custom[0]} is one project's`)
+  }
   if (issuer === 'github' && claims.repository === undefined && claims.repository_id === undefined)
     throw invalidGrant('a GitHub grant names repository or repository_id: GitHub signs tokens for every repository')
   const can = spec.can ?? DEFAULT_CAN

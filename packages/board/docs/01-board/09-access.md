@@ -120,6 +120,8 @@ const team = board({ backend: http('https://acme.vercel.app/api/board') })
 const { grant } = await team.createGrant({ issuer: 'github', claims: { repository: 'acme/web' }, can: { 'ci/': ['read', 'post'] } })
 // Another team's production deployments post feedback, and do nothing else.
 await team.createGrant({ issuer: 'vercel', claims: { owner_id: 'team_partner', project_id: 'prj_front', environment: 'production' }, can: { 'feedback/': ['post'] } })
+// Every project on acme's team, ones made later included, reads, posts, reacts, and labels everywhere in production.
+await team.createGrant({ issuer: 'vercel', claims: { owner_id: 'team_acme', environment: 'production' } })
 console.log(await team.grants())
 await team.revokeGrant(grant.id)
 ```
@@ -139,11 +141,14 @@ revoked g1
   `/.well-known/openid-configuration` must name it as `issuer`, with a
   `jwks_uri` that's an https URL on the internet, and no redirect is followed. Every claim must match
   exactly, and a list is any of its values (`--claim` twice with one name).
-- **It names who it lets in.** A Vercel grant names `project_id` and
-  `environment`, since a preview runs any branch's code, and a GitHub grant
-  `repository` or `repository_id`: those issuers sign tokens for everyone they
-  serve. Any other issuer's names at least one claim. `owner_id` keeps a
-  project's grant to its team.
+- **It names who it lets in.** Vercel and GitHub sign tokens for everyone
+  they serve. A Vercel grant names `environment`, since a preview runs any
+  branch's code, and `project_id`, `owner_id`, or both. `owner_id` keeps a
+  project's grant to its team, and alone it's every project on that team,
+  ones made later included. A grant for a whole team names `production`,
+  `preview`, or `development`, since a custom environment's ID is one
+  project's. A GitHub grant names `repository` or `repository_id`, and any
+  other issuer's names at least one claim.
 - **The same issuer and claims are one grant.** Setting it again changes its
   `can` (`updated g1`). Claims that differ, such as another environment, are
   another grant.
