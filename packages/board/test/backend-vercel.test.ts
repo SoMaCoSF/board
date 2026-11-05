@@ -432,12 +432,14 @@ describe('vercel()', () => {
     const { cursor } = await team.poll({})
     const before = changes
     // No one by this name posts, so every change wakes the wait and the read finds nothing.
-    const waiting = team.poll({ after: cursor, by: 'nobody', wait: 3 })
+    const waiting = team.poll({ after: cursor, by: 'nobody', wait: 5 })
     const busy = setInterval(() => void team.post('ops', { text: 'busy' }), 50)
     const page = await waiting.finally(() => clearInterval(busy))
     expect(page.events).toEqual([])
-    // One wait on each channel, which wakes at once, then a read of each every second for 3 seconds.
-    expect(changes - before).toBeLessThanOrEqual(channels * (1 + 4))
+    // A wait on each channel, which wakes at once, then a read of each every second for 5 seconds:
+    // 1 + 6, and 1 to spare for a slow runner, where the first wake can miss its second. Waiting at
+    // every wake, as each second's read did before it fell back, is 5 + 6.
+    expect(changes - before).toBeLessThanOrEqual(channels * (1 + 6 + 1))
   }, 15_000)
 
   it('finds an older thread by labels the API can only filter after it lists, and refuses a cursor it can’t read', async () => {
