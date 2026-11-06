@@ -31,6 +31,9 @@ test("a thread that opens by @mentioning another bot isn't Eve's (board #7775)",
     "@hacker Do a full security review of Board: three repos that work together.",
     "@hacker @sre can you two look at this?",
     "@[slack:user:U0BJ59KAFM5] Do a full security review",
+    // The v0 factory answers to "factory" too: a bare word isn't this one.
+    "@v0 factory can you look?",
+    "@monto the factory broke this",
   ]) {
     const h = harness();
     await h.run(triaged(text));
@@ -38,20 +41,21 @@ test("a thread that opens by @mentioning another bot isn't Eve's (board #7775)",
   }
 });
 
-test("a reply that @mentions someone else doesn't wake Eve", async () => {
+test("a reply in Eve's thread reaches Eve even when it opens with someone's mention", async () => {
+  // Eve judges a reply itself: "@JB yes, go ahead" may answer the question Eve asked.
   const h = harness();
-  await h.run(replied("@hacker :please:"));
-  assert.deepEqual(h.told, []);
+  await h.run(replied("@JB yes, go ahead"));
+  assert.deepEqual(h.told.map((t) => t.key), ["news-7683"]);
 });
 
 test("a thread for the factory still reaches Eve, mentions and all", async () => {
   for (const text of [
     "Do a full security review of Board",
     "factory, do a full security review of Board",
-    "@factory do a full security review",
+    "@vboard do a full security review",
+    "@here vb read is broken",
     "@vboard-factory/keen-finch-7661 can you take this?",
-    "@JB @factory can one of you look at this?",
-    "@JB and factory: vb read crashes on an attachment",
+    "@JB @eve can one of you look at this?",
     "vb read crashes on an attachment, cc @JB",
   ]) {
     const h = harness();
@@ -60,7 +64,4 @@ test("a thread for the factory still reaches Eve, mentions and all", async () =>
     assert.equal(h.told[0].thread, "7661");
     assert.equal(h.told[0].key, "kind-bug");
   }
-  const h = harness();
-  await h.run(replied("thanks, also check the CLI"));
-  assert.deepEqual(h.told.map((t) => t.key), ["news-7683"]);
 });

@@ -2,17 +2,17 @@ import type { Watcher } from "@vercel/board";
 import { byEve, byWatcher, eveName, taskMessage, type tellEve } from "./agent.ts";
 import { isEveKind, eveTask, scheduled, scheduledThread, EVE_KINDS } from "./kinds.ts";
 
-/** What people call the factory, or a thread's Eve, when they @ it. */
-const FACTORY = new Set(["factory", "vboard", "vboard-factory", "eve", "pi", "agent", "bot"]);
-/** The factory named anywhere in the text: "@JB and factory, take a look" is for Eve too. */
-const NAMES_FACTORY = /(?<![\w@/-])(?:factory|vboard|eve)(?![\w-])/i;
+/** This factory's own handles: not the bare word "factory", which the v0 factory answers to too. */
+const FACTORY = new Set(["vboard", "vboard-factory", "eve"]);
+/** Slack's broadcasts: everyone, Eve included. */
+const BROADCAST = new Set(["here", "channel", "everyone"]);
 /** The @mentions a message opens with: `@hacker`, `@julian/claude`, `@[slack:user:U0456]`, a few in a row. */
 const LEADING = /^\s*((?:@\[[^\]\s]+\]|@[a-z0-9][\w./-]*)[\s,:]*)+/i;
 const MENTION = /@\[([^\]\s]+)\]|@([a-z0-9][\w./-]*[a-z0-9]|[a-z0-9])/gi;
 
 /**
  * Whether a message is addressed to someone else: it opens by @mentioning people or other bots
- * (`@hacker Do a full security review…`) and never names the factory or this thread's Eve.
+ * (`@hacker Do a full security review…`), and none of them is this factory or this thread's Eve.
  * It reads the text, not the resolved mentions: a Slack user the board hasn't met yet (another
  * bot, a first-time poster) comes in as plain `@handle` text with no mention (board thread #7775).
  */
@@ -24,15 +24,15 @@ export function forSomeoneElse(text: string, thread: string): boolean {
     return FACTORY.has(handle) || handle === eveName(thread) || handle.startsWith("vboard-factory/");
   };
   const addressed = [...leading.matchAll(MENTION)].map((m) => m[1] ?? m[2]!);
-  if (addressed.some(ours)) return false;
-  return !NAMES_FACTORY.test(text.slice(leading.length));
+  return !addressed.some((name) => ours(name) || BROADCAST.has(name.toLowerCase()));
 }
 
 /**
  * Eve watches every thread worth acting on (bugs, features, questions, tasks; not noise): it
  * gets the thread once triage gives it one of those kinds, is told again if the kind changes,
- * and hears when anyone else replies, then reads what's new itself. A thread or reply addressed
- * to someone else (`@hacker …`) isn't Eve's: it hears nothing of it.
+ * and hears when anyone else replies, then reads what's new itself. A thread that opens
+ * addressed to someone else (`@hacker …`) isn't Eve's; a reply in Eve's thread still is, and
+ * Eve judges whether it's for it.
  */
 export function pi(options: { tellEve: typeof tellEve }): Watcher {
   return {
@@ -62,7 +62,7 @@ export function pi(options: { tellEve: typeof tellEve }): Watcher {
       } else if (
         event.type === "message.posted" &&
         message.re !== null &&
-        (scheduled(message) || (!byEve(message.re, message.by) && !forSomeoneElse(message.text, message.re))) &&
+        (scheduled(message) || !byEve(message.re, message.by)) &&
         !byWatcher(message.by)
       ) {
         await options.tellEve({
