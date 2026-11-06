@@ -879,9 +879,9 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       if (!watcher) throw new Error(`this board has no watcher ${id}`)
       await watcher.run({ event, board: handleOf({ self: id, origin: { via: { kind: 'watcher', id } } }, trigger) })
     },
-    async receive(key, item, { id, attempt }) {
+    async receive(key, item, meta) {
       if (!engine) throw new Error(`this board has no sync, so nothing reads ${key}'s inbox`)
-      await engine.receive(key, item, { id, attempt })
+      await engine.receive(key, item, meta)
     },
     pull: () => (engine ? engine.pull() : Promise.resolve(0)),
     async readSource(key, target, limit, after) {

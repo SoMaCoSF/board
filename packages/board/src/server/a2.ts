@@ -889,9 +889,9 @@ function build(options: A2Options & { store: BoardStore }, binding: BoardBinding
       return { ok: true }
     },
 
-    async syncThread(caller, { thread }) {
+    async syncThread(caller, { thread }, signal) {
       const { principal } = (await needSync(caller, 'look up a sync'))
-      await reads.ensure()
+      await reads.ensure(undefined, signal)
       const synced = await store.tables.syncOf(thread)
       if (!synced || !principal.access.can('sync', synced.channel)) throw notFound(`no thread ${thread} on this board`, 'thread_not_found')
       return { thread, root: ref(synced.root), channel: synced.channel, targets: [...synced.targets], external: { ...synced.external } }

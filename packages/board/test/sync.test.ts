@@ -10,6 +10,7 @@ import { z } from 'zod'
 import { consumer, createServer } from 'experimental-a2/server'
 import { memory } from 'experimental-a2/store-memory'
 import { boardContract } from '../src/contract/contract.ts'
+import { BOARD_SESSION } from '../src/contract/events.ts'
 import { github, repos, type GitHubEvent } from '../src/sync/github.ts'
 import type { MountOptions } from './harness.ts'
 import { BOARD_URL, caller, deploymentToken, personToken, testBoard } from './harness.ts'
@@ -209,6 +210,60 @@ describe('sync', () => {
       const { body } = await julian('GET', `/messages/${root.message.id}`)
       expect(body.replies.map((reply: { text: string }) => reply.text)).toEqual(['on it'])
     }, { timeout: 10_000 })
+  })
+
+  it("stops an import whose claim lapses while it waits for the tables, and leaves it to the next run", async () => {
+    // The tables lag the log, and their consumer is stuck until the test opens it.
+    const store = boardMemory()
+    const earlier = createServer({ contract: boardContract, store: store.log }).session(BOARD_SESSION)
+    const by = { actor: 'vercel:user:u_julian', principal: 'vercel:user:u_julian', profile: null, session: null }
+    await earlier.append({
+      id: 'earlier',
+      type: 'message.posted',
+      payload: { channel: 'firehose', text: 'from before', re: null, replyTo: null, thread: 'earlier', labels: {}, noSync: true, mentions: [], by, origin: null, from: null },
+    })
+    let open!: () => void
+    const stuck = new Promise<void>((resolve) => (open = resolve))
+    const tables: MessageTables = {
+      ...store.tables,
+      applyNext: async () => false,
+      apply: async (event) => {
+        await stuck
+        await store.tables.apply(event)
+      },
+    }
+    const imports: string[] = []
+    const { board, webhook } = setup({
+      store: { ...store, tables },
+      channels: {
+        C1: delivering(async (sync) => {
+          imports.push(sync.event.kind)
+          await sync.import('firehose')
+        }),
+      },
+    })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+
+    // A function with half a second left: every claim it makes lapses then.
+    const context = Symbol.for('@vercel/request-context')
+    const deadline = Date.now() + 500
+    Reflect.set(globalThis, context, { get: () => ({ deadline, waitUntil: () => {} }) })
+    try {
+      await webhook('slack', { type: 'message', threadId: 'slack:C1:100', id: '100', text: 'export is broken', user: 'U_ADA' })
+      await new Promise((resolve) => setTimeout(resolve, deadline - Date.now() + 100))
+    } finally {
+      Reflect.deleteProperty(globalThis, context)
+    }
+
+    // The tables catch up, but the lapsed import stopped waiting for them: it doesn't go on.
+    open()
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(imports).toEqual([])
+
+    // The next run imports it.
+    await board.servers.find((server) => server.contract.name === 'board-inbox')!.drain('inbox:slack:C1')
+    await vi.waitFor(async () => expect((await read(julian, 'firehose')).map((m) => m.text)).toEqual(['from before', 'export is broken']))
+    expect(imports).toEqual(['message'])
   })
 
   it("never sends text its author edited away, when a label change's delivery runs after the edit", async () => {

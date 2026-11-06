@@ -163,9 +163,9 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
   // --- lookups --------------------------------------------------------------------
 
   /** A thread's sync, or null when the board has no such thread. */
-  async function syncOf(thread: string): Promise<SyncThreadView | null> {
+  async function syncOf(thread: string, signal: AbortSignal = NEVER): Promise<SyncThreadView | null> {
     try {
-      return await call('syncThread', { thread })
+      return await call('syncThread', { thread }, signal)
     } catch (error) {
       if (missing(error)) return null
       throw error
@@ -173,9 +173,9 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
   }
 
   /** A board thread: its root and every reply, deleted ones included. */
-  async function threadOf(root: string): Promise<MessageView[]> {
+  async function threadOf(root: string, signal: AbortSignal = NEVER): Promise<MessageView[]> {
     try {
-      const { message, replies } = await call('message', { id: root })
+      const { message, replies } = await call('message', { id: root }, signal)
       return [message, ...replies]
     } catch (error) {
       if (missing(error)) return []
@@ -184,8 +184,8 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
   }
 
   /** One board message as it is now. */
-  async function messageOf(id: string): Promise<MessageView | null> {
-    return (await threadOf(id)).find((message) => message.id === id) ?? null
+  async function messageOf(id: string, signal: AbortSignal = NEVER): Promise<MessageView | null> {
+    return (await threadOf(id, signal)).find((message) => message.id === id) ?? null
   }
 
   async function copiesOf(ids: readonly string[]): Promise<Record<string, Record<string, ExternalCopy>>> {
@@ -328,7 +328,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
   async function runItem(key: string, item: InboxItem) {
     let error: string | undefined
     try {
-      await inbound(key, { event: item.event, raw: item.raw }, { id: item.id, attempt: item.attempt + 1 })
+      await inbound(key, { event: item.event, raw: item.raw }, { id: item.id, attempt: item.attempt + 1, signal: NEVER })
     } catch (failure) {
       console.error(`[board] sync ${key} couldn't import ${item.id}:`, describe(failure))
       error = describe(failure)
@@ -350,13 +350,13 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
    * is never one: sync reads every channel, and the link's readers may not read that one. A link
    * nobody can read says why.
    */
-  async function resolveLinks(platform: SyncProvider, links: ExternalLink[], linker: { thread: string; message: string }, channel: string, previous: ImportLink[] = []): Promise<ImportLink[]> {
+  async function resolveLinks(platform: SyncProvider, links: ExternalLink[], linker: { thread: string; message: string }, channel: string, previous: ImportLink[], signal: AbortSignal): Promise<ImportLink[]> {
     if (links.length === 0) return []
     const resolved: ImportLink[] = []
     for (const link of links) {
       if (resolved.some((done) => done.url === link.url)) continue
-      const id = (await find({ thread: link.thread, message: link.message })).message
-      const copy = id === null ? null : await messageOf(id)
+      const id = (await find({ thread: link.thread, message: link.message }, signal)).message
+      const copy = id === null ? null : await messageOf(id, signal)
       if (copy && !copy.deleted && copy.channel === channel) {
         resolved.push({ url: link.url, message: copy.id, unavailable: null, snapshot: {
           author: copy.author?.name ?? copy.by.actor,
@@ -389,7 +389,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
    * becomes a line in the text, and on a board that keeps no files, a line that
    * links it where it lives; a failed fetch retries the message a few times first.
    */
-  async function importFiles(platform: SyncProvider, files: ExternalFile[], attempt: number) {
+  async function importFiles(platform: SyncProvider, files: ExternalFile[], attempt: number, signal: AbortSignal) {
     const attachments: Attachment[] = []
     const notes: string[] = []
     let noFiles = false
@@ -426,7 +426,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
       }
       const name = file.name ?? `${file.type}`
       try {
-        attachments.push((await call('upload', { data, name, type: file.mimeType || typeOf(name) })).attachment)
+        attachments.push((await call('upload', { data, name, type: file.mimeType || typeOf(name) }, signal)).attachment)
       } catch (error) {
         // A board elsewhere (`http()`) takes only what fits in a request, unless its store takes direct uploads.
         if (error instanceof HttpError && (error.code === 'too_large' || error.code === 'no_direct_uploads')) {
@@ -444,14 +444,14 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
   }
 
   /** One platform event from the inbox, through its entry's sync function. `id` is its ID there, which its writes derive theirs from. */
-  async function inbound(key: string, item: InboxDelivery, meta: { id: string; attempt: number }) {
+  async function inbound(key: string, item: InboxDelivery, meta: { id: string; attempt: number; signal: AbortSignal }) {
     const { event, raw } = item
     const platform = platformOf(key)
-    const linked = (await find({ thread: event.thread })).thread ?? undefined
+    const linked = (await find({ thread: event.thread }, meta.signal)).thread ?? undefined
     if (event.kind === 'message') {
-      const copied = (await find({ thread: event.subthread ?? event.thread, message: event.message })).message
+      const copied = (await find({ thread: event.subthread ?? event.thread, message: event.message }, meta.signal)).message
       if (copied !== null) {
-        const origin = (await messageOf(copied))?.origin
+        const origin = (await messageOf(copied, meta.signal))?.origin
         if (!origin || origin.message !== event.message || (origin.subthread ?? origin.thread) !== (event.subthread ?? event.thread)) return
       }
     }
@@ -492,16 +492,16 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
   }
 
   /** The import `sync.import` makes: into the event's board thread, or a new root in `channel`. */
-  async function importEvent(key: string, item: InboxDelivery, meta: { id: string; attempt: number }, linked: string | undefined, channel: string | undefined, overrides: SyncOverrides): Promise<SyncResult> {
-    const where = channel ?? (linked ? (await syncOf(linked))?.channel : undefined)
+  async function importEvent(key: string, item: InboxDelivery, meta: { id: string; attempt: number; signal: AbortSignal }, linked: string | undefined, channel: string | undefined, overrides: SyncOverrides): Promise<SyncResult> {
+    const where = channel ?? (linked ? (await syncOf(linked, meta.signal))?.channel : undefined)
     if (where === undefined) return { root: null, message: null }
     try {
       return await applyIncoming(key, item, meta, ChannelPath.parse(where), SyncOverrides.parse(overrides))
     } catch (error) {
       if (!(error instanceof DroppedError)) throw error
       // Dropped: nothing of it is on the board, though a root fetched for it may be.
-      const thread = (await find({ thread: item.event.thread })).thread
-      const root = thread === null ? null : ((await syncOf(thread))?.root ?? null)
+      const thread = (await find({ thread: item.event.thread }, meta.signal)).thread
+      const root = thread === null ? null : ((await syncOf(thread, meta.signal))?.root ?? null)
       return { root, message: null }
     }
   }
@@ -521,12 +521,12 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
     }
   }
 
-  async function applyIncoming(key: string, item: InboxDelivery, meta: { id: string; attempt: number }, channel: string, overrides: SyncOverrides): Promise<SyncResult> {
+  async function applyIncoming(key: string, item: InboxDelivery, meta: { id: string; attempt: number; signal: AbortSignal }, channel: string, overrides: SyncOverrides): Promise<SyncResult> {
     const { event, raw } = item
     const source = originOf(key, event)
     const platform = platformOf(key)
-    const threadKey = (await find({ thread: event.thread })).thread ?? undefined
-    const synced = threadKey ? await syncOf(threadKey) : null
+    const threadKey = (await find({ thread: event.thread }, meta.signal)).thread ?? undefined
+    const synced = threadKey ? await syncOf(threadKey, meta.signal) : null
     const rootId = synced?.root
     // A2's `idempotentId`, byte for byte: logs already hold these IDs, and a retry must find its own.
     const writeId = (n: number) => derivedId('board-inbound', meta.id, String(n))
@@ -559,7 +559,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
           ...input,
           origin: input.origin ?? null,
           ...(attachments.length ? { attachments: attachments.map((file) => file.id) } : {}),
-        }),
+        }, meta.signal),
       )
       return { id: message!, re: input.re ?? null }
     }
@@ -578,10 +578,10 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
     }
     /** Labels for the thread's root, as `author`. */
     const setLabels = (author: ExternalAuthor, set: Record<string, string>, unset: string[]) =>
-      call('syncImport', { op: 'labels', author, from: key, origin: { thread: event.thread }, set, unset })
+      call('syncImport', { op: 'labels', author, from: key, origin: { thread: event.thread }, set, unset }, meta.signal)
     const setExtraLabels = async (author: ExternalAuthor, id: string) => {
       if (!overrides.labels && !overrides.unset) return
-      const root = await messageOf(id)
+      const root = await messageOf(id, meta.signal)
       const set = Object.fromEntries(Object.entries(overrides.labels ?? {}).filter(([key, value]) => root?.labels[key] !== value))
       const unset = (overrides.unset ?? []).filter((key) => root?.labels[key] !== undefined)
       if (Object.keys(set).length || unset.length) await setLabels(author, set, unset)
@@ -589,10 +589,10 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
 
     switch (event.kind) {
       case 'message': {
-        const existing = (await find({ thread: event.subthread ?? event.thread, message: event.message })).message
+        const existing = (await find({ thread: event.subthread ?? event.thread, message: event.message }, meta.signal)).message
         if (existing !== null) return { root: rootId ?? existing, message: existing }
-        const { attachments, notes } = event.files?.length ? await importFiles(platform, event.files, meta.attempt) : { attachments: [], notes: [] }
-        const links = await resolveLinks(platform, event.links ?? [], { thread: event.subthread ?? event.thread, message: event.message }, synced?.channel ?? channel)
+        const { attachments, notes } = event.files?.length ? await importFiles(platform, event.files, meta.attempt, meta.signal) : { attachments: [], notes: [] }
+        const links = await resolveLinks(platform, event.links ?? [], { thread: event.subthread ?? event.thread, message: event.message }, synced?.channel ?? channel, [], meta.signal)
         const base = {
           ...(links.length ? { links } : {}),
           author: event.author,
@@ -624,32 +624,32 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
       case 'edited':
       case 'deleted':
       case 'reaction': {
-        const id = (await find({ thread: event.subthread ?? event.thread, message: event.message })).message
+        const id = (await find({ thread: event.subthread ?? event.thread, message: event.message }, meta.signal)).message
         if (id === null) return { root: rootId ?? null, message: null }
         const author: ExternalAuthor = 'author' in event ? event.author : { id: `${platform.platform}:system`, handle: platform.platform, name: platform.platform, avatar: null, isBot: true }
         const origin = { thread: event.subthread ?? event.thread, message: event.message }
         if (rootId !== undefined) await setExtraLabels(author, rootId)
-        if (event.kind === 'deleted') await call('syncImport', { op: 'delete', author, from: key, origin })
+        if (event.kind === 'deleted') await call('syncImport', { op: 'delete', author, from: key, origin }, meta.signal)
         else if (event.kind === 'edited') {
-          const stored = await messageOf(id)
+          const stored = await messageOf(id, meta.signal)
           const text = clampText(withNotes(overrides.text ?? event.text, stored ? notesIn(stored.text) : []), (stored?.attachments.length ?? 0) > 0)
-          if (stored && !event.linksOnly && stored.text !== text) await screened(await call('syncImport', { op: 'edit', author, from: key, origin, text, source: from }))
-          const links = stored ? await resolveLinks(platform, event.links ?? [], origin, stored.channel, stored.links) : []
-          if (stored && !sameLinks(links, stored.links)) await call('syncImport', { op: 'links', author, from: key, origin, links })
+          if (stored && !event.linksOnly && stored.text !== text) await screened(await call('syncImport', { op: 'edit', author, from: key, origin, text, source: from }, meta.signal))
+          const links = stored ? await resolveLinks(platform, event.links ?? [], origin, stored.channel, stored.links, meta.signal) : []
+          if (stored && !sameLinks(links, stored.links)) await call('syncImport', { op: 'links', author, from: key, origin, links }, meta.signal)
         } else {
           if (platform.singleReaction) {
             const emoji = canonicalEmoji(event.emoji)
-            for (const [held, actors] of Object.entries((await messageOf(id))?.reactions ?? {}))
+            for (const [held, actors] of Object.entries((await messageOf(id, meta.signal))?.reactions ?? {}))
               if (actors.includes(author.id) && !(event.added && held === emoji))
-                await call('syncImport', { op: 'react', author, from: key, origin, emoji: held, remove: true })
+                await call('syncImport', { op: 'react', author, from: key, origin, emoji: held, remove: true }, meta.signal)
           }
-          if (!platform.singleReaction || event.added) await call('syncImport', { op: 'react', author, from: key, origin, emoji: event.emoji, remove: !event.added })
+          if (!platform.singleReaction || event.added) await call('syncImport', { op: 'react', author, from: key, origin, emoji: event.emoji, remove: !event.added }, meta.signal)
         }
         return { root: rootId ?? null, message: id }
       }
       case 'lifecycle': {
         if (rootId !== undefined) {
-          const root = await messageOf(rootId)
+          const root = await messageOf(rootId, meta.signal)
           const createdHere = root?.origin?.message === `lifecycle:${meta.id}`
           const draft = createdHere ? rootDraft({ text: lifecycleText(event), labels: event.labels, author: event.author, raw }) : null
           const desired = labels(draft?.labels ?? event.labels)
@@ -662,7 +662,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
           if (event.retitled && root && !root.deleted && root.from === key && root.origin?.thread === event.thread) {
             const text = clampText(overrides.text ?? rootDraft({ text: lifecycleText(event), labels: root.labels, author: event.author, raw }).text)
             if (root.text !== text)
-              await screened(await call('syncImport', { op: 'edit', author: event.author, from: key, origin: { thread: root.origin.thread, message: root.origin.message }, text }))
+              await screened(await call('syncImport', { op: 'edit', author: event.author, from: key, origin: { thread: root.origin.thread, message: root.origin.message }, text }, meta.signal))
           }
           if (event.reply) return result(await post({ author: event.author, re: rootId, text: clampText(overrides.text ?? event.reply!), ...(overrides.noSync ? { noSync: true } : {}), id: await writeId(1) }))
           return { root: rootId, message: createdHere ? rootId : null }
