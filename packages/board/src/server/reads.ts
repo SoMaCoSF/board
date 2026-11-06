@@ -57,14 +57,22 @@ export function createReads(tables: MessageTables, session: BoardSession, projec
    */
   let whole: Promise<void> | null = null
   function caughtUp(): Promise<void> {
-    whole ??= session.consume(projection).then(
-      () => undefined,
-      (error: unknown) => {
-        whole = null
-        throw error
-      },
-    )
+    whole ??= (async () => {
+      if (!(await atHead())) await session.consume(projection)
+    })().catch((error: unknown) => {
+      whole = null
+      throw error
+    })
     return whole
+  }
+
+  /**
+   * Whether the tables have applied every event in the log: nothing comes after their position.
+   * Tables a store came with are often there already, while the consumer's cursor starts behind them.
+   */
+  async function atHead(): Promise<boolean> {
+    const position = await tables.position()
+    return (await session.history({ gte: position + 1, lte: position + 1 })).length === 0
   }
 
   /** `promise`, unless `signal` aborts first: the caller stops waiting, and what it waits for keeps going. */
@@ -81,7 +89,7 @@ export function createReads(tables: MessageTables, session: BoardSession, projec
   /** Waits until the tables have applied `index`, or the whole log when it's omitted. */
   async function ensure(index?: number, signal?: AbortSignal): Promise<void> {
     if (index !== undefined) await untilAborted(caughtUp(), signal)
-    if (index !== undefined && (await tables.position()) >= index) return
+    if (index !== undefined ? (await tables.position()) >= index : await atHead()) return
     await session.consume(projection, { ...(index !== undefined ? { through: index } : {}), ...(signal ? { signal } : {}) })
   }
 

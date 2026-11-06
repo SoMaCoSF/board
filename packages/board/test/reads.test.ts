@@ -2,13 +2,14 @@ import { createServer } from 'experimental-a2/server'
 import { memory as a2Memory } from 'experimental-a2/store-memory'
 import { describe, expect, it, vi } from 'vitest'
 import { boardContract } from '../src/contract/contract.ts'
-import { BOARD_SESSION } from '../src/contract/events.ts'
+import { BOARD_SESSION, type BoardEvent } from '../src/contract/events.ts'
 // The engine itself, as a2() starts it.
 import { mount as board } from './harness.ts'
 import { createReads, tablesConsumer } from '../src/server/reads.ts'
 import { waitUntil } from '../src/server/wait-until.ts'
 import { sqlTables } from '../src/store/sql.ts'
 import { sqliteDb } from '../src/store/sqlite-db.ts'
+import type { MessageTables } from '../src/store/types.ts'
 import { BOARD_URL, caller, PROJECT_ID, personToken, TEAM_ID, testAuth } from './harness.ts'
 
 describe('list reads', () => {
@@ -121,10 +122,39 @@ describe('reads by ID', () => {
     expect(body.replies.map((reply: { text: string }) => reply.text)).toEqual(['looking'])
   })
 
+  it("answer at once from tables a store came with, while their consumer replays the log behind them", async () => {
+    const log = a2Memory()
+    const earlier = createServer({ contract: boardContract, store: log }).session(BOARD_SESSION)
+    const by = { actor: 'vercel:user:u_julian', principal: 'vercel:user:u_julian', profile: null, session: null }
+    const post = (id: string, text: string, re: number | null) => ({
+      id, type: 'message.posted' as const,
+      payload: { channel: 'dev', text, re, replyTo: null, thread: 'root', labels: {}, noSync: false, mentions: [], by, origin: null, from: null },
+    })
+    await earlier.append(post('root', 'deploys are down', null))
+    await earlier.append(post('reply', 'looking', 1))
+    await earlier.append({ id: 'eyes', type: 'reaction.added', payload: { id: 1, thread: 'root', emoji: 'eyes', by, from: null } })
+
+    // A copy of a store: its log, and tables that applied all of it, but no cursor for their consumer,
+    // which starts over from the first event and never gets past it.
+    const projected = sqlTables(sqliteDb(':memory:'))
+    for (const event of await earlier.history()) await projected.apply(event as BoardEvent)
+    const tables: MessageTables = { ...projected, apply: () => new Promise(() => {}) }
+    const projection = tablesConsumer(tables)
+    const session = createServer({ contract: boardContract, store: log, consumers: [projection] }).session(BOARD_SESSION)
+    const reads = createReads(tables, session, projection)
+
+    await reads.ensure()
+    const message = await reads.message(1)
+    expect(message?.reactions).toEqual({ eyes: ['vercel:user:u_julian'] })
+    expect((await reads.thread(1)).messages.map((m) => m.text)).toEqual(['deploys are down', 'looking'])
+  })
+
   it('stop waiting for the catch-up when their signal aborts, and leave it running', async () => {
     // A catch-up that never finishes unless it's aborted.
     const consumes: (AbortSignal | undefined)[] = []
     const session = {
+      // The tables are behind: the log has an event after their position.
+      history: async () => [{ index: 1 }],
       consume: (_: unknown, options?: { signal?: AbortSignal }) => {
         consumes.push(options?.signal)
         return new Promise(() => {})

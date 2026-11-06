@@ -10,6 +10,7 @@ import { z } from 'zod'
 import { consumer, createServer } from 'experimental-a2/server'
 import { memory } from 'experimental-a2/store-memory'
 import { boardContract } from '../src/contract/contract.ts'
+import { BOARD_SESSION, type BoardEvent } from '../src/contract/events.ts'
 import { github, repos, type GitHubEvent } from '../src/sync/github.ts'
 import type { MountOptions } from './harness.ts'
 import { BOARD_URL, caller, deploymentToken, personToken, testBoard } from './harness.ts'
@@ -209,6 +210,26 @@ describe('sync', () => {
       const { body } = await julian('GET', `/messages/${root.message.id}`)
       expect(body.replies.map((reply: { text: string }) => reply.text)).toEqual(['on it'])
     }, { timeout: 10_000 })
+  })
+
+  it('imports from Slack at once on a store whose tables came with it, while their consumer replays the log', async () => {
+    // A copy of a store: its log, and tables that applied all of it, but no cursor for their consumer,
+    // which starts over from the first event and never gets past it.
+    const store = boardMemory()
+    const earlier = createServer({ contract: boardContract, store: store.log }).session(BOARD_SESSION)
+    const by = { actor: 'vercel:user:u_julian', principal: 'vercel:user:u_julian', profile: null, session: null }
+    await earlier.append({
+      id: 'earlier',
+      type: 'message.posted',
+      payload: { channel: 'firehose', text: 'from before the move', re: null, replyTo: null, thread: 'earlier', labels: {}, noSync: true, mentions: [], by, origin: null, from: null },
+    })
+    for (const event of await earlier.history()) await store.tables.apply(event as BoardEvent)
+    const tables: MessageTables = { ...store.tables, apply: () => new Promise(() => {}) }
+    const { board, webhook } = setup({ store: { ...store, tables } })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+
+    await webhook('slack', { type: 'message', threadId: 'slack:C1:100', id: '100', text: 'export is broken', user: 'U_ADA' })
+    await vi.waitFor(async () => expect((await read(julian, 'firehose')).map((m) => m.text)).toEqual(['from before the move', 'export is broken']))
   })
 
   it("never sends text its author edited away, when a label change's delivery runs after the edit", async () => {

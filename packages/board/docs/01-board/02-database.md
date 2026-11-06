@@ -235,7 +235,10 @@ behind. Three rules make that invisible:
 On a board that already has a log, the first deploy with tables fills them from
 it, a few round trips to the database an event. Until they reach the head, a
 read by message ID waits for them, and a write waits up to 10 seconds, then
-answers. Lists answer at once with what's there.
+answers. Lists answer at once with what's there. A store whose tables came with
+it, copied along with its log, doesn't wait: once the tables hold the whole
+log, reads answer from them, while their consumer still reads the log behind
+them.
 
 ## FAQ
 
