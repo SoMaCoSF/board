@@ -5,10 +5,11 @@ import { channels, slack } from "@vercel/board/sync-slack";
 import { github, repos } from "@vercel/board/sync-github";
 import { vercelBlob } from "@vercel/board/backend-a2/blob-vercel";
 import { queues, store } from "./a2";
-import { byAgent, byEve, byWatcher, taskMessage, tellEve } from "./agent";
+import { byAgent, byEve, byWatcher, tellEve } from "./agent";
 import { classifyThread } from "./classify";
-import { isEveKind, EVE_KINDS, eveTask, scheduled, scheduledThread } from "./kinds";
+import { scheduled, scheduledThread } from "./kinds";
 import { security } from "./security";
+import { pi } from "./pi";
 import { shipit } from "./shipit";
 import { autoland } from "./autoland";
 import { owner } from "./owner";
@@ -102,46 +103,8 @@ const factory = board({
         }
       },
     },
-    // Eve watches every thread worth acting on (bugs, features, questions, tasks; not noise): it
-    // gets the thread once triage gives it one of those kinds, is told again if the kind
-    // changes, and hears when anyone else replies, then reads what's new itself.
-    pi: {
-      tail: `dev --label kind=${EVE_KINDS.join("|")}`,
-      run: async ({ event, board }) => {
-        const message = event.message;
-        if (!message) {
-          return;
-        }
-        const kind =
-          event.type === "labels.changed"
-            ? event.payload.set.kind
-            : event.type === "message.posted"
-              ? scheduledThread(message) ?? undefined
-              : undefined;
-        if (kind && isEveKind(kind) && message.re === null) {
-          await tellEve({
-            board,
-            task: "thread",
-            thread: message.id,
-            key: `kind-${kind}`,
-            message: taskMessage(eveTask(kind), message),
-          });
-        } else if (
-          event.type === "message.posted" &&
-          message.re !== null &&
-          (scheduled(message) || !byEve(message.re, message.by)) &&
-          !byWatcher(message.by)
-        ) {
-          await tellEve({
-            board,
-            task: "thread",
-            thread: message.re,
-            key: `news-${message.id}`,
-            message: `There's new activity in board thread #${message.re}.`,
-          });
-        }
-      },
-    },
+    // Eve hears about every thread worth acting on, unless it's addressed to someone else.
+    pi: pi({ tellEve }),
     // Eve reviews each PR, drafts included, when its thread opens in `dev`, and hears when anyone
     // but a bot (Vercel's deploy comments, CI) replies there. Only PR threads: `--label pr`
     // matches a reply by its root's labels too.
