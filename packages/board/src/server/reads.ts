@@ -9,9 +9,17 @@ import type { BoardSession } from './a2.ts'
 import { linkedIds, type Reader } from './feed.ts'
 import { waitUntil } from './wait-until.ts'
 
-/** Keeps the tables from the board's log, one event at a time, from the first. */
+/**
+ * Keeps the tables from the board's log, one event at a time, from the first the tables don't have:
+ * tables that came with a store, copied along with its log, start it where they are.
+ */
 export function tablesConsumer(tables: MessageTables) {
-  return consumer({ contract: boardContract, name: TABLES_CONSUMER, lane: 'tables', backfill: true }).run(async (ctx) => {
+  return consumer({
+    contract: boardContract,
+    name: TABLES_CONSUMER,
+    lane: 'tables',
+    backfill: { startAfter: ({ sessionId }) => (sessionId === BOARD_SESSION ? tables.position() : 0) },
+  }).run(async (ctx) => {
     // The tables keep one position, the board session's: another session's indexes would move it.
     if (ctx.session.id !== BOARD_SESSION) return
     await tables.apply(ctx.event as BoardEvent)

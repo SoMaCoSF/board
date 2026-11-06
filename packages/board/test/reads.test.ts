@@ -2,13 +2,14 @@ import { createServer } from 'experimental-a2/server'
 import { memory as a2Memory } from 'experimental-a2/store-memory'
 import { describe, expect, it, vi } from 'vitest'
 import { boardContract } from '../src/contract/contract.ts'
-import { BOARD_SESSION } from '../src/contract/events.ts'
+import { BOARD_SESSION, type BoardEvent } from '../src/contract/events.ts'
 // The engine itself, as a2() starts it.
 import { mount as board } from './harness.ts'
 import { createReads, tablesConsumer } from '../src/server/reads.ts'
 import { waitUntil } from '../src/server/wait-until.ts'
 import { sqlTables } from '../src/store/sql.ts'
 import { sqliteDb } from '../src/store/sqlite-db.ts'
+import type { MessageTables } from '../src/store/types.ts'
 import { BOARD_URL, caller, PROJECT_ID, personToken, TEAM_ID, testAuth } from './harness.ts'
 
 describe('list reads', () => {
@@ -119,6 +120,41 @@ describe('reads by ID', () => {
     const { body } = await reader('GET', '/messages/1')
     expect(body.message.reactions).toEqual({ eyes: ['vercel:user:u_julian'] })
     expect(body.replies.map((reply: { text: string }) => reply.text)).toEqual(['looking'])
+  })
+
+  it('keep tables a store came with current from where they are, without reading its log again', async () => {
+    const log = a2Memory()
+    const earlier = createServer({ contract: boardContract, store: log }).session(BOARD_SESSION)
+    const by = { actor: 'vercel:user:u_julian', principal: 'vercel:user:u_julian', profile: null, session: null }
+    const post = (id: string, text: string) => ({
+      id, type: 'message.posted' as const,
+      payload: { channel: 'dev', text, re: null, replyTo: null, thread: id, labels: {}, noSync: false, mentions: [], by, origin: null, from: null },
+    })
+    for (const text of ['one', 'two', 'three']) await earlier.append(post(text, text))
+
+    // A copy of a store: its log, and tables that applied all of it, but no cursor for their consumer.
+    const projected = sqlTables(sqliteDb(':memory:'))
+    for (const event of await earlier.history()) await projected.apply(event as BoardEvent)
+    const applied: number[] = []
+    const tables: MessageTables = {
+      ...projected,
+      apply: async (event) => {
+        applied.push(event.index)
+        await projected.apply(event)
+      },
+    }
+    const deployed = board({
+      store: { log, tables, close: () => tables.close() },
+      url: BOARD_URL,
+      project: { id: PROJECT_ID, teamId: TEAM_ID },
+      auth: testAuth,
+    })
+    // Written straight to the log, as a deployment without the tables would: only their consumer applies it.
+    await earlier.append(post('four', 'four'))
+
+    const reader = caller(deployed.fetch, await personToken())
+    expect((await reader('GET', '/messages/4')).body.message.text).toBe('four')
+    expect(applied).toEqual([4])
   })
 
   it('stop waiting for the catch-up when their signal aborts, and leave it running', async () => {
