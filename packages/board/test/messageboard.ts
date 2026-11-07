@@ -223,7 +223,8 @@ function fakeTokens(shared: { member: (userId: string) => boolean; now: () => nu
   /** What `/boards/:id/tokens…` answers, or undefined for another route. */
   function route(method: string, rest: string, body: Record<string, any>, actor: Actor, boardId: string): unknown {
     if (rest === '/tokens' && method === 'POST') {
-      if (actor.principal.type === 'app' || actor.development) throw new Refused(403, 'unsupported_principal', "This principal can't mint board tokens.")
+      // Only a workload mints: a deployment, or a board token, from itself. A person, an app, and a development token that carries a person don't.
+      if (!actor.token && actor.principal.type !== 'project') throw new Refused(403, 'unsupported_principal', 'Only a deployment mints board tokens: mint from one.')
       const key = `${actor.token?.id ?? principalId(actor.principal)}|${body.operationId}`
       if (replays.has(key)) throw new Refused(409, 'token_already_minted', 'That token was minted already, and its secret is shown only once.')
       const now = shared.now()

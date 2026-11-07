@@ -635,6 +635,8 @@ function failureOf(error: unknown): Failure {
         return own('permission', 'board_not_granted')
       case 'watchers_need_project':
         return own('permission', 'watchers_need_project')
+      case 'unsupported_principal':
+        return own(status === 403 ? 'permission' : 'usage', 'unsupported_principal')
       case 'board_token_scope':
         return own('permission', 'board_token_scope')
       case 'invalid_board_name':
@@ -1160,16 +1162,8 @@ async function run(command: string | undefined, args: string[]): Promise<number>
         const can = grantFlags(() => grantCanOf(flags.can ?? []))
         if (Object.keys(can).length === 0) throw usage("A grant says what it lets them do: --can pattern=permissions, like --can 'ci/=read,post'.", { reason: 'missing_arguments' })
         const { grant } = await client().createGrant({ principals, can })
-        // Vercel's API keeps a grant for a GitHub run or an OIDC issuer, but signs in neither yet.
-        const unsigned = principals.some((principal) => principal.kind === 'github' || principal.kind === 'oidc') && vercelBoard((await client().discovery()).url) !== null
-        const note = "Vercel's board doesn't sign in GitHub or OIDC callers yet: this grant works once it does"
-        if (flags.json) {
-          if (unsigned) warnings.push({ reason: 'callers_not_signed_in', message: note })
-          result({ grant, outcome: 'created' })
-        } else {
-          out(`created ${grantRow(grant)}`)
-          if (unsigned) out(`note  ${note}`)
-        }
+        if (flags.json) result({ grant, outcome: 'created' })
+        else out(`created ${grantRow(grant)}`)
         return 0
       }
       if (verb === 'update') {

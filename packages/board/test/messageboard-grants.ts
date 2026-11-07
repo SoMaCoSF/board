@@ -105,6 +105,9 @@ export function fakeGrants(options: {
 
   /** A principal as people name it, to what the API stores: an email to a user ID, a project's name to its ID, a repository to its ID. */
   function resolve(input: Record<string, any>, removal = false): Stored {
+    // A run or an issuer gets in as an app: an OIDC exchange policy issues it a Vercel App token, and a grant names the app.
+    if (!removal && (input.kind === 'github' || input.kind === 'oidc'))
+      throw new GrantRefused(400, 'unsupported_principal', 'Grants name no GitHub or OIDC principals: grant the Vercel App an OIDC exchange policy issues tokens to.')
     switch (input.kind) {
       case 'user': {
         const userId = input.userId ?? Object.keys(options.members).find((id) => options.members[id] === input.email)

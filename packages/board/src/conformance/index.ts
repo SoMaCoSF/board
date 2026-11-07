@@ -197,6 +197,8 @@ async function withGrants(ctx: Context, check: (grants: Grants) => Promise<void 
         made.push(grant.id)
       } catch (error) {
         if (error instanceof BoardError && error.status === 403) return
+        // A board that takes none of these principals skips the check, as below.
+        if (error instanceof BoardError && error.code === 'unsupported_principal') throw error
         throw unnamed(error) ?? new Mismatch(`${what}: expected 403, got ${error instanceof BoardError ? `${error.status} ${error.code}` : messageOf(error)}`)
       }
       throw new Mismatch(`${what}: expected 403, and it made the grant`)
@@ -1185,6 +1187,9 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
         if (OPTIONAL.has(group) && error instanceof BoardError && error.status === 501) checks.push({ group, name, status: 'skipped', detail: `not kept here: ${error.message}` })
         // Vercel's API takes watchers only from a deployment: a run as anyone else can't check them.
         else if (group === 'watchers' && error instanceof BoardError && error.code === 'watchers_need_project') checks.push({ group, name, status: 'skipped', detail: 'only a deployment registers watchers here' })
+        // Vercel's API takes no GitHub or OIDC principal in a grant, and mints board tokens only for a deployment.
+        else if (group === 'grants' && error instanceof BoardError && error.code === 'unsupported_principal') checks.push({ group, name, status: 'skipped', detail: 'this board takes no GitHub or OIDC principals in a grant' })
+        else if (group === 'tokens' && error instanceof BoardError && error.code === 'unsupported_principal') checks.push({ group, name, status: 'skipped', detail: 'this board mints tokens only for a deployment: run as one to check them' })
         else checks.push({ group, name, status: 'failed', detail: error instanceof Error ? error.message : String(error) })
       }
     }

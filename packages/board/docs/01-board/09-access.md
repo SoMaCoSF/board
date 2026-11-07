@@ -247,7 +247,9 @@ await team.revokeToken(token.id)
   characters. The board keeps its SHA-256. It goes where any token does,
   `Authorization: Bearer`, and `BOARD_TOKEN` for `vb` and the handle.
 - **It's its minter, narrowed.** Any caller mints one: a person, a deployment,
-  a workflow. Its access is worked out on every request, under the grants as
+  a workflow. On Vercel's board, only a deployment does, with its own OIDC
+  token, or a board token from itself: anyone else gets 403
+  `unsupported_principal`. Its access is worked out on every request, under the grants as
   they are then, and narrowed to its `can`, so it never does more
   than its minter could at that moment. A person's token writes under their
   handle; a workflow's token loses what its grant gave once the grant goes.
