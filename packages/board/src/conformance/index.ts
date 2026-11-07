@@ -38,6 +38,12 @@ export type ConformanceOptions = {
    */
   withToken?: (secret: string) => Board
   /**
+   * The same board, with this run's credential and an `x-board-can` header that narrows it to
+   * `can` (`conformance=read`), as a proxy holding the credential sends it: the checks of a
+   * narrowed caller call it so. Without it, they're skipped.
+   */
+  withCan?: (can: string) => Board
+  /**
    * Whom the grants checks name. A board that verifies tokens itself (`vb serve`) takes the made-up
    * IDs they use without it; one that looks names up, as Vercel's API does, needs real ones on its
    * team, or skips the checks that name them: a `project` (its name or ID), a GitHub `repository`
@@ -84,6 +90,23 @@ async function refused(attempt: Promise<unknown>, status: number, what: string) 
   throw new Mismatch(`${what}: expected ${status}, and it succeeded`)
 }
 
+const NO_CAN = "this run can't call the board with an x-board-can header"
+
+/**
+ * That `attempt`, by a caller narrowed with `x-board-can`, is refused as one: 403 `forbidden`.
+ * Vercel's API's refusal of a person's watchers goes on as it is, for the run to skip.
+ */
+async function narrowedOut(attempt: Promise<unknown>, what: string) {
+  try {
+    await attempt
+  } catch (error) {
+    if (error instanceof BoardError && error.code === 'watchers_need_project') throw error
+    if (error instanceof BoardError && error.status === 403 && error.code === 'forbidden') return
+    throw new Mismatch(`${what}, by a caller narrowed with x-board-can: expected 403 forbidden, got ${error instanceof BoardError ? `${error.status} ${error.code}` : String(error)}`)
+  }
+  throw new Mismatch(`${what}, by a caller narrowed with x-board-can: expected 403 forbidden, and it succeeded`)
+}
+
 /** Where a registration is woken, to put back after a check replaces it: its path (and branch) on a board that wakes by path, or its url. */
 function wokenAt(registered: RegistrationView | undefined): { url: string | null } | { path: string; branch?: string } {
   if (!registered?.path) return { url: registered?.url ?? null }
@@ -107,6 +130,7 @@ type Context = {
   reply?: MessageView
   posted: string[]
   withToken?: (secret: string) => Board
+  withCan?: (can: string) => Board
   principals: Principals
   /** The board's own Vercel team, as its discovery names it. */
   team: string | null
@@ -592,6 +616,24 @@ const CHECKS: Check[] = [
     },
   },
   {
+    group: 'core',
+    name: 'narrows a caller to what its x-board-can says',
+    run: async (ctx) => {
+      if (!ctx.withCan) return NO_CAN
+      const { root } = needRoot(ctx)
+      const narrowed = ctx.withCan(`${ctx.channel}=read`)
+      const me = await narrowed.me()
+      same(me.principal, ctx.me.principal, "a narrowed caller's principal, its own")
+      alike(me.can, { [ctx.channel]: ['read'] }, 'what a caller narrowed to read says it may do')
+      same((await narrowed.thread(root.id)).message.id, root.id, 'a thread read by a caller narrowed to read it')
+      const posting = narrowed.post(ctx.channel, { text: 'conformance: narrowed to read', labels: ctx.labels, noSync: true }).then((message) => {
+        ctx.posted.push(message.id)
+        return message
+      })
+      await refused(posting, 403, 'a post by a caller narrowed to read')
+    },
+  },
+  {
     group: 'schedules',
     name: 'schedules a reply, lists it, and cancels it',
     run: async (ctx) => {
@@ -970,6 +1012,20 @@ const CHECKS: Check[] = [
     },
   },
   {
+    group: 'watchers',
+    name: "refuses a caller narrowed with x-board-can its principal's watchers: registering, pulling, and acking",
+    run: async (ctx) => {
+      if (!ctx.withCan) return NO_CAN
+      const narrowed = ctx.withCan(`${ctx.channel}=all`)
+      const registered = (await ctx.board.watchers()).find((r) => r.owner === ctx.me.principal)
+      // What's registered now, so a board that wrongly takes it leaves the registration as it was.
+      const now = { ...wokenAt(registered), watch: registered?.watch ?? {}, ...(registered?.sync ? { sync: registered.sync } : {}) }
+      await narrowedOut(narrowed.register(now), 'registering watchers')
+      await narrowedOut(narrowed.matches(), 'pulling matches')
+      await narrowedOut(narrowed.ack(`conformance-${ctx.labels.conformance}`, { lease: 'conformance' }), 'acking a match')
+    },
+  },
+  {
     group: 'sync',
     name: "keeps sync's records: an import as a platform author, its lookups by platform ID, a receipt, and where it's synced",
     run: async (ctx) => {
@@ -1099,6 +1155,38 @@ const CHECKS: Check[] = [
       same(thread.replies.find((m) => m.id === reply.id)?.noSync, true, "a reply's noSync, read back")
     },
   },
+  {
+    group: 'sync',
+    name: "refuses a caller narrowed with x-board-can sync's records: imports, receipts, and the inbox",
+    run: async (ctx) => {
+      if (!ctx.withCan) return NO_CAN
+      const { root } = needRoot(ctx)
+      const registered = await registerSync(ctx)
+      if ('skip' in registered) return registered.skip
+      const run = ctx.labels.conformance
+      const author = { id: `${SYNC_KEY}:user:${run}`, handle: 'conformance', name: 'Conformance', avatar: null, isBot: false }
+      const thread = `${SYNC_KEY}:${run}:narrowed`
+      try {
+        const narrowed = ctx.withCan(`${ctx.channel}=all`)
+        await narrowedOut(
+          narrowed.syncImport({
+            op: 'post', author, from: SYNC_KEY, channel: ctx.channel, text: 'conformance: a narrowed import', labels: ctx.labels, noSync: true,
+            origin: { channel: `${SYNC_KEY}:${run}`, thread, subthread: null, message: '1', context: null },
+          }),
+          'an import',
+        )
+        await narrowedOut(narrowed.syncReceipt({ kind: 'failed', message: root.id, target: thread, error: 'conformance' }), 'a receipt')
+        const event = { kind: 'message' as const, channel: `${SYNC_KEY}:${run}`, thread, subthread: null, message: '1', isRoot: true, text: 'conformance: a narrowed push', context: null, author }
+        await narrowedOut(narrowed.inboxPush(SYNC_KEY, [{ id: `conformance-narrowed-${run}`, event, raw: null }]), 'a push to the inbox')
+        await narrowedOut(narrowed.inboxNext(SYNC_KEY, { limit: 1 }), 'a lease from the inbox')
+        await narrowedOut(narrowed.inboxAck(SYNC_KEY, `conformance-narrowed-${run}`, { lease: 'conformance' }), 'an ack to the inbox')
+      } finally {
+        // An import a board wrongly took: only an import can take it down.
+        await ctx.board.syncImport({ op: 'delete', author, from: SYNC_KEY, origin: { thread, message: '1' } }).catch(() => {})
+        await ctx.board.register({ ...registered.where, watch: {} }).catch(() => {})
+      }
+    },
+  },
 ]
 
 /**
@@ -1179,6 +1267,7 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
     me,
     posted: [],
     ...(options.withToken ? { withToken: options.withToken } : {}),
+    ...(options.withCan ? { withCan: options.withCan } : {}),
     principals: {
       project: options.principals?.project ?? `prj_conformance${label}`,
       repository: options.principals?.repository ?? `acme/conformance-${label}`,

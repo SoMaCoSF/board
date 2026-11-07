@@ -219,12 +219,12 @@ describe('attachments', () => {
   })
 })
 
-describe('x-board-scope', () => {
+describe('x-board-can', () => {
   it('narrows what a full-access token reads', async () => {
     const { board, julian } = await setup()
     await julian('POST', '/messages', { channel: 'dev', text: 'in dev' })
     await julian('POST', '/messages', { channel: 'security', text: 'in security' })
-    const pi = caller(board.fetch, await personToken(), { 'x-board-scope': 'dev/=read,post' })
+    const pi = caller(board.fetch, await personToken(), { 'x-board-can': 'dev/=read,post' })
     expect((await pi('GET', '/messages')).body.messages.map((m: { text: string }) => m.text)).toEqual(['in dev'])
     expect((await pi('GET', '/channels')).body.channels.map((c: { path: string }) => c.path)).toEqual(['dev'])
   })
@@ -248,7 +248,7 @@ describe('a reader of some channels', () => {
     board = testBoard({ store: { ...store, tables } })
     const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
     await julian('POST', '/messages', { channel: 'dev', text: 'old' })
-    const pi = caller(board.fetch, await personToken(), { 'x-board-scope': 'dev/=read' })
+    const pi = caller(board.fetch, await personToken(), { 'x-board-can': 'dev/=read' })
     landInNew = () => julian('POST', '/messages', { channel: 'dev/new', text: 'fresh' })
     const page = await pi('GET', '/messages')
     const seen = page.body.messages.map((m: { text: string }) => m.text)
@@ -293,7 +293,7 @@ describe('links', () => {
     expect(imported.status).toBe(200)
     expect((await julian('GET', '/messages?channel=open')).body.messages[0].links[0].snapshot.text).toBe('the key is hunter2')
 
-    const open = caller(board.fetch, await personToken(), { 'x-board-scope': 'open=read' })
+    const open = caller(board.fetch, await personToken(), { 'x-board-can': 'open=read' })
     const hidden = { message: null, snapshot: null, unavailable: 'not_readable' }
     const [message] = (await open('GET', '/messages')).body.messages
     expect(message.links[0], '/messages').toMatchObject(hidden)
@@ -510,8 +510,8 @@ describe('schedules', () => {
 
   it('are their creator’s only where it can post: one token narrowed two ways is two callers', async () => {
     const board = testBoard({ scheduler: fakeQueue().scheduler })
-    const dev = caller(board.fetch, await personToken(), { 'x-board-scope': 'dev/=post' })
-    const ci = caller(board.fetch, await personToken(), { 'x-board-scope': 'ci/=read,post' })
+    const dev = caller(board.fetch, await personToken(), { 'x-board-can': 'dev/=post' })
+    const ci = caller(board.fetch, await personToken(), { 'x-board-can': 'ci/=read,post' })
     const id = (await dev('POST', '/schedules', { channel: 'dev', text: 'in dev', in: '1h' })).body.schedule.id
     expect((await dev('GET', '/schedules')).body.schedules).toMatchObject([{ id, text: 'in dev' }])
     expect((await ci('GET', '/schedules')).body.schedules).toEqual([])

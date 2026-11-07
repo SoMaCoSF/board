@@ -1,4 +1,4 @@
-import { ChannelPath, SCOPE_MAX } from '../contract/schemas.ts'
+import { ChannelPath, CAN_MAX } from '../contract/schemas.ts'
 import { forbidden } from './errors.ts'
 
 /**
@@ -367,31 +367,31 @@ export function decide<Source>(matched: readonly Matched<Source>[], channel: str
   }
 }
 
-/** An access as `x-board-scope` writes it, `dev/=read,post;ci/=read`, or `*=` for nothing: what a stored principal keeps. */
-export function scopeOf(access: Access): string {
+/** An access as `x-board-can` writes it, `dev/=read,post;ci/=read`, or `*=` for nothing: what a stored principal keeps. */
+export function canText(access: Access): string {
   const entries = Object.entries(access.summary()).map(([pattern, permissions]) => `${pattern}=${permissions.join(',')}`)
   return entries.length > 0 ? entries.join(';') : '*='
 }
 
 /**
- * `x-board-scope`: `dev/=read,post,react,label;ci/=read`. Each entry is a
+ * `x-board-can`: `dev/=read,post,react,label;ci/=read`. Each entry is a
  * pattern and its permissions (or `all`). It's meant for a proxy that holds the
  * credential, like Pi's sandbox: the board intersects it with the principal's
  * access, so it can only narrow, and a caller holding its own token gains
- * nothing by sending it.
+ * nothing by sending it. `name` is what its errors call it: the CLI's `--can` writes the same.
  */
-export function parseScope(header: string): Can {
-  if (header.length > SCOPE_MAX) throw new InvalidCan(`x-board-scope is longer than ${SCOPE_MAX} characters`)
+export function parseCan(header: string, name = 'x-board-can'): Can {
+  if (header.length > CAN_MAX) throw new InvalidCan(`${name} is longer than ${CAN_MAX} characters`)
   const out: Record<ChannelPattern, Grant> = {}
   const entries = header.split(';').map((entry) => entry.trim())
-  if (entries.every((entry) => entry === '')) throw new InvalidCan('x-board-scope is empty: write pattern=permissions, like dev/=read,post')
+  if (entries.every((entry) => entry === '')) throw new InvalidCan(`${name} is empty: write pattern=permissions, like dev/=read,post`)
   for (const entry of entries) {
     if (entry === '') continue
     const split = entry.indexOf('=')
-    if (split < 0) throw new InvalidCan(`x-board-scope entry ${entry} needs =: write pattern=permissions, like dev/=read,post`)
+    if (split < 0) throw new InvalidCan(`${name} entry ${entry} needs =: write pattern=permissions, like dev/=read,post`)
     const pattern = entry.slice(0, split).trim()
     const list = entry.slice(split + 1).trim()
-    if (Object.hasOwn(out, pattern)) throw new InvalidCan(`x-board-scope lists ${pattern} twice`)
+    if (Object.hasOwn(out, pattern)) throw new InvalidCan(`${name} lists ${pattern} twice`)
     parsePattern(pattern)
     const permissions = list === '' ? [] : list.split(',').map((permission) => permission.trim())
     if (permissions.length === 1 && permissions[0] === 'all') {
@@ -400,7 +400,7 @@ export function parseScope(header: string): Can {
     }
     for (const permission of permissions)
       if (!ORDER.has(permission as Permission))
-        throw new InvalidCan(`x-board-scope: unknown permission ${permission || '(empty)'}: use ${PERMISSIONS.join(', ')}, or all`)
+        throw new InvalidCan(`${name}: unknown permission ${permission || '(empty)'}: use ${PERMISSIONS.join(', ')}, or all`)
     out[pattern] = permissions as Permission[]
   }
   return out

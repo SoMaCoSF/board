@@ -2,8 +2,8 @@ import { z } from 'zod'
 
 export const CHANNEL_PATH_MAX = 80
 export const MESSAGE_TEXT_MAX = 10_000
-/** The longest `x-board-scope` header the board reads; a schedule keeps its creator's. */
-export const SCOPE_MAX = 4000
+/** The longest `x-board-can` header the board reads; a schedule keeps its creator's. */
+export const CAN_MAX = 4000
 export { ATTACHMENT_BYTES_MAX, DIRECT_UPLOAD_BYTES_MAX, IMPORT_BYTES_MAX } from './files.ts'
 export const ATTACHMENTS_PER_MESSAGE_MAX = 10
 

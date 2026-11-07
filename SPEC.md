@@ -409,7 +409,10 @@ The backend picks them; the protocol only says their shape:
   registration is skipped too. `vb conformance` runs it as the CLI's identity,
   with `withToken` for a token it mints (the same board, that secret as the
   credential), so the tokens check sees a token narrowed to its `can` and
-  refused once revoked, and exits 1 when a check fails. board's own tests run
+  refused once revoked, and with `withCan` for its own credential narrowed with
+  `x-board-can` (as a proxy holding it sends it), so the narrowing checks see
+  that caller refused outside its `can`, and on its principal's watchers and
+  sync's records, and exits 1 when a check fails. board's own tests run
   it against boards on its internal engine, one of them keeping no schedules or
   files (which reports those two as not kept here), and against boards broken
   on purpose, so the kit and the backends can't drift apart unnoticed.
@@ -657,7 +660,7 @@ talking to.
   out for each request and, through the binding, for each principal its
   backend stored (a schedule's creator, a registrant) under the grants as
   they are then. A principal carries its token's claims and its
-  `x-board-scope`, never what it may do. The backend gets the caller
+  `x-board-can`, never what it may do. The backend gets the caller
   verified. A token no grant lets in is 403, with the grant that would as the
   `hint` (`Grant it: vb grants create --github acme/web`), and one from an
   issuer no grant names is 401 `untrusted issuer`. There's no `access`
@@ -793,7 +796,7 @@ await team.createGrant({ principals: [{ kind: 'project', project: 'prj_self', en
 - The board's own deployments in its environment and the board's own code (watchers, sync,
   middleware, the handle, schedules' system writes) can do everything. People get what their
   grants give: g1, everything, on a new board.
-- `x-board-scope: dev/=read,post;ci/=read`, set by a proxy that holds the
+- `x-board-can: dev/=read,post;ci/=read`, set by a proxy that holds the
   credential, is intersected with the principal's access, so it only narrows.
   An entry's permissions can be `all` (`dev/=all`). A schedule keeps its
   creator's scope, so a header longer than 4000 characters is `invalid_scope`
@@ -1031,7 +1034,7 @@ await team.revokeToken(token.id)
   narrowed by the token's `can`) and works its access out again on every
   request, under the grants as they are then. So minting takes no
   permission: a token never does more than its minter could at that moment.
-  A request's own `x-board-scope` narrows it further. `can` left out is
+  A request's own `x-board-can` narrows it further. `can` left out is
   read, post, react, and label everywhere, so a token has
   `sync` or `manage` only when its `can` says so. A token always has a
   scope, `*=all` narrowed by its `can`, so it's never its principal's
@@ -1687,7 +1690,7 @@ Registered watchers' routes (`/watchers`, `/watchers/matches`) are in
   board; `text` is words the text contains, case-insensitively.
 - The profile is sent as `x-board-profile`, `x-board-avatar`, and
   `x-board-session`, and the server records them after verifying the token.
-- `x-board-scope` narrows the token's access for that request (see
+- `x-board-can` narrows the token's access for that request (see
   [Authorization](#principals-profiles-actors)). It never widens it.
 
 **Event feed:**
@@ -3157,7 +3160,7 @@ vb schedule cancel s12              # ada answered: nothing automatic, whoever r
 - **Canceling:** a schedule's creator while it can post in the schedule's
   channel, or anyone with `manage` there. A principal ID is coarser than
   access (a repo's workflows share one, as do proxies narrowing one token with
-  `x-board-scope`), so the creator check also takes `post`, and `read` unless
+  `x-board-can`), so the creator check also takes `post`, and `read` unless
   the schedule was created without it (`blind`).
   A reply schedule ends by itself when its thread is deleted.
 - **How it runs:** on `vercel()`, Vercel's API keeps the schedule and posts

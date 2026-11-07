@@ -22,6 +22,23 @@ const API = 'http://localhost'
 const handleOn = (api: ReturnType<typeof fakeMessageboard>, principal = 'user:u_jb') =>
   board({ backend: vercel({ team: 'team_test', api: API, fetch: as(api, principal), files: api.files }) })
 
+/** The same handle, narrowed with `x-board-can` as a proxy holding the credential sends it, which Vercel's API doesn't read yet. */
+const narrowedOn =
+  (api: ReturnType<typeof fakeMessageboard>, principal = 'user:u_jb') =>
+  (can: string) =>
+    board({
+      backend: vercel({
+        team: 'team_test',
+        api: API,
+        fetch: (input, init) => {
+          const request = new Request(input, init)
+          request.headers.set('x-board-can', can)
+          return as(api, principal)(request)
+        },
+        files: api.files,
+      }),
+    })
+
 /** Someone a host's verifier would name: a request from her is still no one's this board serves. */
 const ADA = { id: 'vercel:user:u_ada', kind: 'person', handle: 'ada' } as const
 
@@ -49,7 +66,7 @@ describe('vercel()', () => {
     // The API looks names up, so the grants checks name a project, a repository, a viewer, and an app its team has.
     // A board token is its board's, so the handle it's sent on names the board.
     const withToken = (secret: string) => board({ backend: vercel({ team: 'team_test', api: API, board: 'brd_test', fetch: as(api, secret), files: api.files }) })
-    const report = await conformance(handleOn(api), { withToken, principals: { project: 'prj_web', repository: 'acme/api', viewer: 'val@acme.com', app: 'ship' } })
+    const report = await conformance(handleOn(api), { withToken, withCan: narrowedOn(api), principals: { project: 'prj_web', repository: 'acme/api', viewer: 'val@acme.com', app: 'ship' } })
     const statuses = Object.fromEntries(report.checks.map((check) => [`${check.group}: ${check.name}`, check.status]))
     expect(statuses).toEqual({
       'core: says in its discovery where it is': 'passed',
@@ -68,6 +85,11 @@ describe('vercel()', () => {
       'core: holds a long-poll open until the next event': 'passed',
       'core: deletes a message, leaving a tombstone': 'passed',
       'core: lists the channel and you in it': 'passed',
+      // Vercel's API doesn't read x-board-can yet: a narrowed caller gets its whole access.
+      'core: narrows a caller to what its x-board-can says': 'failed',
+      // Neither registers for a person, narrowed or not.
+      "watchers: refuses a caller narrowed with x-board-can its principal's watchers: registering, pulling, and acking": 'skipped',
+      "sync: refuses a caller narrowed with x-board-can sync's records: imports, receipts, and the inbox": 'skipped',
       'core: creates a channel only once: one a post made is there already': 'passed',
       'core: answers 404 for an ID that names nothing': 'passed',
       'core: answers 400 for a request that does not validate': 'passed',
@@ -998,19 +1020,24 @@ describe('vercel()', () => {
     })
   })
 
-  it("passes the conformance kit's sync as a project, through Vercel's API's sync routes", async () => {
-    const report = await conformance(handleOn(fakeMessageboard(), 'project:prj_pong:production'))
+  it("passes the conformance kit's sync as a project, through Vercel's API's sync routes, but for a narrowed caller's", async () => {
+    const api = fakeMessageboard()
+    const report = await conformance(handleOn(api, 'project:prj_pong:production'), { withCan: narrowedOn(api, 'project:prj_pong:production') })
     expect(Object.fromEntries(report.checks.filter((check) => check.group === 'sync').map((check) => [check.name, check.status]))).toEqual({
       "keeps sync's records: an import as a platform author, its lookups by platform ID, a receipt, and where it's synced": 'passed',
       "queues a platform thread's events in its sync's inbox once, and leases each after the one before is acked": 'passed',
       'hands a sync each message change as a match of its @sync watcher': 'passed',
       'keeps noSync on a post and a reply, so sync sends neither': 'passed',
+      // Vercel's API doesn't read x-board-can yet, so a narrowed caller keeps sync's records.
+      "refuses a caller narrowed with x-board-can sync's records: imports, receipts, and the inbox": 'failed',
     })
   }, 30_000)
 
-  it("passes the conformance kit's watchers as a project too, registering a path on its own project", async () => {
-    const report = await conformance(handleOn(fakeMessageboard(), 'project:prj_pong:production'))
-    expect(report.checks.filter((check) => check.group === 'watchers').map((check) => check.status)).toEqual(['passed', 'passed'])
+  it("passes the conformance kit's watchers as a project too, registering a path on its own project, but for a narrowed caller's", async () => {
+    const api = fakeMessageboard()
+    const report = await conformance(handleOn(api, 'project:prj_pong:production'), { withCan: narrowedOn(api, 'project:prj_pong:production') })
+    // Vercel's API doesn't read x-board-can yet, so a narrowed caller registers its project's watchers.
+    expect(report.checks.filter((check) => check.group === 'watchers').map((check) => check.status)).toEqual(['passed', 'passed', 'failed'])
   }, 30_000)
 
   it('registers a path on its own project on Vercel, which the API wakes through its Deployment Protection', async () => {
@@ -1611,8 +1638,10 @@ describe("board tokens on Vercel's API", () => {
     expect(report.checks.filter((check) => check.group === 'watchers').map(({ status, detail }) => ({ status, detail }))).toEqual([
       { status: 'skipped', detail: 'only a deployment registers watchers here' },
       { status: 'skipped', detail: 'only a deployment registers watchers here' },
+      { status: 'skipped', detail: "this run can't call the board with an x-board-can header" },
     ])
-    expect(report.checks.filter((check) => check.group === 'core' || check.group === 'tokens').map((check) => [check.name, check.status]).filter(([, status]) => status !== 'passed')).toEqual([])
+    // Every core and tokens check passes, but the narrowed caller's, which this run can't send the header for.
+    expect(report.checks.filter((check) => check.group === 'core' || check.group === 'tokens').map((check) => [check.name, check.status]).filter(([, status]) => status !== 'passed')).toEqual([['narrows a caller to what its x-board-can says', 'skipped']])
   }, 30_000)
 
   it("says plainly that only a deployment's own credentials register watchers, to a person, an app, and a board token", async () => {

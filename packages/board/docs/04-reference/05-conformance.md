@@ -51,6 +51,13 @@ that secret as the credential, as `BOARD_TOKEN` sends it. `vb conformance`
 passes it. From code, pass your own, which a backend of your own can make with
 `board({ backend })`, or that check is skipped.
 
+To check that `x-board-can` narrows a caller, it calls the board through
+`withCan(can)`: a handle on the same board, with the run's own credential and
+an `x-board-can: <can>` header, as a proxy that holds the credential sends it.
+A caller narrowed so must be refused what its `can` leaves out, and its
+principal's watchers and sync's records, with 403 `forbidden`. `vb conformance`
+passes it. From code, pass your own, or those three checks are skipped.
+
 Every grant it makes is in `conformance/grants/`, the same subtree and the same
 channels each run, so a run leaves no channel behind and no grant reaches
 outside it. It revokes them all when a check ends, and a revoke that fails

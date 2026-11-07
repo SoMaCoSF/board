@@ -91,12 +91,12 @@ describe('tokens', () => {
     expect((await full('GET', '/inbox/slack/next')).status).toBe(403)
   })
 
-  it('narrows further, never wider, with x-board-scope', async () => {
+  it('narrows further, never wider, with x-board-can', async () => {
     const { as, mint } = await setUp()
     const { secret } = await mint({ name: 'dev-reader', can: { 'dev/': ['read', 'post'] } })
-    const scoped = as(secret, { 'x-board-scope': '*=all' })
+    const scoped = as(secret, { 'x-board-can': '*=all' })
     expect((await scoped('GET', '/me')).body.can).toEqual({ 'dev/': ['read', 'post'] })
-    const narrower = as(secret, { 'x-board-scope': 'dev/=read' })
+    const narrower = as(secret, { 'x-board-can': 'dev/=read' })
     expect((await narrower('GET', '/me')).body.can).toEqual({ 'dev/': ['read'] })
   })
 

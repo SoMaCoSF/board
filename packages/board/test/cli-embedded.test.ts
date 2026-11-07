@@ -453,6 +453,40 @@ describe('the embedded CLI', () => {
     }
   })
 
+  it("narrows a connection to Vercel's API with x-board-can, on your login and on VERCEL_TOKEN alike", async () => {
+    const home = await isolated()
+    const api = fakeMessageboard()
+    const sent: { can: string | null; type: string | null; authorization: string | null }[] = []
+    const fetching = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const request = new Request(input, init)
+      if (request.method === 'POST' && new URL(request.url).pathname.endsWith('/threads'))
+        sent.push({ can: request.headers.get('x-board-can'), type: request.headers.get('content-type'), authorization: request.headers.get('authorization') })
+      return api.fetch(input, init)
+    })
+    // What `vb conformance` does for its narrowed caller: its own credential, with x-board-can.
+    const probe: Command = {
+      spec: { name: 'probe', description: 'posts as a narrowed caller', arguments: [], options: [], examples: [] },
+      run: async (_args, { connection, out }) => {
+        out((await connection(undefined, { can: 'dev=read,post' }).board.post('dev', { text: 'narrowed' })).channel)
+        return 0
+      },
+    }
+    const cwd = process.cwd()
+    process.chdir(home)
+    try {
+      for (const [name, value] of [['VERCEL_AUTH_TOKEN', 'user:u_jb'], ['VERCEL_TOKEN', 'user:u_ada']] as const) {
+        vi.stubEnv(name, value)
+        sent.length = 0
+        expect(await capture(() => main(['probe', '--scope', 'test'], { name: 'board', commands: { probe } }))).toMatchObject({ code: 0, stdout: 'dev\n' })
+        expect(sent, name).toEqual([{ can: 'dev=read,post', type: 'application/json', authorization: `Bearer ${value}` }])
+      }
+    } finally {
+      fetching.mockRestore()
+      process.chdir(cwd)
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
   it("reaches a team's board by the URL whoami prints for it, with --url or BOARD_URL, and in its Vercel project with neither", async () => {
     const home = await isolated()
     vi.stubEnv('VERCEL_AUTH_TOKEN', 'user:u_jb')

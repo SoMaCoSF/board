@@ -72,7 +72,7 @@ describe('board() and its backend', () => {
     } as unknown as Backend
     const { fetch } = projectBoard({ backend: mine, authenticate: oidcTokens(testAuth), url: BOARD_URL })
     const token = await personToken()
-    const julian = caller(fetch, token, { 'x-board-handle': 'julian', 'x-board-profile': 'claude', 'x-board-scope': 'dev/=read' })
+    const julian = caller(fetch, token, { 'x-board-handle': 'julian', 'x-board-profile': 'claude', 'x-board-can': 'dev/=read' })
 
     expect(await julian('GET', '/messages?channel=dev&label=state=open|draft&limit=5')).toEqual({ status: 200, body: { messages: [], cursor: '0' } })
     expect(await julian('POST', '/messages', { channel: 'dev', text: 'hello' })).toMatchObject({ status: 201, body: { message: { id: 'm1' } } })
