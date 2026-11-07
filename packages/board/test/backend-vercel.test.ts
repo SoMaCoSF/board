@@ -77,7 +77,7 @@ describe('vercel()', () => {
       'grants: makes another grant for the same principals, and changes one by its ID': 'skipped',
       "grants: keeps a grant's can as written, a pattern with no permissions included": 'passed',
       'grants: lets the most specific pattern decide, then the closest principal there, and adds up ties': 'passed',
-      'grants: lets everyone narrow what something else lets in, and lets no one in itself': 'passed',
+      'grants: lets everyone narrow what something else lets in, and lets no one in itself': 'skipped',
       'grants: caps a person by their team role, so a viewer reads but neither posts nor manages': 'passed',
       'grants: names an app by its slug or client ID, keeps it by client ID, and every app as a group': 'passed',
       'grants: takes manage at each pattern a grant names to change it, and at * to list them': 'skipped',
@@ -1475,8 +1475,15 @@ describe('vercel()', () => {
     expect(await jb.explain('dev', { user: 'val@acme.com' })).toMatchObject({ pattern: '*', level: 'group', grants: [{ id: 'g1' }], capped: 'viewer', can: ['read', 'react'] })
     // An app on the team, by its slug: g3 lets every one in.
     expect(await jb.explain('dev', { app: 'ship' })).toMatchObject({ pattern: '*', level: 'group', grants: [{ id: 'g3' }], can: ['read', 'post', 'react', 'label'] })
-    // No grant names a repository's runs: nothing lets one in.
-    expect(await jb.explain('ci', { github: 'acme/web', workflow: 'ci.yml' })).toMatchObject({ pattern: null, level: null, grants: [], can: [] })
+    // No grant names a repository's runs or an issuer, so neither is explained: an app stands in for them.
+    for (const principal of [{ github: 'acme/web', workflow: 'ci.yml' }, { oidc: 'https://gitlab.com', claims: { project_id: '42' } }])
+      await expect(jb.explain('ci', principal)).rejects.toMatchObject({
+        status: 400,
+        code: 'unsupported_principal',
+        origin: 'handle',
+        message: "Vercel's board explains no GitHub or OIDC caller: no grant names one.",
+        hint: 'Explain the app an OIDC exchange policy issues tokens for: --app <slug>.',
+      })
     expect((await jb.revokeGrant(grant.id)).revoked).toBe(true)
     expect(api.requests).toEqual(
       expect.arrayContaining([
@@ -1586,6 +1593,7 @@ describe("board tokens on Vercel's API", () => {
     const github = 'this board takes no GitHub or OIDC principals in a grant'
     expect(report.checks.filter((check) => check.group === 'grants' && check.status !== 'passed').map(({ name, status, detail }) => ({ name, status, detail }))).toEqual([
       { name: 'makes another grant for the same principals, and changes one by its ID', status: 'skipped', detail: github },
+      { name: 'lets everyone narrow what something else lets in, and lets no one in itself', status: 'skipped', detail: github },
       { name: "lets no token grant past its own can, even where everyone's grant closes it", status: 'skipped', detail: github },
       { name: 'lets no token let anyone in where everyone gets more than the token has', status: 'skipped', detail: github },
       { name: 'lets a member grant on a pattern after a lock under it', status: 'skipped', detail: expect.any(String) },
@@ -1621,12 +1629,12 @@ describe("board tokens on Vercel's API", () => {
       await expect(attempt).rejects.toMatchObject({ status: 403, code: 'watchers_need_project', origin: 'handle', message: "Vercel's API takes watchers only from a deployment's own credentials." })
   })
 
-  it("mints for deployments and tokens, and says plainly to people, apps, and development tokens that carry a person that only a deployment mints", async () => {
+  it("mints for deployments and tokens, and says plainly to people and apps that only a deployment mints", async () => {
     const api = fakeMessageboard()
     const { token, secret } = await handleOn(api, 'project:prj_pong:production').createToken({ name: 'deploy' })
     expect(token.by).toBe('vercel:project:prj_pong:production')
     expect((await holding(api, secret).createToken({ name: 'child' })).token.parent).toBe(token.id)
-    for (const principal of ['user:u_jb', 'user:u_ada', 'app:oac_1', 'user:u_jb:development'])
+    for (const principal of ['user:u_jb', 'user:u_ada', 'app:oac_1'])
       await expect(handleOn(api, principal).createToken({ name: 'ci' })).rejects.toMatchObject({
         status: 403,
         code: 'unsupported_principal',

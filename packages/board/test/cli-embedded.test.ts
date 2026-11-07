@@ -695,6 +695,10 @@ describe('the embedded CLI', () => {
       expect(await run('grants', 'create', '--oidc', 'https://gitlab.com', '--claim', 'project_id=42', '--can', 'ci/=post')).toMatchObject({ code: 2, stderr: grant })
       const json = JSON.parse((await run('grants', 'create', '--github', 'acme/web', '--can', 'ci/=post', '--json')).stderr)
       expect(json).toMatchObject({ status: 'error', reason: 'unsupported_principal', hint: 'Grant an app that an OIDC exchange policy issues tokens for: --app <slug>.' })
+      expect(await run('grants', 'explain', 'ci', '--github', 'acme/web')).toMatchObject({
+        code: 2,
+        stderr: "error: Vercel's board explains no GitHub or OIDC caller: no grant names one.\n\n  Explain the app an OIDC exchange policy issues tokens for: --app <slug>.\n",
+      })
       // An app gets in, as the hint says.
       expect((await run('grants', 'create', '--app', 'ship', '--can', 'ci/=post')).stdout).toMatch(/^created g4  --app ship  ci\/=post\n$/)
       expect(await run('tokens', 'create', 'ci', '--can', 'dev/=read')).toMatchObject({

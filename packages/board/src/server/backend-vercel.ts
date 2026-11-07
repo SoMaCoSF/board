@@ -1499,6 +1499,15 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       })
     throw error
   }
+  /** An explain Vercel's API won't answer: for a GitHub run or an OIDC issuer, which no grant there names. */
+  const explainRefused = (error: unknown): never => {
+    if (error instanceof HttpError && error.code === 'unsupported_principal')
+      throw new HttpError(400, 'unsupported_principal', "Vercel's board explains no GitHub or OIDC caller: no grant names one.", {
+        hint: 'Explain the app an OIDC exchange policy issues tokens for: --app <slug>.',
+        origin: 'handle',
+      })
+    throw error
+  }
   /** A mint Vercel's API won't make: only a deployment mints board tokens there, and a board token mints from itself. */
   const mintRefused = (error: unknown): never => {
     if (error instanceof HttpError && error.code === 'unsupported_principal')
@@ -1808,7 +1817,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       const params = new URLSearchParams()
       for (const [name, value] of Object.entries(query)) if (value !== undefined) params.set(name, value)
       for (const pair of claim ?? []) params.append('claim', pair)
-      const explained = await api<Protocol['explain']['output']>(who, 'GET', await onBoard(who, `/grants/explain?${params}`), signal ? { signal } : {})
+      const explained = await api<Protocol['explain']['output']>(who, 'GET', await onBoard(who, `/grants/explain?${params}`), signal ? { signal } : {}).catch(explainRefused)
       return { ...explained, grants: explained.grants.map(grantFrom) }
     },
     async revokeGrant(caller, { id }, signal) {

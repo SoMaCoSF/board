@@ -593,7 +593,8 @@ error: Vercel's board takes no GitHub or OIDC principals in a grant.
 it won over, the closest grants there, and what they give. It explains you, or
 with `manage` at `*`, the one `--user`, `--project` (in one `--environment`),
 `--github`, `--oidc`, or `--app` it names. A local board has no apps, so
-nothing lets one in there. A caller that can't list grants sees that
+nothing lets one in there. Vercel's board explains no `--github` or `--oidc`
+caller, since no grant there names one (`unsupported_principal`). A caller that can't list grants sees that
 one decides, not which:
 
 ```text

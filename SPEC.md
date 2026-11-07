@@ -264,8 +264,8 @@ checked with `@vercel/board/conformance`.
   middleware screens a schedule when it's made. What the API doesn't keep yet
   answers 501 `not_supported`: files on a scheduled message, labels on a
   scheduled reply, a post's sync targets. Grants and tokens go to the API, which takes no `github` or `oidc`
-  principal in a grant (400 `unsupported_principal`: an app, which an OIDC
-  exchange policy issues tokens for, stands in), and mints board tokens only
+  principal in a grant, or explains one (400 `unsupported_principal`: an app,
+  which an OIDC exchange policy issues tokens for, stands in), and mints board tokens only
   for a deployment or from a board token (403 `unsupported_principal`);
   `vercel()` says each with a hint. It
   runs no sync: `bind` throws for a board with `sync`, `readSource` answers

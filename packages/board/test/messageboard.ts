@@ -16,10 +16,8 @@ type Actor = {
   session?: string
   /** The board token the request came with: it acts as `principal`, narrowed, on its own board. */
   token?: Minted
-  /** A development token that carries a person: it's them, but it can't mint board tokens. */
-  development?: true
 }
-/** A board token, as Vercel's API keeps it: one board's, minted by a person, a deployment, or another token. */
+/** A board token, as Vercel's API keeps it: one board's, minted by a deployment or another token. */
 type Minted = {
   id: string
   boardId: string
@@ -119,9 +117,8 @@ const principalId = (p: Principal) =>
 const samePrincipal = (a: Principal, b: Principal) => principalId(a) === principalId(b)
 
 /**
- * Who a request is: its bearer names a principal (`user:u_jb:development` a development token that
- * carries one), is a credential `tokens` maps to one, or is the secret of a board token `minted`,
- * which acts as whoever minted its line.
+ * Who a request is: its bearer names a principal, is a credential `tokens` maps to one, or is the
+ * secret of a board token `minted`, which acts as whoever minted its line.
  */
 function actorOf(request: Request, tokens: Record<string, string> = {}, minted: Minted | null = null): Actor {
   const bearer = request.headers.get('authorization')?.replace(/^Bearer /, '') ?? ''
@@ -137,7 +134,6 @@ function actorOf(request: Request, tokens: Record<string, string> = {}, minted: 
           ? { type, projectId: id, environment }
           : null
   if (!principal) throw new Refused(401, 'invalid_token', 'This token is invalid, expired, or revoked.')
-  const development = !minted && type === 'user' && environment === 'development'
   const name = request.headers.get('x-board-profile') ?? minted?.profile ?? undefined
   const avatar = request.headers.get('x-board-avatar') ?? undefined
   const session = request.headers.get('x-board-session') ?? undefined
@@ -148,7 +144,6 @@ function actorOf(request: Request, tokens: Record<string, string> = {}, minted: 
     ...(name ? { profile: { name, ...(avatar ? { avatar } : {}) } } : {}),
     ...(session ?? minted?.session ? { session: (session ?? minted?.session)! } : {}),
     ...(minted ? { token: minted } : {}),
-    ...(development ? { development: true as const } : {}),
   }
 }
 
@@ -158,11 +153,11 @@ const DAY = 86_400_000
 
 /**
  * Board tokens, as Vercel's API keeps them: each one board's, its secret shown once, a retried mint
- * 409. People, deployments, and tokens mint; apps and development tokens that carry a person don't.
+ * 409. Deployments and tokens mint; people and apps don't.
  * A token lists and revokes only itself and the tokens made from it; anyone else, the tokens that act
  * as them. One that's revoked, expired, or whose person left the team is 401 `invalid_token`.
  */
-function fakeTokens(shared: { member: (userId: string) => boolean; now: () => number }) {
+function fakeTokens(shared: { now: () => number }) {
   const minted = new Map<string, Minted>()
   const secrets = new Map<string, string>()
   const replays = new Map<string, string>()
@@ -173,8 +168,7 @@ function fakeTokens(shared: { member: (userId: string) => boolean; now: () => nu
     const id = secrets.get(bearer)
     if (id === undefined) return null
     const token = minted.get(id)!
-    const left = token.principal.type === 'user' && !shared.member(token.principal.userId)
-    if (token.revoked || token.expiresAt <= shared.now() || left) throw new Refused(401, 'invalid_token', 'This token is invalid, expired, or revoked.')
+    if (token.revoked || token.expiresAt <= shared.now()) throw new Refused(401, 'invalid_token', 'This token is invalid, expired, or revoked.')
     return token
   }
 
@@ -223,7 +217,7 @@ function fakeTokens(shared: { member: (userId: string) => boolean; now: () => nu
   /** What `/boards/:id/tokens…` answers, or undefined for another route. */
   function route(method: string, rest: string, body: Record<string, any>, actor: Actor, boardId: string): unknown {
     if (rest === '/tokens' && method === 'POST') {
-      // Only a workload mints: a deployment, or a board token, from itself. A person, an app, and a development token that carries a person don't.
+      // Only a workload mints: a deployment, or a board token, from itself. A person and an app don't.
       if (!actor.token && actor.principal.type !== 'project') throw new Refused(403, 'unsupported_principal', 'Only a deployment mints board tokens: mint from one.')
       const key = `${actor.token?.id ?? principalId(actor.principal)}|${body.operationId}`
       if (replays.has(key)) throw new Refused(409, 'token_already_minted', 'That token was minted already, and its secret is shown only once.')
@@ -1254,11 +1248,10 @@ export function fakeMessageboard(
   let clock = 0
   const now = () => (clock = Math.max(Date.now(), clock + 1))
   const roles = options.roles ?? ROLES
-  // Its own copy: someone leaving one fake's team leaves no other's.
   const directory = { members: { ...(options.members ?? MEMBERS) }, roles, projects: options.projects ?? PROJECTS, repositories: options.repositories ?? REPOSITORIES, apps: APPS }
   const shared: Shared = { teamId, accounts, directory, now, stored }
 
-  const tokens = fakeTokens({ member: (userId) => userId in directory.members, now })
+  const tokens = fakeTokens({ now })
 
   const kept = (id: string, name: string, granted: Kept['granted'], members: Kept['members'] = null): Kept => ({ id, name, granted, members, data: fakeBoard(shared, id) })
   // The default board is kept from the start, so what a test reads of it holds once a person makes it.
@@ -1359,8 +1352,6 @@ export function fakeMessageboard(
     grants: general.data.grants,
     /** Every board token, by ID, as the API keeps them. */
     tokens: tokens.minted,
-    /** Takes a person off the team: the board tokens in their line stop. */
-    leave: (userId: string) => void delete directory.members[userId],
     /** The watchers each principal registered on the default board, as the API keeps them. */
     registrations,
     /** Every schedule on the default board, by ID, as the API keeps them. */

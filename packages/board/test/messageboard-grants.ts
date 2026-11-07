@@ -327,25 +327,9 @@ export function fakeGrants(options: {
       if (!clientId) throw new GrantRefused(400, 'app_not_found', `no app ${app} on the team`)
       return { kind: 'app', clientId }
     }
-    const repository = query('github')
-    if (repository !== undefined) {
-      const repositoryId = options.repositories[repository]
-      if (!repositoryId) throw new GrantRefused(400, 'repository_not_found', `no GitHub repository ${repository}`)
-      const workflow = query('workflow')
-      const branch = query('branch')
-      const event = query('event')
-      return {
-        kind: 'github',
-        repositoryId,
-        repository,
-        // A run on main unless the query says.
-        ...(workflow ? { workflowRef: `${repository}/${workflowPath(workflow)}@refs/heads/${branch ?? 'main'}` } : {}),
-        ref: `refs/heads/${branch ?? 'main'}`,
-        ...(event ? { event } : {}),
-      }
-    }
-    const issuer = query('oidc')
-    if (issuer !== undefined) return { kind: 'oidc', issuer, claims: Object.fromEntries(url.searchParams.getAll('claim').map((pair) => [pair.slice(0, pair.indexOf('=')), pair.slice(pair.indexOf('=') + 1)])) }
+    // No grant names a GitHub run or an OIDC issuer, so there's nothing to explain for one.
+    if (query('github') !== undefined || query('oidc') !== undefined)
+      throw new GrantRefused(400, 'unsupported_principal', 'Grants name no GitHub or OIDC principals: explain the Vercel App an OIDC exchange policy issues tokens to.')
     return null
   }
 
