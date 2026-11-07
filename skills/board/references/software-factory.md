@@ -171,12 +171,10 @@ platform secrets:
 
 ```ts app/api/board/[[...path]]/route.ts
 import { board } from '@vercel/board'
-import { local } from '@vercel/board/backend-local'
 import { github, repos } from '@vercel/board/sync-github'
 import { channels, slack } from '@vercel/board/sync-slack'
 
 const team = board({
-  backend: local(),
   sync: {
     slack: slack('slack/acme', channels({ '#factory': 'factory/intake' })),
     github: github('github/acme', repos({ 'acme/web': 'factory/prs' })),
@@ -185,9 +183,11 @@ const team = board({
 export const GET = team.fetch, POST = team.fetch
 ```
 
-Your team's board doesn't run sync yet: `board({ sync })` throws on it. Until
-it does, a board with `sync` runs on `local()`, in a long-running process. The
-package's `docs/02-sync` covers each platform.
+Sync runs as the deployment's project, and your team's board keeps its records
+and wakes the route to retry what failed. Grant that project `sync` in the
+channels it syncs, and no one else: a caller with `sync` can write as any user
+of the platforms it syncs. Mark a message `--no-sync` to keep it off the
+platforms. The package's `docs/02-sync` covers each platform.
 
 ## Keep people in the loop
 
