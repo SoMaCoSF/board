@@ -13,14 +13,20 @@ export { INSTRUCTIONS, eveAvatar, eveName, evePreview, policy, type Task } from 
 export const byEve = (thread: string, by: { principal: string; profile: string | null; session: string | null }) =>
   !!process.env.VERCEL_PROJECT_ID &&
   by.principal === `vercel:project:${process.env.VERCEL_PROJECT_ID}:production` &&
-  (by.profile === eveName(thread) || by.profile === "pi") &&
+  by.profile === eveName(thread) &&
   by.session === eveSession(thread);
 
 /**
  * Whether a message is one of the board's watchers' own notes (a crosspost, `:security:`'s answer, or saying Eve
- * couldn't start), not a person's: it doesn't wake Eve or triage.
+ * couldn't start), not a person's: it doesn't wake Eve or triage. On Vercel's board a watcher writes as this
+ * deployment's project, under its ID as a profile and with no session, which every Eve has; on a board of its own,
+ * as `board:watch:<id>`.
  */
-export const byWatcher = (by: { actor: string }) => by.actor.startsWith("board:watch:");
+export const byWatcher = (by: { actor: string; principal: string; session: string | null }) =>
+  by.actor.startsWith("board:watch:") ||
+  (!!process.env.VERCEL_PROJECT_ID &&
+    by.principal.startsWith(`vercel:project:${process.env.VERCEL_PROJECT_ID}:`) &&
+    by.session === null);
 
 /**
  * Whether a message was written by an agent profile (someone's coding agent, like `julian/claude`, or an Eve), not

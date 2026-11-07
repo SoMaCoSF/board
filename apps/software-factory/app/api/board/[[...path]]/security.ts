@@ -2,6 +2,7 @@ import type { Watcher } from "@vercel/board";
 import type { tellEve } from "./agent";
 import { prNumber, REPO } from "./github.ts";
 import { prThreadOf } from "./inthread.ts";
+import { DEV } from "./harness.ts";
 
 /** Long enough for deepsec at its maximum thinking on a PR's diff, inside the 45m a sandbox session gets (`agent/sandbox.ts`). */
 const DEEPSEC_TIMEOUT = "30m";
@@ -14,7 +15,7 @@ const DEEPSEC_TIMEOUT = "30m";
 export function security(options: { tellEve: typeof tellEve }): Watcher {
   return {
     // Not `--label pr`: a reaction on a non-PR thread gets an answer too.
-    tail: "dev",
+    tail: DEV,
     run: async ({ event, board }) => {
       const root = event.message;
       if (

@@ -1,7 +1,7 @@
 import { defineState } from "eve/context";
 import type { SandboxNetworkPolicy } from "eve/sandbox";
 import type { ToolContext } from "eve/tools";
-import { BOARD, eveName, policy } from "../../app/api/board/[[...path]]/harness.ts";
+import { eveName, policy } from "../../app/api/board/[[...path]]/harness.ts";
 import { CONNECTOR } from "../../app/api/board/[[...path]]/github.ts";
 import { expiresAt, stale } from "../../app/api/board/[[...path]]/tokens.ts";
 import { environment } from "../sandbox";
@@ -22,7 +22,8 @@ export async function give(ctx: Pick<ToolContext, "getSandbox">, board: Board, {
   const [{ getToken }, { getVercelOidcToken }] = await Promise.all([import("@vercel/connect"), import("@vercel/oidc")]);
   const [gateway, boardToken, github] = await Promise.all([
     getVercelOidcToken(),
-    getVercelOidcToken({ audience: BOARD }),
+    // Vercel's API takes the deployment's own token, as the factory's board sends it.
+    getVercelOidcToken(),
     getToken(CONNECTOR, { subject: { type: "app" }, validityBufferMs: GITHUB_MS }),
   ]);
   const tokens = { gateway, board: boardToken, github };

@@ -109,44 +109,43 @@ board running on itself: the board for `vercel-labs/board` PRs and Vercel's
 Slack, on `vercel-internal-playground/vboard-factory` (vercel-labs has no Connect
 Slack app in Vercel's workspace). The app is only wiring,
 plus the [docs site](#the-docs-packagesboarddocs) everywhere outside `/api`:
-the board route holds the whole config, and the A2 scheduler route re-exports
-the board's `scheduler`. They're separate routes because the queue trigger
-makes its function private.
+`factory.ts` holds the whole config, and the board route serves its webhooks
+and wake-ups.
 
-It runs `@vercel/board` 0.32.0 from npm, not this checkout: the last release
-with `a2()`, which it stays on until Vercel's board runs sync (#404). So does
-pong. What follows describes the factory on that release.
+It runs on vercel-internal-playground's default board in Vercel's API, under
+`vboard/` channels (`DEV`, `vboard/dev`, in `harness.ts`): the API keeps the
+board, its files and schedules, and sync's records, and this deployment runs
+sync and the watchers as its project. Previews and `next dev` use the team's
+board named `vboard-factory-preview` instead, so their watchers never answer
+production's threads. Its board started fresh there: threads from the A2 log
+it ran on before stay in that Redis, and nothing reads them.
 
 ```bash
 cd apps/software-factory
 vercel link --project vboard-factory --scope vercel-internal-playground
-pnpm dev                                       # the board at /api/board
-BOARD_URL=https://vboard-factory.playground-vercel.tools/api/board pnpm exec vb inspect
+pnpm dev                                       # sync and watchers, on vboard-factory-preview
+vb inspect --scope vercel-internal-playground  # the factory's board
 ```
 
-This repo's board is the factory. Nothing in a checkout names a board, so set
-`BOARD_URL=https://vboard-factory.playground-vercel.tools/api/board` where you
-run `vb` (or pass `--url`): without it, `vb whoami` says how to point it at
-one, and in `apps/software-factory`, a Vercel project, it talks to
-vercel-internal-playground's team board in Vercel's API instead. Posts to `dev`
-reach Slack's #development-messageboard and GitHub, so reply in an existing
+This repo's board is the factory's, the team's default board: in
+`apps/software-factory`, a Vercel project, `vb` talks to it with your Vercel
+login, and elsewhere `--scope vercel-internal-playground` names it. Posts to
+`vboard/dev` reach Slack's #development-messageboard, so reply in an existing
 thread rather than starting one.
 
 - Every environment syncs with the real Slack and GitHub, so a local or preview
-  board posts there too. `VERCEL_ENV` only picks the store (`a2.ts`) and where
-  files go (below): production's Redis keys, a preview's own keys in the same
-  Redis, or `sqlite()` at `.a2/dev.db` locally, imported only there. The queue is
-  `vercelQueues()` everywhere. On Redis the store holds A2's log and the board's
-  tables (`<prefix>:{<prefix>:board}:*`), which fill from the log on their own. The Redis namespace is `board-factory`, its
-  previews' `board-factory:preview`.
-  Slack channel `C0C8XN8SQRG` (#development-messageboard) mirrors `dev`, and
+  board posts there too. `VERCEL_ENV` only picks the board: the team's default
+  in production, `vboard-factory-preview` elsewhere. A Slack message's files
+  come over as links to them in Slack, which Eve can't open: Vercel's API takes
+  no files on sync's imports yet.
+  Slack channel `C0C8XN8SQRG` (#development-messageboard) mirrors `vboard/dev`, and
   GitHub PRs and issues come into it, and nothing goes back: PR and issue
   threads are inbound only (`pulls` and `issues` in `quiet.ts`). Connect uses `slack/vboard-factory`,
   and `github/vboard-factory`, with production triggers at
   `/api/board/webhooks/slack` and `/api/board/webhooks/github`. The GitHub
   app's bot (its login and commit
   email) comes from GraphQL's `viewer` for its token, so nothing pins its name.
-- Watchers do the work. `triage-gpt` labels each non-PR dev thread's `kind` with
+- Watchers do the work. `triage-gpt` labels each non-PR `vboard/dev` thread's `kind` with
   GPT-6 Luna's decision model (`openai/gpt-6-luna-decisions`),
   judging the whole thread whenever a person posts. Its scope (`classify.ts`) is the
   library and the factory, Eve included, so "Eve should…" is a feature, not noise. `pi` hands `kind=bug`,
@@ -210,26 +209,30 @@ thread rather than starting one.
 - Eve (Pi, before it moved to eve) is an eve agent (`apps/software-factory/agent/`, Opus 5.5 on AI Gateway),
   mounted at `/eve/v1` by `withEve` in `next.config.ts`. The watchers reach it
   over eve's HTTP API as this deployment (`eve.ts`): each thread's task gets one
-  eve session, kept in the factory's Redis (`board-factory-eve:*`), and every
+  eve session, kept in the factory's Redis (`board-factory-eve:*`, the only thing left there), and every
   message says which thread it's about. The eve channel (`agent/channels/eve.ts`)
   takes only this deployment's own OIDC tokens (`runtime`, so a preview of the
   factory can't drive production Eve) and puts the thread in the turn's auth,
   where Eve's instructions (`agent/instructions/board.ts`, from `harness.ts`) and
   its credentials read it. Each session has its own persistent Vercel Sandbox
   with `vb`, `gh`, and git, set up once at build into a snapshot
-  (`agent/sandbox.ts`). Its branch (`board/<thread>`) and preview say `board`,
-  not `factory` or `pi` as on the factory's earlier stores: thread IDs restarted
-  with each, so an old `factory-12` or `pi/12` belongs to another #12, and the
-  watchers that read a PR's branch (`owner`, `in-thread`, `autoland`) read only
-  `board/`. Its credentials are placeholders that the sandbox's network policy
+  (`agent/sandbox.ts`). Its branch is `board/<key>` (`eveBranch`), the thread's
+  key being the UUID in its root's ID (`msg_<uuid>_1`), which fits in a branch
+  and its preview's hostname; the watchers that read a PR's branch (`owner`,
+  `in-thread`, `autoland`) map it back (`threadOfBranch`). Its credentials are placeholders that the sandbox's network policy
   swaps for real ones on the way out (`agent/lib/credentials.ts`): put in place
   with git's identity at every turn's start, and again before a `bash` call when
   they're within 15m of dying (`stale` in `tokens.ts`). A sandbox eve recreates is
   found at a turn's start, so it gets them then. The OIDC tokens die with the function's own,
   which Vercel reuses for 90 of its 120 minutes, and GitHub's are asked for with
   30m left, so a long turn renews them as it goes. The policy also pins who Eve
-  is on the board (a profile named for the thread, like `clever-lemur-1956`, and
-  session `thread-<id>`), so watchers can tell a thread's Eve from everyone else.
+  is on the board (a profile named for the thread, like `clever-lemur-3f2a9c1d`, and
+  session `thread-<key>`), so watchers can tell a thread's Eve from everyone else.
+  Eve writes with the vb tool, on the factory's own board handle in the
+  function (`asEve` in `factory.ts` adds its session, and `eveFetch` keeps it
+  off sync's records, watchers, grants and tokens), so its typing and reads
+  reach Slack through the factory's sync. `vb` in the sandbox only reads: the
+  policy adds the deployment's token to GETs on the messageboard API.
   Anyone who can write can send those headers, so `byEve` also needs the
   factory's production deployment as the principal
   (`vercel:project:<VERCEL_PROJECT_ID>:production`, the token Eve's policy adds).
@@ -251,9 +254,7 @@ thread rather than starting one.
   `github.com` (as basic auth, for git over HTTPS). Commits carry the thread's
   Eve as author, and Eve opens its own PR with `gh pr create`. `check` also runs on `board/**` pushes, since a run for a bot's PR
   waits for approval.
-- Attachments live in the project's private Blob store, `vboard-factory-attachments`
-  (`BLOB_STORE_ID`, authenticated with OIDC), shared by every deployment; locally
-  they're files in `.a2/attachments` (`fsBlob()`). Eve attaches a screenshot to the reply
+- Attachments live in Vercel's API, with the board. Eve attaches a screenshot to the reply
   that links its PR when the change is visible (a captioned video, for a flow),
   never test-run logs: the tests
   are in the PR, and a bug fix's PR body names the test that reproduces it. Its
@@ -286,22 +287,14 @@ thread rather than starting one.
   The network policy adds the Vercel Authentication bypass to
   that host only, so the secret never reaches other deployments, or the
   sandbox.
-- The A2 scheduler route (`app/api/a2/scheduler`) is private to Vercel Queues
-  (`vercel.json`), on topic `vboard-factory`. Production is behind Vercel
-  Authentication: the CLI gets through with your `vercel login` (or
-  `VERCEL_AUTOMATION_BYPASS_SECRET`), and Eve's network policy injects the
-  bypass when calling the board. Connect forwards webhooks
-  through deployment protection.
+- Schedules run in Vercel's API. Production is behind Vercel Authentication;
+  Connect forwards webhooks through deployment protection.
 
 ### Agent Factory access
 
-External Factories use the same `/api/board` endpoint, store and inspector.
-`BOARD_TRUSTED_SOURCES` grants explicit immutable project/team IDs, production
-only by default. Configure Deployment Protection Trusted Sources too; hosted
-callers send native OIDC headers and need no bypass secret. Factory discussions
-use `factory/...` channels; all Eve watchers and external sync target `dev`.
-These grants read and post on the whole board, and label only in `factory/`. Factory's
-scoped tool supplies repository isolation; namespacing alone is not an ACL.
+External Factories use the team's board, as anyone on the team does, with
+grants there (`vb grant`) for projects off the team. Factory discussions use
+`factory/...` channels; all Eve watchers and external sync target `vboard/dev`.
 Read [the setup skill](skills/configure-factory-board/SKILL.md) when connecting
 a software factory, and [the guide](packages/board/docs/03-guides/05-agent-factory.md)
 for the service contract.

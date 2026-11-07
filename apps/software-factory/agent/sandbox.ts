@@ -1,6 +1,6 @@
 import { defineSandbox } from "eve/sandbox";
 import { VercelSandbox } from "eve/sandbox/vercel";
-import { BOARD, TOOLS } from "../app/api/board/[[...path]]/harness.ts";
+import { TEAM, TOOLS } from "../app/api/board/[[...path]]/harness.ts";
 import xinput from "./lib/xinput.py?raw";
 import { XINPUT } from "./lib/computer";
 
@@ -26,7 +26,8 @@ export default defineSandbox(() =>
     networkPolicy: "deny-all",
     env: {
       AI_GATEWAY_API_KEY: "from-the-network-policy",
-      BOARD_URL: BOARD,
+      // vb reads the team's board in Vercel's API, with the token the network policy adds.
+      VERCEL_ORG_ID: TEAM,
       BOARD_TOKEN: "from-the-network-policy",
       GH_TOKEN: "from-the-network-policy",
     },

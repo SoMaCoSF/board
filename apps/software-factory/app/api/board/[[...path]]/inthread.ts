@@ -2,6 +2,7 @@ import type { Watcher } from "@vercel/board";
 import { mirror, type SyncFn } from "@vercel/board/sync";
 import { REPO } from "./github.ts";
 import { threadOfBranch } from "./owner.ts";
+import { DEV } from "./harness.ts";
 
 // A factory PR has its own Slack thread, like any PR, where its review happens. The thread it
 // was built for also gets the PR's one-line message as a reply, which follows the PR's state.
@@ -39,8 +40,8 @@ export const prThreadOf = (message: { id: string; re: string | null; labels: Rec
 export const isFactoryPrRoot = (message: { re: string | null; labels: Record<string, string> }) =>
   message.re === null && !!message.labels.pr && !!message.labels.source;
 
-/** Slack's side of `dev`: every new root starts a thread in the channel, a factory PR's too, so its review happens there. */
-export const devMirror = (channel = "dev"): SyncFn => mirror(channel);
+/** Slack's side of `vboard/dev`: every new root starts a thread in the channel, a factory PR's too, so its review happens there. */
+export const devMirror = (channel = DEV): SyncFn => mirror(channel);
 
 /**
  * Posts a factory PR's message in its source thread once its root is on the board, and keeps it
@@ -50,7 +51,7 @@ export const devMirror = (channel = "dev"): SyncFn => mirror(channel);
  */
 export function inThread(): Watcher {
   return {
-    tail: "dev --label pr",
+    tail: `${DEV} --label pr`,
     run: async ({ event, board }) => {
       if (!["message.posted", "labels.changed", "message.edited"].includes(event.type)) return;
       if (!event.message || !isFactoryPrRoot(event.message)) return;

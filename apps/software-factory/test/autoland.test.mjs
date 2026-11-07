@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { autoland, decide as decideFor } from "../app/api/board/[[...path]]/autoland.ts";
+import { eveName } from "../app/api/board/[[...path]]/harness.ts";
 
 // Eve posts as the factory's production deployment.
 process.env.VERCEL_PROJECT_ID = "prj_factory";
@@ -85,7 +86,7 @@ function event(over = {}) {
       id: "59",
       set: { land: "yes", "land.why": "fixes the bug", "land.sha": "abc123" },
       unset: [],
-      by: { actor: `${PI}+pi`, principal: PI, profile: "pi", session: "thread-59" },
+      by: { actor: `${PI}+${eveName("59")}`, principal: PI, profile: eveName("59"), session: "thread-59" },
     },
     message: {
       id: "59",
@@ -147,10 +148,10 @@ test("the watcher pages through a PR's files", async () => {
 test("only the PR thread's own Eve can set the verdict", async () => {
   for (const by of [
     { actor: "slack:user:U1", principal: "slack:user:U1", profile: null, session: null },
-    { actor: `${PI}+pi`, principal: PI, profile: "pi", session: "thread-12" },
+    { actor: `${PI}+${eveName("12")}`, principal: PI, profile: eveName("12"), session: "thread-12" },
     // Anyone who can write sends a profile and session: a person, or a preview of some branch.
-    { actor: "vercel:user:abc+pi", principal: "vercel:user:abc", profile: "pi", session: "thread-59" },
-    { actor: "vercel:project:prj_factory:preview+pi", principal: "vercel:project:prj_factory:preview", profile: "pi", session: "thread-59" },
+    { actor: `vercel:user:abc+${eveName("59")}`, principal: "vercel:user:abc", profile: eveName("59"), session: "thread-59" },
+    { actor: `vercel:project:prj_factory:preview+${eveName("59")}`, principal: "vercel:project:prj_factory:preview", profile: eveName("59"), session: "thread-59" },
   ]) {
     const h = harness(routes());
     await h.run(event({ payload: { ...event().payload, by } }));

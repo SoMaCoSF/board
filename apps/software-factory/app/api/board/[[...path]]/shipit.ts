@@ -2,16 +2,17 @@ import type { Watcher } from "@vercel/board";
 import type { tellEve } from "./agent";
 import { github, prNumber, type GitHubOptions } from "./github.ts";
 import { prThreadOf } from "./inthread.ts";
+import { DEV } from "./harness.ts";
 
 /** Reactions that request a merge. Slack delivers :shipit: as `squirrel`. */
 const MERGE_EMOJI = new Set(["shipit", "squirrel", "approved"]);
 
 export function shipit(options: GitHubOptions & { tellEve: typeof tellEve }): Watcher {
   return {
-    tail: "dev --label pr",
+    tail: `${DEV} --label pr`,
     run: async ({ event, board }) => {
       const root = event.message;
-      // From Slack or on the board, by anyone who can react in `dev`: GitHub's merge rules decide.
+      // From Slack or on the board, by anyone who can react in `vboard/dev`: GitHub's merge rules decide.
       if (event.type !== "reaction.added" || !MERGE_EMOJI.has(event.payload.emoji)) return;
       // On a PR thread's root, or on a factory PR's message in the thread it was built for.
       const thread = prThreadOf(root);

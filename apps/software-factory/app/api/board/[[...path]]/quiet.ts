@@ -1,4 +1,5 @@
 import { REPO } from "./github.ts";
+import { DEV } from "./harness.ts";
 import { sourceOfPr } from "./inthread.ts";
 
 // What the factory imports from GitHub but keeps on the board, out of Slack, or off the board altogether.
@@ -76,9 +77,9 @@ type IssuesSync = { direction: "in"; import(channel: string): Promise<unknown> }
  */
 export async function pulls(sync: PullsSync): Promise<void> {
   if (sync.direction === "out") return;
-  if (await unseenPr(sync.event, sync.board, "dev")) return;
-  const source = await sourceThread(sync.event, sync.board, "dev");
-  await sync.import("dev", { noSync: boardOnly(sync.event), ...(source ? { labels: { source } } : {}) });
+  if (await unseenPr(sync.event, sync.board, DEV)) return;
+  const source = await sourceThread(sync.event, sync.board, DEV);
+  await sync.import(DEV, { noSync: boardOnly(sync.event), ...(source ? { labels: { source } } : {}) });
 }
 
 /**
@@ -86,5 +87,5 @@ export async function pulls(sync: PullsSync): Promise<void> {
  * what's said on the board. Eve answers on GitHub only on purpose, with gh.
  */
 export async function issues(sync: IssuesSync): Promise<void> {
-  if (sync.direction === "in") await sync.import("dev");
+  if (sync.direction === "in") await sync.import(DEV);
 }

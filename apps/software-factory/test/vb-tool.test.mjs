@@ -1,47 +1,74 @@
 import assert from "node:assert/strict";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { test } from "node:test";
-import { BOARD, eveName, eveSession, policy } from "../app/api/board/[[...path]]/harness.ts";
+import { board as boardAt } from "@vercel/board";
+import { DEV, eveName, eveSession } from "../app/api/board/[[...path]]/harness.ts";
+import { eveFetch } from "../app/api/board/[[...path]]/eve-fetch.ts";
 import { callSignal, eveBoard, runVb, SANDBOX_HOME } from "../agent/lib/vb-tool.ts";
-import { caller, deploymentToken, personToken, PROJECT_ID, testBoard } from "../../../packages/board/test/harness.ts";
+import { fakeMessageboard } from "../../../packages/board/test/messageboard.ts";
 
-// The factory runs in production, so its own production deployment, Eve, has full access.
-process.env.VERCEL_ENV = "production";
+// The factory's board is Vercel's, never one at a URL the environment names.
+delete process.env.BOARD_URL;
+delete process.env.BOARD_TOKEN;
+process.env.VERCEL_PROJECT_ID = "prj_factory";
 
-// The vb tool against an in-process board, as the factory's own production deployment, the way
-// Eve's token reaches it: only the transport and the sandbox's files are the test's.
+const PROJECT = "project:prj_factory:production";
+
+// Files go to the storage URLs the API signs, with no credentials: the latest fake's.
+let storage;
+const real = globalThis.fetch;
+globalThis.fetch = (input, init) =>
+  new URL(String(input instanceof Request ? input.url : input)).hostname === "storage.test" ? storage(input, init) : real(input, init);
+
+// The vb tool on a board like the factory's: Vercel's, here a fake of its API, through `eveFetch`
+// with the deployment's token, and an Eve's session while `asEve` names its thread.
 async function setup(thread = "1419") {
-  const board = testBoard({ url: BOARD });
-  const token = await deploymentToken("vboard-factory", PROJECT_ID, "production", { audience: BOARD });
+  const api = fakeMessageboard();
+  storage = api.files;
   const sent = [];
-  const eve = eveBoard(thread, {
-    token: async () => token,
-    fetch: (input, init) => {
-      const request = new Request(input, init);
-      sent.push(request.headers);
-      return board.fetch(request);
-    },
+  const eve = new AsyncLocalStorage();
+  const factory = boardAt({
+    team: "team_test",
+    fetch: eveFetch({
+      token: async () => PROJECT,
+      thread: () => eve.getStore(),
+      fetch: (input, init) => {
+        sent.push(new URL(String(input)).pathname);
+        return api.fetch(input, init);
+      },
+    }),
   });
-  const person = caller(board.fetch, await personToken("u_barba", BOARD));
-  const root = (await person("POST", "/messages", { channel: "dev", text: "add a vb tool to eve", noSync: true })).body.message;
+  const person = boardAt({ team: "team_test", fetch: (input, init) => {
+    const headers = new Headers(init?.headers);
+    headers.set("authorization", "Bearer user:u_jb");
+    return api.fetch(input, { ...init, headers });
+  } });
+  const root = await person.post(DEV, "add a vb tool to eve", { noSync: true });
   const files = new Map();
   const sandbox = async () => ({
     readBinaryFile: async ({ path }) => files.get(path) ?? null,
     writeBinaryFile: async ({ path, content }) => void files.set(path, content),
   });
-  const run = (...args) => runVb(eve, args, sandbox);
-  return { eve, root, sent, token, files, run };
+  const handle = eveBoard(factory, thread);
+  const run = (...args) => eve.run(thread, () => runVb(handle, args, sandbox));
+  return { eve: handle, factory, root, sent, files, run, api };
 }
 
-test("vb tool: writes as the thread's Eve, with the headers vb gets from the network policy", async () => {
-  const { eve, root, sent, token, run } = await setup();
-  const id = await run("reply", `#${root.id}`, "on it");
+test("vb tool: writes as the thread's Eve: the factory's production project, under its name and session", async () => {
+  const { eve, root, run } = await setup();
+  const id = await run("reply", root.id, "on it");
   const reply = (await eve.thread(root.id)).replies.find((m) => m.id === id);
   assert.equal(reply.text, "on it");
   assert.equal(reply.by.profile, eveName("1419"));
   assert.equal(reply.by.session, eveSession("1419"));
-  assert.equal(reply.by.principal, `vercel:project:${PROJECT_ID}:production`);
-  const [rule] = policy("1419", { gateway: "g", board: token, github: "h" }, undefined).allow[new URL(BOARD).host];
-  for (const [name, value] of Object.entries(rule.transform[0].headers)) assert.equal(sent.at(-1).get(name), value);
+  assert.equal(reply.by.principal, "vercel:project:prj_factory:production");
+});
+
+test("vb tool: the factory's own writes outside an Eve's command carry no Eve's session", async () => {
+  const { factory, root, run } = await setup();
+  await run("reply", root.id, "Eve's");
+  const own = await factory.reply(root.id, "the board's own");
+  assert.equal(own.by.session, null);
 });
 
 test("vb tool: prints what vb prints, and says how a command failed", async () => {
@@ -49,19 +76,16 @@ test("vb tool: prints what vb prints, and says how a command failed", async () =
   await run("reply", root.id, "first reply");
   const text = await run("read", root.id);
   assert.match(text, /add a vb tool to eve/);
-  assert.match(text, /↳ #\d+ +sunny-gecko-1419/);
   assert.match(text, /first reply/);
-  assert.match(await run("read", "dev", "--text", "vb tool"), /^dev · 1 thread · cursor/);
-  assert.equal(await run("read", "dve"), "error: Couldn't find channel dve. Did you mean dev?\n\n  See its channels:\n    vb channels\n(exit 1)");
+  assert.match(await run("read", DEV, "--text", "vb tool"), /^vboard\/dev · 1 thread · cursor/);
   assert.equal(await run("label", root.id, "kind=bug"), `labeled ${root.id}`);
-  assert.match(await run("whoami"), /isn't available in-process[\s\S]*\(exit 2\)$/);
   // tail and wait would hold every other Eve's calls on the instance: they stay in bash.
-  for (const args of [["tail", "dev"], ["wait", "dev"], ["--as", "x", "tail", "dev"], ["--by", "ada", "wait"], ["--mentions", "tail", "dev"]]) {
+  for (const args of [["tail", DEV], ["wait", DEV], ["--as", "x", "tail", DEV], ["--by", "ada", "wait"], ["--mentions", "tail", DEV]]) {
     const word = args.includes("tail") ? "tail" : "wait";
     assert.equal(await run(...args), `error: ${word} isn't available here.\nrun vb ${word} in bash instead\n(exit 2)`);
   }
   // A reply saying "wait" is a reply.
-  assert.match(await run("reply", root.id, "wait"), /^\d+$/);
+  assert.match(await run("reply", root.id, "wait"), /^msg_/);
 });
 
 test("vb tool: --attach and download use the sandbox's files, ~ and $HOME in its home", async () => {
@@ -78,23 +102,37 @@ test("vb tool: --attach and download use the sandbox's files, ~ and $HOME in its
   assert.deepEqual(files.get(`${SANDBOX_HOME}/copy.png`), png);
 });
 
-test("vb tool: reaches only the routes the sandbox's policy lets vb reach", async () => {
+test("vb tool: reads nothing the platforms sent outside the board's channels, and reaches no sync records, watchers, grants or tokens", async () => {
   const { root, run, sent } = await setup();
   const before = sent.length;
   for (const args of [["sources", "slack", "read", "#general"], ["inbox", "slack"], ["identity"]])
-    assert.match(await run(...args), /\(exit [12]\)$/, args.join(" "));
-  assert.match(await run("sources", "slack", "read", "#general"), /the vb tool can't reach \/sources\/slack\/read/);
-  assert.match(await run("inbox", "slack"), /the vb tool can't reach \/inbox\/slack/);
-  // None of them reached the board.
+    assert.match(await run(...args), /isn't available here[\s\S]*\(exit 2\)$/, args.join(" "));
   assert.equal(sent.length, before);
   assert.match(await run("read", root.id), /add a vb tool to eve/);
+  const { eveReaches } = await import("../app/api/board/[[...path]]/eve-fetch.ts");
+  const at = (path) => new URL(`https://api.vercel.com/v1/messageboard${path}`);
+  for (const path of ["/me", "/boards", "/boards/brd_1/threads/thr_1/messages", "/boards/brd_1/attachments", "/boards/brd_1/sync/copies", "/boards/brd_1/schedules"])
+    assert.ok(eveReaches(at(path)), path);
+  for (const path of [
+    "/boards/ensure",
+    "/boards/default",
+    "/boards/brd_1/sync/imports",
+    "/boards/brd_1/sync/receipts",
+    "/boards/brd_1/sync/inbox/slack",
+    "/boards/brd_1/sync/inbox/slack/next",
+    "/boards/brd_1/watchers",
+    "/boards/brd_1/watchers/matches",
+    "/boards/brd_1/grants",
+    "/boards/brd_1/tokens",
+  ]) assert.ok(!eveReaches(at(path)), path);
+  assert.ok(!eveReaches(new URL("https://api.vercel.com/v9/projects")));
 });
 
 test("vb tool: a call that hangs ends with its signal, and frees the calls behind it", async () => {
-  const { eve, root, token } = await setup();
+  const { eve, root } = await setup();
   // A board that never answers.
   const signal = callSignal(undefined, 50);
-  const hung = eveBoard("1419", { token: async () => token, signal, fetch: (_input, init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason))) });
+  const hung = eveBoard(boardAt({ team: "team_test", fetch: (_input, init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason))) }), "1419");
   const none = async () => ({ readBinaryFile: async () => null, writeBinaryFile: async () => {} });
   assert.match(await runVb(hung, ["read", root.id], none, signal), /\(exit 1\)$/);
   // The queue moved on.

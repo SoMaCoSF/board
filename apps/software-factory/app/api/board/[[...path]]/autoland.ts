@@ -1,6 +1,7 @@
 import type { Watcher } from "@vercel/board";
 import { byEve } from "./agent.ts";
 import { bot, github, prNumber, type GitHubOptions } from "./github.ts";
+import { DEV } from "./harness.ts";
 
 // Auto-land, in shadow mode: it decides whether a factory PR would land on its own,
 // and labels the PR thread with the decision, but merges nothing. The reviewer (the
@@ -48,7 +49,7 @@ const clip = (text: string) => (text.length > 256 ? `${text.slice(0, 255)}…` :
 
 export function autoland(options: GitHubOptions = {}): Watcher {
   return {
-    tail: "dev --label pr",
+    tail: `${DEV} --label pr`,
     run: async ({ event, board }) => {
       const root = event.message;
       if (

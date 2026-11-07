@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { eveAvatar, eveName, evePreview, policy } from "../app/api/board/[[...path]]/agent.ts";
-import { routes } from "../../../packages/board/src/api/routes.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const script = join(root, "skills/ui-video/scripts/ui-video");
@@ -16,78 +15,58 @@ test("policy: Eve's own branch preview gets past Vercel Authentication, and no o
   const allow = policy("3100", tokens, "s3cret").allow;
   // Vercel's branch URL for board/3100: the branch's `/` becomes `-`.
   assert.equal(evePreview("3100"), "vboard-factory-git-board-3100.playground-vercel.tools");
+  // A thread on Vercel's board: its branch is board/<key>.
+  assert.equal(
+    evePreview("msg_3f2a9c1d-0b4e-4c5a-9d7e-1a2b3c4d5e6f_1"),
+    "vboard-factory-git-board-3f2a9c1d-0b4e-4c5a-9d7e-1a2b3c4d5e6f.playground-vercel.tools",
+  );
   assert.deepEqual(allow[evePreview("3100")], [{ transform: [{ headers: { "x-vercel-protection-bypass": "s3cret" } }] }]);
   const withSecret = Object.entries(allow).filter(([, rules]) => JSON.stringify(rules).includes("s3cret"));
-  assert.deepEqual(withSecret.map(([host]) => host).sort(), ["vboard-factory.playground-vercel.tools", evePreview("3100")].sort());
+  assert.deepEqual(withSecret.map(([host]) => host), [evePreview("3100")]);
   assert.deepEqual(allow["*"], []);
   assert.equal(policy("3100", tokens, undefined).allow[evePreview("3100")], undefined);
 });
 
-// The headers the sandbox's proxy adds to a request for `path` on `host`, as it reads a rule's path match.
-function sent(allow, host, path) {
-  const rules = (allow[host] ?? []).filter((rule) => !rule.match?.path || new RegExp(rule.match.path.regex).test(path));
+// The headers the sandbox's proxy adds to a `method` request for `path` on `host`, as it reads a rule's match.
+function sent(allow, host, method, path) {
+  const rules = (allow[host] ?? []).filter(
+    (rule) => (!rule.match?.path || new RegExp(rule.match.path.regex).test(path)) && (!rule.match?.method || rule.match.method.includes(method)),
+  );
   return Object.assign({}, ...rules.flatMap((rule) => rule.transform.map((t) => t.headers)));
 }
 
-test("policy: Eve's credentials and identity reach every board route vb calls, and nothing else on the board's host", () => {
+test("policy: vb in bash reads Vercel's board as the thread's Eve, and writes nothing and reaches nothing else there", () => {
   const allow = policy(3100, tokens, "s3cret").allow;
-  const host = "vboard-factory.playground-vercel.tools";
-  const pi = {
+  const host = "api.vercel.com";
+  const eve = {
     authorization: "Bearer b",
     "x-board-profile": eveName(3100),
     "x-board-avatar": eveAvatar(3100),
     "x-board-session": "thread-3100",
-    "x-vercel-protection-bypass": "s3cret",
   };
-  const vb = new Set([
-    "discovery",
-    "me",
-    "channels",
-    "createChannel",
-    "actors",
-    "messages",
-    "message",
-    "threads",
-    "events",
-    "post",
-    "edit",
-    "delete",
-    "react",
-    "label",
-    "sync",
-    "synced",
-    "linked",
-    "typing",
-    "schedule",
-    "schedules",
-    "cancelSchedule",
-    "upload",
-    "attachment",
-    "uploadStart",
-    "uploadFinish",
-  ]);
-  const params = { id: "42", key: "slack", name: "pi" };
-  for (const [name, route] of Object.entries(routes)) {
-    const path = `/api/board${route.path.replace(/:(\w+)/g, (_, param) => params[param])}`;
-    assert.deepEqual(sent(allow, host, path), vb.has(name) ? pi : {}, `${name} ${path}`);
-  }
-  for (const path of ["/api/board/", "/api/board/schedules/s42/cancel", "/api/board/attachments/att_x-1"]) {
-    assert.deepEqual(sent(allow, host, path), pi, path);
-  }
+  // What vb tail and vb wait read.
   for (const path of [
-    "/api/board/attachments/x%2F..%2F..%2Fstuck",
-    "/api/board/attachments/x%5C..%5C..%5Cstuck",
-    "/api/board/messages/1\\..\\..\\stuck",
-    "/api/board/webhooks/slack",
-    "/api/board/webhooks/github",
-    "/api/board/me/webhooks/slack",
-    "/api/board/messages/1/../../webhooks/slack",
-    "/api/a2/scheduler",
+    "/v1/messageboard/me",
+    "/v1/messageboard/boards",
+    "/v1/messageboard/boards/brd_1/channels",
+    "/v1/messageboard/boards/brd_1/changes",
+    "/v1/messageboard/boards/brd_1/threads/thr_1/messages",
+    "/v1/messageboard/boards/brd_1/messages/msg_1_1",
+  ]) assert.deepEqual(sent(allow, host, "GET", path), eve, path);
+  for (const method of ["POST", "PATCH", "PUT", "DELETE"])
+    assert.deepEqual(sent(allow, host, method, "/v1/messageboard/boards/brd_1/threads/thr_1/messages"), {}, method);
+  for (const path of [
+    "/v1/messageboard/boards/brd_1/sync/inbox/slack",
+    "/v1/messageboard/boards/brd_1/sync/find",
+    "/v1/messageboard/boards/brd_1/watchers",
+    "/v1/messageboard/boards/brd_1/grants",
+    "/v1/messageboard/boards/brd_1/tokens",
+    "/v9/projects",
+    "/v2/user",
     "/",
-    "/sync/slack",
-  ]) {
-    assert.deepEqual(sent(allow, host, path), {}, path);
-  }
+  ]) assert.deepEqual(sent(allow, host, "GET", path), {}, path);
+  // The factory's own deployment gets no credentials: nothing there is Eve's to call.
+  assert.equal(allow["vboard-factory.playground-vercel.tools"], undefined);
 });
 
 test("policy: Eve's gh and git always go as the factory GitHub App", () => {

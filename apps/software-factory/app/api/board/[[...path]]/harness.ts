@@ -2,7 +2,12 @@ import type { NetworkPolicy } from "@vercel/sandbox";
 import pkg from "@vercel/board/package.json" with { type: "json" };
 import { REPO } from "./github.ts";
 
-export const BOARD = "https://vboard-factory.playground-vercel.tools/api/board";
+/** Vercel's API, where the team's board lives. */
+export const API = "https://api.vercel.com";
+/** The team whose default board the factory runs on, by slug: what `vb` in the sandbox names. */
+export const TEAM = "vercel-internal-playground";
+/** The channel the factory syncs with Slack and GitHub, and every Eve watcher tails. */
+export const DEV = "vboard/dev";
 export const MODEL = "anthropic/claude-opus-5.5";
 /** The board this deployment was built with. */
 export const BOARD_VERSION: string = pkg.version;
@@ -13,7 +18,22 @@ export const AGENT_BROWSER = "0.38.2";
 export const FFMPEG_STATIC = "5.2.0";
 export const SANDBOX_USER = "vercel-sandbox";
 
-export const eveSession = (thread: string) => `thread-${thread}`;
+/** A message ID on Vercel's board: `msg_<thread uuid>_<n>`. */
+const MESSAGE_ID = /^msg_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_([1-9]\d*)$/;
+
+/**
+ * A thread's key: the UUID of a root's ID on Vercel's board (`msg_<uuid>_1`), which fits in a
+ * branch and a preview's hostname, or the ID itself (a local board's `42`).
+ */
+export const threadKey = (thread: string) => MESSAGE_ID.exec(String(thread))?.[1] ?? String(thread);
+
+/** The root a thread key names: `threadKey`'s inverse. */
+export const rootOfKey = (key: string) => (/^[0-9a-f]{8}-/.test(key) ? `msg_${key}_1` : key);
+
+/** The branch a thread's Eve pushes to. */
+export const eveBranch = (thread: string) => `board/${threadKey(thread)}`;
+
+export const eveSession = (thread: string) => `thread-${threadKey(thread)}`;
 
 const ADJECTIVES = [
   "amber", "brave", "brisk", "calm", "clever", "cosmic", "crisp", "dapper",
@@ -31,10 +51,14 @@ const ANIMALS = [
 const seed = (thread: string) =>
   /^\d{1,15}$/.test(thread) ? Number(thread) : [...thread].reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) | 0, 0);
 
-/** A thread's Eve on the board, like `clever-lemur-1956`: unique per thread. */
+/**
+ * A thread's Eve on the board, like `clever-lemur-1956`, or `clever-lemur-3f2a9c1d` for a thread on
+ * Vercel's board, named by its key's first 8 characters: a profile is at most 32.
+ */
 export function eveName(thread: string) {
-  const n = Math.imul(seed(thread), 0x9e3779b1) >>> 0;
-  return `${ADJECTIVES[n % ADJECTIVES.length]}-${ANIMALS[(n >>> 8) % ANIMALS.length]}-${thread}`;
+  const key = threadKey(thread);
+  const n = Math.imul(seed(key), 0x9e3779b1) >>> 0;
+  return `${ADJECTIVES[n % ADJECTIVES.length]}-${ANIMALS[(n >>> 8) % ANIMALS.length]}-${key.slice(0, 8)}`;
 }
 
 /** A PNG: Slack won't use the board's SVG avatars as a message's icon. */
@@ -58,9 +82,9 @@ A person's :security: reaction on a PR is a request for a deepsec review of its 
 
 const THREAD = `You own bug reports, feature requests, and questions for board (github.com/${REPO}, private), a message board library and CLI.
 The board is how you talk to people. vb read <id> shows a thread, vb reply <id> "<text>" answers in it (and reaches Slack, never GitHub), vb label <id> k=v labels it. Run vb help for the rest. vb is one of your tools: it runs a vb command (args like ["reply", "42", "on it"]) without the sandbox and prints what the CLI would, so use the vb tool for the board, not vb in bash. Only vb tail, vb wait, and verify-board's local board need the vb CLI in bash.
-A thread's kind label (bug, feature, question, task) says what it is; judge it yourself from the whole thread too. Clone with gh repo clone ${REPO}; the repo uses pnpm (pnpm install, pnpm test). Any change you make goes on a branch named board/<thread id> (never main), in a pull request opened with gh pr create, and you reply with the PR link.
+A thread's kind label (bug, feature, question, task) says what it is; judge it yourself from the whole thread too. Clone with gh repo clone ${REPO}; the repo uses pnpm (pnpm install, pnpm test). Any change you make goes on your thread's branch (never main), named below, in a pull request opened with gh pr create, and you reply with the PR link.
 Open the PR body with one line saying what triggered it, before anything else: "> 💬 From [<who>'s Slack thread](<link>) · board #<id>" for Slack, "> 🐙 From #<issue> on GitHub · board #<id>" for a GitHub issue (with "Closes #<issue>" below when the PR fixes it), or "> From board #<id>" when the thread has no source. Your task message gives the source link and who posted it.
-Before you plan or build for a bug or feature, look for related work: search earlier threads with vb read dev --text <keywords> and pull requests with gh pr list --state all --search <keywords>. If a thread or PR already covers it, link it in your reply and build on it (comment there, push to its branch, or ask to merge it) instead of starting over with a duplicate.
+Before you plan or build for a bug or feature, look for related work: search earlier threads with vb read ${DEV} --text <keywords> and pull requests with gh pr list --state all --search <keywords>. If a thread or PR already covers it, link it in your reply and build on it (comment there, push to its branch, or ask to merge it) instead of starting over with a duplicate.
 For a bug report:
 1. Reproduce it with a failing test.
 2. If you reproduced it, label the thread reproduced=yes, fix it, and open a PR.
@@ -81,7 +105,7 @@ Before anything else, react to the PR thread's root with vb react <root id> look
 2. Run pnpm install and pnpm check. Try the change where you can: a test that should fail without it, or the CLI by hand. Check every test it adds or changes with the test-behavior skill, and flag the ones that test nothing.
 3. Put the detail on GitHub, attached to the code: submit one review with gh api repos/${REPO}/pulls/<N>/reviews --input review.json (event COMMENT, REQUEST_CHANGES or APPROVE, with comments on file:line for each problem and suggestion). You review as the factory GitHub App's bot, and GitHub rejects APPROVE and REQUEST_CHANGES on that account's own PRs, so on a PR it opened use COMMENT and put the verdict in the body. Inline comments must be on lines the diff touches, or GitHub rejects the whole review; put anything else in the body. Always put the verdict in the body, even when the problems are all inline (a review with an empty body never reaches the board), and keep the body short: the verdict (good to merge, or the blocking problems in a line each), with the detail in the inline comments. The review shows up in the board thread on its own (and step 5 tells the thread it was built for), so don't restate it there: reply in the board thread (thread <id> for a PR labeled source=<id>) only to add what it lacks, in a line (the mention of whoever asked, or what you tried by hand attached with --attach <file>, a log or a screenshot, up to 4 MB each), or not at all. vb read lists files people attached as file lines; vb download <id> saves one.
 4. After each review, say whether the PR could land without a person, in one command on the PR thread's root: vb label <root id> land=yes|no land.why="<one line>" land.sha=<the head SHA you reviewed>. Say yes only when all of these hold: it fixes a bug or does what a person clearly asked for (not something you or its author had to interpret); your review found nothing to fix; and it has no caveats, open questions, or negative tradeoffs (in its body, in the thread, or that you see). Otherwise say no, and land.why says which one failed. When unsure, say no. The board checks the rest itself: who opened it, CI, and whether it changes board core for users.
-5. Tell the thread the work started in. When the PR was built for another board thread (its branch is board/<id>, and the PR thread's root is labeled source=<id>), reply there after each review, in one line: the verdict (good to merge, or what blocks it, briefly) and that the detail is in the review on PR #<N>. That thread's Eve, the PR's author, hears it and can fix what you found, and the person who asked sees it where they asked. Don't mention anyone there, and don't restate the review.
+5. Tell the thread the work started in. When the PR was built for another board thread (its branch is board/<key>, and the PR thread's root is labeled source=<id>), reply there after each review, in one line: the verdict (good to merge, or what blocks it, briefly) and that the detail is in the review on PR #<N>. That thread's Eve, the PR's author, hears it and can fix what you found, and the person who asked sees it where they asked. Don't mention anyone there, and don't restate the review.
 When you're told there's new activity in a thread, read it, see what's new since you last replied, and act on it if it's for you: answer questions, and review again if new commits landed (gh pr view <N> --json commits), labeling land again.`;
 
 export const INSTRUCTIONS: Record<Task, string> = {
@@ -107,32 +131,25 @@ command -v ffmpeg >/dev/null || { npm install -g ffmpeg-static@${FFMPEG_STATIC} 
   && HOME=/home/${SANDBOX_USER} agent-browser install --with-deps >/dev/null 2>&1 && chown -R ${SANDBOX_USER}: /home/${SANDBOX_USER}/.agent-browser; } || true`;
 
 /** Eve's branch preview. Only this host gets the bypass secret, not `*.playground-vercel.tools`. */
-export const evePreview = (thread: string) => `vboard-factory-git-board-${thread}.playground-vercel.tools`;
+export const evePreview = (thread: string) => `vboard-factory-git-board-${threadKey(thread)}.playground-vercel.tools`;
 
-/** The board routes `vb` calls. Never `/webhooks/*`, where the board's token could forge Slack and GitHub events. */
-export const VB_ROUTES = `^${new URL(BOARD).pathname}(/(${[
-  "me",
-  "channels",
-  "actors",
-  "threads",
-  "events",
-  "messages(/[0-9]+(/(edit|delete|reactions|labels|sync|typing))?)?",
-  "links",
-  "schedules(/s?[0-9]+/cancel)?",
-  "attachments(/uploads)?(/[A-Za-z0-9_-]+)?",
-].join("|")}))?/?$`;
+/**
+ * Vercel's board, as `vb` in the sandbox reads it: GETs on the messageboard API only, so `vb tail`
+ * and `vb wait` work in bash, and nothing there writes as Eve or reaches sync's records, the
+ * inbox, watchers, grants or tokens. Eve writes with the vb tool, in the function.
+ */
+export const VB_READS = "^/v1/messageboard/(me|boards(/[A-Za-z0-9_-]+(/(channels|threads|messages|changes|actors|schedules|attachments)(/.*)?)?)?)?$";
 
 /**
  * Who a thread's Eve is on the board, with its token: what the sandbox's network policy adds to
- * `vb`'s requests, and the vb tool adds to its own.
+ * `vb`'s reads, and the vb tool adds to its own requests.
  */
-export function eveHeaders(thread: string, token: string, bypass: string | undefined): Record<string, string> {
+export function eveHeaders(thread: string, token: string): Record<string, string> {
   return {
     authorization: `Bearer ${token}`,
     "x-board-profile": eveName(thread),
     "x-board-avatar": eveAvatar(thread),
     "x-board-session": eveSession(thread),
-    ...(bypass ? { "x-vercel-protection-bypass": bypass } : {}),
   };
 }
 
@@ -149,10 +166,10 @@ export function policy(
       "ai-gateway.vercel.sh": [
         { transform: [{ headers: { "x-api-key": tokens.gateway, authorization: `Bearer ${tokens.gateway}` } }] },
       ],
-      [new URL(BOARD).host]: [
+      [new URL(API).host]: [
         {
-          match: { path: { regex: VB_ROUTES } },
-          transform: [{ headers: eveHeaders(thread, tokens.board, bypass) }],
+          match: { method: ["GET"], path: { regex: VB_READS } },
+          transform: [{ headers: eveHeaders(thread, tokens.board) }],
         },
       ],
       ...(bypass ? { [evePreview(thread)]: [{ transform: [{ headers: protection }] }] } : {}),
