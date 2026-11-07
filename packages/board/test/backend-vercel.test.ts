@@ -1582,7 +1582,9 @@ describe("board tokens on Vercel's API", () => {
     const lives = ({ token }: { token: { at: string; expiresAt: string } }) => Date.parse(token.expiresAt) - Date.parse(token.at)
     expect(lives(await pong.createToken({ name: 'ci' }))).toBe(86_400_000)
     expect(lives(await pong.createToken({ name: 'week', expires: '7d' }))).toBe(7 * 86_400_000)
-    await expect(pong.createToken({ name: 'longer', expires: '8d' })).rejects.toMatchObject({ status: 400, code: 'invalid_request' })
+    await expect(pong.createToken({ name: 'longer', expires: '8d' })).rejects.toMatchObject({ status: 400, code: 'invalid_expires' })
+    // One that isn't a duration, as the API answers it.
+    expect(await raw(api, 'project:prj_pong:production', 'POST', '/boards/brd_test/tokens', { operationId: 'op_soon', name: 'soon', expires: 'soon' })).toMatchObject({ status: 400, body: { error: { code: 'invalid_expires' } } })
     expect([...api.tokens.values()].map((minted) => minted.name)).toEqual(['ci', 'week'])
   })
 

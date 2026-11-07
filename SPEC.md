@@ -268,7 +268,7 @@ checked with `@vercel/board/conformance`.
   which an OIDC exchange policy issues tokens for, stands in), and mints board tokens only
   for a deployment or from a board token (403 `unsupported_principal`), for
   a day unless `expires` says otherwise and 7 days at most, since a
-  deployment can mint again (400 `invalid_request` past that); `vercel()`
+  deployment can mint again (400 `invalid_expires` past that); `vercel()`
   says the refusals with a hint. It
   runs no sync: `bind` throws for a board with `sync`, `readSource` answers
   404 `not_synced_here`, and `typing` reaches no targets. Only a deployment's

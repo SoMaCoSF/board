@@ -199,7 +199,7 @@ function fakeTokens(shared: { now: () => number }) {
     if (expires === undefined) return DAY
     const found = typeof expires === 'string' ? /^(\d+)(m|h|d)$/.exec(expires) : null
     const ms = found ? Number(found[1]) * { m: 60_000, h: 3_600_000, d: DAY }[found[2] as 'm' | 'h' | 'd'] : NaN
-    if (!(ms > 0 && ms <= 7 * DAY)) throw new Refused(400, 'invalid_request', 'A token lives up to 7 days.')
+    if (!(ms > 0 && ms <= 7 * DAY)) throw new Refused(400, 'invalid_expires', 'A token lives up to 7 days: pass expires as 7d or less.')
     return ms
   }
 
