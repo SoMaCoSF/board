@@ -79,7 +79,7 @@ describe('a reply after a message, on a2()', () => {
     const team = testBoard()
     const root = await team.post('deploys', 'deploy a1b2c3')
     const hidden = await team.post('secrets', 'rotate the keys')
-    const narrowed = caller(team.fetch, await personToken(), { 'x-board-scope': 'deploys=read,post' })
+    const narrowed = caller(team.fetch, await personToken(), { 'x-board-can': 'deploys=read,post' })
     const refused = async (after: string) => (await narrowed('POST', '/messages', { re: root.id, text: 'on it', after })).body
     const missing = await refused('999999')
     expect(missing).toMatchObject({ error: { code: 'invalid_after' } })

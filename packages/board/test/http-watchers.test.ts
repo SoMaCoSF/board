@@ -546,13 +546,13 @@ describe('pulling matches', () => {
     expect(await pull()).toEqual([])
   })
 
-  it('refuses a caller narrowed with x-board-scope, which leaves its registration and matches as they were', async () => {
+  it('refuses a caller narrowed with x-board-can, which leaves its registration and matches as they were', async () => {
     const { t, v0, julian, pull, ack } = await queued()
     await julian('POST', '/messages', { channel: 'feedback', text: 'meant for v0' })
     const queue = t.remote.servers.at(-1)!.session(`watch:@${V0}`)
     await vi.waitFor(async () => expect((await queue.history()).map((event: { type: string }) => event.type)).toContain('watch.matched'))
-    const narrowed = caller(t.remote.fetch, await v0Token(), { 'x-board-scope': 'other=read' })
-    const refusal = { status: 403, body: { error: { code: 'forbidden', message: "this token is narrowed with x-board-scope: registering and running watchers is its project's job" } } }
+    const narrowed = caller(t.remote.fetch, await v0Token(), { 'x-board-can': 'other=read' })
+    const refusal = { status: 403, body: { error: { code: 'forbidden', message: "this token is narrowed with x-board-can: registering and running watchers is its project's job" } } }
     // Its pull would have dropped the match it can't read, and its register replaced v0's whole registration.
     expect(await narrowed('GET', '/watchers/matches')).toEqual(refusal)
     expect(await narrowed('POST', '/watchers', { watch: {} })).toEqual(refusal)

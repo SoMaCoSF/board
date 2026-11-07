@@ -4,8 +4,8 @@ import type { Protocol } from '../api/protocol.ts'
 import type { GrantView, PrincipalView, TokenView } from '../api/routes.ts'
 import { duration } from '../client/client.ts'
 import { ACCESS_SESSION, accessContract, type AccessEvent } from '../contract/contract.ts'
-import { SCOPE_MAX } from '../contract/schemas.ts'
-import { checkGrantChange, compileAccess, FULL_ACCESS, parseScope, patternsOf, scopeOf, type Access, type Can, type GrantShape, type WrittenCan } from './access.ts'
+import { CAN_MAX } from '../contract/schemas.ts'
+import { checkGrantChange, compileAccess, FULL_ACCESS, parseCan, patternsOf, canText, type Access, type Can, type GrantShape, type WrittenCan } from './access.ts'
 import {
   BOARD_TOKEN_PREFIX,
   checkCan,
@@ -291,7 +291,7 @@ const isOwner = (principal: Identity['principal']) => principal.kind === 'person
 /** Whether `identity` may list the grants: `manage` at `*`, or the owner, as far as its token's scope allows. */
 function lists({ principal }: Identity): boolean {
   if (principal.access.at('manage', '*')) return true
-  return isOwner(principal) && (principal.scope === undefined || compileAccess(parseScope(principal.scope)).at('manage', '*'))
+  return isOwner(principal) && (principal.scope === undefined || compileAccess(parseCan(principal.scope)).at('manage', '*'))
 }
 
 /** A 403 unless `identity` may list the grants. */
@@ -316,7 +316,7 @@ const withoutEveryone = (grants: readonly StoredGrant[]): StoredGrant[] =>
 async function changerAccess({ principal }: Identity, grants: readonly StoredGrant[], accessIn: AccessIn): Promise<{ caller: Access; own: Access } | null> {
   if (isOwner(principal)) {
     if (principal.scope === undefined) return null
-    const scoped = compileAccess(parseScope(principal.scope))
+    const scoped = compileAccess(parseCan(principal.scope))
     return { caller: scoped, own: scoped }
   }
   const [caller, own] = await Promise.all([accessIn(principal, grants), accessIn(principal, withoutEveryone(grants))])
@@ -427,7 +427,7 @@ export function createTrust(options: {
         let access = minters.get(key)
         if (!access) minters.set(key, (access = options.accessNow(minter)))
         const now = await access
-        return tokenView(row, now === null || scope === undefined ? now : now.narrow(parseScope(scope)))
+        return tokenView(row, now === null || scope === undefined ? now : now.narrow(parseCan(scope)))
       }),
     )
   }
@@ -581,8 +581,8 @@ export function createTrust(options: {
       } catch (error) {
         throw badRequest((error as Error).message, 'invalid_scope')
       }
-      const scope = scopeOf((principal.scope === undefined ? FULL_ACCESS : compileAccess(parseScope(principal.scope))).narrow(can))
-      if (scope.length > SCOPE_MAX) throw badRequest(`a token's can is ${SCOPE_MAX} characters at most as a scope: name fewer channels`, 'invalid_scope')
+      const scope = canText((principal.scope === undefined ? FULL_ACCESS : compileAccess(parseCan(principal.scope))).narrow(can))
+      if (scope.length > CAN_MAX) throw badRequest(`a token's can is ${CAN_MAX} characters at most as a scope: name fewer channels`, 'invalid_scope')
       const minter: Known = {
         id: principal.id,
         kind: principal.kind,

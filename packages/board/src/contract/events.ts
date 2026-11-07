@@ -16,7 +16,7 @@ import {
   MessageText,
   MESSAGE_TEXT_MAX,
   RemoteWatcherId,
-  SCOPE_MAX,
+  CAN_MAX,
   storable,
 } from './schemas.ts'
 import { ExternalEvent, ExternalTarget, Link, LINKS_PER_MESSAGE_MAX, Origin } from './external.ts'

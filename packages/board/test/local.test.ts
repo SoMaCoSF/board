@@ -27,7 +27,13 @@ describe('local()', () => {
   it('passes the whole conformance kit, schedules and files included', async () => {
     const team = localBoard()
     try {
-      const report = await conformance(over(team.fetch, () => personToken()), { withToken: (secret) => over(team.fetch, async () => secret) })
+      // Narrowed as a proxy holding the person's token narrows it.
+      const narrowed = (can: string) =>
+        over((request) => {
+          request.headers.set('x-board-can', can)
+          return team.fetch(request)
+        }, () => personToken())
+      const report = await conformance(over(team.fetch, () => personToken()), { withToken: (secret) => over(team.fetch, async () => secret), withCan: narrowed })
       // All but the grants checks a local board skips: a viewer's cap and an app, which it has neither of, a member under a lock, and grants across teams.
       expect(report.checks.filter((check) => check.status !== 'passed').map((check) => [check.status, check.name])).toEqual([
         ['skipped', 'caps a person by their team role, so a viewer reads but neither posts nor manages'],

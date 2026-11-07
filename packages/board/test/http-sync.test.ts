@@ -532,14 +532,14 @@ describe('whose records are whose', () => {
     expect(await copies(support)).toEqual({})
   })
 
-  it('refuses a caller narrowed with x-board-scope what its sync records', async () => {
+  it('refuses a caller narrowed with x-board-can what its sync records', async () => {
     const team = testBoard()
     await grant(team, 'prj_support', 'all')
     const support = caller(team.fetch, await supportToken())
     expect((await support('POST', '/watchers', { watch: {}, sync: [entry] })).status).toBe(200)
     const own = (await support('POST', '/sync/imports', { op: 'post', author, from: 'slack', channel: 'support/inbox', text: 'from Slack' })).body.message as string
     // A sandbox with the project's token, narrowed to support/: what it claimed there, its project's sync would fill from anywhere.
-    const narrowed = caller(team.fetch, await supportToken(), { 'x-board-scope': 'support/=all' })
+    const narrowed = caller(team.fetch, await supportToken(), { 'x-board-can': 'support/=all' })
     const pushed = { id: 'e1', event: { kind: 'deleted', channel: 'slack:C1', thread: 'slack:C1:1', subthread: null, message: '1' }, raw: null }
     for (const [method, path, body] of [
       ['POST', '/sync/imports', { op: 'post', author, from: 'slack', channel: 'support/inbox', text: 'claimed', origin: inC('C7', '1', '1') }],
@@ -549,7 +549,7 @@ describe('whose records are whose', () => {
       ['POST', '/inbox/slack/e1/ack', { lease: 'l1' }],
     ] as const) {
       const refused = await narrowed(method, path, body)
-      expect([refused.status, refused.body.error?.message], path).toEqual([403, expect.stringContaining('narrowed with x-board-scope')])
+      expect([refused.status, refused.body.error?.message], path).toEqual([403, expect.stringContaining('narrowed with x-board-can')])
     }
     expect((await support('POST', '/sync/imports', { op: 'post', author, from: 'slack', channel: 'support/inbox', text: 'claimed', origin: inC('C7', '1', '1') })).status).toBe(200)
   })

@@ -485,7 +485,7 @@ vb tokens revoke <token>
 `tokens create` mints a token that acts as you, narrowed to `--can`, and
 prints its secret, which shows only here, so it pipes:
 `BOARD_TOKEN=$(vb tokens create widget --can feedback/=post)`. `--can` is
-`x-board-scope`'s syntax (`dev/=read,post;ci/=read`). `--profile` and
+`x-board-can`'s syntax (`dev/=read,post;ci/=read`). `--profile` and
 `--session` pin what every request with it writes as. It lives 30 days, or
 `--expires`, 90 days at most; on Vercel's board, a day, or `--expires`, 7 days
 at most. See [Tokens](../01-board/09-access.md#tokens).

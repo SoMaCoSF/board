@@ -404,7 +404,7 @@ write.
   (`vercel:user:<id>`, `vercel:project:<id>:<env>`, …), `kind`, `handle`, and
   optionally `expiresAt`. Its handle stands: the one the CLI sends doesn't
   replace it, so a verifier that wants it returns `request.claims.handle`
-  itself. The name, profile, and `x-board-scope` the caller sends still apply
+  itself. The name, profile, and `x-board-can` the caller sends still apply
   on top of it.
 - **`kind: 'person'` is a person on the team:** it gets what grants give
   people, as the board's own people do (g1 gives everything), and a channel

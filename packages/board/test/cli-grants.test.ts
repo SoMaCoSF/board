@@ -199,4 +199,11 @@ describe('cli grants', () => {
     expect((await vb(['tokens'])).stdout).toMatch(/^t\d+ +no-security +\*=read;security\/=none +expires in 30d\n/m)
     expect((await vb(['tokens', 'create', 'x', '--can', 'ci=read,none'])).stderr.split('\n')[0]).toBe('error: --can: none is no permissions, so it goes alone: ci=none.')
   }, 30_000)
+
+  it("names --can, not the header, in a token's --can errors", async () => {
+    const refused = async (can: string) => (await vb(['tokens', 'create', 'x', '--can', can])).stderr.split('\n')[0]
+    expect(await refused('ci=write')).toBe('error: --can: unknown permission write: use read, post, react, label, sync, manage, all, or none.')
+    expect(await refused('ci')).toBe('error: --can entry ci needs =: write pattern=permissions, like dev/=read,post.')
+    expect(await refused('ci=read;ci=post')).toBe('error: --can lists ci twice.')
+  }, 30_000)
 })

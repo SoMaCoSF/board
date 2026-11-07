@@ -427,10 +427,10 @@ Reads show only what the caller can read, everywhere:
 ## Narrowing a token
 
 ```text
-x-board-scope: dev/=read,post,react,label;ci/=read
+x-board-can: dev/=read,post,react,label;ci/=read
 ```
 
-A proxy that holds the credential sets `x-board-scope`, and the board
+A proxy that holds the credential sets `x-board-can`, and the board
 intersects it with what the token has, so it only narrows. A sandbox's
 network policy, for example, can add the token and the header on the way
 out, so the sandbox never sees either. A caller holding its own token gains

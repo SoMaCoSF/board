@@ -7,7 +7,7 @@ import { withMentions } from '../api/tail.ts'
 import { BoardError, type Filters, type ProfileOption } from '../client/client.ts'
 import { boardUrl, connect, handFetch, handLogin, vercelProjectFile } from '../client/node.ts'
 import { http } from '../backend-http/index.ts'
-import { credentialSource, handTeam, vercel } from '../backend-vercel/index.ts'
+import { credentialed, credentialSource, handTeam, vercel } from '../backend-vercel/index.ts'
 import { board as boardAt, type Board } from '../server/index.ts'
 import { isBoardName } from '../server/board.ts'
 import { isApiMessageId } from '../server/backend-vercel.ts'
@@ -17,7 +17,7 @@ import { VERSION } from '../version.ts'
 import { conformance } from '../conformance/index.ts'
 import { explainPrincipalOf, explanationLine, GrantMisuse, grantCanOf, KINDS, principalsIn, type OptionToken } from './grants.ts'
 import { actorName, formatAccess, formatConformance, formatEvent, formatGrants, grantRow, formatSchedule, formatTokens, reactionNames, formatSourceRead, formatSynced, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
-import { parseScope } from '../server/access.ts'
+import { parseCan } from '../server/access.ts'
 import { AGENTS, allowRules, cliOf, disallow, installedHook, tilde, uninstallHook, type HookAgent } from './hooks.ts'
 import { commands, filters as filterOptions, globalOptions, options, type CliCommand } from './commands.ts'
 import { commandHelp, commandPath, rootHelp } from './help.ts'
@@ -427,7 +427,7 @@ function trustId(what: 'grant' | 'token', value: string | undefined): string {
 }
 
 /**
- * A token's `--can`, as `x-board-scope` writes it (`dev/=read,post;ci/=read`), repeated or
+ * A token's `--can`, as `x-board-can` writes it (`dev/=read,post;ci/=read`), repeated or
  * `;`-joined, with `none` for no permissions, as `all` is every one: `*=all;security/=none` closes a
  * subtree. `security/=` means the same. The board takes an empty list, so `none` never leaves the CLI.
  */
@@ -443,9 +443,9 @@ function canFlag(values: readonly string[]) {
     })
     .join(';')
   try {
-    return parseScope(scope)
+    return parseCan(scope, '--can')
   } catch (error) {
-    throw usage(`${(error as Error).message.replace(/x-board-scope/g, '--can').replace(/, or all$/, ', all, or none')}.`)
+    throw usage(`${(error as Error).message.replace(/, or all$/, ', all, or none')}.`)
   }
 }
 
@@ -758,14 +758,14 @@ function profileFlag(): ProfileOption | undefined {
  * Vercel's API for `--scope` or `--team`; the one the environment points at; or the team's board
  * of the Vercel project it runs in, or, for an app with a team board, your login's.
  */
-function connection(url: string | undefined = flags.url, options: { token?: string; handle?: string | undefined } = {}) {
+function connection(url: string | undefined = flags.url, options: { token?: string; handle?: string | undefined; can?: string } = {}) {
   const profile = profileFlag()
   const team = flags.scope ?? flags.team
   const name = boardNameFlag(url, team)
   // A name names a team's board as --scope does, so it goes before BOARD_URL too.
   const configured = url ?? (team === undefined && name === undefined ? configuredUrl() : null)
   if (configured === null) {
-    const board = boardAt({ backend: vercel({ ...(team !== undefined ? { team } : {}), ...sending(options.token) }), ...(name !== undefined ? { name, ensure: flags.ensure === true } : {}) })
+    const board = boardAt({ backend: vercel({ ...(team !== undefined ? { team } : {}), ...sending(options.token, options.can) }), ...(name !== undefined ? { name, ensure: flags.ensure === true } : {}) })
     return { url: null, transport: { source: credentialSource }, board: profile !== undefined ? board.as(profile) : board }
   }
   const at = configured.replace(/\/+$/, '')
@@ -773,11 +773,11 @@ function connection(url: string | undefined = flags.url, options: { token?: stri
   // A team's board in Vercel's API (what `whoami` prints for one) is reached through the API, as `--scope` is.
   const onVercel = vercelBoard(at)
   if (onVercel) {
-    const board = boardAt({ backend: vercel({ ...onVercel, ...sending(options.token) }) })
+    const board = boardAt({ backend: vercel({ ...onVercel, ...sending(options.token, options.can) }) })
     return { url: at as string | null, transport: { source: credentialSource }, board: profile !== undefined ? board.as(profile) : board }
   }
   const handle = options.handle ?? flags.handle
-  const transport = connect(at, { ...(options.token !== undefined ? { token: options.token } : {}), ...(handle ? { handle } : {}) })
+  const transport = connect(at, { ...(options.token !== undefined ? { token: options.token } : {}), ...(handle ? { handle } : {}), ...(options.can !== undefined ? { fetch: narrowing(options.can) } : {}) })
   const board = boardAt({ backend: http(at, { fetch: transport.fetch }) })
   return { url: at as string | null, transport: transport as { source(): string | null }, board: profile !== undefined ? board.as(profile) : board }
 }
@@ -814,15 +814,27 @@ function boardNameFlag(url: string | undefined, team: string | undefined): strin
   return given
 }
 
-/** For Vercel's API, `token` in place of your own credentials: a board token's secret. */
-function sending(token: string | undefined): { fetch?: typeof fetch } {
-  if (token === undefined) return {}
+/** For Vercel's API, `token` in place of your own credentials (a board token's secret), and `can` narrowing them. */
+function sending(token: string | undefined, can?: string): { fetch?: typeof fetch } {
+  if (token === undefined && can === undefined) return {}
   return {
-    fetch: (input, init) => {
-      const request = new Request(input, init)
-      request.headers.set('authorization', `Bearer ${token}`)
-      return globalThis.fetch(request)
+    fetch: (input, init = {}) => {
+      // The headers go in init: vercel()'s own fetch builds its credentials onto init's, and a Request's would be lost.
+      const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined))
+      if (token !== undefined) headers.set('authorization', `Bearer ${token}`)
+      if (can !== undefined) headers.set('x-board-can', can)
+      // Without a token of its own, it goes with the credentials vercel() would find.
+      return (token === undefined ? credentialed() : globalThis.fetch)(input, { ...init, headers })
     },
+  }
+}
+
+/** A fetch that narrows what a board on HTTP lets its credentials do to `can`, as a proxy holding them would. */
+function narrowing(can: string): typeof fetch {
+  return (input, init) => {
+    const request = new Request(input, init)
+    request.headers.set('x-board-can', can)
+    return globalThis.fetch(request)
   }
 }
 
@@ -956,7 +968,9 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       // A board token is its board's, so a team's board in Vercel's API is reached by its URL, which names it by ID.
       const tokenUrl = io.board ? undefined : connection().url === null ? (await client().discovery()).url : flags.url
       const withToken = io.board ? {} : { withToken: (secret: string) => connection(tokenUrl, { token: secret }).board }
-      const report = await conformance(client(), { ...(flags.channel ? { channel: flags.channel } : {}), ...withToken })
+      // And with this run's own credential, narrowed with x-board-can, as a proxy holding it sends it.
+      const withCan = io.board ? {} : { withCan: (can: string) => connection(undefined, { can }).board }
+      const report = await conformance(client(), { ...(flags.channel ? { channel: flags.channel } : {}), ...withToken, ...withCan })
       if (flags.json) result(report)
       else out(formatConformance(report))
       return report.ok ? 0 : 1

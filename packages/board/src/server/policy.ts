@@ -1,4 +1,4 @@
-import { compileAccess, parseScope, PERMISSIONS, scopeOf, type Access, type Level, type Permission } from './access.ts'
+import { compileAccess, parseCan, PERMISSIONS, canText, type Access, type Level, type Permission } from './access.ts'
 import { explainGrants } from './grants.ts'
 import { resolveActor } from './actors.ts'
 import {
@@ -187,7 +187,7 @@ export function createPolicy(options: PolicyOptions, keeps: boolean, serving: ((
       if (status === 401 || status === 403) return { pattern: null, over: [], level: null, grants: [], permissions: [] }
       throw error
     }
-    const scope = principal.scope === undefined ? null : compileAccess(parseScope(principal.scope))
+    const scope = principal.scope === undefined ? null : compileAccess(parseCan(principal.scope))
     const allowed = (permissions: readonly Permission[]) => (scope ? permissions.filter((permission) => scope.can(permission, channel)) : [...permissions])
     if ('fixed' in resolved) return { pattern: null, over: [], level: null, grants: [], permissions: allowed(PERMISSIONS.filter((permission) => resolved.fixed.can(permission, channel))) }
     const { pattern, over, level, grants, permissions } = explainGrants(resolved.facts, channel)
@@ -208,7 +208,7 @@ export function createPolicy(options: PolicyOptions, keeps: boolean, serving: ((
       const found = await principalOf(request)
       const claims = found.pinned ? pinnedClaims(found.pinned, request.claims) : request.claims
       // A token's own scope and the request's both narrow: neither widens the other.
-      const scope = found.scope === undefined ? (claims.scope ?? undefined) : claims.scope === null ? found.scope : scopeOf(compileAccess(parseScope(found.scope)).narrow(parseScope(claims.scope)))
+      const scope = found.scope === undefined ? (claims.scope ?? undefined) : claims.scope === null ? found.scope : canText(compileAccess(parseCan(found.scope)).narrow(parseCan(claims.scope)))
       const principal = scope === undefined ? found : { ...found, scope }
       const { author, actor } = resolveActor(principal, claims, request.audience)
       return { principal: { ...principal, access: await authority.grant(principal) }, author, actor }

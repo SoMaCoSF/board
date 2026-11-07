@@ -505,7 +505,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
     const send = (patched: Protocol['syncImport']['input']) => backend.syncImport(caller, patched, signal)
     if (middleware.length === 0 || caller.origin.via?.kind === 'middleware' || (body.op !== 'post' && body.op !== 'edit')) return send(body)
     const access = accessOf(caller)
-    // One that can't import goes as it came, for the backend to say why: no sync, or narrowed with x-board-scope.
+    // One that can't import goes as it came, for the backend to say why: no sync, or narrowed with x-board-can.
     if (access && (!access.anywhere('sync') || ('identity' in caller && caller.identity.principal.scope !== undefined))) return send(body)
     const dropped = async (commit: () => Promise<Protocol['syncImport']['output']>) => {
       try {

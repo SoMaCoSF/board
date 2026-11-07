@@ -1,6 +1,6 @@
 import type { JWTVerifyGetKey } from 'jose'
 import type { PrincipalInput } from '../api/routes.ts'
-import { compileAccess, FULL_ACCESS, parseScope, writtenCan, type Access, type Can, type WrittenCan } from './access.ts'
+import { compileAccess, FULL_ACCESS, parseCan, writtenCan, type Access, type Can, type WrittenCan } from './access.ts'
 import { badRequest, forbidden, HttpError, unauthorized } from './errors.ts'
 import { admits, grantAccess, type GrantFacts, type GrantSource } from './grants.ts'
 
@@ -19,7 +19,7 @@ export type Claims = {
   /** `x-board-handle` and `x-board-name`: a person's handle and display name. */
   handle: string | null
   name: string | null
-  /** `x-board-scope`: what it narrows itself to, `dev/=read,post`. It only narrows. */
+  /** `x-board-can`: what it narrows itself to, `dev/=read,post`. It only narrows. */
   scope: string | null
 }
 
@@ -50,7 +50,7 @@ export type Principal = {
   expiresAt: Date | null
   /** The verified token's claims, so its access can be worked out again later, as a schedule's sends do. Absent for people and the board's own code. */
   facts?: TokenFacts
-  /** The `x-board-scope` a proxy sent, which narrows whatever it may do. */
+  /** The `x-board-can` a proxy sent, which narrows whatever it may do. */
   scope?: string
   /**
    * The board token it came with (its ID), kept with what it stores: a schedule or a registration
@@ -541,7 +541,7 @@ export function createAuthority(options: {
    */
   async function grant(principal: Known, snapshot?: readonly StoredGrant[]): Promise<Access> {
     const resolved = await resolve(principal, snapshot)
-    const scope = principal.scope === undefined ? undefined : parseScope(principal.scope)
+    const scope = principal.scope === undefined ? undefined : parseCan(principal.scope)
     if ('fixed' in resolved) return scope === undefined ? resolved.fixed : resolved.fixed.narrow(scope)
     const decided = grantAccess({ ...resolved.facts, ...(scope !== undefined ? { can: scope } : {}) })
     if (!decided) throw forbidden("this token can't use this board")

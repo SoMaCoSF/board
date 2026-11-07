@@ -6,7 +6,7 @@ import {
   expand,
   IMPLIES,
   parsePattern,
-  parseScope,
+  parseCan,
   PERMISSIONS,
   type Access,
   type Permission,
@@ -189,13 +189,13 @@ describe('access, exhaustively over a small universe', () => {
       const header = Object.entries(scope)
         .map(([pattern, grant]) => `${pattern}=${grant.join(',')}`)
         .join(';')
-      expect(parseScope(header), header).toEqual(scope)
+      expect(parseCan(header), header).toEqual(scope)
       for (const map of [owner, intake])
-        agrees(compileAccess(map).narrow(parseScope(header)), (channel) => held(map, channel, scope), `${show(map)} with ${header}`)
+        agrees(compileAccess(map).narrow(parseCan(header)), (channel) => held(map, channel, scope), `${show(map)} with ${header}`)
     }
     // Pi's sandbox: full access behind its proxy's scope.
     const pi = { 'a/': ['read', 'post', 'react', 'label'], 'a/b': ['read', 'sync'] } as const satisfies ChannelMap
-    agrees(compileAccess(owner).narrow(parseScope('a/=read,post,react,label;a/b=read,sync')), (channel) => held(owner, channel, pi), 'pi')
+    agrees(compileAccess(owner).narrow(parseCan('a/=read,post,react,label;a/b=read,sync')), (channel) => held(owner, channel, pi), 'pi')
   })
 
   it('reads only *, a channel, or a channel and its subtree, and says what to type for any other *', () => {
@@ -218,7 +218,7 @@ describe('access, exhaustively over a small universe', () => {
       if (valid) {
         if (parsed !== null) expect.fail(`${pattern} is a pattern, but: ${parsed}`)
         expect(() => compileAccess({ [pattern]: ['read'] })).not.toThrow()
-        expect(() => parseScope(`${pattern}=read`)).not.toThrow()
+        expect(() => parseCan(`${pattern}=read`)).not.toThrow()
         continue
       }
       if (parsed === null) expect.fail(`${pattern || '(empty)'} isn't a pattern, but parsed`)
@@ -230,7 +230,7 @@ describe('access, exhaustively over a small universe', () => {
         if (!parsed.endsWith(hint)) expect.fail(`${pattern}: ${parsed}, not ${hint}`)
       }
       expect(() => compileAccess({ [pattern]: ['read'] }), pattern).toThrow('invalid channel pattern')
-      expect(() => parseScope(`${pattern}=read`), pattern).toThrow('invalid channel pattern')
+      expect(() => parseCan(`${pattern}=read`), pattern).toThrow('invalid channel pattern')
     }
   })
 })
