@@ -74,7 +74,7 @@ describe('vercel()', () => {
       'schedules: schedules a reply, lists it, and cancels it': 'passed',
       'schedules: keeps noSync on a schedule, so its sends stay off every platform': 'passed',
       'grants: grants a principal, lists it, and revokes it': 'passed',
-      'grants: makes another grant for the same principals, and changes one by its ID': 'skipped',
+      'grants: makes another grant for the same principals, and changes one by its ID': 'passed',
       "grants: keeps a grant's can as written, a pattern with no permissions included": 'passed',
       'grants: lets the most specific pattern decide, then the closest principal there, and adds up ties': 'passed',
       'grants: lets everyone narrow what something else lets in, and lets no one in itself': 'skipped',
@@ -1588,16 +1588,25 @@ describe("board tokens on Vercel's API", () => {
     // A project that manages the board, so the grants checks that mint tokens run too.
     await handleOn(api).createGrant({ principals: [{ kind: 'project', project: 'prj_pong', environments: ['production'] }], can: { '*': 'all' } })
     const { secret } = await handleOn(api, 'project:prj_pong:production').createToken({ name: 'conformance' })
-    const report = await conformance(holding(api, secret), { withToken: (minted) => holding(api, minted), principals: { project: 'prj_web', repository: 'acme/api', viewer: 'val@acme.com', app: 'ship' } })
-    // Its tokens, minted from its own, check what a token may grant; only the checks naming a GitHub run skip.
+    const principals = { project: 'prj_web', repository: 'acme/api', viewer: 'val@acme.com' }
+    const report = await conformance(holding(api, secret), { withToken: (minted) => holding(api, minted), principals: { ...principals, app: 'ship' } })
+    // Its tokens, minted from its own, check what a token may grant, naming the app it's given. Only the
+    // check that needs a caller nothing lets in, which a repository's runs are, skips.
     const github = 'this board takes no GitHub or OIDC principals in a grant'
-    expect(report.checks.filter((check) => check.group === 'grants' && check.status !== 'passed').map(({ name, status, detail }) => ({ name, status, detail }))).toEqual([
-      { name: 'makes another grant for the same principals, and changes one by its ID', status: 'skipped', detail: github },
-      { name: 'lets everyone narrow what something else lets in, and lets no one in itself', status: 'skipped', detail: github },
-      { name: "lets no token grant past its own can, even where everyone's grant closes it", status: 'skipped', detail: github },
-      { name: 'lets no token let anyone in where everyone gets more than the token has', status: 'skipped', detail: github },
+    const unchecked = (checks: typeof report.checks) =>
+      checks.filter((check) => check.group === 'grants' && check.status !== 'passed').map(({ name, status, detail }) => ({ name, status, detail }))
+    const always = [
       { name: 'lets a member grant on a pattern after a lock under it', status: 'skipped', detail: expect.any(String) },
       { name: 'lets a project on another team in, in its environments', status: 'skipped', detail: expect.any(String) },
+    ]
+    expect(unchecked(report.checks)).toEqual([{ name: 'lets everyone narrow what something else lets in, and lets no one in itself', status: 'skipped', detail: github }, ...always])
+    // Given no app, the checks that grant to someone else name the repository, which Vercel's API refuses.
+    const appless = await conformance(holding(api, secret), { withToken: (minted) => holding(api, minted), principals })
+    expect(unchecked(appless.checks).filter((check) => check.detail === github).map((check) => check.name)).toEqual([
+      'makes another grant for the same principals, and changes one by its ID',
+      'lets everyone narrow what something else lets in, and lets no one in itself',
+      "lets no token grant past its own can, even where everyone's grant closes it",
+      'lets no token let anyone in where everyone gets more than the token has',
     ])
     expect(report.checks.filter((check) => check.group === 'watchers').map(({ status, detail }) => ({ status, detail }))).toEqual([
       { status: 'skipped', detail: 'only a deployment registers watchers here' },

@@ -155,7 +155,7 @@ const DAY = 86_400_000
  * Board tokens, as Vercel's API keeps them: each one board's, its secret shown once, a retried mint
  * 409. Deployments and tokens mint; people and apps don't.
  * A token lists and revokes only itself and the tokens made from it; anyone else, the tokens that act
- * as them. One that's revoked, expired, or whose person left the team is 401 `invalid_token`.
+ * as them. One that's revoked or expired is 401 `invalid_token`.
  */
 function fakeTokens(shared: { now: () => number }) {
   const minted = new Map<string, Minted>()
