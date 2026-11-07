@@ -1,7 +1,7 @@
 import { defineState } from "eve/context";
 import type { SandboxNetworkPolicy } from "eve/sandbox";
 import type { ToolContext } from "eve/tools";
-import { eveName, policy } from "../../app/api/board/[[...path]]/harness.ts";
+import { boardName, eveName, factoryBoardId, policy } from "../../app/api/board/[[...path]]/harness.ts";
 import { CONNECTOR } from "../../app/api/board/[[...path]]/github.ts";
 import { expiresAt, stale } from "../../app/api/board/[[...path]]/tokens.ts";
 import { environment } from "../sandbox";
@@ -11,6 +11,9 @@ import type { Board } from "./board";
 
 const GITHUB_MS = 30 * 60_000;
 const GIT_EMAIL = "pi@vboard-factory.playground-vercel.tools";
+
+/** The factory's board's ID, asked once per instance: a board keeps its ID. */
+let boardId: Promise<string> | null = null;
 
 const given = defineState("factory.credentials", () => ({ until: 0 }));
 
@@ -27,7 +30,11 @@ export async function give(ctx: Pick<ToolContext, "getSandbox">, board: Board, {
     getToken(CONNECTOR, { subject: { type: "app" }, validityBufferMs: GITHUB_MS }),
   ]);
   const tokens = { gateway, board: boardToken, github };
-  await sandbox.setNetworkPolicy(policy(board.thread, tokens, process.env.VERCEL_AUTOMATION_BYPASS_SECRET) as SandboxNetworkPolicy);
+  boardId ??= factoryBoardId(boardToken, boardName()).catch((error: unknown) => {
+    boardId = null;
+    throw error;
+  });
+  await sandbox.setNetworkPolicy(policy(board.thread, tokens, process.env.VERCEL_AUTOMATION_BYPASS_SECRET, await boardId) as SandboxNetworkPolicy);
   const git = await sandbox.run({
     command: `git config --global user.name ${JSON.stringify(eveName(board.thread))} && git config --global user.email ${GIT_EMAIL}`,
   });

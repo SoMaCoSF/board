@@ -14,6 +14,6 @@ export default defineTool({
     if (!board) throw new Error("the vb tool works only in a board thread's session");
     // Ends with the turn, or in a few minutes: every request it makes, too.
     const signal = callSignal(ctx.abortSignal);
-    return asEve(board.thread, () => runVb(eveBoard(factory, board.thread), input.args, () => ctx.getSandbox(), signal));
+    return asEve({ thread: board.thread, signal }, () => runVb(eveBoard(factory, board.thread), input.args, () => ctx.getSandbox(), signal));
   },
 });

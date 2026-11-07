@@ -22,10 +22,11 @@ export const eveBoard = (board: Board, thread: string): Board => board.as({ name
 
 /**
  * Commands the vb tool doesn't run: tail and wait would hold every other Eve's calls on the
- * instance, and sources, inbox, and identity read what the platforms sent outside the board's
- * channels, which board content could otherwise steer Eve into reading.
+ * instance; sources, inbox, and identity read what the platforms sent outside the board's
+ * channels, which board content could otherwise steer Eve into reading; and tokens, grants, hooks,
+ * and conformance act as the factory's project on the board itself.
  */
-const REFUSED = ["tail", "wait", "sources", "inbox", "identity"];
+const REFUSED = ["tail", "wait", "sources", "inbox", "identity", "tokens", "grants", "hooks", "hook", "conformance"];
 
 /** The sandbox's home, where clones and skills live. */
 export const SANDBOX_HOME = `/home/${SANDBOX_USER}`;

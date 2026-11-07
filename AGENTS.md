@@ -231,8 +231,11 @@ thread rather than starting one.
   Eve writes with the vb tool, on the factory's own board handle in the
   function (`asEve` in `factory.ts` adds its session, and `eveFetch` keeps it
   off sync's records, watchers, grants and tokens), so its typing and reads
-  reach Slack through the factory's sync. `vb` in the sandbox only reads: the
-  policy adds the deployment's token to GETs on the messageboard API.
+  reach Slack through the factory's sync. The board's first use is outside any
+  command (`eveScope`), so its watchers never run as an Eve. `vb` in the sandbox
+  only reads: the policy adds the deployment's token to GETs on the factory's
+  one board (`vbReads`, its ID from `factoryBoardId`), and `BOARD_NAME` points a
+  preview's `vb` at the previews' board.
   Anyone who can write can send those headers, so `byEve` also needs the
   factory's production deployment as the principal
   (`vercel:project:<VERCEL_PROJECT_ID>:production`, the token Eve's policy adds).

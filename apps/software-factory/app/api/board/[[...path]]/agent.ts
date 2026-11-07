@@ -6,13 +6,19 @@ export { INSTRUCTIONS, eveAvatar, eveName, evePreview, policy, type Task } from 
 
 
 /**
- * Whether a message was written by the Eve working on `thread` (named `pi` before it had a name of its own). Every Eve
- * posts as the factory's production deployment, whose OIDC token its network policy adds; its profile and session
+ * The environment whose deployment this one's Eves write as: a preview's, on its own board, or
+ * production's everywhere else, so a preview can never pass for production's Eve there.
+ */
+const eveEnvironment = () => (process.env.VERCEL_ENV === "preview" ? "preview" : "production");
+
+/**
+ * Whether a message was written by the Eve working on `thread` . Every Eve posts as the factory's deployment
+ * (production's, or a preview's on the previews' board), with its OIDC token; its profile and session
  * are headers anyone who can write may send, so they only say which thread's Eve it is.
  */
 export const byEve = (thread: string, by: { principal: string; profile: string | null; session: string | null }) =>
   !!process.env.VERCEL_PROJECT_ID &&
-  by.principal === `vercel:project:${process.env.VERCEL_PROJECT_ID}:production` &&
+  by.principal === `vercel:project:${process.env.VERCEL_PROJECT_ID}:${eveEnvironment()}` &&
   by.profile === eveName(thread) &&
   by.session === eveSession(thread);
 

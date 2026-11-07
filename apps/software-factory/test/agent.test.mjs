@@ -87,6 +87,24 @@ test("byEve: only the factory's production deployment, since anyone who can writ
   }
 });
 
+test("byEve: on the previews' board, a preview's Eve, and still never production's there or a preview's on production's", () => {
+  const eve = { profile: eveName("1956"), session: "thread-1956" };
+  const preview = "vercel:project:prj_factory:preview";
+  const production = "vercel:project:prj_factory:production";
+  const env = process.env.VERCEL_ENV;
+  try {
+    process.env.VERCEL_ENV = "preview";
+    assert.ok(byEve("1956", { principal: preview, ...eve }));
+    assert.ok(!byEve("1956", { principal: production, ...eve }));
+    process.env.VERCEL_ENV = "production";
+    assert.ok(!byEve("1956", { principal: preview, ...eve }));
+    assert.ok(byEve("1956", { principal: production, ...eve }));
+  } finally {
+    if (env === undefined) delete process.env.VERCEL_ENV;
+    else process.env.VERCEL_ENV = env;
+  }
+});
+
 test("eveAvatar: a PNG generated from each Eve's name", () => {
   assert.equal(eveAvatar("1956"), "https://vercel.com/api/www/avatar?s=64&format=png&u=clever-lemur-1956");
 });

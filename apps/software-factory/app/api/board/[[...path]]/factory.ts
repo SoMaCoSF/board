@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { board } from "@vercel/board";
 import { render } from "@vercel/board/sync";
 import { channels, slack } from "@vercel/board/sync-slack";
@@ -15,8 +14,8 @@ import { guard } from "./guard";
 import { renderForSlack } from "./render";
 import { issues, pulls } from "./quiet";
 import { CONNECTOR, REPO } from "./github";
-import { DEV } from "./harness";
-import { eveFetch } from "./eve-fetch";
+import { boardName, DEV } from "./harness";
+import { eveFetch, eveScope, type EveCall } from "./eve-fetch";
 
 // The software factory: board running on its own repo and Vercel's Slack, on the team's default
 // board in Vercel's API, under `vboard/` channels. The API keeps the board, its files and
@@ -24,13 +23,11 @@ import { eveFetch } from "./eve-fetch";
 //
 // Previews and local dev get a board of their own, so their watchers never answer production's
 // threads: every deployment's watchers register on the board they use.
-const production = process.env.VERCEL_ENV === "production";
+/** Where the vb tool runs Eve's commands; the board's first use, outside them, is a read of its channels. */
+const scope = eveScope(() => factory.channels());
 
-/** The thread whose Eve a request is from, while the vb tool runs one of its commands. */
-const eve = new AsyncLocalStorage<string>();
-
-/** Runs `fn` as the Eve working on `thread`: its requests carry that Eve's session, and reach only what Eve uses. */
-export const asEve = <T>(thread: string, fn: () => Promise<T>) => eve.run(thread, fn);
+/** Runs `fn` as the Eve working on `call.thread`: its requests carry that Eve's session, reach only what Eve uses, and end with `call.signal`. */
+export const asEve = <T>(call: EveCall, fn: () => Promise<T>) => scope.asEve(call, fn);
 
 let oidc: (() => Promise<string>) | null = null;
 const token = async () => {
@@ -39,9 +36,9 @@ const token = async () => {
 };
 
 export const factory = board({
-  ...(production ? {} : { name: "vboard-factory-preview" }),
+  ...(boardName() ? { name: boardName() } : {}),
   // As this deployment's project, with its OIDC token; an Eve's session while it's one of Eve's.
-  fetch: eveFetch({ token, thread: () => eve.getStore() }),
+  fetch: eveFetch({ token, call: scope.call }),
   // Every message from Slack, GitHub, or CI is checked for prompt injection before it lands.
   // Shadow mode: a flagged one is labeled guard=injection, and nothing is dropped yet.
   middleware: [guard({ mode: "shadow" })],

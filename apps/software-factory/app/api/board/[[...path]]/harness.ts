@@ -6,6 +6,13 @@ import { REPO } from "./github.ts";
 export const API = "https://api.vercel.com";
 /** The team whose default board the factory runs on, by slug: what `vb` in the sandbox names. */
 export const TEAM = "vercel-internal-playground";
+/**
+ * The team's board the factory uses: its default one in production, and one named
+ * `vboard-factory-preview` for previews and `next dev`, so their watchers never answer production's
+ * threads. Undefined names the default.
+ */
+export const boardName = (env = process.env.VERCEL_ENV) => (env === "production" ? undefined : "vboard-factory-preview");
+
 /** The channel the factory syncs with Slack and GitHub, and every Eve watcher tails. */
 export const DEV = "vboard/dev";
 export const MODEL = "anthropic/claude-opus-5.5";
@@ -134,11 +141,32 @@ command -v ffmpeg >/dev/null || { npm install -g ffmpeg-static@${FFMPEG_STATIC} 
 export const evePreview = (thread: string) => `vboard-factory-git-board-${threadKey(thread)}.playground-vercel.tools`;
 
 /**
- * Vercel's board, as `vb` in the sandbox reads it: GETs on the messageboard API only, so `vb tail`
- * and `vb wait` work in bash, and nothing there writes as Eve or reaches sync's records, the
- * inbox, watchers, grants or tokens. Eve writes with the vb tool, in the function.
+ * The factory's board, as `vb` in the sandbox reads it: GETs on the messageboard API for that one
+ * board (`board`, its ID), so `vb tail` and `vb wait` work in bash, and nothing there reads the
+ * team's other boards, writes as Eve, or reaches sync's records, the inbox, watchers, grants or
+ * tokens. Listing the team's boards (their names, which `vb` finds the board by) is all it sees
+ * of the rest. Eve writes with the vb tool, in the function.
  */
-export const VB_READS = "^/v1/messageboard/(me|boards(/[A-Za-z0-9_-]+(/(channels|threads|messages|changes|actors|schedules|attachments)(/.*)?)?)?)?$";
+export const vbReads = (board: string) => {
+  if (!/^[A-Za-z0-9_-]+$/.test(board)) throw new Error(`not a board ID: ${board}`);
+  return `^/v1/messageboard/(me|boards|boards/${board}/(channels|threads|messages|changes|actors|schedules|attachments)(/[A-Za-z0-9_-]+)*)$`;
+};
+
+/**
+ * The ID of the team's board named `name` (the factory's, `boardName()`; undefined for the default), as Vercel's API names it, asked with
+ * the deployment's `token`: what the sandbox's policy pins `vb` to.
+ */
+export async function factoryBoardId(token: string, name: string | undefined, send: typeof fetch = fetch): Promise<string> {
+  const url = new URL(`${API}/v1/messageboard/boards`);
+  url.searchParams.set("slug", TEAM);
+  if (name) url.searchParams.set("name", name);
+  const response = await send(url, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) });
+  if (!response.ok) throw new Error(`Vercel's API answered ${response.status} for the factory's board`);
+  const body = (await response.json()) as { boards?: { id: string; name: string }[]; defaultBoardId?: string | null };
+  const id = name ? body.boards?.find((board) => board.name.toLowerCase() === name.toLowerCase())?.id : body.defaultBoardId;
+  if (!id) throw new Error(`the team has no board ${name ?? "by default"} yet`);
+  return id;
+}
 
 /**
  * Who a thread's Eve is on the board, with its token: what the sandbox's network policy adds to
@@ -158,6 +186,7 @@ export function policy(
   thread: string,
   tokens: { gateway: string; board: string; github: string },
   bypass: string | undefined,
+  board: string,
 ): NetworkPolicy {
   const protection = bypass ? { "x-vercel-protection-bypass": bypass } : {};
   const git = Buffer.from(`x-access-token:${tokens.github}`).toString("base64");
@@ -168,7 +197,7 @@ export function policy(
       ],
       [new URL(API).host]: [
         {
-          match: { method: ["GET"], path: { regex: VB_READS } },
+          match: { method: ["GET"], path: { regex: vbReads(board) } },
           transform: [{ headers: eveHeaders(thread, tokens.board) }],
         },
       ],

@@ -7,7 +7,7 @@
     "build": "pnpm --filter @vercel/board build && next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test --test-force-exit test/*.test.mjs"
   },
   "devDependencies": {
     "@types/hast": "^3.0.5",

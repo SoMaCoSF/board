@@ -6,13 +6,14 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { eveAvatar, eveName, evePreview, policy } from "../app/api/board/[[...path]]/agent.ts";
+import { boardName, factoryBoardId } from "../app/api/board/[[...path]]/harness.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const script = join(root, "skills/ui-video/scripts/ui-video");
 const tokens = { gateway: "g", board: "b", github: "h" };
 
 test("policy: Eve's own branch preview gets past Vercel Authentication, and no other deployment sees the secret", () => {
-  const allow = policy("3100", tokens, "s3cret").allow;
+  const allow = policy("3100", tokens, "s3cret", "brd_1").allow;
   // Vercel's branch URL for board/3100: the branch's `/` becomes `-`.
   assert.equal(evePreview("3100"), "vboard-factory-git-board-3100.playground-vercel.tools");
   // A thread on Vercel's board: its branch is board/<key>.
@@ -24,7 +25,7 @@ test("policy: Eve's own branch preview gets past Vercel Authentication, and no o
   const withSecret = Object.entries(allow).filter(([, rules]) => JSON.stringify(rules).includes("s3cret"));
   assert.deepEqual(withSecret.map(([host]) => host), [evePreview("3100")]);
   assert.deepEqual(allow["*"], []);
-  assert.equal(policy("3100", tokens, undefined).allow[evePreview("3100")], undefined);
+  assert.equal(policy("3100", tokens, undefined, "brd_1").allow[evePreview("3100")], undefined);
 });
 
 // The headers the sandbox's proxy adds to a `method` request for `path` on `host`, as it reads a rule's match.
@@ -35,8 +36,8 @@ function sent(allow, host, method, path) {
   return Object.assign({}, ...rules.flatMap((rule) => rule.transform.map((t) => t.headers)));
 }
 
-test("policy: vb in bash reads Vercel's board as the thread's Eve, and writes nothing and reaches nothing else there", () => {
-  const allow = policy(3100, tokens, "s3cret").allow;
+test("policy: vb in bash reads the factory's board as the thread's Eve, and writes nothing and reads no other board", () => {
+  const allow = policy(3100, tokens, "s3cret", "brd_1").allow;
   const host = "api.vercel.com";
   const eve = {
     authorization: "Bearer b",
@@ -56,6 +57,13 @@ test("policy: vb in bash reads Vercel's board as the thread's Eve, and writes no
   for (const method of ["POST", "PATCH", "PUT", "DELETE"])
     assert.deepEqual(sent(allow, host, method, "/v1/messageboard/boards/brd_1/threads/thr_1/messages"), {}, method);
   for (const path of [
+    // The team's other boards.
+    "/v1/messageboard/boards/brd_other/threads/thr_1/messages",
+    "/v1/messageboard/boards/brd_other/channels",
+    "/v1/messageboard/boards/brd_1x/channels",
+    "/v1/messageboard/boards/brd_1/../brd_other/channels",
+    "/v1/messageboard/boards/brd_1/channels/../../brd_other/channels",
+    "/v1/messageboard/boards/brd_1/channels/%2E%2E/%2E%2E/brd_other/channels",
     "/v1/messageboard/boards/brd_1/sync/inbox/slack",
     "/v1/messageboard/boards/brd_1/sync/find",
     "/v1/messageboard/boards/brd_1/watchers",
@@ -65,12 +73,34 @@ test("policy: vb in bash reads Vercel's board as the thread's Eve, and writes no
     "/v2/user",
     "/",
   ]) assert.deepEqual(sent(allow, host, "GET", path), {}, path);
+  assert.throws(() => policy(3100, tokens, undefined, "brd_1|.*"), /not a board ID/);
   // The factory's own deployment gets no credentials: nothing there is Eve's to call.
   assert.equal(allow["vboard-factory.playground-vercel.tools"], undefined);
 });
 
+test("factoryBoardId: the team's default board in production, and the previews' board by name elsewhere", async () => {
+  const asked = [];
+  const api = async (url, init) => {
+    asked.push([String(url), init.headers.authorization]);
+    const name = new URL(url).searchParams.get("name");
+    return Response.json(name
+      ? { boards: [{ id: "brd_preview", name: "VBoard-Factory-Preview" }], defaultBoardId: "brd_default" }
+      : { boards: [{ id: "brd_default", name: "General" }, { id: "brd_preview", name: "vboard-factory-preview" }], defaultBoardId: "brd_default" });
+  };
+  assert.equal(await factoryBoardId("t", boardName("production"), api), "brd_default");
+  assert.equal(await factoryBoardId("t", boardName("preview"), api), "brd_preview");
+  assert.equal(await factoryBoardId("t", boardName(undefined), api), "brd_preview");
+  assert.deepEqual(asked.map(([url, auth]) => [new URL(url).pathname, new URL(url).searchParams.get("slug"), auth]), [
+    ["/v1/messageboard/boards", "vercel-internal-playground", "Bearer t"],
+    ["/v1/messageboard/boards", "vercel-internal-playground", "Bearer t"],
+    ["/v1/messageboard/boards", "vercel-internal-playground", "Bearer t"],
+  ]);
+  await assert.rejects(factoryBoardId("t", "missing", async () => Response.json({ boards: [] })), /has no board missing/);
+  await assert.rejects(factoryBoardId("t", undefined, async () => new Response(null, { status: 403 })), /answered 403/);
+});
+
 test("policy: Eve's gh and git always go as the factory GitHub App", () => {
-  const allow = policy("3100", tokens, undefined).allow;
+  const allow = policy("3100", tokens, undefined, "brd_1").allow;
   assert.deepEqual(allow["api.github.com"], [{ transform: [{ headers: { authorization: "Bearer h" } }] }]);
   assert.deepEqual(allow["github.com"], [
     { transform: [{ headers: { authorization: `Basic ${Buffer.from("x-access-token:h").toString("base64")}` } }] },
