@@ -194,11 +194,12 @@ function fakeTokens(shared: { now: () => number }) {
     return can as Minted['can']
   }
 
+  /** A day, unless `expires` says otherwise, and a week at most: only deployments mint, and they can mint again. */
   function lifetime(expires: unknown): number {
-    if (expires === undefined) return 30 * DAY
+    if (expires === undefined) return DAY
     const found = typeof expires === 'string' ? /^(\d+)(m|h|d)$/.exec(expires) : null
     const ms = found ? Number(found[1]) * { m: 60_000, h: 3_600_000, d: DAY }[found[2] as 'm' | 'h' | 'd'] : NaN
-    if (!(ms > 0 && ms <= 90 * DAY)) throw new Refused(400, 'invalid_request', 'A token lives up to 90 days.')
+    if (!(ms > 0 && ms <= 7 * DAY)) throw new Refused(400, 'invalid_request', 'A token lives up to 7 days.')
     return ms
   }
 

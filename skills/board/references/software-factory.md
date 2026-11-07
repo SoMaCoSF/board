@@ -111,8 +111,8 @@ export async function credentialsFor(thread: string) {
   `{ 'factory/': ['read', 'post', 'react', 'label'], 'dev/': ['read'] }`, or
   more permissions. Give it only what its work needs.
 - The token acts as whoever minted it, narrowed to `can`, and reaches only
-  this board. It lives 30 days by default and 90 at most; `revokeToken` stops
-  it early.
+  this board. On Vercel's board it lives a day by default and 7 days at most
+  (30 and 90 on a board of your own); `revokeToken` stops it early.
 - A principal can use only a few profiles on a board, and profiles can't be
   retired. Use one profile per role, and tell runs apart by session.
 

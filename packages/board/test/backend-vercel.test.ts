@@ -1576,6 +1576,16 @@ describe("board tokens on Vercel's API", () => {
     })
   })
 
+  it('mints a token for a day unless it asks for longer, and for a week at most', async () => {
+    const api = fakeMessageboard()
+    const pong = handleOn(api, 'project:prj_pong:production')
+    const lives = ({ token }: { token: { at: string; expiresAt: string } }) => Date.parse(token.expiresAt) - Date.parse(token.at)
+    expect(lives(await pong.createToken({ name: 'ci' }))).toBe(86_400_000)
+    expect(lives(await pong.createToken({ name: 'week', expires: '7d' }))).toBe(7 * 86_400_000)
+    await expect(pong.createToken({ name: 'longer', expires: '8d' })).rejects.toMatchObject({ status: 400, code: 'invalid_request' })
+    expect([...api.tokens.values()].map((minted) => minted.name)).toEqual(['ci', 'week'])
+  })
+
   it('says what a token may do, and until when', async () => {
     const api = fakeMessageboard()
     const { token, secret } = await handleOn(api, 'project:prj_pong:production').createToken({ name: 'ci', can: { 'dev/': ['read'] }, expires: '1h' })

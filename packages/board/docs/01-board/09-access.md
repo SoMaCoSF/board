@@ -268,7 +268,8 @@ await team.revokeToken(token.id)
   pins a profile edits, deletes, and cancels only what was written as that
   profile, not your own posts. Another token that pins it is the same author.
 - **It expires** 30 days after it's minted, or after `expires`, 90 days at
-  most. A token minted with a token is its child: it keeps its parent's pins,
+  most. On Vercel's board, where only a deployment mints and can mint again,
+  it's a day, or `expires`, 7 days at most. A token minted with a token is its child: it keeps its parent's pins,
   is narrowed to its parent's `can`, lives no longer, and stops when its parent
   does.
 - **Revoking it holds from the next request,** for it and every token minted
@@ -503,7 +504,7 @@ all of them. They don't say where or what.
 ### Is there a static token for callers without OIDC?
 
 Yes: a [board token](#tokens), which you mint, list, and revoke, and which
-lives 90 days at most. Callers with an OIDC token need none: a
+lives 90 days at most, or 7 on Vercel's board. Callers with an OIDC token need none: a
 [grant](#grants) names them, a project, a repository's runs, or an issuer's
 claims, and each token lives as long as it does. A credential of your own,
 such as a session cookie, takes

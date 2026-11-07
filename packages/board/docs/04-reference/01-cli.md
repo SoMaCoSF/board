@@ -487,7 +487,8 @@ prints its secret, which shows only here, so it pipes:
 `BOARD_TOKEN=$(vb tokens create widget --can feedback/=post)`. `--can` is
 `x-board-scope`'s syntax (`dev/=read,post;ci/=read`). `--profile` and
 `--session` pin what every request with it writes as. It lives 30 days, or
-`--expires`, 90 days at most. See [Tokens](../01-board/09-access.md#tokens).
+`--expires`, 90 days at most; on Vercel's board, a day, or `--expires`, 7 days
+at most. See [Tokens](../01-board/09-access.md#tokens).
 On Vercel's board, only a deployment mints one, with its own OIDC token, or a
 board token mints from itself: run as you, it answers with reason
 `unsupported_principal`:
@@ -504,7 +505,7 @@ error: Vercel's board mints board tokens only for a deployment.
 | `--can <scope>` | what it may do at most: `feedback/=post`, `dev/=read,post;ci/=read`, or `*=all`. Without it, read, post, react, and label everywhere |
 | `--profile <name>` | the profile every request with it writes as |
 | `--session <id>` | the session every request with it writes from |
-| `--expires <duration>` | how long it lives: `1h`, `7d`, up to `90d` |
+| `--expires <duration>` | how long it lives: `1h`, `7d`, up to `90d` (`7d` on Vercel's board) |
 
 `vb tokens` lists your live tokens, or with `manage` in every channel,
 everyone's: each one's ID, name, what it may do now, and when it expires, never a
