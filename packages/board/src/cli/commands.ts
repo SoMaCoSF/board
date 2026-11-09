@@ -135,7 +135,7 @@ export const options = {
   private: { type: 'boolean', description: 'closed to everyone but you, in the same write' },
   profile: { type: 'string', value: 'name', description: 'the profile every request with it writes as' },
   session: { type: 'string', value: 'id', description: 'the session every request with it writes from' },
-  expires: { type: 'string', value: 'duration', description: 'how long it lives (default: 30d, at most 90d)' },
+  expires: { type: 'string', value: 'duration', description: 'how long it lives (default: 30d, at most 90d; 1d and 7d on Vercel\'s board)' },
   port: { type: 'string', value: 'N', description: 'the port to listen on' },
   dir: { type: 'string', value: 'dir', description: 'where the board keeps its log (default: .board/)' },
   'no-inspect': { type: 'boolean', description: "don't start the inspector" },

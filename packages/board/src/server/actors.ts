@@ -2,7 +2,7 @@ import { own } from '../contract/own.ts'
 import type { ActorsState, Actor } from '../contract/folds.ts'
 import { toStorable, type Author } from '../contract/schemas.ts'
 import { extractMentions } from '../contract/mentions.ts'
-import { parseScope } from './access.ts'
+import { parseCan } from './access.ts'
 import type { Claims, Principal } from './auth.ts'
 import { badRequest } from './errors.ts'
 
@@ -44,10 +44,12 @@ export function claimsOf(headers: Headers): Claims {
     }
   }
   // Set by a proxy that holds the credential (Pi's sandbox); it only narrows.
-  const scope = headers.get('x-board-scope')
+  // The old name, refused rather than ignored: ignoring it would give a proxy that still sends it the token's whole access.
+  if (headers.get('x-board-scope') !== null) throw badRequest('x-board-scope is x-board-can now: send the same value as x-board-can', 'invalid_scope')
+  const scope = headers.get('x-board-can')
   if (scope !== null)
     try {
-      parseScope(scope)
+      parseCan(scope)
     } catch (error) {
       throw badRequest((error as Error).message, 'invalid_scope')
     }

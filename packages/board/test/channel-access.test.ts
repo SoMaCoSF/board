@@ -206,10 +206,10 @@ describe('a grant for another OIDC issuer', () => {
   })
 })
 
-describe('x-board-scope', () => {
+describe('x-board-can', () => {
   it('narrows what the token can do', async () => {
     const { fetch } = testBoard()
-    const pi = caller(fetch, await personToken(), { 'x-board-scope': 'dev/=read,post,react,label;ci/=read' })
+    const pi = caller(fetch, await personToken(), { 'x-board-can': 'dev/=read,post,react,label;ci/=read' })
     expect((await pi('GET', '/me')).body.can).toEqual({ 'ci/': ['read'], 'dev/': ['read', 'post', 'react', 'label'] })
     expect((await pi('POST', '/messages', { channel: 'dev/pi', text: 'on it' })).status).toBe(201)
     const ci = await pi('POST', '/messages', { channel: 'ci', text: 'not mine' })
@@ -218,31 +218,44 @@ describe('x-board-scope', () => {
 
   it('never widens it', async () => {
     const { fetch } = await granting({ principals: [{ kind: 'github', repository: 'acme/web' }], can: { '*': ['post'] } })
-    const widened = caller(fetch, await workflowToken(), { 'x-board-scope': '*=all' })
+    const widened = caller(fetch, await workflowToken(), { 'x-board-can': '*=all' })
     expect((await widened('GET', '/me')).body.can).toEqual({ '*': ['post'] })
   })
 
   it('refuses a scope longer than a schedule can keep, on every route', async () => {
     const queue = fakeQueue()
     const { fetch } = testBoard({ scheduler: queue.scheduler })
-    const scopeOf = (length: number) => 'dev/=all'.padEnd(length, ';')
-    const longest = caller(fetch, await personToken(), { 'x-board-scope': scopeOf(4000) })
+    const canText = (length: number) => 'dev/=all'.padEnd(length, ';')
+    const longest = caller(fetch, await personToken(), { 'x-board-can': canText(4000) })
     expect((await longest('POST', '/messages', { channel: 'dev', text: 'now' })).status).toBe(201)
     expect((await longest('POST', '/schedules', { channel: 'dev', text: 'later', in: '1h' })).status).toBe(201)
-    const tooLong = caller(fetch, await personToken(), { 'x-board-scope': scopeOf(4001) })
+    const tooLong = caller(fetch, await personToken(), { 'x-board-can': canText(4001) })
     for (const [method, path, body] of [
       ['POST', '/messages', { channel: 'dev', text: 'now' }],
       ['POST', '/schedules', { channel: 'dev', text: 'later', in: '1h' }],
     ] as const)
       expect(await tooLong(method, path, body), path).toMatchObject({
         status: 400,
-        body: { error: { code: 'invalid_scope', message: 'x-board-scope is longer than 4000 characters' } },
+        body: { error: { code: 'invalid_scope', message: 'x-board-can is longer than 4000 characters' } },
       })
   })
 
   it('refuses a scope it can’t read', async () => {
     const { fetch } = testBoard()
     for (const scope of ['dev/', 'dev/*=read', 'dev/=write', ''])
-      expect((await caller(fetch, await personToken(), { 'x-board-scope': scope })('GET', '/me')).body.error, scope).toMatchObject({ code: 'invalid_scope' })
+      expect((await caller(fetch, await personToken(), { 'x-board-can': scope })('GET', '/me')).body.error, scope).toMatchObject({ code: 'invalid_scope' })
+  })
+
+  it('refuses the old x-board-scope instead of ignoring it', async () => {
+    const { fetch } = testBoard()
+    const old = caller(fetch, await personToken(), { 'x-board-scope': 'dev/=read' })
+    for (const [method, path, body] of [
+      ['GET', '/me', undefined],
+      ['POST', '/messages', { channel: 'ci', text: 'past the old narrowing' }],
+    ] as const)
+      expect(await old(method, path, body), path).toMatchObject({
+        status: 400,
+        body: { error: { code: 'invalid_scope', message: 'x-board-scope is x-board-can now: send the same value as x-board-can' } },
+      })
   })
 })

@@ -203,7 +203,7 @@ function build(options: A2Options, binding: BoardBinding) {
   let ownHandle: ReturnType<BoardBinding['handle']> | null = null
   const post = options.transport?.post ?? publicPost
   const tails = Object.fromEntries(
-    Object.entries(binding.subscriptions).flatMap(([id, subscription]) => (subscription.kind === 'tail' ? [[id, { tail: subscription.tail, when: subscription.when }]] : [])),
+    Object.entries(binding.subscriptions).flatMap(([id, subscription]) => (subscription.kind === 'tail' ? [[id, { tail: subscription.tail }]] : [])),
   )
   // Always, since boards on http() may register watchers here at any time.
   const watchers = createWatchers({
@@ -1067,12 +1067,12 @@ function build(options: A2Options, binding: BoardBinding) {
   }
 
   /**
-   * Refuses a caller narrowed with `x-board-scope` (a sandboxed agent, say): its principal's
+   * Refuses a caller narrowed with `x-board-can` (a sandboxed agent, say): its principal's
    * watchers are one registration, which its project registers and runs with the token it
    * narrowed. A narrowed pull would take matches from it, and a narrowed register replace it.
    */
   function ownWatchers(principal: Granted) {
-    if (principal.scope !== undefined) throw forbidden("this token is narrowed with x-board-scope: registering and running watchers is its project's job")
+    if (principal.scope !== undefined) throw forbidden("this token is narrowed with x-board-can: registering and running watchers is its project's job")
   }
 
   /**
@@ -1087,7 +1087,7 @@ function build(options: A2Options, binding: BoardBinding) {
   /**
    * The caller, when it may sync somewhere: what every sync route needs. `records`: what it does
    * keeps sync's records (imports, receipts, its inbox, links), which only an integration does,
-   * never a caller narrowed with `x-board-scope`.
+   * never a caller narrowed with `x-board-can`.
    */
   async function needSync(caller: Caller, what: string, records = false): Promise<Identity> {
     const identity = await identityOf(caller)
@@ -1097,12 +1097,12 @@ function build(options: A2Options, binding: BoardBinding) {
   }
 
   /**
-   * Refuses a caller narrowed with `x-board-scope` what its principal's sync does: a platform
+   * Refuses a caller narrowed with `x-board-can` what its principal's sync does: a platform
    * thread or message it claimed for a channel in its scope would bring that sync's later events
    * there, from wherever on the platform they are.
    */
   function unnarrowed(principal: Granted, what: string) {
-    if (principal.scope !== undefined) throw forbidden(`this token is narrowed with x-board-scope, so it can't ${what}: that's its project's sync's job`)
+    if (principal.scope !== undefined) throw forbidden(`this token is narrowed with x-board-can, so it can't ${what}: that's its project's sync's job`)
   }
 
   /**

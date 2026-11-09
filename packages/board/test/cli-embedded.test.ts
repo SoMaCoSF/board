@@ -399,10 +399,10 @@ describe('the embedded CLI', () => {
     const home = await isolated()
     const api = fakeMessageboard()
     const fetching = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => api.fetch(input, init))
-    // Ada mints it on the team's board: its secret is all the CLI gets.
+    // A deployment mints it on the team's board: its secret is all the CLI gets.
     const minting = await api.fetch('https://api.vercel.com/v1/messageboard/boards/brd_test/tokens?teamId=team_test', {
       method: 'POST',
-      headers: { authorization: 'Bearer user:u_ada', 'content-type': 'application/json' },
+      headers: { authorization: 'Bearer project:prj_pong:production', 'content-type': 'application/json' },
       body: JSON.stringify({ operationId: 'op_1', name: 'ci', can: { 'dev/': ['read'] }, expires: '2h' }),
     })
     vi.stubEnv('BOARD_TOKEN', ((await minting.json()) as { secret: string }).secret)
@@ -411,7 +411,7 @@ describe('the embedded CLI', () => {
     try {
       const whoami = await capture(() => main(['whoami', '--url', 'https://api.vercel.com/v1/messageboard/boards/brd_test?teamId=team_test'], { name: 'board', commands: local }))
       expect(whoami.code).toBe(0)
-      expect(whoami.stdout).toMatch(/^Ada Lovelace \(vercel:user:u_ada\)\n(.*\n)*token +expires in (1h 59m|2h 0m)\n(.*\n)*can +dev\/  read\n$/)
+      expect(whoami.stdout).toMatch(/^.* \(vercel:project:prj_pong:production\)\n(.*\n)*token +expires in (1h 59m|2h 0m)\n(.*\n)*can +dev\/  read\n$/)
       // Naming no board, the CLI asks for the team's, which a board token can't.
       expect(await capture(() => main(['read', 'dev', '--scope', 'test'], { name: 'board', commands: local }))).toMatchObject({
         code: 1,
@@ -446,6 +446,40 @@ describe('the embedded CLI', () => {
     try {
       expect(await capture(() => main(['probe', '--scope', 'test'], { name: 'board', commands: { probe } }))).toMatchObject({ code: 0, stdout: 'vercel:user:u_ada\n' })
       expect(new Set(sent)).toEqual(new Set(['Bearer w3Nc8sJd1hFy']))
+    } finally {
+      fetching.mockRestore()
+      process.chdir(cwd)
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it("narrows a connection to Vercel's API with x-board-can, on your login and on VERCEL_TOKEN alike", async () => {
+    const home = await isolated()
+    const api = fakeMessageboard()
+    const sent: { can: string | null; type: string | null; authorization: string | null }[] = []
+    const fetching = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const request = new Request(input, init)
+      if (request.method === 'POST' && new URL(request.url).pathname.endsWith('/threads'))
+        sent.push({ can: request.headers.get('x-board-can'), type: request.headers.get('content-type'), authorization: request.headers.get('authorization') })
+      return api.fetch(input, init)
+    })
+    // What `vb conformance` does for its narrowed caller: its own credential, with x-board-can.
+    const probe: Command = {
+      spec: { name: 'probe', description: 'posts as a narrowed caller', arguments: [], options: [], examples: [] },
+      run: async (_args, { connection, out }) => {
+        out((await connection(undefined, { can: 'dev=read,post' }).board.post('dev', { text: 'narrowed' })).channel)
+        return 0
+      },
+    }
+    const cwd = process.cwd()
+    process.chdir(home)
+    try {
+      for (const [name, value] of [['VERCEL_AUTH_TOKEN', 'user:u_jb'], ['VERCEL_TOKEN', 'user:u_ada']] as const) {
+        vi.stubEnv(name, value)
+        sent.length = 0
+        expect(await capture(() => main(['probe', '--scope', 'test'], { name: 'board', commands: { probe } }))).toMatchObject({ code: 0, stdout: 'dev\n' })
+        expect(sent, name).toEqual([{ can: 'dev=read,post', type: 'application/json', authorization: `Bearer ${value}` }])
+      }
     } finally {
       fetching.mockRestore()
       process.chdir(cwd)
@@ -681,23 +715,32 @@ describe('the embedded CLI', () => {
     }
   })
 
-  it("notes that Vercel's board doesn't sign in GitHub or OIDC callers yet, when a grant names one", async () => {
+  it("says what Vercel's API refuses: a grant naming a GitHub run or an OIDC issuer, and a token a person mints", async () => {
     const home = await isolated()
     vi.stubEnv('VERCEL_AUTH_TOKEN', 'user:u_jb')
     const api = fakeMessageboard()
     const fetching = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => api.fetch(input, init))
     const run = (...args: string[]) => capture(() => main([...args, '--scope', 'test'], { name: 'board', commands: local }))
-    const note = "Vercel's board doesn't sign in GitHub or OIDC callers yet: this grant works once it does"
     const cwd = process.cwd()
     process.chdir(home)
     try {
-      const github = await run('grants', 'create', '--github', 'acme/web', '--can', 'ci/=post')
-      expect(github).toMatchObject({ code: 0, stdout: expect.stringMatching(new RegExp(`^created g4  --github acme/web  ci/=post\\nnote  ${note}\\n$`)) })
-      const oidc = JSON.parse((await run('grants', 'create', '--oidc', 'https://issuer.example', '--claim', 'sub=ci', '--can', 'ci/=read', '--json')).stdout)
-      expect(oidc).toMatchObject({ outcome: 'created', warnings: [{ reason: 'callers_not_signed_in', message: note }] })
-      // A person signs in: no note.
-      expect((await run('grants', 'create', '--user', 'ada@acme.com', '--can', 'ci/=read')).stdout).not.toContain('note')
-      expect(JSON.parse((await run('grants', 'create', '--user', 'bob@acme.com', '--can', 'ci/=read', '--json')).stdout).warnings).toBeUndefined()
+      const grant = "error: Vercel's board takes no GitHub or OIDC principals in a grant.\n\n  Grant an app that an OIDC exchange policy issues tokens for: --app <slug>.\n"
+      expect(await run('grants', 'create', '--github', 'acme/web', '--can', 'ci/=post')).toMatchObject({ code: 2, stdout: '', stderr: grant })
+      expect(await run('grants', 'create', '--oidc', 'https://gitlab.com', '--claim', 'project_id=42', '--can', 'ci/=post')).toMatchObject({ code: 2, stderr: grant })
+      const json = JSON.parse((await run('grants', 'create', '--github', 'acme/web', '--can', 'ci/=post', '--json')).stderr)
+      expect(json).toMatchObject({ status: 'error', reason: 'unsupported_principal', hint: 'Grant an app that an OIDC exchange policy issues tokens for: --app <slug>.' })
+      expect(await run('grants', 'explain', 'ci', '--github', 'acme/web')).toMatchObject({
+        code: 2,
+        stderr: "error: Vercel's board explains no GitHub or OIDC caller: no grant names one.\n\n  Explain the app an OIDC exchange policy issues tokens for: --app <slug>.\n",
+      })
+      // An app gets in, as the hint says.
+      expect((await run('grants', 'create', '--app', 'ship', '--can', 'ci/=post')).stdout).toMatch(/^created g4  --app ship  ci\/=post\n$/)
+      expect(await run('tokens', 'create', 'ci', '--can', 'dev/=read')).toMatchObject({
+        code: 1,
+        stdout: '',
+        stderr: "error: Vercel's board mints board tokens only for a deployment.\n\n  Mint it from a deployment, with its OIDC token, or from a board token.\n",
+      })
+      expect(api.tokens.size).toBe(0)
     } finally {
       fetching.mockRestore()
       process.chdir(cwd)
@@ -707,7 +750,8 @@ describe('the embedded CLI', () => {
 
   it("checks only a board someone named, never the team's by default, since it posts and changes grants", async () => {
     const home = await isolated()
-    vi.stubEnv('VERCEL_AUTH_TOKEN', 'user:u_jb')
+    // As a deployment, which mints the tokens it checks with: a person mints none on Vercel's board.
+    vi.stubEnv('VERCEL_TOKEN', 'project:prj_pong:production')
     vi.stubEnv('VERCEL_ORG_ID', 'team_test')
     const api = fakeMessageboard()
     const fetching = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => api.fetch(input, init))

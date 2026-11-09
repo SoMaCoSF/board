@@ -13,7 +13,7 @@ import { compileWatcher, type Compiled } from './watch-spec.ts'
 import type { BoardReads } from './reads.ts'
 import { arm, due, hasWork, queueReducer, wakeBackoff, type QueueSession } from './registered.ts'
 import type { Registration, RegistryState, StoredPrincipal } from './registry.ts'
-import { A2_TRIES, afterRetry } from './attempts.ts'
+import { runMatch } from './watch-run.ts'
 
 
 export const ID = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -45,58 +45,11 @@ const SYNCED = new Set(['message.posted', 'message.edited', 'message.deleted', '
 const queued = (payload: { watcher?: string | undefined; sync?: true | undefined; inbox?: string | undefined }) =>
   payload.watcher !== undefined || payload.sync === true || payload.inbox !== undefined
 
-/**
- * A2 dead-letters an event after 10 failures, and a dead letter stops its
- * lane, which is the thread's: the watcher would never run on that thread
- * again. So `run` gets a few tries, then the failure is recorded and the
- * thread moves on.
- */
-const RUN_ATTEMPTS = 5
-
-/**
- * A run that's killed (a timeout, out of memory) never throws. A2 counts it
- * toward the 10 failures when the next attempt takes over, and dead-letters
- * the event at that takeover instead of running it: the 10th attempt is the
- * last one a watcher sees. Throws give up at RUN_ATTEMPTS, so getting this far
- * means runs keep dying, and the 10th records the failure without running.
- */
-const KILLED_ATTEMPTS = A2_TRIES
-
 /** Tries at a wake-up before it's left to the next match or sweep, well short of A2's dead letter. */
 const WAKE_TRIES = 3
 
-const describe = (error: unknown) => ((error instanceof Error ? error.message : String(error)) || 'unknown error').slice(0, 500)
-
-type Match = { id: string; payload: { thread: string; event: unknown } }
-
 /** Whether a wake-up got there: an answer, or still running when the wait ran out. If not, why: its status, or the error. */
 export type Woken = { reached: true } | { reached: false; why: string }
-
-/**
- * One match, on its thread's lane: `run`, retried by A2 while it fails, then
- * given up on (recorded as `watch.failed`) so the thread's next event runs.
- */
-export async function runMatch(input: {
-  watcher: { id: string; run: (event: BoardEventView) => unknown }
-  match: Match
-  attempt: number
-  record: (failure: { matched: string; thread: string; error: string }) => Promise<unknown>
-}) {
-  const { watcher, match, attempt } = input
-  const event = match.payload.event as BoardEventView
-  const giveUp = async (error: string) => {
-    console.error(`[board] watcher ${watcher.id} gave up on event #${event.cursor} after ${attempt} tries:`, error)
-    await input.record({ matched: match.id, thread: match.payload.thread, error })
-  }
-  const early = !afterRetry(attempt)
-  if (early && attempt >= KILLED_ATTEMPTS) return giveUp(`its run was cut short ${attempt - 1} times (a timeout, or out of memory)`)
-  try {
-    await watcher.run(event)
-  } catch (error) {
-    if (!early || attempt < RUN_ATTEMPTS) throw error
-    await giveUp(describe(error))
-  }
-}
 
 /** A watcher writes as `board:watch:<id>`, and its own writes never wake it. */
 const actorOf = (id: string) => `board:watch:${id}`
@@ -122,7 +75,7 @@ export const registrantSession = (owner: string) => watchSession(`@${owner}`)
  */
 export function createWatchers(options: {
   /** This project's watchers, by ID. */
-  watch: Record<string, { tail: string; when: 'matches' | 'enters' }>
+  watch: Record<string, { tail: string }>
   /** Runs one on an event it matched; posts it makes get IDs derived from `trigger`. A throw is retried. */
   run: (id: string, event: BoardEventView, trigger: string, attempt: number) => Promise<void>
   store?: A2Store | undefined
@@ -287,8 +240,7 @@ export function createWatchers(options: {
         access = now
       }
       const match = compileFilter(watcher.filters, { me: null, actors, messages, access })
-      if (watcher.enters ? !entered(match, before, after, messages) : !(watcher.criteria ? match(before) || match(after) : id !== null))
-        continue
+      if (!(watcher.criteria ? match(before) || match(after) : id !== null)) continue
       const key = registration ? `@${registration.owner}/${watcher.id}` : watcher.id
       const shown = registration
         ? eventView(event, after, actors, await reads!.reader(access, after ? [after] : []))
@@ -341,18 +293,6 @@ export function createWatchers(options: {
   async function messagesBefore(event: BoardEvent, signal: AbortSignal): Promise<MessagesState> {
     if (!reads) throw new Error('watchers used before the board bound them')
     return loadBefore(reads, event, signal)
-  }
-
-  /** Didn't match before and does now; a new reply only counts if its thread wasn't already in view. */
-  function entered(
-    match: (message: Message | undefined) => boolean,
-    before: Message | undefined,
-    after: Message | undefined,
-    messages: MessagesState,
-  ) {
-    if (match(before) || !match(after)) return false
-    const root = before === undefined && after!.re !== null ? messages.byId[after!.re] : undefined
-    return !match(root)
   }
 
   /**

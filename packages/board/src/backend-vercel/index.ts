@@ -93,7 +93,11 @@ const environment: VercelEnvironment = {
   },
   team,
   profile: environmentProfile,
+  boardToken: () => boardToken() !== null,
 }
+
+/** The fetch `vercel()` sends by default, with the credentials it finds: for the CLI to add a header of its own to. */
+export const credentialed = (): typeof fetch => environment.fetch()
 
 /**
  * Your team's board, in Vercel's API: this board keeps nothing, and reads and writes that one as

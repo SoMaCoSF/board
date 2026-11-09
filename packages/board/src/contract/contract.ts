@@ -15,7 +15,7 @@ import {
   MessageText,
   MESSAGE_TEXT_MAX,
   RemoteWatcherId,
-  SCOPE_MAX,
+  CAN_MAX,
   storable,
 } from './schemas.ts'
 import { ExternalEvent, ExternalTarget, Link, LINKS_PER_MESSAGE_MAX, Origin } from './external.ts'
@@ -131,15 +131,14 @@ export const StoredPrincipal = z.object({
       team: z.string().max(200).optional(),
     })
     .optional(),
-  scope: z.string().max(SCOPE_MAX).optional(),
+  scope: z.string().max(CAN_MAX).optional(),
   /** The board token it came with: what it stores stops when the token does. */
   token: z.string().min(1).max(64).optional(),
 })
 
-/** A watcher as a board on `http()` registers it: its tail, and when it runs. */
+/** A watcher as a board on `http()` registers it: its tail. */
 export const WatcherSpec = z.object({
   tail: z.string().max(1000),
-  when: z.enum(['matches', 'enters']),
 })
 
 /**

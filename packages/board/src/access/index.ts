@@ -15,8 +15,10 @@ export {
 export { oidcTokens } from '../server/tokens.ts'
 export { resolveActor } from '../server/actors.ts'
 export { DEFAULT_CAN } from '../server/auth.ts'
+export { CAN_MAX } from '../contract/schemas.ts'
 export {
   compileAccess,
+  parseCan,
   union,
   checkGrantChange,
   InvalidCan,

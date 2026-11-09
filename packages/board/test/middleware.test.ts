@@ -74,7 +74,7 @@ describe('middleware', () => {
     // Julian wrote it where he reads; the same principal narrowed to posting there didn't, so it isn't its to change.
     const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
     const plan = (await julian('POST', '/messages', { channel: 'secret', text: 'the plan' })).body.message
-    const writeOnly = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian', 'x-board-scope': 'secret=post' })
+    const writeOnly = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian', 'x-board-can': 'secret=post' })
     const there = await writeOnly('POST', `/messages/${plan.id}/edit`, { text: 'changed' })
     const absent = await writeOnly('POST', '/messages/999/edit', { text: 'changed' })
     expect([there.status, there.body.error.code]).toEqual([404, 'message_not_found'])

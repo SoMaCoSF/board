@@ -208,7 +208,7 @@ describe('watchers on http()', () => {
     await (await julianOn(t.remote.fetch))('POST', '/messages', { channel: 'feedback', text: 'export is broken' })
     await vi.waitFor(async () => {
       const { body } = await caller(t.remote.fetch, await v0Token())('GET', '/watchers')
-      expect(body.watchers[0].watch).toEqual({ fix: { tail: 'feedback --label kind=bug', when: 'matches' } })
+      expect(body.watchers[0].watch).toEqual({ fix: { tail: 'feedback --label kind=bug' } })
     })
   })
 
@@ -546,13 +546,13 @@ describe('pulling matches', () => {
     expect(await pull()).toEqual([])
   })
 
-  it('refuses a caller narrowed with x-board-scope, which leaves its registration and matches as they were', async () => {
+  it('refuses a caller narrowed with x-board-can, which leaves its registration and matches as they were', async () => {
     const { t, v0, julian, pull, ack } = await queued()
     await julian('POST', '/messages', { channel: 'feedback', text: 'meant for v0' })
     const queue = t.remote.servers.at(-1)!.session(`watch:@${V0}`)
     await vi.waitFor(async () => expect((await queue.history()).map((event: { type: string }) => event.type)).toContain('watch.matched'))
-    const narrowed = caller(t.remote.fetch, await v0Token(), { 'x-board-scope': 'other=read' })
-    const refusal = { status: 403, body: { error: { code: 'forbidden', message: "this token is narrowed with x-board-scope: registering and running watchers is its project's job" } } }
+    const narrowed = caller(t.remote.fetch, await v0Token(), { 'x-board-can': 'other=read' })
+    const refusal = { status: 403, body: { error: { code: 'forbidden', message: "this token is narrowed with x-board-can: registering and running watchers is its project's job" } } }
     // Its pull would have dropped the match it can't read, and its register replaced v0's whole registration.
     expect(await narrowed('GET', '/watchers/matches')).toEqual(refusal)
     expect(await narrowed('POST', '/watchers', { watch: {} })).toEqual(refusal)
@@ -641,13 +641,13 @@ describe('registering', () => {
   })
 
   it('hashes watchers and sync entries in code-unit order, the same in every locale', () => {
-    const spec = { tail: 'feedback', when: 'matches' as const }
+    const spec = { tail: 'feedback' }
     const entry = (key: string) => ({ key, platform: 'slack' })
     // A locale's collation puts `a` before `B`; code units put `B` (U+0042) before `a` (U+0061).
     const canonical = canonicalWatchers({ a: spec, B: spec }, [entry('a'), entry('B')])
     expect(JSON.parse(canonical)).toEqual([
-      ['B', 'feedback', 'matches'],
-      ['a', 'feedback', 'matches'],
+      ['B', 'feedback'],
+      ['a', 'feedback'],
       ['sync', [['B', 'slack'], ['a', 'slack']]],
     ])
     expect(canonicalWatchers({ B: spec, a: spec }, [entry('B'), entry('a')])).toBe(canonical)
@@ -700,9 +700,9 @@ describe('registering by path', () => {
   it.each([
     ['production, on a board that wakes by path', production, true, { path: '/api/board' }],
     ['a preview of a branch, which it names', { VERCEL: '1', VERCEL_ENV: 'preview', VERCEL_GIT_COMMIT_REF: 'jb/watchers' }, true, { path: '/api/board', branch: 'jb/watchers' }],
-    ['a preview of no branch, as `vercel deploy` makes', { VERCEL: '1', VERCEL_ENV: 'preview' }, true, { url: V0_URL }],
-    ['a custom environment', { VERCEL: '1', VERCEL_ENV: 'preview', VERCEL_TARGET_ENV: 'staging', VERCEL_GIT_COMMIT_REF: 'staging' }, true, { url: V0_URL }],
-    ['development', { VERCEL: '1', VERCEL_ENV: 'development' }, true, { url: V0_URL }],
+    ['a preview of no branch, as `vercel deploy` makes, which names none', { VERCEL: '1', VERCEL_ENV: 'preview' }, true, { path: '/api/board' }],
+    ['a custom environment, which names no branch', { VERCEL: '1', VERCEL_ENV: 'preview', VERCEL_TARGET_ENV: 'staging', VERCEL_GIT_COMMIT_REF: 'staging' }, true, { path: '/api/board' }],
+    ['development, as `vercel env pull` and `vercel dev` say it, which stays up', { VERCEL: '1', VERCEL_ENV: 'development' }, true, { url: V0_URL }],
     ['off Vercel', {}, true, { url: V0_URL }],
     ["on a board that doesn't wake by path", production, false, { url: V0_URL }],
   ])('registers %s with %j', async (_case, env: Record<string, string>, byPath, where) => {
@@ -723,6 +723,6 @@ describe('registering by path', () => {
     const backend = http(BOARD_URL, { fetch: bearer(remote, v0Token) })
     board({ backend, url: V0_URL, watch: { fix: { tail: 'feedback', run: async () => {} } } })
     await backend.registerWatchers()
-    expect(sent).toEqual([{ ...where, watch: { fix: { tail: 'feedback', when: 'matches' } } }])
+    expect(sent).toEqual([{ ...where, watch: { fix: { tail: 'feedback' } } }])
   })
 })

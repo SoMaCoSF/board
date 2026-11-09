@@ -38,12 +38,20 @@ export type ConformanceOptions = {
    */
   withToken?: (secret: string) => Board
   /**
+   * The same board, with this run's credential and an `x-board-can` header that narrows it to
+   * `can` (`conformance=read`), as a proxy holding the credential sends it: the checks of a
+   * narrowed caller call it so. Without it, they're skipped.
+   */
+  withCan?: (can: string) => Board
+  /**
    * Whom the grants checks name. A board that verifies tokens itself (`vb serve`) takes the made-up
    * IDs they use without it; one that looks names up, as Vercel's API does, needs real ones on its
    * team, or skips the checks that name them: a `project` (its name or ID), a GitHub `repository`
    * no grant names, a `viewer` (a person's email or ID whose team role is viewer), to check
    * that a role caps what grants give, and an `app` installed on the board's team (its slug or
-   * client ID), which a local board has none of. None may be the run's own: it throws before it
+   * client ID), which a local board has none of. Checks that grant to someone besides the project
+   * name the app when there's one, and the repository otherwise: Vercel's board takes no GitHub
+   * principal in a grant, so give it an app. None may be the run's own: it throws before it
    * writes.
    */
   principals?: { project?: string; repository?: string; viewer?: string; app?: string }
@@ -82,6 +90,23 @@ async function refused(attempt: Promise<unknown>, status: number, what: string) 
   throw new Mismatch(`${what}: expected ${status}, and it succeeded`)
 }
 
+const NO_CAN = "this run can't call the board with an x-board-can header"
+
+/**
+ * That `attempt`, by a caller narrowed with `x-board-can`, is refused as one: 403 `forbidden`.
+ * Vercel's API's refusal of a person's watchers goes on as it is, for the run to skip.
+ */
+async function narrowedOut(attempt: Promise<unknown>, what: string) {
+  try {
+    await attempt
+  } catch (error) {
+    if (error instanceof BoardError && error.code === 'watchers_need_project') throw error
+    if (error instanceof BoardError && error.status === 403 && error.code === 'forbidden') return
+    throw new Mismatch(`${what}, by a caller narrowed with x-board-can: expected 403 forbidden, got ${error instanceof BoardError ? `${error.status} ${error.code}` : String(error)}`)
+  }
+  throw new Mismatch(`${what}, by a caller narrowed with x-board-can: expected 403 forbidden, and it succeeded`)
+}
+
 /** Where a registration is woken, to put back after a check replaces it: its path (and branch) on a board that wakes by path, or its url. */
 function wokenAt(registered: RegistrationView | undefined): { url: string | null } | { path: string; branch?: string } {
   if (!registered?.path) return { url: registered?.url ?? null }
@@ -105,6 +130,7 @@ type Context = {
   reply?: MessageView
   posted: string[]
   withToken?: (secret: string) => Board
+  withCan?: (can: string) => Board
   principals: Principals
   /** The board's own Vercel team, as its discovery names it. */
   team: string | null
@@ -143,6 +169,13 @@ const subtreeOf = (ctx: Context) => `${ctx.channel}/grants/`
 
 /** The check's grant: that project may post in the subtree's `ci/`. */
 const grantFor = (ctx: Context) => ({ principals: [projectFor(ctx)], can: { [`${subtreeOf(ctx)}ci/`]: ['post'] } }) as const
+
+/**
+ * Whom the checks that grant to someone besides the project name: the app the run was given, or
+ * else the repository, which a board that takes no GitHub principal in a grant refuses (Vercel's).
+ */
+const granteeOf = (ctx: Context) =>
+  ctx.principals.app !== null ? ({ kind: 'app', app: ctx.principals.app } as const) : ({ kind: 'github', repository: ctx.principals.repository } as const)
 
 /** A check that can't run here, and why: it's skipped, not failed. */
 class Skip extends Error {}
@@ -197,6 +230,8 @@ async function withGrants(ctx: Context, check: (grants: Grants) => Promise<void 
         made.push(grant.id)
       } catch (error) {
         if (error instanceof BoardError && error.status === 403) return
+        // A board that takes none of these principals skips the check, as below.
+        if (error instanceof BoardError && error.code === 'unsupported_principal') throw error
         throw unnamed(error) ?? new Mismatch(`${what}: expected 403, got ${error instanceof BoardError ? `${error.status} ${error.code}` : messageOf(error)}`)
       }
       throw new Mismatch(`${what}: expected 403, and it made the grant`)
@@ -581,6 +616,24 @@ const CHECKS: Check[] = [
     },
   },
   {
+    group: 'core',
+    name: 'narrows a caller to what its x-board-can says',
+    run: async (ctx) => {
+      if (!ctx.withCan) return NO_CAN
+      const { root } = needRoot(ctx)
+      const narrowed = ctx.withCan(`${ctx.channel}=read`)
+      const me = await narrowed.me()
+      same(me.principal, ctx.me.principal, "a narrowed caller's principal, its own")
+      alike(me.can, { [ctx.channel]: ['read'] }, 'what a caller narrowed to read says it may do')
+      same((await narrowed.thread(root.id)).message.id, root.id, 'a thread read by a caller narrowed to read it')
+      const posting = narrowed.post(ctx.channel, { text: 'conformance: narrowed to read', labels: ctx.labels, noSync: true }).then((message) => {
+        ctx.posted.push(message.id)
+        return message
+      })
+      await refused(posting, 403, 'a post by a caller narrowed to read')
+    },
+  },
+  {
     group: 'schedules',
     name: 'schedules a reply, lists it, and cancels it',
     run: async (ctx) => {
@@ -637,9 +690,9 @@ const CHECKS: Check[] = [
         const first = await make(grantFor(ctx))
         const again = await make(grantFor(ctx))
         check(again.id !== first.id, `the same principals again should be another grant, got ${again.id} twice`)
-        const { repository } = ctx.principals
+        const other = granteeOf(ctx)
         const ci = `${subtreeOf(ctx)}ci/`
-        // A board that looks names up and has none for the repository skips the rest.
+        // A board that looks names up and has none for the app or repository skips the rest.
         const update = async (change: Parameters<Board['updateGrant']>[1]) => {
           try {
             return await ctx.board.updateGrant(first.id, change)
@@ -648,17 +701,17 @@ const CHECKS: Check[] = [
           }
         }
         // The project again joins the one it names: its environments together.
-        const added = await update({ add: [{ kind: 'github', repository }, projectFor(ctx, ['production'])], can: { [ci]: ['read', 'post'] } })
+        const added = await update({ add: [other, projectFor(ctx, ['production'])], can: { [ci]: ['read', 'post'] } })
         same(added.grant.id, first.id, "the updated grant's id")
-        alike(added.grant.principals.map((principal) => principal.kind), ['project', 'github'], 'principals after adding a repository, and the project again')
+        alike(added.grant.principals.map((principal) => principal.kind), ['project', other.kind], `principals after adding ${other.kind === 'app' ? 'an app' : 'a repository'}, and the project again`)
         const project = added.grant.principals[0]
         alike(sortedOf(project?.kind === 'project' ? project.environments : undefined), sortedOf(['preview', 'production']), "the project's environments, after adding it again")
         alike(added.grant.can, { [ci]: ['read', 'post'] }, "the updated grant's can")
         // A project to remove is the project, whatever its environments.
         const removed = await update({ remove: [{ kind: 'project', project: ctx.principals.project }] })
-        alike(removed.grant.principals.map((principal) => principal.kind), ['github'], 'principals after removing the project')
+        alike(removed.grant.principals.map((principal) => principal.kind), [other.kind], 'principals after removing the project')
         await rejects(update({ remove: [{ kind: 'project', project: ctx.principals.project }] }), 400, 'not_in_grant', 'removing a principal the grant no longer names')
-        await rejects(update({ remove: [{ kind: 'github', repository }] }), 400, 'grant_empty', 'removing the last principal')
+        await rejects(update({ remove: [other] }), 400, 'grant_empty', 'removing the last principal')
         await rejects(ctx.board.updateGrant(`${first.id}0`, { can: { [ci]: ['read'] } }), 404, 'grant_not_found', 'updating a grant that was never made')
       }),
   },
@@ -803,7 +856,7 @@ const CHECKS: Check[] = [
       withGrants(ctx, async ({ make, deny, mint, keep }) => {
         const subtree = subtreeOf(ctx)
         const secret = `${subtree}secret/`
-        const run = { kind: 'github' as const, repository: ctx.principals.repository }
+        const run = granteeOf(ctx)
         const narrowed = await mint({ '*': 'all', [secret]: [] })
         await deny(narrowed, { principals: [run], can: { [subtree]: ['read'] } }, `a grant on ${subtree} from a token kept out of ${secret}`)
         // A lock there binds whoever it names as much as the token, until it's lifted: the token's own limit still counts.
@@ -825,7 +878,7 @@ const CHECKS: Check[] = [
         await keep(open)
         await make({ principals: [{ kind: 'everyone' }], can: { [open]: ['read'] } })
         // Anyone it lets in, anywhere, would read open/ through everyone's grant.
-        await deny(narrowed, { principals: [{ kind: 'github', repository: ctx.principals.repository }], can: { [`${subtree}ci/`]: ['post'] } }, `a grant from a token kept out of ${open}, which everyone reads`)
+        await deny(narrowed, { principals: [granteeOf(ctx)], can: { [`${subtree}ci/`]: ['post'] } }, `a grant from a token kept out of ${open}, which everyone reads`)
       }),
   },
   {
@@ -939,10 +992,8 @@ const CHECKS: Check[] = [
       if (registered && (Object.keys(registered.watch).length > 0 || (registered.sync?.length ?? 0) > 0))
         return 'this token has watchers or a sync registered here, and checking would replace them'
       const byPath = (await ctx.board.discovery()).wake_by_path
-      // A path wakes a project's production, or a preview's branch, which it names.
+      // A path wakes a project's deployment in any environment, a preview's by its branch when it names one.
       const environment = /^vercel:project:[^:]+:(.+)$/.exec(ctx.me.principal)?.[1] ?? null
-      if (byPath && environment !== null && environment !== 'production' && environment !== 'preview')
-        return `a path wakes production or a preview, and this token is ${environment}'s`
       const where = wokenAt(registered)
       const branch = environment === 'preview' ? { branch: 'conformance' } : {}
       const attempt = () => ctx.board.register({ path: '/conformance', ...branch, watch: {} })
@@ -958,6 +1009,20 @@ const CHECKS: Check[] = [
       } finally {
         await ctx.board.register({ ...where, watch: {} })
       }
+    },
+  },
+  {
+    group: 'watchers',
+    name: "refuses a caller narrowed with x-board-can its principal's watchers: registering, pulling, and acking",
+    run: async (ctx) => {
+      if (!ctx.withCan) return NO_CAN
+      const narrowed = ctx.withCan(`${ctx.channel}=all`)
+      const registered = (await ctx.board.watchers()).find((r) => r.owner === ctx.me.principal)
+      // What's registered now, so a board that wrongly takes it leaves the registration as it was.
+      const now = { ...wokenAt(registered), watch: registered?.watch ?? {}, ...(registered?.sync ? { sync: registered.sync } : {}) }
+      await narrowedOut(narrowed.register(now), 'registering watchers')
+      await narrowedOut(narrowed.matches(), 'pulling matches')
+      await narrowedOut(narrowed.ack(`conformance-${ctx.labels.conformance}`, { lease: 'conformance' }), 'acking a match')
     },
   },
   {
@@ -1090,6 +1155,38 @@ const CHECKS: Check[] = [
       same(thread.replies.find((m) => m.id === reply.id)?.noSync, true, "a reply's noSync, read back")
     },
   },
+  {
+    group: 'sync',
+    name: "refuses a caller narrowed with x-board-can sync's records: imports, receipts, and the inbox",
+    run: async (ctx) => {
+      if (!ctx.withCan) return NO_CAN
+      const { root } = needRoot(ctx)
+      const registered = await registerSync(ctx)
+      if ('skip' in registered) return registered.skip
+      const run = ctx.labels.conformance
+      const author = { id: `${SYNC_KEY}:user:${run}`, handle: 'conformance', name: 'Conformance', avatar: null, isBot: false }
+      const thread = `${SYNC_KEY}:${run}:narrowed`
+      try {
+        const narrowed = ctx.withCan(`${ctx.channel}=all`)
+        await narrowedOut(
+          narrowed.syncImport({
+            op: 'post', author, from: SYNC_KEY, channel: ctx.channel, text: 'conformance: a narrowed import', labels: ctx.labels, noSync: true,
+            origin: { channel: `${SYNC_KEY}:${run}`, thread, subthread: null, message: '1', context: null },
+          }),
+          'an import',
+        )
+        await narrowedOut(narrowed.syncReceipt({ kind: 'failed', message: root.id, target: thread, error: 'conformance' }), 'a receipt')
+        const event = { kind: 'message' as const, channel: `${SYNC_KEY}:${run}`, thread, subthread: null, message: '1', isRoot: true, text: 'conformance: a narrowed push', context: null, author }
+        await narrowedOut(narrowed.inboxPush(SYNC_KEY, [{ id: `conformance-narrowed-${run}`, event, raw: null }]), 'a push to the inbox')
+        await narrowedOut(narrowed.inboxNext(SYNC_KEY, { limit: 1 }), 'a lease from the inbox')
+        await narrowedOut(narrowed.inboxAck(SYNC_KEY, `conformance-narrowed-${run}`, { lease: 'conformance' }), 'an ack to the inbox')
+      } finally {
+        // An import a board wrongly took: only an import can take it down.
+        await ctx.board.syncImport({ op: 'delete', author, from: SYNC_KEY, origin: { thread, message: '1' } }).catch(() => {})
+        await ctx.board.register({ ...registered.where, watch: {} }).catch(() => {})
+      }
+    },
+  },
 ]
 
 /**
@@ -1170,6 +1267,7 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
     me,
     posted: [],
     ...(options.withToken ? { withToken: options.withToken } : {}),
+    ...(options.withCan ? { withCan: options.withCan } : {}),
     principals: {
       project: options.principals?.project ?? `prj_conformance${label}`,
       repository: options.principals?.repository ?? `acme/conformance-${label}`,
@@ -1185,8 +1283,11 @@ export async function conformance(board: Board, options: ConformanceOptions = {}
         checks.push(skipped ? { group, name, status: 'skipped', detail: skipped } : { group, name, status: 'passed' })
       } catch (error) {
         if (OPTIONAL.has(group) && error instanceof BoardError && error.status === 501) checks.push({ group, name, status: 'skipped', detail: `not kept here: ${error.message}` })
-        // Vercel's API takes no board token for watchers yet: a run on one can't check them.
-        else if (group === 'watchers' && error instanceof BoardError && error.code === 'board_token_unsupported') checks.push({ group, name, status: 'skipped', detail: "a board token can't register watchers yet" })
+        // Vercel's API takes watchers only from a deployment: a run as anyone else can't check them.
+        else if (group === 'watchers' && error instanceof BoardError && error.code === 'watchers_need_project') checks.push({ group, name, status: 'skipped', detail: 'only a deployment registers watchers here' })
+        // Vercel's API takes no GitHub or OIDC principal in a grant, and mints board tokens only for a deployment.
+        else if (group === 'grants' && error instanceof BoardError && error.code === 'unsupported_principal') checks.push({ group, name, status: 'skipped', detail: 'this board takes no GitHub or OIDC principals in a grant' })
+        else if (group === 'tokens' && error instanceof BoardError && error.code === 'unsupported_principal') checks.push({ group, name, status: 'skipped', detail: 'this board mints tokens only for a deployment: run as one to check them' })
         else checks.push({ group, name, status: 'failed', detail: error instanceof Error ? error.message : String(error) })
       }
     }

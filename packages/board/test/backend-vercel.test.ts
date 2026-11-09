@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import { board } from '../src/server/index.ts'
 import { ATTACHMENT_BYTES_MAX } from '../src/contract/files.ts'
 import { vercel } from '../src/backend-vercel/index.default.ts'
@@ -10,6 +10,7 @@ import type { Authenticate } from '../src/access/index.ts'
 import { compileAccess } from '../src/server/access.ts'
 import type { Caller } from '../src/server/backend.ts'
 import type { Middleware } from '../src/server/middleware.ts'
+import type { Watcher } from '../src/server/watcher.ts'
 import { slack } from '../src/sync/slack.ts'
 import { channels, render } from '../src/sync/fn.ts'
 import { as, fakeMessageboard } from './messageboard.ts'
@@ -20,6 +21,23 @@ const API = 'http://localhost'
 /** A handle on the fake's board through vercel(), as `principal`. */
 const handleOn = (api: ReturnType<typeof fakeMessageboard>, principal = 'user:u_jb') =>
   board({ backend: vercel({ team: 'team_test', api: API, fetch: as(api, principal), files: api.files }) })
+
+/** The same handle, narrowed with `x-board-can` as a proxy holding the credential sends it, which Vercel's API doesn't read yet. */
+const narrowedOn =
+  (api: ReturnType<typeof fakeMessageboard>, principal = 'user:u_jb') =>
+  (can: string) =>
+    board({
+      backend: vercel({
+        team: 'team_test',
+        api: API,
+        fetch: (input, init) => {
+          const request = new Request(input, init)
+          request.headers.set('x-board-can', can)
+          return as(api, principal)(request)
+        },
+        files: api.files,
+      }),
+    })
 
 /** Someone a host's verifier would name: a request from her is still no one's this board serves. */
 const ADA = { id: 'vercel:user:u_ada', kind: 'person', handle: 'ada' } as const
@@ -43,12 +61,12 @@ async function drain(handle: ReturnType<typeof handleOn>) {
 }
 
 describe('vercel()', () => {
-  it("passes the conformance kit's core, schedules, grants, attachments, and watchers, and skips sync for a person, whom Vercel's API lets sync nowhere", async () => {
+  it("passes the conformance kit's core, schedules, grants, and attachments for a person, and skips what Vercel's API takes only from a deployment, and GitHub grants", async () => {
     const api = fakeMessageboard()
     // The API looks names up, so the grants checks name a project, a repository, a viewer, and an app its team has.
     // A board token is its board's, so the handle it's sent on names the board.
     const withToken = (secret: string) => board({ backend: vercel({ team: 'team_test', api: API, board: 'brd_test', fetch: as(api, secret), files: api.files }) })
-    const report = await conformance(handleOn(api), { withToken, principals: { project: 'prj_web', repository: 'acme/api', viewer: 'val@acme.com', app: 'ship' } })
+    const report = await conformance(handleOn(api), { withToken, withCan: narrowedOn(api), principals: { project: 'prj_web', repository: 'acme/api', viewer: 'val@acme.com', app: 'ship' } })
     const statuses = Object.fromEntries(report.checks.map((check) => [`${check.group}: ${check.name}`, check.status]))
     expect(statuses).toEqual({
       'core: says in its discovery where it is': 'passed',
@@ -67,6 +85,11 @@ describe('vercel()', () => {
       'core: holds a long-poll open until the next event': 'passed',
       'core: deletes a message, leaving a tombstone': 'passed',
       'core: lists the channel and you in it': 'passed',
+      // Vercel's API doesn't read x-board-can yet: a narrowed caller gets its whole access.
+      'core: narrows a caller to what its x-board-can says': 'failed',
+      // Neither registers for a person, narrowed or not.
+      "watchers: refuses a caller narrowed with x-board-can its principal's watchers: registering, pulling, and acking": 'skipped',
+      "sync: refuses a caller narrowed with x-board-can sync's records: imports, receipts, and the inbox": 'skipped',
       'core: creates a channel only once: one a post made is there already': 'passed',
       'core: answers 404 for an ID that names nothing': 'passed',
       'core: answers 400 for a request that does not validate': 'passed',
@@ -76,19 +99,19 @@ describe('vercel()', () => {
       'grants: makes another grant for the same principals, and changes one by its ID': 'passed',
       "grants: keeps a grant's can as written, a pattern with no permissions included": 'passed',
       'grants: lets the most specific pattern decide, then the closest principal there, and adds up ties': 'passed',
-      'grants: lets everyone narrow what something else lets in, and lets no one in itself': 'passed',
+      'grants: lets everyone narrow what something else lets in, and lets no one in itself': 'skipped',
       'grants: caps a person by their team role, so a viewer reads but neither posts nor manages': 'passed',
       'grants: names an app by its slug or client ID, keeps it by client ID, and every app as a group': 'passed',
-      'grants: takes manage at each pattern a grant names to change it, and at * to list them': 'passed',
-      "grants: lets no token grant past its own can, even where everyone's grant closes it": 'passed',
-      'grants: lets no token let anyone in where everyone gets more than the token has': 'passed',
+      'grants: takes manage at each pattern a grant names to change it, and at * to list them': 'skipped',
+      "grants: lets no token grant past its own can, even where everyone's grant closes it": 'skipped',
+      'grants: lets no token let anyone in where everyone gets more than the token has': 'skipped',
       'grants: lets a member grant on a pattern after a lock under it': 'skipped',
       'grants: lets a project on another team in, in its environments': 'skipped',
-      'tokens: mints a token, shows its secret only then, lists it, and revokes it': 'passed',
-      "tokens: lets a token do what its can says, as whoever minted it, and nothing once it's revoked": 'passed',
+      'tokens: mints a token, shows its secret only then, lists it, and revokes it': 'skipped',
+      "tokens: lets a token do what its can says, as whoever minted it, and nothing once it's revoked": 'skipped',
       'attachments: takes a file, posts it, and gives it back': 'passed',
-      'watchers: matches a registered tail, hands the match to a pull, and takes its ack': 'passed',
-      'watchers: wakes by path only where its discovery says so, and only a Vercel project': 'passed',
+      'watchers: matches a registered tail, hands the match to a pull, and takes its ack': 'skipped',
+      'watchers: wakes by path only where its discovery says so, and only a Vercel project': 'skipped',
       "sync: keeps sync's records: an import as a platform author, its lookups by platform ID, a receipt, and where it's synced": 'skipped',
       "sync: queues a platform thread's events in its sync's inbox once, and leases each after the one before is acked": 'skipped',
       'sync: hands a sync each message change as a match of its @sync watcher': 'skipped',
@@ -657,7 +680,9 @@ describe('vercel()', () => {
     expect(events.filter((event) => event.type === 'message.edited').map((event) => event.message?.text)).toEqual(['under kept, edited'])
   })
 
-  it("registers its own watchers where it's woken, and runs what they matched when it is", async () => {
+  it("registers a production deployment's watchers by its path, and runs what they matched when it's woken", async () => {
+    for (const [name, value] of Object.entries({ VERCEL: '1', VERCEL_ENV: 'production', VERCEL_TARGET_ENV: '', VERCEL_GIT_COMMIT_REF: '' })) vi.stubEnv(name, value)
+    onTestFinished(() => void vi.unstubAllEnvs())
     const api = fakeMessageboard()
     const ran: string[] = []
     const pong = board({
@@ -676,7 +701,7 @@ describe('vercel()', () => {
     })
     await pong.me()
     while (!api.registrations.has('vercel:project:prj_pong:production')) await new Promise((resolve) => setTimeout(resolve, 5))
-    expect(api.registrations.get('vercel:project:prj_pong:production')).toMatchObject({ url: 'https://pong.example/api/board' })
+    expect(api.registrations.get('vercel:project:prj_pong:production')).toMatchObject({ url: null, path: '/api/board' })
     await handleOn(api).post('pings', { text: 'ping' })
     const wake = () => pong.fetch(new Request('https://pong.example/api/board/wake', { method: 'POST' })).then((response) => response.json())
     await expect(wake()).resolves.toEqual({ ran: 1 })
@@ -691,19 +716,328 @@ describe('vercel()', () => {
     expect(registered()).toBe(before)
   })
 
-  it("passes the conformance kit's sync as a project, through Vercel's API's sync routes", async () => {
-    const report = await conformance(handleOn(fakeMessageboard(), 'project:prj_pong:production'))
+  it("keeps the registration a call starts running after the response, through Vercel's waitUntil", async () => {
+    for (const [name, value] of Object.entries({ VERCEL: '1', VERCEL_ENV: 'production', VERCEL_TARGET_ENV: '', VERCEL_GIT_COMMIT_REF: '' })) vi.stubEnv(name, value)
+    onTestFinished(() => void vi.unstubAllEnvs())
+    const kept: Promise<unknown>[] = []
+    const context = Symbol.for('@vercel/request-context')
+    Reflect.set(globalThis, context, { get: () => ({ waitUntil: (task: Promise<unknown>) => void kept.push(task) }) })
+    onTestFinished(() => void Reflect.deleteProperty(globalThis, context))
+    const api = fakeMessageboard()
+    const pong = board({
+      backend: vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:production') }),
+      url: 'https://pong.example/api/board',
+      basePath: '/api/board',
+      watch: { pings: { tail: 'pings', run: async () => {} } },
+    })
+    await pong.me()
+    // A function can freeze once it answers, so what the call started is handed to the platform to finish.
+    expect(kept.length).toBeGreaterThan(0)
+    await Promise.all(kept)
+    expect(api.registrations.get('vercel:project:prj_pong:production')).toMatchObject({ url: null, path: '/api/board' })
+  })
+
+  it('registers a deployment off Vercel with no url, and pulls what its watchers match, with its env pulled too', async () => {
+    // What `vercel env pull` writes to .env.local, and `vercel dev` sets: a dev server, which stays up.
+    for (const [name, value] of Object.entries({ VERCEL: '1', VERCEL_ENV: 'development', VERCEL_TARGET_ENV: 'development', VERCEL_GIT_COMMIT_REF: '' })) vi.stubEnv(name, value)
+    onTestFinished(() => void vi.unstubAllEnvs())
+    const api = fakeMessageboard()
+    const ran: string[] = []
+    const backend = vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:development') })
+    onTestFinished(() => backend.close())
+    const pong = board({
+      backend,
+      url: 'https://pong.example/api/board',
+      watch: {
+        pings: {
+          tail: 'pings',
+          run: async ({ event, board: own }) => {
+            if (event.type !== 'message.posted') return
+            ran.push(event.message!.text)
+            await own.reply(event.message!.id, 'pong')
+          },
+        },
+      },
+    })
+    await pong.me()
+    await vi.waitFor(() => expect(api.registrations.get('vercel:project:prj_pong:development')).toMatchObject({ url: null }))
+    expect(api.registrations.get('vercel:project:prj_pong:development')!.path).toBeUndefined()
+    // Nothing wakes it: it pulls the match itself.
+    const ping = await handleOn(api, 'user:u_ada').post('pings', 'ping')
+    await vi.waitFor(() => expect(ran).toEqual(['ping']))
+    await vi.waitFor(async () => expect((await pong.thread(ping.id)).replies.map((reply) => [reply.text, reply.by.actor])).toEqual([['pong', 'vercel:project:prj_pong:development+pings']]))
+  })
+
+  it('registers its path from a custom environment and a preview with no branch, and never pulls on its own there', async () => {
+    onTestFinished(() => void vi.unstubAllEnvs())
+    for (const [environment, env] of [
+      ['staging', { VERCEL_ENV: 'preview', VERCEL_TARGET_ENV: 'staging', VERCEL_GIT_COMMIT_REF: '' }],
+      // A `vercel deploy` preview: it names no branch, and the API wakes that deployment itself.
+      ['preview', { VERCEL_ENV: 'preview', VERCEL_TARGET_ENV: '', VERCEL_GIT_COMMIT_REF: '' }],
+    ] as const) {
+      for (const [name, value] of Object.entries({ VERCEL: '1', ...env })) vi.stubEnv(name, value)
+      const api = fakeMessageboard()
+      const ran: string[] = []
+      const backend = vercel({ team: 'team_test', api: API, fetch: as(api, `project:prj_pong:${environment}`) })
+      onTestFinished(() => backend.close())
+      const pong = board({ backend, url: 'https://pong-abc123.vercel.app/api/board', watch: { pings: { tail: 'pings', run: async ({ event }) => void ran.push(event.message!.text) } } })
+      await pong.me()
+      await vi.waitFor(() => expect(api.registrations.has(`vercel:project:prj_pong:${environment}`)).toBe(true))
+      expect(api.registrations.get(`vercel:project:prj_pong:${environment}`)).toMatchObject({ url: null, path: '/api/board' })
+      expect(api.registrations.get(`vercel:project:prj_pong:${environment}`)!.branch).toBeUndefined()
+      await handleOn(api, 'user:u_ada').post('pings', 'ping')
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      expect([environment, ran, api.requests.filter((request) => request.includes('/watchers/matches'))]).toEqual([environment, [], []])
+    }
+  })
+
+  it('never pulls on its own on Vercel, even with a registration nothing wakes', async () => {
+    for (const [name, value] of Object.entries({ VERCEL: '1', VERCEL_ENV: 'production', VERCEL_TARGET_ENV: '', VERCEL_GIT_COMMIT_REF: '' })) vi.stubEnv(name, value)
+    onTestFinished(() => void vi.unstubAllEnvs())
+    const api = fakeMessageboard()
+    const ran: string[] = []
+    const backend = vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:production') })
+    onTestFinished(() => backend.close())
+    // A URL that isn't https, so no path comes of it: the registration it asks for would pull, off Vercel.
+    const pong = board({ backend, url: 'http://pong.internal/api/board', watch: { pings: { tail: 'pings', run: async ({ event }) => void ran.push(event.message!.text) } } })
+    const registered = await pong.fetch(new Request('http://pong.internal/api/board/watchers', { method: 'POST' }))
+    expect(await registered.json()).toMatchObject({ url: null })
+    await handleOn(api, 'user:u_ada').post('pings', 'ping')
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(ran).toEqual([])
+    expect(api.requests.filter((request) => request.includes('/watchers/matches'))).toEqual([])
+  })
+
+  it('never sends Vercel\'s API a url to wake, and the API takes none', async () => {
+    const api = fakeMessageboard()
+    const pong = handleOn(api, 'project:prj_pong:production')
+    await expect(pong.register({ url: 'https://pong.example/api/board', watch: {} })).rejects.toMatchObject({ status: 400, code: 'invalid_request', origin: 'handle' })
+    expect(api.requests.filter((request) => request.startsWith('PUT '))).toEqual([])
+    const sent = await as(api, 'project:prj_pong:production')(`${API}/v1/messageboard/boards/brd_test/watchers?teamId=team_test`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: 'https://pong.example/api/board', watch: {} }),
+    })
+    expect(sent.status).toBe(400)
+    expect(api.registrations.size).toBe(0)
+  })
+
+  describe("a person's watchers", () => {
+    /** A board run as `principal`, as `next dev` on a laptop runs one, with its watchers in config. */
+    function personal(api: ReturnType<typeof fakeMessageboard>, watch: Record<string, Watcher>, principal = 'user:u_jb') {
+      const backend = vercel({ team: 'team_test', api: API, fetch: as(api, principal) })
+      onTestFinished(() => backend.close())
+      return { backend, team: board({ backend, url: 'http://localhost:3000/api/board', watch }) }
+    }
+    /** Until its tails have read the head of the feed: what's posted after that, they run. */
+    const following = (api: ReturnType<typeof fakeMessageboard>) => vi.waitFor(() => expect(api.requests.some((request) => request.endsWith('/changes'))).toBe(true))
+
+    it('run in this process as tails from the head, registering nothing, and never on their own writes', async () => {
+      const api = fakeMessageboard()
+      const ada = handleOn(api, 'user:u_ada')
+      await ada.post('pings', 'before it started')
+      const ran: string[] = []
+      const { team } = personal(api, {
+        pings: {
+          tail: 'pings',
+          run: async ({ event, board: own }) => {
+            if (event.type !== 'message.posted') return
+            ran.push(event.message!.text)
+            await own.reply(event.message!.id, 'pong')
+          },
+        },
+      })
+      await team.me()
+      await following(api)
+      const ping = await ada.post('pings', 'ping')
+      await vi.waitFor(() => expect(ran).toEqual(['ping']))
+      await vi.waitFor(async () => expect((await team.thread(ping.id)).replies.map((reply) => [reply.text, reply.by.actor])).toEqual([['pong', 'vercel:user:u_jb+pings']]))
+      // The next post comes after its reply in the feed: by then the reply was seen, and ran nothing.
+      await ada.post('pings', 'ping again')
+      await vi.waitFor(() => expect(ran).toEqual(['ping', 'ping again']))
+      expect(api.registrations.size).toBe(0)
+      expect(api.requests.filter((request) => request.includes('/watchers'))).toEqual([])
+    })
+
+    it('run as tails in a dev server with its env pulled, which says VERCEL=1 in development', async () => {
+      for (const [name, value] of Object.entries({ VERCEL: '1', VERCEL_ENV: 'development', VERCEL_TARGET_ENV: 'development', VERCEL_GIT_COMMIT_REF: '' })) vi.stubEnv(name, value)
+      onTestFinished(() => void vi.unstubAllEnvs())
+      const api = fakeMessageboard()
+      const ada = handleOn(api, 'user:u_ada')
+      await ada.post('pings', 'before it started')
+      const { ran, watch } = pinger()
+      const { team } = personal(api, watch)
+      await team.me()
+      await following(api)
+      const ping = await ada.post('pings', 'ping')
+      await vi.waitFor(() => expect(ran).toEqual(['ping']))
+      await vi.waitFor(async () => expect((await team.thread(ping.id)).replies.map((reply) => [reply.text, reply.by.actor])).toEqual([['pong', 'vercel:user:u_jb+pings']]))
+      expect(api.requests.filter((request) => request.includes('/watchers'))).toEqual([])
+    })
+
+    it('try a run that throws again, and post its reply once', async () => {
+      const api = fakeMessageboard()
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+      onTestFinished(() => errors.mockRestore())
+      let tries = 0
+      const { team } = personal(api, {
+        pings: {
+          tail: 'pings',
+          run: async ({ event, board: own }) => {
+            if (event.type !== 'message.posted') return
+            await own.reply(event.message!.id, 'pong')
+            if (++tries === 1) throw new Error('down')
+          },
+        },
+      }, 'app:oac_1')
+      const ada = handleOn(api, 'user:u_ada')
+      await ada.post('pings', 'before it started')
+      await team.me()
+      await following(api)
+      const ping = await ada.post('pings', 'ping')
+      await vi.waitFor(() => expect(tries).toBe(2), { timeout: 5_000 })
+      expect((await team.thread(ping.id)).replies.map((reply) => reply.text)).toEqual(['pong'])
+    })
+
+    /** A pings watcher that replies pong, and what it ran on. */
+    const pinger = () => {
+      const ran: string[] = []
+      const watch: Record<string, Watcher> = {
+        pings: {
+          tail: 'pings',
+          run: async ({ event, board: own }) => {
+            if (event.type !== 'message.posted') return
+            ran.push(event.message!.text)
+            await own.reply(event.message!.id, 'pong')
+          },
+        },
+      }
+      return { ran, watch }
+    }
+    const registrations = (api: ReturnType<typeof fakeMessageboard>) => api.requests.filter((request) => request.startsWith('PUT ') && request.endsWith('/watchers')).length
+
+    it('run as tails with a board token you set in Node, its project\'s included, never trying to register', async () => {
+      for (const key of Object.keys(process.env)) if (/^(BOARD|VERCEL|CLAUDE|CODEX|GROK|CURSOR|PI_|AI_AGENT)/.test(key)) vi.stubEnv(key, '')
+      onTestFinished(() => {
+        vi.unstubAllEnvs()
+        vi.unstubAllGlobals()
+      })
+      const api = fakeMessageboard()
+      const ada = handleOn(api, 'user:u_ada')
+      await ada.post('pings', 'before it started')
+      const { secret } = await handleOn(api, 'project:prj_pong:production').createToken({ name: 'deploy' })
+      vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => api.fetch(input, init))
+      vi.stubEnv('VERCEL_ORG_ID', 'team_test')
+      vi.stubEnv('BOARD_TOKEN', secret)
+      const { ran, watch } = pinger()
+      const backend = nodeVercel({ board: 'brd_test' })
+      onTestFinished(() => backend.close())
+      const team = board({ backend, url: 'https://pong.example/api/board', watch })
+      await team.me()
+      await following(api)
+      const ping = await ada.post('pings', 'ping')
+      await vi.waitFor(() => expect(ran).toEqual(['ping']))
+      await vi.waitFor(async () => expect((await team.thread(ping.id)).replies.map((reply) => [reply.text, reply.by.actor])).toEqual([['pong', 'vercel:project:prj_pong:production+pings']]))
+      expect(api.requests.filter((request) => request.includes('/watchers'))).toEqual([])
+    })
+
+    it("run as tails once Vercel's API refuses a project's board token in a fetch, which registers once and never again", async () => {
+      const api = fakeMessageboard()
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+      onTestFinished(() => errors.mockRestore())
+      const ada = handleOn(api, 'user:u_ada')
+      await ada.post('pings', 'before it started')
+      const { secret } = await handleOn(api, 'project:prj_pong:production').createToken({ name: 'deploy' })
+      const { ran, watch } = pinger()
+      const backend = vercel({ team: 'team_test', api: API, board: 'brd_test', fetch: as(api, secret) })
+      onTestFinished(() => backend.close())
+      const team = board({ backend, url: 'http://localhost:3000/api/board', watch })
+      await team.me()
+      await following(api)
+      expect(registrations(api)).toBe(1)
+      const ping = await ada.post('pings', 'ping')
+      await vi.waitFor(() => expect(ran).toEqual(['ping']))
+      await vi.waitFor(async () => expect((await team.thread(ping.id)).replies.map((reply) => reply.text)).toEqual(['pong']))
+      // Not on a wake-up, a registration asked for, or a later use once the wait between tries is over.
+      const wake = await team.fetch(new Request('http://localhost:3000/api/board/wake', { method: 'POST', headers: { 'x-board-watchers': 'stale' } }))
+      expect(await wake.json()).toEqual({ ran: 0 })
+      const asked = await team.fetch(new Request('http://localhost:3000/api/board/watchers', { method: 'POST' }))
+      expect(asked.status).toBe(403)
+      await expect(backend.registerWatchers()).rejects.toMatchObject({ code: 'watchers_need_project' })
+      const clock = vi.spyOn(Date, 'now')
+      onTestFinished(() => clock.mockRestore())
+      const at = Date.now()
+      clock.mockReturnValue(at + 60_000)
+      await team.me()
+      clock.mockRestore()
+      await ada.post('pings', 'ping again')
+      await vi.waitFor(() => expect(ran).toEqual(['ping', 'ping again']))
+      // A board that pulls on its own stops trying too: its next try would have come after a second.
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+      expect(registrations(api)).toBe(1)
+    })
+
+    it("start no tails on a deployment whose credentials aren't its own, a board token's or VERCEL_TOKEN's", async () => {
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+      onTestFinished(() => {
+        errors.mockRestore()
+        vi.unstubAllEnvs()
+        vi.unstubAllGlobals()
+      })
+      const api = fakeMessageboard()
+      const ada = handleOn(api, 'user:u_ada')
+      await ada.post('pings', 'before it started')
+      const { secret } = await handleOn(api, 'project:prj_pong:production').createToken({ name: 'ci' })
+      vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => api.fetch(input, init))
+      for (const [name, value, options] of [
+        ['BOARD_TOKEN', secret, { board: 'brd_test' }],
+        ['VERCEL_TOKEN', 'user:u_jb', {}],
+      ] as const) {
+        for (const key of Object.keys(process.env)) if (/^(BOARD|VERCEL|CLAUDE|CODEX|GROK|CURSOR|PI_|AI_AGENT)/.test(key)) vi.stubEnv(key, '')
+        for (const [key, set] of Object.entries({ VERCEL: '1', VERCEL_ENV: 'production', VERCEL_ORG_ID: 'team_test', [name]: value })) vi.stubEnv(key, set)
+        const { ran, watch } = pinger()
+        const backend = nodeVercel(options)
+        onTestFinished(() => backend.close())
+        const team = board({ backend, url: 'https://pong.vercel.app/api/board', watch })
+        await team.me()
+        await ada.post('pings', `ping with ${name}`)
+        await new Promise((resolve) => setTimeout(resolve, 300))
+        expect([name, ran]).toEqual([name, []])
+      }
+      // Neither read the feed or asked to register.
+      expect(api.requests.filter((request) => request.endsWith('/changes') || request.includes('/watchers'))).toEqual([])
+    })
+
+    it("answer a wake-up with nothing run and a registration with watchers_need_project, asking the API nothing", async () => {
+      const api = fakeMessageboard()
+      const { backend, team } = personal(api, { pings: { tail: 'pings', run: async () => {} } })
+      const wake = await team.fetch(new Request('http://localhost:3000/api/board/wake', { method: 'POST' }))
+      expect(await wake.json()).toEqual({ ran: 0 })
+      const registering = await team.fetch(new Request('http://localhost:3000/api/board/watchers', { method: 'POST' }))
+      expect([registering.status, (await registering.json()).error.code]).toEqual([403, 'watchers_need_project'])
+      await expect(backend.registerWatchers()).rejects.toMatchObject({ status: 403, code: 'watchers_need_project', origin: 'handle' })
+      expect(api.requests.filter((request) => request.includes('/watchers'))).toEqual([])
+    })
+  })
+
+  it("passes the conformance kit's sync as a project, through Vercel's API's sync routes, but for a narrowed caller's", async () => {
+    const api = fakeMessageboard()
+    const report = await conformance(handleOn(api, 'project:prj_pong:production'), { withCan: narrowedOn(api, 'project:prj_pong:production') })
     expect(Object.fromEntries(report.checks.filter((check) => check.group === 'sync').map((check) => [check.name, check.status]))).toEqual({
       "keeps sync's records: an import as a platform author, its lookups by platform ID, a receipt, and where it's synced": 'passed',
       "queues a platform thread's events in its sync's inbox once, and leases each after the one before is acked": 'passed',
       'hands a sync each message change as a match of its @sync watcher': 'passed',
       'keeps noSync on a post and a reply, so sync sends neither': 'passed',
+      // Vercel's API doesn't read x-board-can yet, so a narrowed caller keeps sync's records.
+      "refuses a caller narrowed with x-board-can sync's records: imports, receipts, and the inbox": 'failed',
     })
   }, 30_000)
 
-  it("passes the conformance kit's watchers as a project too, registering a path on its own project", async () => {
-    const report = await conformance(handleOn(fakeMessageboard(), 'project:prj_pong:production'))
-    expect(report.checks.filter((check) => check.group === 'watchers').map((check) => check.status)).toEqual(['passed', 'passed'])
+  it("passes the conformance kit's watchers as a project too, registering a path on its own project, but for a narrowed caller's", async () => {
+    const api = fakeMessageboard()
+    const report = await conformance(handleOn(api, 'project:prj_pong:production'), { withCan: narrowedOn(api, 'project:prj_pong:production') })
+    // Vercel's API doesn't read x-board-can yet, so a narrowed caller registers its project's watchers.
+    expect(report.checks.filter((check) => check.group === 'watchers').map((check) => check.status)).toEqual(['passed', 'passed', 'failed'])
   }, 30_000)
 
   it('registers a path on its own project on Vercel, which the API wakes through its Deployment Protection', async () => {
@@ -745,7 +1079,7 @@ describe('vercel()', () => {
       const at = Date.now()
       clock.mockReturnValue(at + 11_000)
       await pong.me()
-      await vi.waitFor(() => expect(api.registrations.get('vercel:project:prj_pong:production')).toMatchObject({ url: 'https://pong.example/api/board' }))
+      await vi.waitFor(() => expect(api.registrations.get('vercel:project:prj_pong:production')).toMatchObject({ url: null }))
     } finally {
       clock.mockRestore()
       errors.mockRestore()
@@ -754,11 +1088,11 @@ describe('vercel()', () => {
 
   it("turns a tail into the API's filter, and refuses what the API can't match", async () => {
     const api = fakeMessageboard()
-    const team = handleOn(api)
+    const team = handleOn(api, 'project:prj_pong:production')
     await team.register({ url: null, watch: { open: { tail: 'dev/ --label status=open|draft --text "is failing"' }, mine: { tail: 'general --by me' } } })
-    expect(api.registrations.get('vercel:user:u_jb')?.watch).toEqual({
-      open: { filter: { channelTree: 'dev', text: 'is failing', labels: [{ key: 'status', values: ['open', 'draft'] }] }, when: 'matches' },
-      mine: { filter: { channelIds: ['general'], authors: ['vercel:user:u_jb'] }, when: 'matches' },
+    expect(api.registrations.get('vercel:project:prj_pong:production')?.watch).toEqual({
+      open: { filter: { channelTree: 'dev', text: 'is failing', labels: [{ key: 'status', values: ['open', 'draft'] }] } },
+      mine: { filter: { channelIds: ['general'], authors: ['vercel:project:prj_pong:production'] } },
     })
     for (const tail of ['general --mentions @ada', 'general --source slack'])
       await expect(team.register({ url: null, watch: { w: { tail } } })).rejects.toMatchObject({ status: 400, code: 'bad_watcher' })
@@ -1076,7 +1410,7 @@ describe('vercel()', () => {
   it('hashes a registration with its sync entries, as a board on http() does', async () => {
     const api = fakeMessageboard()
     const pong = handleOn(api, 'project:prj_pong:production')
-    const watch = { w: { tail: 'general', when: 'matches' as const } }
+    const watch = { w: { tail: 'general' } }
     await pong.register({ url: null, watch })
     expect(api.registrations.get('vercel:project:prj_pong:production')!.hash).toBe(watchersHash(watch))
     await pong.register({ url: null, watch, sync: [{ key: 'slack', platform: 'slack' }] })
@@ -1140,7 +1474,6 @@ describe('vercel()', () => {
       principals: [
         { kind: 'user', email: 'ada@acme.com' },
         { kind: 'project', project: 'web', environments: ['production'] },
-        { kind: 'github', repository: 'acme/web', workflow: 'ci.yml' },
         { kind: 'app', app: 'ship' },
       ],
       can: { 'security/': 'all' },
@@ -1148,14 +1481,13 @@ describe('vercel()', () => {
     expect(grant.principals).toEqual([
       { kind: 'user', userId: 'u_ada', email: 'ada@acme.com' },
       { kind: 'project', projectId: 'prj_web', name: 'web', environments: ['production'], teamId: 'team_test' },
-      { kind: 'github', repositoryId: '700001', repository: 'acme/web', workflow: 'ci.yml' },
       { kind: 'app', clientId: 'oac_1', name: 'ship' },
     ])
     // A project it names already gets the new environments.
     const joined = await jb.updateGrant(grant.id, { add: [{ kind: 'project', project: 'prj_web', environments: ['preview'] }] })
     expect(joined.grant.principals[1]).toEqual({ kind: 'project', projectId: 'prj_web', name: 'web', environments: ['production', 'preview'], teamId: 'team_test' })
     const updated = await jb.updateGrant(grant.id, { add: [{ kind: 'user', email: 'bob@acme.com' }], remove: [{ kind: 'project', project: 'web' }, { kind: 'app', app: 'oac_1' }] })
-    expect(updated.grant.principals.map((principal) => ('userId' in principal ? principal.userId : principal.kind))).toEqual(['u_ada', 'github', 'u_bob'])
+    expect(updated.grant.principals.map((principal) => ('userId' in principal ? principal.userId : principal.kind))).toEqual(['u_ada', 'u_bob'])
     expect(await jb.explain('security/incidents', { user: 'bob@acme.com' })).toEqual({
       channel: 'security/incidents',
       pattern: 'security/',
@@ -1170,10 +1502,15 @@ describe('vercel()', () => {
     expect(await jb.explain('dev', { user: 'val@acme.com' })).toMatchObject({ pattern: '*', level: 'group', grants: [{ id: 'g1' }], capped: 'viewer', can: ['read', 'react'] })
     // An app on the team, by its slug: g3 lets every one in.
     expect(await jb.explain('dev', { app: 'ship' })).toMatchObject({ pattern: '*', level: 'group', grants: [{ id: 'g3' }], can: ['read', 'post', 'react', 'label'] })
-    // Its grant lets the run in, and says nothing of ci.
-    expect(await jb.explain('ci', { github: 'acme/web', workflow: 'ci.yml' })).toMatchObject({ pattern: null, level: null, grants: [], can: [] })
-    await jb.createGrant({ principals: [{ kind: 'oidc', issuer: 'https://gitlab.com', claims: { project_id: '42' } }], can: { 'ci/': ['post'] } })
-    expect(await jb.explain('ci', { oidc: 'https://gitlab.com', claims: { project_id: '42' } })).toMatchObject({ pattern: 'ci/', level: 'principal', can: ['post'] })
+    // No grant names a repository's runs or an issuer, so neither is explained: an app stands in for them.
+    for (const principal of [{ github: 'acme/web', workflow: 'ci.yml' }, { oidc: 'https://gitlab.com', claims: { project_id: '42' } }])
+      await expect(jb.explain('ci', principal)).rejects.toMatchObject({
+        status: 400,
+        code: 'unsupported_principal',
+        origin: 'handle',
+        message: "Vercel's board explains no GitHub or OIDC caller: no grant names one.",
+        hint: 'Explain the app an OIDC exchange policy issues tokens for: --app <slug>.',
+      })
     expect((await jb.revokeGrant(grant.id)).revoked).toBe(true)
     expect(api.requests).toEqual(
       expect.arrayContaining([
@@ -1183,6 +1520,23 @@ describe('vercel()', () => {
         `POST /boards/brd_test/grants/${grant.id}/revoke`,
       ]),
     )
+  })
+
+  it("refuses a grant naming a GitHub run or an OIDC issuer, made or added, saying an app stands in for it", async () => {
+    const api = fakeMessageboard()
+    const jb = handleOn(api)
+    const refusal = {
+      status: 400,
+      code: 'unsupported_principal',
+      origin: 'handle',
+      message: "Vercel's board takes no GitHub or OIDC principals in a grant.",
+      hint: 'Grant an app that an OIDC exchange policy issues tokens for: --app <slug>.',
+    }
+    for (const principal of [{ kind: 'github', repository: 'acme/web' }, { kind: 'oidc', issuer: 'https://gitlab.com', claims: { project_id: '42' } }] as const)
+      await expect(jb.createGrant({ principals: [principal], can: { 'ci/': ['post'] } })).rejects.toMatchObject(refusal)
+    const { grant } = await jb.createGrant({ principals: [{ kind: 'app', app: 'ship' }], can: { 'ci/': ['post'] } })
+    await expect(jb.updateGrant(grant.id, { add: [{ kind: 'github', repository: 'acme/web' }] })).rejects.toMatchObject(refusal)
+    expect((await jb.grants()).find((found) => found.id === grant.id)?.principals).toEqual([{ kind: 'app', clientId: 'oac_1', name: 'ship' }])
   })
 
   it("gives back grants' and tokens' times as the protocol has them, though the API answers milliseconds", async () => {
@@ -1195,10 +1549,11 @@ describe('vercel()', () => {
     expect((await jb.grants()).find((listed) => listed.id === grant.id)?.at).toBe(grant.at)
     expect((await jb.explain('ci', { user: 'ada@acme.com' })).grants).toMatchObject([{ id: grant.id, at: grant.at }])
     expect((await jb.updateGrant(grant.id, { can: { 'ci/': ['read', 'post'] } })).grant.at).toMatch(/^\d{4}-\d\d-\d\dT/)
-    const { token } = await jb.createToken({ name: 'ci', can: { 'ci/': ['post'] }, expires: '1d' })
+    const pong = handleOn(api, 'project:prj_pong:production')
+    const { token } = await pong.createToken({ name: 'ci', can: { 'ci/': ['post'] }, expires: '1d' })
     expect(token.at).toBe(new Date(Date.parse(token.at)).toISOString())
     expect(Date.parse(token.expiresAt) - Date.parse(token.at)).toBe(86_400_000)
-    expect(await jb.tokens()).toMatchObject([{ id: token.id, at: token.at, expiresAt: token.expiresAt }])
+    expect(await pong.tokens()).toMatchObject([{ id: token.id, at: token.at, expiresAt: token.expiresAt }])
   })
 })
 
@@ -1212,43 +1567,30 @@ describe("board tokens on Vercel's API", () => {
     return { status: response.status, body: await response.json() }
   }
 
-  it("runs the conformance kit on a board token, and skips watchers, which a board token can't register yet", async () => {
-    const api = fakeMessageboard()
-    const { secret } = await handleOn(api).createToken({ name: 'conformance' })
-    const report = await conformance(holding(api, secret), { withToken: (minted) => holding(api, minted) })
-    expect(report.checks.filter((check) => check.group === 'watchers').map(({ status, detail }) => ({ status, detail }))).toEqual([
-      { status: 'skipped', detail: "a board token can't register watchers yet" },
-      { status: 'skipped', detail: "a board token can't register watchers yet" },
-    ])
-    expect(report.checks.filter((check) => check.group === 'core' || check.group === 'tokens').every((check) => check.status === 'passed')).toBe(true)
-  })
-
   it('shows a secret once, sends it as it is, and answers a retried mint 409 token_already_minted', async () => {
     const api = fakeMessageboard()
-    const ada = handleOn(api, 'user:u_ada')
-    const { secret } = await ada.createToken({ name: 'ci' })
-    expect(JSON.stringify(await ada.tokens())).not.toContain(secret)
-    expect((await holding(api, secret).me()).principal).toBe('vercel:user:u_ada')
+    const pong = handleOn(api, 'project:prj_pong:production')
+    const { secret } = await pong.createToken({ name: 'ci' })
+    expect(JSON.stringify(await pong.tokens())).not.toContain(secret)
+    expect((await holding(api, secret).me()).principal).toBe('vercel:project:prj_pong:production')
     const mint = { operationId: 'op_1', name: 'ci' }
-    expect((await raw(api, 'user:u_ada', 'POST', '/boards/brd_test/tokens', mint)).status).toBe(200)
-    expect(await raw(api, 'user:u_ada', 'POST', '/boards/brd_test/tokens', mint)).toMatchObject({ status: 409, body: { error: { code: 'token_already_minted' } } })
+    expect((await raw(api, 'project:prj_pong:production', 'POST', '/boards/brd_test/tokens', mint)).status).toBe(200)
+    expect(await raw(api, 'project:prj_pong:production', 'POST', '/boards/brd_test/tokens', mint)).toMatchObject({ status: 409, body: { error: { code: 'token_already_minted' } } })
   })
 
-  it("answers 401 invalid_token for a token that's unknown, revoked, expired, or whose person left the team", async () => {
+  it("answers 401 invalid_token for a token that's unknown, revoked, or expired", async () => {
     const api = fakeMessageboard()
-    const ada = handleOn(api, 'user:u_ada')
-    const [revoked, expired, left] = await Promise.all(['revoked', 'expired', 'left'].map((name) => ada.createToken({ name })))
-    await ada.revokeToken(revoked!.token.id)
+    const pong = handleOn(api, 'project:prj_pong:production')
+    const [revoked, expired] = await Promise.all(['revoked', 'expired'].map((name) => pong.createToken({ name })))
+    await pong.revokeToken(revoked!.token.id)
     api.tokens.get(expired!.token.id)!.expiresAt = Date.now() - 1
-    expect((await holding(api, left!.secret).me()).principal).toBe('vercel:user:u_ada')
-    api.leave('u_ada')
-    for (const secret of ['not-a-token', revoked!.secret, expired!.secret, left!.secret])
+    for (const secret of ['not-a-token', revoked!.secret, expired!.secret])
       await expect(holding(api, secret).me()).rejects.toMatchObject({ status: 401, code: 'invalid_token' })
   })
 
   it("answers 404 board_not_found on a board that isn't the token's, and says plainly that it reaches no team route", async () => {
     const api = fakeMessageboard({ boards: [{ name: 'Security', id: 'brd_sec' }] })
-    const { secret } = await handleOn(api).createToken({ name: 'ci' })
+    const { secret } = await handleOn(api, 'project:prj_pong:production').createToken({ name: 'ci' })
     await expect(holding(api, secret, 'brd_sec').messages({ channel: 'dev' })).rejects.toMatchObject({ status: 404, code: 'board_not_found' })
     expect(await raw(api, secret, 'GET', '/boards')).toMatchObject({ status: 403, body: { error: { code: 'board_token_scope' } } })
     // Finding the team's board is a team route.
@@ -1261,64 +1603,167 @@ describe("board tokens on Vercel's API", () => {
     })
   })
 
+  it('posts a new thread with a post-only token, in a channel it can neither read nor make, and names that channel', async () => {
+    const api = fakeMessageboard()
+    const { secret } = await handleOn(api, 'project:prj_pong:production').createToken({ name: 'ci', can: { 'ci/': ['post'] } })
+    const ci = holding(api, secret)
+    // The API makes ci on its first post, as a board does, though this token couldn't make it itself.
+    const posted = await ci.post('ci', { text: 'build green', labels: { run: '42' } })
+    expect(posted).toMatchObject({ channel: 'ci', text: 'build green', labels: { run: '42' }, re: null, by: { principal: 'vercel:project:prj_pong:production' } })
+    // Someone who reads ci sees it there.
+    expect((await handleOn(api).thread(posted.id)).message).toMatchObject({ id: posted.id, channel: 'ci', text: 'build green' })
+  })
+
+  it("gets back a post-only token's retried post as it sent it, though the API answers a replay with IDs only", async () => {
+    const api = fakeMessageboard()
+    const { secret } = await handleOn(api, 'project:prj_pong:production').createToken({ name: 'ci', can: { 'ci/': ['post'] } })
+    const ci = holding(api, secret)
+    const first = await ci.post('ci', { id: 'run-42', text: 'build green', labels: { run: '42' } })
+    const again = await ci.post('ci', { id: 'run-42', text: 'build green', labels: { run: '42' } })
+    expect(again).toMatchObject({ id: first.id, thread: first.thread, channel: 'ci', text: 'build green', labels: { run: '42' }, re: null, by: first.by, author: first.author })
+    // It's the one post: the retry made no other.
+    expect((await handleOn(api).messages({ channel: 'ci' })).messages.map((message) => message.id)).toEqual([first.id])
+  })
+
+  it('names the channel a retried post landed in, not the one the retry names', async () => {
+    const api = fakeMessageboard()
+    const jb = handleOn(api)
+    const first = await jb.post('dev', { id: 'once', text: 'hi' })
+    expect(await jb.post('ops', { id: 'once', text: 'hi' })).toMatchObject({ id: first.id, channel: 'dev' })
+  })
+
+  it('starts a thread in one call to the API, in a channel new or not, for a reader and a post-only token alike', async () => {
+    const api = fakeMessageboard()
+    const { secret } = await handleOn(api, 'project:prj_pong:production').createToken({ name: 'ci', can: { 'ci/': ['post'] } })
+    const jb = handleOn(api)
+    const ci = holding(api, secret)
+    const before = api.requests.length
+    for (const [handle, channel] of [[jb, 'ops'], [jb, 'ops'], [ci, 'ci'], [ci, 'ci']] as const) expect(await handle.post(channel, { text: 'hi' })).toMatchObject({ channel })
+    // Neither looks the channel up, makes it, or lists channels to name it.
+    expect(api.requests.slice(before).filter((request) => /\/(channels|threads)/.test(request))).toEqual(Array(4).fill('POST /boards/brd_test/threads'))
+  })
+
+  it('mints a token for a day unless it asks for longer, and for a week at most', async () => {
+    const api = fakeMessageboard()
+    const pong = handleOn(api, 'project:prj_pong:production')
+    const lives = ({ token }: { token: { at: string; expiresAt: string } }) => Date.parse(token.expiresAt) - Date.parse(token.at)
+    expect(lives(await pong.createToken({ name: 'ci' }))).toBe(86_400_000)
+    expect(lives(await pong.createToken({ name: 'week', expires: '7d' }))).toBe(7 * 86_400_000)
+    await expect(pong.createToken({ name: 'longer', expires: '8d' })).rejects.toMatchObject({ status: 400, code: 'invalid_expires' })
+    // One that isn't a duration, as the API answers it.
+    expect(await raw(api, 'project:prj_pong:production', 'POST', '/boards/brd_test/tokens', { operationId: 'op_soon', name: 'soon', expires: 'soon' })).toMatchObject({ status: 400, body: { error: { code: 'invalid_expires' } } })
+    expect([...api.tokens.values()].map((minted) => minted.name)).toEqual(['ci', 'week'])
+  })
+
   it('says what a token may do, and until when', async () => {
     const api = fakeMessageboard()
-    const { token, secret } = await handleOn(api).createToken({ name: 'ci', can: { 'dev/': ['read'] }, expires: '1h' })
+    const { token, secret } = await handleOn(api, 'project:prj_pong:production').createToken({ name: 'ci', can: { 'dev/': ['read'] }, expires: '1h' })
     expect(await holding(api, secret).me()).toMatchObject({ can: { 'dev/': ['read'] }, expiresAt: token.expiresAt })
     expect(Date.parse(token.expiresAt) - Date.parse(token.at)).toBe(3_600_000)
   })
 
-  it("says plainly that a board token can't register watchers yet", async () => {
+  it("runs the conformance kit on a project's board token, which mints its own, and skips watchers, which only a deployment's own credentials register", async () => {
     const api = fakeMessageboard()
-    const { secret } = await handleOn(api).createToken({ name: 'ci' })
-    await expect(holding(api, secret).register({ url: null, watch: { open: { tail: 'dev/' } } })).rejects.toMatchObject({
-      status: 403,
-      code: 'board_token_unsupported',
-      origin: 'handle',
-      message: "a board token can't register watchers yet.",
-    })
+    // A project that manages the board, so the grants checks that mint tokens run too.
+    await handleOn(api).createGrant({ principals: [{ kind: 'project', project: 'prj_pong', environments: ['production'] }], can: { '*': 'all' } })
+    const { secret } = await handleOn(api, 'project:prj_pong:production').createToken({ name: 'conformance' })
+    const principals = { project: 'prj_web', repository: 'acme/api', viewer: 'val@acme.com' }
+    const report = await conformance(holding(api, secret), { withToken: (minted) => holding(api, minted), principals: { ...principals, app: 'ship' } })
+    // Its tokens, minted from its own, check what a token may grant, naming the app it's given. Only the
+    // check that needs a caller nothing lets in, which a repository's runs are, skips.
+    const github = 'this board takes no GitHub or OIDC principals in a grant'
+    const unchecked = (checks: typeof report.checks) =>
+      checks.filter((check) => check.group === 'grants' && check.status !== 'passed').map(({ name, status, detail }) => ({ name, status, detail }))
+    const always = [
+      { name: 'lets a member grant on a pattern after a lock under it', status: 'skipped', detail: expect.any(String) },
+      { name: 'lets a project on another team in, in its environments', status: 'skipped', detail: expect.any(String) },
+    ]
+    expect(unchecked(report.checks)).toEqual([{ name: 'lets everyone narrow what something else lets in, and lets no one in itself', status: 'skipped', detail: github }, ...always])
+    // Given no app, the checks that grant to someone else name the repository, which Vercel's API refuses.
+    const appless = await conformance(holding(api, secret), { withToken: (minted) => holding(api, minted), principals })
+    expect(unchecked(appless.checks).filter((check) => check.detail === github).map((check) => check.name)).toEqual([
+      'makes another grant for the same principals, and changes one by its ID',
+      'lets everyone narrow what something else lets in, and lets no one in itself',
+      "lets no token grant past its own can, even where everyone's grant closes it",
+      'lets no token let anyone in where everyone gets more than the token has',
+    ])
+    expect(report.checks.filter((check) => check.group === 'watchers').map(({ status, detail }) => ({ status, detail }))).toEqual([
+      { status: 'skipped', detail: 'only a deployment registers watchers here' },
+      { status: 'skipped', detail: 'only a deployment registers watchers here' },
+      { status: 'skipped', detail: "this run can't call the board with an x-board-can header" },
+    ])
+    // Every core and tokens check passes, but the narrowed caller's, which this run can't send the header for.
+    expect(report.checks.filter((check) => check.group === 'core' || check.group === 'tokens').map((check) => [check.name, check.status]).filter(([, status]) => status !== 'passed')).toEqual([['narrows a caller to what its x-board-can says', 'skipped']])
+  }, 30_000)
+
+  it("says plainly that only a deployment's own credentials register watchers, to a person, an app, and a board token", async () => {
+    const api = fakeMessageboard()
+    const { secret: projects } = await handleOn(api, 'project:prj_pong:production').createToken({ name: 'deploy' })
+    for (const handle of [handleOn(api), handleOn(api, 'app:oac_1'), holding(api, projects)])
+      await expect(handle.register({ url: null, watch: { open: { tail: 'dev/' } } })).rejects.toMatchObject({
+        status: 403,
+        code: 'watchers_need_project',
+        origin: 'handle',
+        message: "Vercel's API takes watchers only from a deployment's own credentials.",
+        hint: expect.stringContaining("Watchers in board()'s config run in this process instead."),
+      })
     expect(api.registrations.size).toBe(0)
+    // A pull, an ack, and a listing the API refuses the same way say the same.
+    const refusing = board({
+      backend: vercel({
+        team: 'team_test', api: API, board: 'brd_test',
+        fetch: async (input, init) => (/\/watchers/.test(new URL(new Request(input, init).url).pathname) ? Response.json({ error: { code: 'watchers_need_project', message: 'no' } }, { status: 403 }) : as(api, 'user:u_jb')(input, init)),
+      }),
+    })
+    for (const attempt of [refusing.matches({}), refusing.ack('mat_1', { lease: 'l' }), refusing.watchers()])
+      await expect(attempt).rejects.toMatchObject({ status: 403, code: 'watchers_need_project', origin: 'handle', message: "Vercel's API takes watchers only from a deployment's own credentials." })
   })
 
-  it("mints for people, deployments, and tokens, and answers 403 unsupported_principal to apps and development tokens that carry a person", async () => {
+  it("mints for deployments and tokens, and says plainly to people and apps that only a deployment mints", async () => {
     const api = fakeMessageboard()
-    const { token, secret } = await handleOn(api).createToken({ name: 'ci' })
+    const { token, secret } = await handleOn(api, 'project:prj_pong:production').createToken({ name: 'deploy' })
+    expect(token.by).toBe('vercel:project:prj_pong:production')
     expect((await holding(api, secret).createToken({ name: 'child' })).token.parent).toBe(token.id)
-    expect((await handleOn(api, 'project:prj_pong:production').createToken({ name: 'deploy' })).token.by).toBe('vercel:project:prj_pong:production')
-    for (const principal of ['app:oac_1', 'user:u_jb:development'])
-      await expect(handleOn(api, principal).createToken({ name: 'ci' })).rejects.toMatchObject({ status: 403, code: 'unsupported_principal' })
+    for (const principal of ['user:u_jb', 'user:u_ada', 'app:oac_1'])
+      await expect(handleOn(api, principal).createToken({ name: 'ci' })).rejects.toMatchObject({
+        status: 403,
+        code: 'unsupported_principal',
+        origin: 'handle',
+        message: "Vercel's board mints board tokens only for a deployment.",
+        hint: "Mint it from a deployment, with its OIDC token, or from a board token.",
+      })
+    expect([...api.tokens.values()].map((minted) => minted.name)).toEqual(['deploy', 'child'])
   })
 
-  it("holds a token to its can in grants, as its minter's grants and role are", async () => {
+  it("holds a token to its can in grants, as its minter's grants are", async () => {
     const api = fakeMessageboard()
-    // Ada is a member, who manages everywhere; her token only reads, and posts in ci/.
-    const { secret } = await handleOn(api, 'user:u_ada').createToken({ name: 'ci', can: { '*': ['read'], 'ci/': ['read', 'post'] } })
+    // A grant lets the project manage everywhere; its token only reads, and posts in ci/.
+    await handleOn(api).createGrant({ principals: [{ kind: 'project', project: 'prj_pong', environments: ['production'] }], can: { '*': 'all' } })
+    const pong = handleOn(api, 'project:prj_pong:production')
+    const { secret } = await pong.createToken({ name: 'ci', can: { '*': ['read'], 'ci/': ['read', 'post'] } })
     const token = holding(api, secret)
     await expect(token.grants()).rejects.toMatchObject({ status: 403, code: 'grant_forbidden' })
     await expect(token.createGrant({ principals: [{ kind: 'user', email: 'bob@acme.com' }], can: { 'ci/': ['read'] } })).rejects.toMatchObject({ status: 403, code: 'grant_forbidden' })
-    expect((await handleOn(api, 'user:u_ada').createGrant({ principals: [{ kind: 'user', email: 'bob@acme.com' }], can: { 'ci/': ['read'] } })).grant.id).toEqual(expect.any(String))
+    expect((await pong.createGrant({ principals: [{ kind: 'user', email: 'bob@acme.com' }], can: { 'ci/': ['read'] } })).grant.id).toEqual(expect.any(String))
     // Nor grant over a spot it's kept out of.
-    const kept = holding(api, (await handleOn(api, 'user:u_ada').createToken({ name: 'ci', can: { '*': 'all', 'ci/secret/': [] } })).secret)
+    const kept = holding(api, (await pong.createToken({ name: 'ci', can: { '*': 'all', 'ci/secret/': [] } })).secret)
     await expect(kept.createGrant({ principals: [{ kind: 'user', email: 'bob@acme.com' }], can: { 'ci/': ['read'] } })).rejects.toMatchObject({ status: 403, code: 'grant_forbidden' })
     expect((await kept.createGrant({ principals: [{ kind: 'user', email: 'bob@acme.com' }], can: { 'ci/open/': ['read'] } })).grant.id).toEqual(expect.any(String))
-    // An owner's token too.
-    const owners = holding(api, (await handleOn(api, 'user:u_jb').createToken({ name: 'ci', can: { '*': ['read'] } })).secret)
-    await expect(owners.createGrant({ principals: [{ kind: 'user', email: 'bob@acme.com' }], can: { 'ci/': ['read'] } })).rejects.toMatchObject({ status: 403, code: 'grant_forbidden' })
   })
 
   it('lists and revokes, for a token, only itself and the tokens made from it, and answers a bad scope 400 invalid_scope', async () => {
     const api = fakeMessageboard()
-    const ada = handleOn(api, 'user:u_ada')
-    const parent = await ada.createToken({ name: 'parent' })
-    const sibling = await ada.createToken({ name: 'sibling' })
+    const pong = handleOn(api, 'project:prj_pong:production')
+    const parent = await pong.createToken({ name: 'parent' })
+    const sibling = await pong.createToken({ name: 'sibling' })
     const child = await holding(api, parent.secret).createToken({ name: 'child' })
     const ids = async (handle: ReturnType<typeof board>) => (await handle.tokens()).map((listed) => listed.id).sort()
     expect(await ids(holding(api, parent.secret))).toEqual([parent.token.id, child.token.id].sort())
     expect(await ids(holding(api, child.secret))).toEqual([child.token.id])
     await expect(holding(api, parent.secret).revokeToken(sibling.token.id)).rejects.toMatchObject({ status: 404, code: 'token_not_found' })
     expect(await holding(api, parent.secret).revokeToken(child.token.id)).toEqual({ revoked: true })
-    // Ada sees what acts as her.
-    expect(await ids(ada)).toEqual([parent.token.id, sibling.token.id].sort())
-    expect(await raw(api, 'user:u_ada', 'POST', '/boards/brd_test/tokens', { operationId: 'op_2', name: 'ci', can: { 'dev/': ['fly'] } })).toMatchObject({ status: 400, body: { error: { code: 'invalid_scope' } } })
+    // The project sees what acts as it.
+    expect(await ids(pong)).toEqual([parent.token.id, sibling.token.id].sort())
+    expect(await raw(api, 'project:prj_pong:production', 'POST', '/boards/brd_test/tokens', { operationId: 'op_2', name: 'ci', can: { 'dev/': ['fly'] } })).toMatchObject({ status: 400, body: { error: { code: 'invalid_scope' } } })
   })
 })

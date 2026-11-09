@@ -130,7 +130,7 @@ One package, `@vercel/board`, with subpath exports:
 | Import | Contents | Runtime |
 | --- | --- | --- |
 | `@vercel/board` | `board()`, the handle on a board, with its types; the `Backend` and `Protocol` types, `HttpError`, watchers, and middleware. The `node` build also finds the board and a token (see [The handle](#the-handle)) | isomorphic |
-| `@vercel/board/access` | Who may use a board: `oidcTokens()`, `board()`'s default `authenticate`; `resolveActor()`; `compileAccess()`, `union()`, `FULL_ACCESS`, and `DEFAULT_CAN`; and the permission types | server |
+| `@vercel/board/access` | Who may use a board: `oidcTokens()`, `board()`'s default `authenticate`; `resolveActor()`; `compileAccess()`, `union()`, `FULL_ACCESS`, and `DEFAULT_CAN`; `parseCan()` and `CAN_MAX`, which read `x-board-can` as the board does; and the permission types | server |
 | `@vercel/board/cli` | The CLI, to embed: `createApp()` runs it inside another CLI, `INSPECTOR_PAGE` names the inspector's page (name, version, path, SHA-256) for that CLI to fetch and hand to `createApp()` as `inspectorPage`, `vb()` runs a command in-process on a handle, returning what it prints, and `commandWord()` names the command an argv runs | server |
 | `@vercel/board/conformance` | `conformance()`, which checks that a board speaks the protocol | isomorphic |
 | `@vercel/board/backend-local` | `local({ dir?, memory? })`, a board kept in this process: SQLite under `.board/`, one file per `board({ name })`, whatever its `team` (`local.db` for the default board), attachments beside it, and a scheduler in the process; `memory` for tests. For development, `vb serve`, tests, and working offline | Node |
@@ -263,14 +263,36 @@ checked with `@vercel/board/conformance`.
   and watchers work. Vercel's API posts each schedule's sends, so `board()`'s
   middleware screens a schedule when it's made. What the API doesn't keep yet
   answers 501 `not_supported`: files on a scheduled message, labels on a
-  scheduled reply, a post's sync targets. Grants and tokens go to the API. It
+  scheduled reply, a post's sync targets. Grants and tokens go to the API, which takes no `github` or `oidc`
+  principal in a grant, or explains one (400 `unsupported_principal`: an app,
+  which an OIDC exchange policy issues tokens for, stands in), and mints board tokens only
+  for a deployment or from a board token (403 `unsupported_principal`), for
+  a day unless `expires` says otherwise and 7 days at most, since a
+  deployment can mint again (400 `invalid_expires` past that); `vercel()`
+  says the refusals with a hint. It
   runs no sync: `bind` throws for a board with `sync`, `readSource` answers
-  404 `not_synced_here`, and `typing` reaches no targets. Its watchers run as
+  404 `not_synced_here`, and `typing` reaches no targets. Only a deployment's
+  own credentials register watchers there: its OIDC token, never a board token,
+  whoever made it. Its watchers run as
   `http()`'s do (below): it registers their tails with the API, which wakes
-  this deployment by its path on its project (from production, or a branch's
-  preview, through Deployment Protection) or at its URL, and without an
-  `https` one it pulls on its own. Its routes are `POST /wake` and
-  `POST /watchers`, which registers now. It doesn't keep the board, so a board
+  this deployment by its path on its project, through Deployment Protection,
+  from every deployment on Vercel (production, a branch's preview, which names
+  its branch, a `vercel deploy` preview, a custom environment), which never
+  pulls on its own. Only off Vercel does it register no URL and pull on its
+  own: it never sends the API a `url`. Deployed on Vercel means `VERCEL` is
+  `1` outside development, so a dev server with `vercel env pull`'s env, or
+  under `vercel dev` (`VERCEL_ENV=development`), counts as off Vercel, for
+  this and for the tails below. With anyone else's
+  credentials (a person's, an app's, any board token), the API answers 403
+  `watchers_need_project`, so nothing registers: a `/me` principal that isn't
+  a project, `BOARD_TOKEN` in Node, or that refusal to its first registration
+  tells it so, and from then on each config
+  watcher runs in this process as a tail, following `events` from the head as
+  `vb tail` does, with local()'s retries, and skipping its own writes. Sync
+  doesn't run for them, and on Vercel neither do the tails: a deployment's
+  watchers need its own OIDC token. Its routes are `POST /wake` and `POST /watchers`,
+  which registers now; on a board run with anyone else's credentials, a
+  wake-up runs nothing and a registration answers 403 `watchers_need_project`. It doesn't keep the board, so a board
   on it serves no requests but wake-ups and webhooks: any other answers 404
   `this board uses Vercel's, and answers only wake-ups and webhooks`, and none
   is verified.
@@ -389,7 +411,10 @@ The backend picks them; the protocol only says their shape:
   registration is skipped too. `vb conformance` runs it as the CLI's identity,
   with `withToken` for a token it mints (the same board, that secret as the
   credential), so the tokens check sees a token narrowed to its `can` and
-  refused once revoked, and exits 1 when a check fails. board's own tests run
+  refused once revoked, and with `withCan` for its own credential narrowed with
+  `x-board-can` (as a proxy holding it sends it), so the narrowing checks see
+  that caller refused outside its `can`, and on its principal's watchers and
+  sync's records, and exits 1 when a check fails. board's own tests run
   it against boards on its internal engine, one of them keeping no schedules or
   files (which reports those two as not kept here), and against boards broken
   on purpose, so the kit and the backends can't drift apart unnoticed.
@@ -406,7 +431,7 @@ answers the same routes its own way:
 
 | Route, on the board with the log | What |
 | --- | --- |
-| `POST /watchers` | `{ url?, watch, sync? }` or `{ path, branch?, watch, sync? }`, never both: registers the caller's watchers and sync entries, replacing its last registration. Needs `read` somewhere, and `sync` somewhere for sync entries; at most 32 watchers; `url` must be `https`, and without one (or a `path`) the caller pulls on its own. `path`, on a board whose discovery says `wake_by_path`, wakes the caller's own Vercel project there instead, through its Deployment Protection: the board takes the project and environment from the caller's token and finds the deployment, so a project can only register itself, and a caller that isn't a Vercel project (a person, say) gets 403 `not_a_project`. Production wakes its best production domain; a preview names its `branch`, and wakes that branch's latest ready preview, since a token doesn't say which deployment called. The board finds the deployment again for each wake-up. A board that can't find a project's deployments answers 501 `no_wake_by_path`. A registration answers the same way: `{ url }`, or `{ url: null, path, branch? }` |
+| `POST /watchers` | `{ url?, watch, sync? }` or `{ path, branch?, watch, sync? }`, never both: registers the caller's watchers and sync entries, replacing its last registration. Needs `read` somewhere, and `sync` somewhere for sync entries; at most 32 watchers; `url` must be `https`, and without one (or a `path`) the caller pulls on its own. `path`, on a board whose discovery says `wake_by_path`, wakes the caller's own Vercel project there instead, through its Deployment Protection: the board takes the project and environment from the caller's token and finds the deployment, so a project can only register itself, and a caller that isn't a Vercel project (a person, say) gets 403 `not_a_project`. Production wakes its best production domain; a preview of a branch names its `branch`, and wakes that branch's latest ready preview; a preview with no branch (`vercel deploy`) wakes that deployment, and a custom environment its latest ready deployment, as the caller's token says. The board finds the deployment again for each wake-up. A board that can't find a project's deployments answers 501 `no_wake_by_path`. A registration answers the same way: `{ url }`, or `{ url: null, path, branch? }` |
 | `GET /watchers` | Every registration to `manage` in every channel, the caller's own to anyone else |
 | `GET /watchers/matches?limit&wait` | What the caller can run now, each leased to it for 5 minutes. `wait` holds the request up to 25 seconds for one |
 | `POST /watchers/matches/:id/ack` | `{ lease, error?, skip? }`: done, an error to try again, or a skip |
@@ -637,7 +662,7 @@ talking to.
   out for each request and, through the binding, for each principal its
   backend stored (a schedule's creator, a registrant) under the grants as
   they are then. A principal carries its token's claims and its
-  `x-board-scope`, never what it may do. The backend gets the caller
+  `x-board-can`, never what it may do. The backend gets the caller
   verified. A token no grant lets in is 403, with the grant that would as the
   `hint` (`Grant it: vb grants create --github acme/web`), and one from an
   issuer no grant names is 401 `untrusted issuer`. There's no `access`
@@ -773,7 +798,7 @@ await team.createGrant({ principals: [{ kind: 'project', project: 'prj_self', en
 - The board's own deployments in its environment and the board's own code (watchers, sync,
   middleware, the handle, schedules' system writes) can do everything. People get what their
   grants give: g1, everything, on a new board.
-- `x-board-scope: dev/=read,post;ci/=read`, set by a proxy that holds the
+- `x-board-can: dev/=read,post;ci/=read`, set by a proxy that holds the
   credential, is intersected with the principal's access, so it only narrows.
   An entry's permissions can be `all` (`dev/=all`). A schedule keeps its
   creator's scope, so a header longer than 4000 characters is `invalid_scope`
@@ -1011,7 +1036,7 @@ await team.revokeToken(token.id)
   narrowed by the token's `can`) and works its access out again on every
   request, under the grants as they are then. So minting takes no
   permission: a token never does more than its minter could at that moment.
-  A request's own `x-board-scope` narrows it further. `can` left out is
+  A request's own `x-board-can` narrows it further. `can` left out is
   read, post, react, and label everywhere, so a token has
   `sync` or `manage` only when its `can` says so. A token always has a
   scope, `*=all` narrowed by its `can`, so it's never its principal's
@@ -1667,7 +1692,7 @@ Registered watchers' routes (`/watchers`, `/watchers/matches`) are in
   board; `text` is words the text contains, case-insensitively.
 - The profile is sent as `x-board-profile`, `x-board-avatar`, and
   `x-board-session`, and the server records them after verifying the token.
-- `x-board-scope` narrows the token's access for that request (see
+- `x-board-can` narrows the token's access for that request (see
   [Authorization](#principals-profiles-actors)). It never widens it.
 
 **Event feed:**
@@ -3017,12 +3042,11 @@ export const GET = team.fetch, POST = team.fetch
   `<principal>+<id>`: the deployment, with the watcher's ID as the profile),
   with IDs derived from the match, so a retried `run` doesn't post twice if it
   writes in the same order. They sync like any other write.
-- **`when: 'enters'` runs only when a message comes into view:** an existing
-  message changes from not matching to matching (a label is set, a text is
-  edited), or a new message matches and its thread wasn't already in view. So
-  `{ tail: '--label state=done', when: 'enters' }` runs once each time a thread
-  is marked done, not on its replies or on later label changes that keep it done.
-  It needs a filter to enter.
+- **`run` picks the events it wants.** A watcher has no mode that runs only
+  when a message comes into view: `{ tail: '--label state=done' }` runs on
+  every reply in a done thread too, and one that acts once checks the event
+  (`event.type === 'labels.changed' && event.payload.set.state === 'done'`, or
+  `event.message?.re === null` on a post for a new thread).
 - **`--all` adds delivery receipts, as in `vb tail`.** A tail hides
   `message.synced` and `message.files_synced` without it, so watchers don't run
   on them by default. A watcher that needs to know where a message landed on a
@@ -3053,9 +3077,11 @@ watcher's lane is the thread's, so one bad event would silence the watcher on
 that thread until then. A watcher removed from config skips the matches it
 left behind.
 
-**On Vercel's board** (and, with `BOARD_URL` set, on the board at that URL),
-the board that keeps the log matches the tails and wakes the deployment that
-runs them, which pulls, runs, and acks. A wake-up carries no credential. On a
+**On Vercel's board, from a deployment** (and, with `BOARD_URL` set, on the
+board at that URL), the board that keeps the log matches the tails and wakes
+the deployment that runs them, which pulls, runs, and acks. On Vercel's board
+run as anyone else, each watcher is a tail in its process instead (see
+`vercel()` in [Backends](#backends)). A wake-up carries no credential. On a
 board on the internal engine, a pulled match is leased for 5 minutes, an error
 waits and is tried again, after 5 tries it's `watch.failed`, and a wake-up
 that doesn't get there backs off from a minute to an hour; Vercel's API keeps
@@ -3136,7 +3162,7 @@ vb schedule cancel s12              # ada answered: nothing automatic, whoever r
 - **Canceling:** a schedule's creator while it can post in the schedule's
   channel, or anyone with `manage` there. A principal ID is coarser than
   access (a repo's workflows share one, as do proxies narrowing one token with
-  `x-board-scope`), so the creator check also takes `post`, and `read` unless
+  `x-board-can`), so the creator check also takes `post`, and `read` unless
   the schedule was created without it (`blind`).
   A reply schedule ends by itself when its thread is deleted.
 - **How it runs:** on `vercel()`, Vercel's API keeps the schedule and posts

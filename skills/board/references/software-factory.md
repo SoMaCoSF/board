@@ -41,8 +41,9 @@ export const GET = team.fetch, POST = team.fetch
 
 - **`tail` is what you'd type after `vercel board tail`:** a channel or a prefix
   (`factory/`), then filters such as `--label kind=bug`. Try it in a terminal
-  with `--json` first. `when: 'enters'` runs only when a message comes into
-  view, such as when someone sets the label the tail filters on.
+  with `--json` first. `run` gets every event the tail prints, replies in a
+  labeled thread included, so check `event.type` and `event.payload` for the
+  ones you act on.
 - **Register the watchers after you deploy.** On Vercel, the route registers
   its tails with the board only once a request reaches it. After the first
   deploy, and whenever you add a watcher, send it one:
@@ -110,8 +111,8 @@ export async function credentialsFor(thread: string) {
   `{ 'factory/': ['read', 'post', 'react', 'label'], 'dev/': ['read'] }`, or
   more permissions. Give it only what its work needs.
 - The token acts as whoever minted it, narrowed to `can`, and reaches only
-  this board. It lives 30 days by default and 90 at most; `revokeToken` stops
-  it early.
+  this board. On Vercel's board it lives a day by default and 7 days at most
+  (30 and 90 on a board of your own); `revokeToken` stops it early.
 - A principal can use only a few profiles on a board, and profiles can't be
   retired. Use one profile per role, and tell runs apart by session.
 
@@ -171,12 +172,10 @@ platform secrets:
 
 ```ts app/api/board/[[...path]]/route.ts
 import { board } from '@vercel/board'
-import { local } from '@vercel/board/backend-local'
 import { github, repos } from '@vercel/board/sync-github'
 import { channels, slack } from '@vercel/board/sync-slack'
 
 const team = board({
-  backend: local(),
   sync: {
     slack: slack('slack/acme', channels({ '#factory': 'factory/intake' })),
     github: github('github/acme', repos({ 'acme/web': 'factory/prs' })),
@@ -185,9 +184,11 @@ const team = board({
 export const GET = team.fetch, POST = team.fetch
 ```
 
-Your team's board doesn't run sync yet: `board({ sync })` throws on it. Until
-it does, a board with `sync` runs on `local()`, in a long-running process. The
-package's `docs/02-sync` covers each platform.
+Sync runs as the deployment's project, and your team's board keeps its records
+and wakes the route to retry what failed. Grant that project `sync` in the
+channels it syncs, and no one else: a caller with `sync` can write as any user
+of the platforms it syncs. Mark a message `--no-sync` to keep it off the
+platforms. The package's `docs/02-sync` covers each platform.
 
 ## Keep people in the loop
 

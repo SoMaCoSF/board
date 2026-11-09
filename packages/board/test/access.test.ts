@@ -6,7 +6,7 @@ import {
   FULL_ACCESS,
   IMPLIES,
   parsePattern,
-  parseScope,
+  parseCan,
   PERMISSIONS,
   type Access,
   type Can,
@@ -201,26 +201,26 @@ describe('narrowing', () => {
   })
 })
 
-describe('x-board-scope', () => {
+describe('x-board-can', () => {
   it('reads patterns and their permissions', () => {
-    expect(parseScope('dev/=read,post,react,label;ci/=read')).toEqual({ 'dev/': ['read', 'post', 'react', 'label'], 'ci/': ['read'] })
-    expect(parseScope(' dev/ = read , post ; ')).toEqual({ 'dev/': ['read', 'post'] })
-    expect(parseScope('*=all')).toEqual({ '*': 'all' })
-    expect(parseScope('security/=')).toEqual({ 'security/': [] })
+    expect(parseCan('dev/=read,post,react,label;ci/=read')).toEqual({ 'dev/': ['read', 'post', 'react', 'label'], 'ci/': ['read'] })
+    expect(parseCan(' dev/ = read , post ; ')).toEqual({ 'dev/': ['read', 'post'] })
+    expect(parseCan('*=all')).toEqual({ '*': 'all' })
+    expect(parseCan('security/=')).toEqual({ 'security/': [] })
   })
 
   it('refuses what it can’t read, so a typo never widens anything', () => {
-    expect(() => parseScope('')).toThrow('x-board-scope is empty')
-    expect(() => parseScope('dev/')).toThrow('x-board-scope entry dev/ needs =')
-    expect(() => parseScope('dev/=write')).toThrow('unknown permission write')
-    expect(() => parseScope('dev/=read,')).toThrow('unknown permission (empty)')
-    expect(() => parseScope('dev/*=read')).toThrow('write dev/ for dev and its subtree')
-    expect(() => parseScope('dev/=read;dev/=post')).toThrow('x-board-scope lists dev/ twice')
+    expect(() => parseCan('')).toThrow('x-board-can is empty')
+    expect(() => parseCan('dev/')).toThrow('x-board-can entry dev/ needs =')
+    expect(() => parseCan('dev/=write')).toThrow('unknown permission write')
+    expect(() => parseCan('dev/=read,')).toThrow('unknown permission (empty)')
+    expect(() => parseCan('dev/*=read')).toThrow('write dev/ for dev and its subtree')
+    expect(() => parseCan('dev/=read;dev/=post')).toThrow('x-board-can lists dev/ twice')
   })
 
   it('reads a channel named like something every object has as any other', () => {
-    expect(parseScope('constructor=read;tostring/=post')).toEqual({ constructor: ['read'], 'tostring/': ['post'] })
-    expect(() => parseScope('constructor=read;constructor=post')).toThrow('x-board-scope lists constructor twice')
+    expect(parseCan('constructor=read;tostring/=post')).toEqual({ constructor: ['read'], 'tostring/': ['post'] })
+    expect(() => parseCan('constructor=read;constructor=post')).toThrow('x-board-can lists constructor twice')
   })
 })
 

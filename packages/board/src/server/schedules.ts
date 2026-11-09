@@ -137,7 +137,7 @@ export function nextSend(schedule: Pick<Schedule, 'every' | 'until' | 'times'>, 
 /**
  * Whether `principal` is the schedule's creator, as far as seeing and canceling
  * it goes. A principal ID is coarser than access (a repo's workflows share one,
- * and so do the proxies narrowing one token with `x-board-scope`), so it also
+ * and so do the proxies narrowing one token with `x-board-can`), so it also
  * needs `post` there now, as it would to create it. Where it can't read, the
  * schedule is its own only if it was created without reading too, so a
  * principal ID shared with a caller that reads doesn't reach that caller's.

@@ -61,7 +61,7 @@ These routes take no token:
 | `x-board-session` | the runtime session, recorded on writes (up to 200 characters) |
 | `x-board-handle` | a person's handle, e.g. their Vercel username. Ignored for machines, and for people a host's verifier names |
 | `x-board-name` | a person's display name, URI-encoded. Ignored for machines |
-| `x-board-scope` | narrows what the token may do, for a proxy that holds it: `dev/=read,post;ci/=read`, or `all` for an entry's permissions (`dev/=all`). It never widens, and a narrowed caller can't register, pull, or ack watchers, or keep sync's records (403). See [Access](../01-board/09-access.md#narrowing-a-token) |
+| `x-board-can` | narrows what the token may do, for a proxy that holds it: `dev/=read,post;ci/=read`, or `all` for an entry's permissions (`dev/=all`). It never widens, and a narrowed caller can't register, pull, or ack watchers, or keep sync's records (403). See [Access](../01-board/09-access.md#narrowing-a-token) |
 | `x-vercel-protection-bypass` | Vercel's own header, to pass Deployment Protection |
 
 `board()` checks their shape (a 400 for one that's malformed), and the board
@@ -550,7 +550,7 @@ When the board knows what fixes it, the error carries a `hint` too, as
 | 400 | `invalid_cursor` | an `after` or `before` that isn't a cursor or a message ID on this board |
 | 400 | `invalid_after` | a reply's `after` that isn't a message in its thread |
 | 400 | `token_expires_first` | a schedule made with a board token that would first send after the token expires |
-| 400 | `invalid_scope` | an `x-board-scope` header the board can't parse, or one longer than 4000 characters; the message says what to write |
+| 400 | `invalid_scope` | an `x-board-can` header the board can't parse, or one longer than 4000 characters, or the old `x-board-scope` header; the message says what to write |
 | 400 | `ambiguous_mention` | an `@handle` matches several actors. The message lists the `@[actor-id]` forms to use, for a caller that reads every channel |
 | 400 | `unknown_mention` | an `@[actor-id]` names no actor the board knows. A plain `@handle` that matches no one isn't an error: it stays plain text, listed in the answer's `unknownMentions` for a caller that reads the channel |
 | 400 | `message_deleted` | editing, reacting to, or labeling a deleted message |
@@ -559,7 +559,7 @@ When the board knows what fixes it, the error carries a `hint` too, as
 | 400 | `size_mismatch` | finishing a direct upload whose bytes in the store aren't the size its start said |
 | 400 | `platform_error`, `invalid_target`, `unsupported` | a source read the platform failed, of a target it can't read, or on a platform that reads nothing on demand |
 | 401 | `unauthorized` | a missing, malformed, or expired token, an unknown issuer, or the wrong audience |
-| 403 | `forbidden` | a caller no grant lets in (the `hint` is the grant to create), a write its access doesn't allow where it can read (the message names the permission and channel), an edit or delete by someone else, someone else's schedule without `manage`, or a source read without `manage` in every channel, or the inbox without `sync` in every channel, or a code for anyone but a person, or watchers or sync's records for a caller narrowed with `x-board-scope` |
+| 403 | `forbidden` | a caller no grant lets in (the `hint` is the grant to create), a write its access doesn't allow where it can read (the message names the permission and channel), an edit or delete by someone else, someone else's schedule without `manage`, or a source read without `manage` in every channel, or the inbox without `sync` in every channel, or a code for anyone but a person, or watchers or sync's records for a caller narrowed with `x-board-can` |
 | 403 | `private_channel`, `shared_channel`, `not_in_channel` | a source read the board won't do |
 | 403 | `not_a_project` | a `path` in `POST /watchers` from a caller that isn't a Vercel project, on a board that wakes by path: a path is on the caller's own project |
 | 404 | `not_found` | no such route, a request a board with no backend doesn't serve, or a webhook for a sync entry the board doesn't have |

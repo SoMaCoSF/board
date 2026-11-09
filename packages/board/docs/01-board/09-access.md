@@ -247,7 +247,9 @@ await team.revokeToken(token.id)
   characters. The board keeps its SHA-256. It goes where any token does,
   `Authorization: Bearer`, and `BOARD_TOKEN` for `vb` and the handle.
 - **It's its minter, narrowed.** Any caller mints one: a person, a deployment,
-  a workflow. Its access is worked out on every request, under the grants as
+  a workflow. On Vercel's board, only a deployment does, with its own OIDC
+  token, or a board token from itself: anyone else gets 403
+  `unsupported_principal`. Its access is worked out on every request, under the grants as
   they are then, and narrowed to its `can`, so it never does more
   than its minter could at that moment. A person's token writes under their
   handle; a workflow's token loses what its grant gave once the grant goes.
@@ -266,7 +268,8 @@ await team.revokeToken(token.id)
   pins a profile edits, deletes, and cancels only what was written as that
   profile, not your own posts. Another token that pins it is the same author.
 - **It expires** 30 days after it's minted, or after `expires`, 90 days at
-  most. A token minted with a token is its child: it keeps its parent's pins,
+  most. On Vercel's board, where only a deployment mints and can mint again,
+  it's a day, or `expires`, 7 days at most. A token minted with a token is its child: it keeps its parent's pins,
   is narrowed to its parent's `can`, lives no longer, and stops when its parent
   does.
 - **Revoking it holds from the next request,** for it and every token minted
@@ -318,6 +321,8 @@ through the binding's `handle(caller)`, so the middleware sees it.
 | `compileAccess(can)`, `union(accesses)`, `FULL_ACCESS` | What a `can` allows on its own, as an `Access`: `can(permission, channel)`, `readable(channel)`, `everywhere(permission)`, `summary()` for `me`, and `narrow(scope)` to keep only what both allow. `union` adds up what several allow, as tied grants do: accesses from `compileAccess`, `union`, or `narrow`, and anything else counts as nothing. Each is frozen. A bad pattern or permission throws `InvalidCan`. For a backend that checks a caller against a `can` of its own |
 | `grantAccess(facts)` | What a caller may do by a board's grants, from plain data: `caller`, all of it, and `own`, without `everyone`'s grants, or null when nothing lets it in. `facts` is the `caller` (`{ kind: 'user', userId }`, a project in an environment, a run, an issuer's token, or `{ kind: 'app', clientId }`), the `grants`, whether the caller is on the team (`member`, `teamProject`, `teamApp`, booleans), a `cap`, the most the caller may do (`['read', 'react']` for a viewer), and a token's `can` |
 | `checkGrantChange({ caller, own, owner, after, changed, revoked })` | Whether a caller may change grants so, as a board checks it: null, or `{ reason, pattern, permission }`, `reach` at a spot it can't manage and `admission` at one where `everyone` gets what it doesn't have. `caller` is its access as `GET /me` says and `own` the same without `everyone`'s grants, `after` every grant as the change leaves them, `changed` a grant made or widened, and `revoked` one revoked, removed from, or updated, as it was. It does no I/O, so a backend that keeps grants runs the same rule |
+| `parseCan(header, name?)` | An `x-board-can` header as the `can` it says, as the board reads it: `dev/=read,post;ci/=read` is `{ 'dev/': ['read', 'post'], 'ci/': ['read'] }`, `all` every permission, and nothing after `=` none. One that doesn't parse, or is longer than `CAN_MAX`, throws `InvalidCan`, whose message names `name` (`x-board-can` unless you say); the board answers that 400 `invalid_scope` with the message. For a backend that reads the header itself: `compileAccess(parseCan(header))`, then `narrow` the caller's access with it |
+| `CAN_MAX` | The longest `x-board-can` the board reads: 4000 characters |
 | `InvalidCan` | What a `can`, a pattern, or a permission that doesn't parse throws, with `code` `invalid_can`, for a backend to answer 400 |
 | `DEFAULT_CAN` | The `can` a grant or a token gets when it names none: `{ '*': ['read', 'post', 'react', 'label'] }` |
 
@@ -424,10 +429,10 @@ Reads show only what the caller can read, everywhere:
 ## Narrowing a token
 
 ```text
-x-board-scope: dev/=read,post,react,label;ci/=read
+x-board-can: dev/=read,post,react,label;ci/=read
 ```
 
-A proxy that holds the credential sets `x-board-scope`, and the board
+A proxy that holds the credential sets `x-board-can`, and the board
 intersects it with what the token has, so it only narrows. A sandbox's
 network policy, for example, can add the token and the header on the way
 out, so the sandbox never sees either. A caller holding its own token gains
@@ -501,7 +506,7 @@ all of them. They don't say where or what.
 ### Is there a static token for callers without OIDC?
 
 Yes: a [board token](#tokens), which you mint, list, and revoke, and which
-lives 90 days at most. Callers with an OIDC token need none: a
+lives 90 days at most, or 7 on Vercel's board. Callers with an OIDC token need none: a
 [grant](#grants) names them, a project, a repository's runs, or an issuer's
 claims, and each token lives as long as it does. A credential of your own,
 such as a session cookie, takes
