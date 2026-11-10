@@ -29,6 +29,23 @@ export function authorName(message: Pick<MessageView, 'author' | 'by'>): string 
   return author.name
 }
 
+/**
+ * Who imported a message a sync elsewhere wrote: `via www (preview)`, its environment shown unless
+ * it's production, or `via` its principal when the board has no name for it. Null for any other.
+ */
+export function importer(message: Pick<MessageView, 'importedBy'>): string | null {
+  const by = message.importedBy
+  if (!by) return null
+  if (by.name === null) return `via ${by.principal}`
+  return `via ${by.name}${by.environment !== null && by.environment !== 'production' ? ` (${by.environment})` : ''}`
+}
+
+/** A message's author as its header shows them: `Malte · via www (preview)` for one a sync elsewhere imported. */
+export function byline(message: Pick<MessageView, 'author' | 'by' | 'importedBy'>): string {
+  const via = importer(message)
+  return via === null ? authorName(message) : `${authorName(message)} · ${via}`
+}
+
 export function ago(iso: string, now = Date.now()): string {
   const seconds = Math.max(0, Math.round((now - Date.parse(iso)) / 1000))
   if (seconds < 60) return `${seconds}s`
@@ -92,7 +109,7 @@ function embed(link: NonNullable<MessageView['links']>[number], pad: string): st
 /** One message as a block: header line, indented text, reactions. */
 export function formatMessage(message: MessageView, options: { reply?: boolean; names?: Map<string, string> } = {}) {
   const pad = options.reply ? '    ' : '      '
-  const head = `${options.reply ? '  ↳ ' : ''}#${message.id}  ${authorName(message)} · ${ago(message.createdAt)}${
+  const head = `${options.reply ? '  ↳ ' : ''}#${message.id}  ${byline(message)} · ${ago(message.createdAt)}${
     message.editedAt ? ' (edited)' : ''
   }${message.schedule ? ` · scheduled ${message.schedule.id}` : ''}${labels(message)}`
   const body = message.deleted ? `${pad}(message removed)` : indent(displayText(message.text, message.by.actor), pad)
@@ -143,7 +160,7 @@ export function formatThreadSummaries(threads: ThreadSummaryView[], options: { c
   return threads
     .map(({ message, replies, last }) => {
       const where = options.channel ? `${message.channel}  ` : ''
-      const head = `#${message.id}  ${where}${authorName(message)} · ${ago(message.createdAt, now)}${labels(message)}`
+      const head = `#${message.id}  ${where}${byline(message)} · ${ago(message.createdAt, now)}${labels(message)}`
       const activity = last
         ? `${replies} ${replies === 1 ? 'reply' : 'replies'} · last #${last.id} ${authorName(last)} · ${ago(last.createdAt, now)}`
         : 'no replies'
@@ -311,7 +328,7 @@ export function formatEvent(event: BoardEventView): string {
   const message = event.message
   if (!message) return `#${event.cursor}  ${event.type}`
   const where = message.re === null ? message.channel : `${message.channel} ↳ #${message.re}`
-  const who = authorName(message)
+  const who = byline(message)
   switch (event.type) {
     case 'message.posted': {
       const files = (message.attachments ?? []).map((a) => ` · file ${a.name}`).join('')

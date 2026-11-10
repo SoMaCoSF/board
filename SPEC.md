@@ -1180,6 +1180,17 @@ on a platform; a platform user mentioned by actor or email
   of plain objects. Its folds read only a map's own keys, so a log that already
   holds one folds like any other name, and a handle or channel named
   `constructor` is like any other.
+- **An imported message says who imported it.** Its author is the platform
+  user a sync named, which the board doesn't check with the platform, so a
+  message a sync elsewhere imported has `importedBy: { principal, name,
+  environment }` in its view: that sync's principal, its project's name where
+  the board knows it, and a deployment's environment, or null. `local()` takes
+  it from the principal it logged (`importedBy` on `message.posted`), and
+  knows no project names. Vercel's board says it where Vercel's API does, as
+  `{ projectId, environment, name }`. The board's own sync's imports, whose
+  webhooks the board checked itself, have none. The CLI and the inspector show
+  it after the author: `Malte · via www (preview)`, the environment left out in
+  production, and the principal for a name the board doesn't have.
 - **Limits:** message text is at most 10,000 characters. It may be empty only
   when the message has attachments.
 - **Text is markdown (GFM).** Sync stores what platforms send as markdown:
@@ -1283,7 +1294,7 @@ export const boardContract = contract({
       links: z.array(Link).max(10).optional(), // (server) platform messages it links to: { url, message, snapshot, unavailable }
       schedule: z.object({ id, n }).optional(), // (server) the schedule that posted it, and which send
       blind: z.literal(true).optional(),     // (server) its author couldn't read the channel
-      importedBy: ActorId.optional(),        // (server) the sync elsewhere that imported it, whose copy `origin` names
+      importedBy: ActorId.optional(),        // (server) the sync elsewhere that imported it, whose copy `origin` names, if any
     }),
     // Every event below also carries `thread`, and each change from a platform its `from`.
     'channel.created':   z.object({ channel: ChannelPath, by: Author }),   // one made before anything posted to it; a post makes one with no event of its own

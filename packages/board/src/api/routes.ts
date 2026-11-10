@@ -631,8 +631,15 @@ export type TokenView = {
 
 /** `kind` says who wrote it: a `person` or a platform user (`external`), an agent (`profile`), or a deployment or workflow. */
 export type ActorView = Pick<Actor, 'kind' | 'handle' | 'name' | 'avatar'>
+/**
+ * Who imported a message a sync elsewhere wrote, as its platform author: that sync's principal
+ * (`vercel:project:prj_web:preview`), its project's name where the board knows it, and a
+ * deployment's environment. The author's name is the platform's, as that sync said it.
+ */
+export type ImporterView = { principal: string; name: string | null; environment: string | null }
+
 /** A message as clients see it: its IDs are refs, and `version` says which of two views of it is newer. */
-export type MessageView = Omit<Message, 'id' | 're' | 'replyTo' | 'links' | 'schedule' | 'version' | 'revision'> & {
+export type MessageView = Omit<Message, 'id' | 're' | 'replyTo' | 'links' | 'schedule' | 'version' | 'revision' | 'importedBy'> & {
   id: string
   /** The thread's root, or null for a root. */
   re: string | null
@@ -648,6 +655,8 @@ export type MessageView = Omit<Message, 'id' | 're' | 'replyTo' | 'links' | 'sch
   links: LinkView[]
   /** Set when a schedule posted it: the schedule's ID and which send this was, from 0. */
   schedule?: { id: string; n: number }
+  /** Set when a sync elsewhere imported it. None for the board's own sync's imports, which the board checked itself. */
+  importedBy?: ImporterView
   author: ActorView | null
 }
 

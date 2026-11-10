@@ -770,8 +770,8 @@ function build(options: A2Options, binding: BoardBinding) {
             id,
             origin: body.origin,
             from: body.from,
-            // Its platform message is the copy of the sync that imported it.
-            ...(body.origin && !ownSync(caller) ? { importedBy: principal.id } : {}),
+            // Who imported it, which readers see: its platform message, if it has one, is that sync's copy.
+            ...(!ownSync(caller) ? { importedBy: principal.id } : {}),
             after: afterAt(body.after),
             lenientMentions: true,
             attachments,

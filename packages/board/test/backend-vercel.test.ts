@@ -1276,6 +1276,32 @@ describe('vercel()', () => {
     ])
   })
 
+  it('says which project imported a message, in its environment, as the API says it, and nothing where the API says nothing', async () => {
+    const api = fakeMessageboard()
+    const preview = handleOn(api, 'project:prj_pong:preview')
+    await preview.register({ url: null, watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })
+    const malte = { id: 'slack:user:U_MALTE', handle: 'malte', name: 'Malte', avatar: null, isBot: false }
+    await preview.syncImport({ op: 'post', author: malte, from: 'slack', channel: 'general', text: 'ship it', origin: { thread: 'slack:C1:1', subthread: null, message: '1', context: null } })
+    const julian = handleOn(api)
+    await julian.post('general', { text: 'on the board' })
+    // What an API that doesn't say who imported a message yet answers.
+    const unsaid = handleOn({ ...api, fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+      const response = await api.fetch(input, init)
+      const body = await response.clone().json().catch(() => null)
+      if (!Array.isArray(body?.messages)) return response
+      return Response.json({ ...body, messages: body.messages.map(({ importedBy: _, ...message }: Record<string, unknown>) => message) }, { status: response.status })
+    } })
+    const shown = async (handle: typeof julian) => (await handle.messages({ channel: 'general' })).messages.map((message) => [message.text, message.importedBy])
+    expect(await shown(julian)).toEqual([
+      ['ship it', { principal: 'vercel:project:prj_pong:preview', name: 'pong', environment: 'preview' }],
+      ['on the board', undefined],
+    ])
+    expect(await shown(unsaid)).toEqual([
+      ['ship it', undefined],
+      ['on the board', undefined],
+    ])
+  })
+
   it("syncs Slack through the engine from its first webhook, a file as an attachment on the board, and a board reply back to Slack", async () => {
     const api = fakeMessageboard()
     const s = fakePlatform('slack')

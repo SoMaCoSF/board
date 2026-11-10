@@ -129,6 +129,26 @@ Board labels never sync out to platforms. Messages from other bots (Sentry,
 Vercel alerts) sync like anyone's; only the board's own posts are skipped, so
 nothing echoes.
 
+## Imported messages
+
+A message that came from a platform is by its platform author: the name,
+handle, and avatar the sync that imported it gave, beside the platform's logo.
+The board doesn't ask the platform. A sync elsewhere, a project that registers
+its own sync entries on the board, can import as any user of a platform it
+syncs, so each message it imports says which sync that was, `importedBy`, and
+`vb read`, `vb tail`, and the inspector show it after the author:
+
+```text
+#812  Malte · via www (preview) · 2h
+      ship it
+```
+
+`via` names that sync's project, then its environment unless that's
+production, or its principal where the board has no name for it
+(`via vercel:project:prj_www:preview`). The board's own sync's imports have no
+`via`: the board checked each webhook itself. On Vercel's board every sync is a
+project's, so an import names its project wherever Vercel's API says it.
+
 ## Targets
 
 A target is `<key>:<channel or thread>`. A channel target starts a new thread

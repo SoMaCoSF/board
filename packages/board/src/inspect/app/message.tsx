@@ -5,7 +5,7 @@ import remarkBreaks from 'remark-breaks'
 import remarkGfm from 'remark-gfm'
 import { LOGOS } from '../../contract/logos.ts'
 import type { MessageView } from '../../api/routes.ts'
-import { authorName, who } from '../../cli/format.ts'
+import { authorName, importer, who } from '../../cli/format.ts'
 import { displayEmoji } from '../../contract/emoji.ts'
 import { fileSize } from '../../contract/files.ts'
 import type { Attachment } from '../../contract/schemas.ts'
@@ -277,6 +277,7 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
   const row = useRef<HTMLDivElement>(null)
   const editing = board.useEditing() === m.id
   const name = authorName(m)
+  const via = importer(m)
   const mine = m.by.actor === options.me
   const reacted = (emoji: string) => (m.reactions[emoji] ?? []).includes(options.me)
   const toggle = (emoji: string) => void board.react(m.id, emoji, reacted(emoji))
@@ -332,6 +333,11 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
               <span className="author" {...nativeMenu}>
                 {name}
               </span>
+              {via && (
+                <span className="where" {...nativeMenu}>
+                  {via}
+                </span>
+              )}
               {options.context?.(m)}
               <Ago iso={m.createdAt} />
               {m.noSync && <span className="badge">board only</span>}

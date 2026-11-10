@@ -1,5 +1,5 @@
 import type { Protocol } from '../api/protocol.ts'
-import { RegisterBody, type ActorView, type BoardEventView, type ChannelView, type Discovery, type GrantView, type InboxEntry, type MessageView, type RegistrationView, type ScheduleView, type ThreadSummaryView, type TokenView } from '../api/routes.ts'
+import { RegisterBody, type ActorView, type BoardEventView, type ChannelView, type Discovery, type GrantView, type ImporterView, type InboxEntry, type MessageView, type RegistrationView, type ScheduleView, type ThreadSummaryView, type TokenView } from '../api/routes.ts'
 import { duration, type ProfileOption } from '../client/client.ts'
 import { sha256 } from '../client/ids.ts'
 import { IMPORT_BYTES_MAX, RemoteWatcherId, type Attachment, type Author, type Labels } from '../contract/schemas.ts'
@@ -60,6 +60,8 @@ type ApiMessage = {
   attachments?: Attachment[]
   /** Set when a schedule posted it: which schedule, and which of its sends, from 0. */
   schedule?: { id: string; n: number }
+  /** Set on a message a sync import wrote: the project whose sync wrote it, in its environment, and its name. */
+  importedBy?: { projectId: string; environment: string; name: string | null }
 }
 /**
  * A post as the API answers a caller that can't read its channel: IDs only, as a client-ID replay to
@@ -297,6 +299,13 @@ const authorOf = (actor: ApiActor): Author => ({
   principal: principalId(actor.principal),
   profile: actor.profile?.name ?? null,
   session: actor.session ?? null,
+})
+
+/** Who imported a message, as board shows it: the project the API says its sync wrote it as. */
+const importerOf = ({ projectId, environment, name }: NonNullable<ApiMessage['importedBy']>): ImporterView => ({
+  principal: principalId({ type: 'project', projectId, environment }),
+  name: name ?? null,
+  environment,
 })
 
 /** Who cancels a schedule when no one did: the API, once its creator can no longer post it, as a local board's scheduler. */
@@ -681,6 +690,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       revision: message.revision,
       author: await nameOf(who, message.createdBy),
       ...(message.schedule ? { schedule: { id: message.schedule.id, n: message.schedule.n } } : {}),
+      ...(message.importedBy ? { importedBy: importerOf(message.importedBy) } : {}),
     }
   }
 

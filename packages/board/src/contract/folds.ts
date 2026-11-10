@@ -28,6 +28,8 @@ export type Message = {
   origin: Origin | null
   /** The sync key it came from, or null when written on the board. */
   from: string | null
+  /** The principal of the sync elsewhere that imported it. None for the board's own sync's imports, or a write on the board. */
+  importedBy?: string
   createdAt: string
   editedAt: string | null
   deleted: boolean
@@ -97,6 +99,7 @@ function foldMessage(state: MessagesState, event: BoardEvent): Message | undefin
         links: payload.links ?? [],
         ...(payload.schedule ? { schedule: { ...payload.schedule } } : {}),
         ...(payload.blind ? { blind: true as const } : {}),
+        ...(payload.importedBy ? { importedBy: payload.importedBy } : {}),
       }
       state.byId[event.index] = message
       if (payload.re !== null) (state.replies[payload.re] ??= []).push(event.index)

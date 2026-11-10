@@ -57,6 +57,8 @@ type Message = {
   origin?: Record<string, unknown>
   noSync?: boolean
   links?: { url: string; message?: string | null; snapshot?: unknown; unavailable?: string | null }[]
+  /** On a message a sync import wrote: the project whose sync wrote it, in its environment, and its name. */
+  importedBy?: { projectId: string; environment: string; name: string | null }
 }
 type Schedule = {
   id: string
@@ -378,6 +380,7 @@ function fakeBoard(shared: Shared, boardId: string) {
     ...(m.origin ? { origin: m.origin } : {}),
     ...(m.noSync ? { noSync: true } : {}),
     ...(m.links?.length ? { links: m.links } : {}),
+    ...(m.importedBy ? { importedBy: m.importedBy } : {}),
   })
   const showThread = (t: Thread) => {
     const { messages, ...rest } = t
@@ -771,6 +774,9 @@ function fakeBoard(shared: Shared, boardId: string) {
         if (origin) message.origin = origin
         if (body.noSync) message.noSync = true
         if (body.links?.length) message.links = body.links
+        // Every message a sync import writes says whose sync wrote it: only a project imports.
+        if (actor.principal.type === 'project')
+          message.importedBy = { projectId: actor.principal.projectId, environment: actor.principal.environment, name: shared.directory.projects[actor.principal.projectId] ?? null }
         if (origin) {
           // A platform root binds its thread to its platform thread, which announces nothing.
           if (body.channelId !== undefined) {

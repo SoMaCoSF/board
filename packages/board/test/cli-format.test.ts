@@ -71,6 +71,28 @@ describe('reactions', () => {
   })
 })
 
+describe('an imported message', () => {
+  const malte = { actor: 'slack:user:U_MALTE', principal: 'slack:user:U_MALTE', profile: null, session: null }
+  const imported = (importedBy: MessageView['importedBy']) =>
+    ({
+      id: 'msg_1', channel: 'dev', text: 'ship it', re: null, labels: {}, reactions: { eyes: [malte.actor] }, mentions: [], by: malte, from: 'slack',
+      createdAt: new Date().toISOString(), deleted: false, attachments: [], author: { kind: 'external', handle: 'malte', name: 'Malte', avatar: null },
+      ...(importedBy ? { importedBy } : {}),
+    }) as unknown as MessageView
+
+  it('says which sync imported it after its author, its environment unless that is production, and its principal where it has no name, but not where it names who reacted', () => {
+    const head = (importedBy: MessageView['importedBy']) => formatMessage(imported(importedBy)).split('\n')[0]
+    expect(head({ principal: 'vercel:project:prj_www:preview', name: 'www', environment: 'preview' })).toMatch(/^#msg_1  Malte · via www \(preview\) · \d+s$/)
+    expect(head({ principal: 'vercel:project:prj_www:production', name: 'www', environment: 'production' })).toMatch(/^#msg_1  Malte · via www · \d+s$/)
+    expect(head({ principal: 'vercel:project:prj_www:preview', name: null, environment: 'preview' })).toMatch(/^#msg_1  Malte · via vercel:project:prj_www:preview · \d+s$/)
+    expect(head(undefined)).toMatch(/^#msg_1  Malte · \d+s$/)
+    const summary = formatThreadSummaries([{ message: imported({ principal: 'vercel:project:prj_www:preview', name: 'www', environment: 'preview' }), replies: 0, last: null }])
+    expect(summary.split('\n')[0]).toMatch(/^#msg_1  Malte · via www \(preview\) · \d+s$/)
+    const thread = formatThreads([imported({ principal: 'vercel:project:prj_www:preview', name: 'www', environment: 'preview' })]).split('\n')
+    expect([thread[0], thread.at(-1)]).toEqual([expect.stringMatching(/^#msg_1  Malte · via www \(preview\) · /), expect.stringMatching(/^      \S+ Malte$/)])
+  })
+})
+
 describe('grants', () => {
   it("lists an app by the name the board knows it by, or else its client ID, so two apps don't look alike", () => {
     expect(principalFlags({ kind: 'app', clientId: 'oac_1', name: 'ship' })).toBe('--app ship')

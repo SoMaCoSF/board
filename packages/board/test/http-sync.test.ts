@@ -130,6 +130,27 @@ describe('the sync permission', () => {
     await vi.waitFor(() => expect(s.channelPosts.map((post) => post.text)).toEqual([JSON.stringify({ markdown: '**Ada (slack)**: export is broken' })]))
   })
 
+  it("says which sync elsewhere imported a message, with its origin or none, and nothing of the board's own sync's imports", async () => {
+    const s = fakePlatform('slack')
+    const team = testBoard({ sync: { slack: slack({ adapter: s.adapter }, channels({ C1: 'firehose' })) } })
+    // g2 lets every project on the team sync, its previews included.
+    const support = caller(team.fetch, await deploymentToken('support', 'prj_support', 'preview'))
+    expect((await support('POST', '/watchers', { watch: {}, sync: [{ key: 'helpdesk', platform: 'slack' }] })).status).toBe(200)
+    const origin = { channel: 'helpdesk:C7', thread: 'helpdesk:C7:1', subthread: null, message: '1', context: null }
+    expect((await support('POST', '/sync/imports', { op: 'post', author, from: 'helpdesk', channel: 'firehose', text: 'from its Slack', origin })).status).toBe(200)
+    expect((await support('POST', '/sync/imports', { op: 'post', author, from: null, channel: 'firehose', text: 'from its sync function' })).status).toBe(200)
+    await team.fetch(new Request(`${BOARD_URL}/webhooks/slack`, { method: 'POST', body: JSON.stringify({ type: 'message', threadId: 'slack:C1:100', id: '100', text: 'from our Slack', user: 'U1' }) }))
+    const julian = await julianOn(team.fetch)
+    const importer = { principal: 'vercel:project:prj_support:preview', name: null, environment: 'preview' }
+    await vi.waitFor(async () =>
+      expect(((await julian('GET', '/messages?channel=firehose')).body.messages as (Read & { importedBy?: unknown })[]).map((message) => [message.text, message.importedBy])).toEqual([
+        ['from its Slack', importer],
+        ['from its sync function', importer],
+        ['from our Slack', undefined],
+      ]),
+    )
+  })
+
   it('registers sync entries only for a token that may sync, and lists those of the ones that still may', async () => {
     // A project that may only read, and one whose sync the team can take away.
     const team = testBoard()

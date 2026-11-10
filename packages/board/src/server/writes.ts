@@ -179,7 +179,7 @@ export type PostInput = WriteOrigin & {
   links?: Link[]
   /** The schedule send that posts it. */
   schedule?: { id: number; n: number }
-  /** The principal of the sync elsewhere that imports it, whose copy its `origin` is. */
+  /** The principal of the sync elsewhere that imports it, whose copy its `origin` is, if it has one. */
   importedBy?: string | undefined
   /** A reply's precondition: the message in its thread that must still be the newest. */
   after?: number | undefined

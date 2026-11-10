@@ -57,8 +57,9 @@ export const boardEvents = {
        */
       blind: z.literal(true).optional(),
       /**
-       * (server) The principal of the sync elsewhere that imported it, whose copy `origin` names:
-       * that sync's to act on. None for the board's own sync, or a write on the board.
+       * (server) The principal of the sync elsewhere that imported it, which readers see beside its
+       * platform author. The copy its `origin` names, if any, is that sync's to act on. None for the
+       * board's own sync, or a write on the board.
        */
       importedBy: ActorId.optional(),
     }),

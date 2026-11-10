@@ -1,5 +1,5 @@
 import type { z } from 'zod'
-import type { ActorView, Filters, LinkView, MessageView, BoardEventView } from '../api/routes.ts'
+import type { ActorView, Filters, ImporterView, LinkView, MessageView, BoardEventView } from '../api/routes.ts'
 import type { ParsedFilters } from '../api/routes.ts'
 import type { BoardEvent } from '../contract/events.ts'
 import type { Link } from '../contract/external.ts'
@@ -87,9 +87,14 @@ export const scheduleRef = (index: number): string => `s${index}`
 /** The log index a ref names on this board, or null for a string that names nothing here. */
 export const indexOf = (value: string): number | null => (/^(0|[1-9]\d{0,15})$/.test(value) ? Number(value) : null)
 
+/** Who imported a message, from the principal the board logged: a deployment's environment is in its ID, and its project's name isn't. */
+function importerOf(principal: string): ImporterView {
+  return { principal, name: null, environment: /^vercel:project:[^:]+:([^:]+)$/.exec(principal)?.[1] ?? null }
+}
+
 /** A message as `reader` sees it. Every view names its reader, so none shows a link's snapshot by default. */
 export function view(message: Message, actors: ActorsState, reader: Reader): MessageView {
-  const { blind, version, revision, schedule, ...shown } = message
+  const { blind, version, revision, schedule, importedBy, ...shown } = message
   return {
     ...shown,
     ...(blind ? { blind } : {}),
@@ -100,6 +105,7 @@ export function view(message: Message, actors: ActorsState, reader: Reader): Mes
     // A message folded before revisions has its post's: its next edit or delete moves it.
     revision: revision ?? message.id,
     ...(schedule ? { schedule: { id: scheduleRef(schedule.id), n: schedule.n } } : {}),
+    ...(importedBy ? { importedBy: importerOf(importedBy) } : {}),
     links: readableLinks(message.links, reader),
     labels: { ...message.labels },
     reactions: Object.fromEntries(
