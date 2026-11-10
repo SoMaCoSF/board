@@ -209,6 +209,11 @@ matches the tails, and the route at the top of this page runs `run`:
   project made: in `BOARD_TOKEN` it doesn't try, and with a token in a `fetch`
   it tries once, then runs its watchers as tails (off Vercel: see
   [How it runs](#how-it-runs)).
+- **Its sync entries go with its watchers only from production.** A
+  deployment in any other environment registers its watchers without them,
+  since Vercel's API gives each sync key one owner and a preview runs
+  production's code. `board({ syncEnvironments })` names the environments
+  that send them: see [Sync on Vercel's board](../02-sync/01-overview.md#on-vercels-board).
 - **Every deployment on Vercel registers its mount path** on its own project,
   and Vercel's API wakes it through Deployment Protection with nothing to set
   up, finding the deployment from its OIDC token: production's best domain, a

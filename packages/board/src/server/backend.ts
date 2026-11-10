@@ -107,6 +107,11 @@ export type BoardBinding = {
   /** board()'s sync entries: what its sync imports through, and what discovery lists. */
   sync: readonly SyncEntry[]
   /**
+   * The Vercel environments whose deployments register `sync` with a board elsewhere that gives
+   * each key one owner: `board({ syncEnvironments })`, production unless it names others.
+   */
+  syncEnvironments: readonly string[]
+  /**
    * Reads a platform channel or thread with sync entry `key`'s app, which only board() has: what
    * `readSource` answers. 404 `not_synced_here` for an entry it doesn't run.
    */

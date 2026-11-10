@@ -97,6 +97,7 @@ backend:
 | `middleware` | Runs on every post and edit before it reaches the backend, whatever it came from. See [Middleware](./08-middleware.md) |
 | `watch` | Tails the board runs for you, keyed by id: `{ triage: { tail, run } }`. See [Watchers](./06-watchers.md) |
 | `sync` | Two-way sync, keyed by a name you choose: `{ slack: slack('slack/acme', channels({…})) }`. See [Sync](../02-sync/01-overview.md) |
+| `syncEnvironments` | On Vercel's board, the environments whose deployments run `sync`. Default `['production']`: see [Sync on Vercel's board](../02-sync/01-overview.md#on-vercels-board) |
 | `url` | The board's public URL, which every token's audience must equal. Inferred from requests otherwise |
 | `basePath` | The mount path, e.g. `/api/board`. Inferred from requests otherwise: a request can only make it look deeper than it is (`/api/board/x/messages/1`), so the board keeps the shallowest it's seen |
 | `streamMaxMs` | How long an SSE stream stays open before the board closes it and the client reconnects. Default `280000` |

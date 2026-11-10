@@ -6,7 +6,7 @@ import { IMPORT_BYTES_MAX, RemoteWatcherId, type Attachment, type Author, type L
 import type { ExternalAuthor, Link, Origin } from '../contract/external.ts'
 import { VERSION } from '../version.ts'
 import { compileAccess, parsePattern, PERMISSIONS, type AccessSummary, type Permission } from './access.ts'
-import { type Backend, type BackendRoute, type BoardBinding, type Caller, type ProtocolMethods } from './backend.ts'
+import { type Backend, type BackendRoute, type BoardBinding, type Caller, type ProtocolMethods, type SyncEntry } from './backend.ts'
 import { fileName, mediaType } from '../contract/files.ts'
 import { badRequest, HttpError, json, notFound } from './errors.ts'
 import { deployedOnVercel, registrant, wakePath, type WakeAt } from './registrant.ts'
@@ -408,7 +408,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       return await api<T>(...args).catch(async (error: unknown) => {
         // A sync key is this deployment's once it registers, which its first request starts without
         // waiting: a webhook can get there first, so it registers and tries once more.
-        if (!(error instanceof HttpError && error.code === 'sync_key_not_owned' && (binding?.sync.length ?? 0) > 0)) throw error
+        if (!(error instanceof HttpError && error.code === 'sync_key_not_owned' && binding !== null && (await syncedHere()).length > 0)) throw error
         await runner.registerNow()
         return api<T>(...args)
       })
@@ -1389,13 +1389,33 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     return binding
   }
 
+  let toldNoSync = false
+  /**
+   * The sync entries this deployment registers: board()'s, from an environment `syncEnvironments`
+   * names, and none from any other. The API gives each sync key on the board one owner, and a
+   * preview runs production's code, so it would race production for the keys.
+   */
+  async function syncedHere(): Promise<readonly SyncEntry[]> {
+    const { sync, syncEnvironments } = bound()
+    if (sync.length === 0) return sync
+    const { principal } = (await self(deployment)).actor
+    if (principal.type !== 'project') return []
+    if (syncEnvironments.includes(principal.environment)) return sync
+    if (!toldNoSync) {
+      toldNoSync = true
+      const named = syncEnvironments.length > 0 ? syncEnvironments.join(', ') : 'none'
+      console.error(`[board] sync doesn't run in ${principal.environment}: board({ syncEnvironments }) names ${named}, so this deployment registers its watchers without it`)
+    }
+    return []
+  }
+
   // A deployment's watchers run as a board on http()'s do: registered with the API, woken by their
   // path when one matches, and pulling on their own where nothing can wake them.
   const runner = registrant({
     remote: "Vercel's API",
     registry: {
-      register: (where) =>
-        registerAs(deployment, where, tails, bound().sync, true).catch((error: unknown) => {
+      register: async (where) =>
+        registerAs(deployment, where, tails, await syncedHere(), true).catch((error: unknown) => {
           // These aren't a deployment's own credentials after all (a board token in a fetch): they run here from now on.
           if (error instanceof HttpError && error.code === 'watchers_need_project') {
             refused = true
@@ -1411,8 +1431,9 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     // on Vercel, and nothing at a URL: off Vercel, it registers no path, and pulls. The API refuses any `url`, even null.
     wakeAt: async (here) => wakePath(here) ?? {},
     binding: bound,
-    hash: () => tagOf(tails, bound().sync),
+    hash: async () => tagOf(tails, await syncedHere()),
     hasWork: () => Object.keys(tails).length > 0 || bound().sync.length > 0,
+    pull: async () => ((await syncedHere()).length > 0 ? bound().pull() : 0),
     rethrow: (error) => {
       throw error
     },

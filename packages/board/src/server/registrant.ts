@@ -62,6 +62,8 @@ export type RegistrantOptions = {
   hash(): Promise<string>
   /** Whether there's anything to register: watchers, or sync entries. */
   hasWork(): boolean
+  /** Pulls and runs what this board's sync queued in the other's inbox: nothing, when it registered no sync entries there. */
+  pull(): Promise<number>
   /** The other board's error, as this board answers it. */
   rethrow(error: unknown): never
   /** `POST /watchers` from a caller board() verified: a registration of its own, the backend's to make. */
@@ -127,7 +129,7 @@ export function registrant(options: RegistrantOptions) {
       ran += matches.length
     }
     // An inbox event whose wait after an error is over: what woke this board may be it.
-    return ran + (await bound().pull())
+    return ran + (await options.pull())
   }
 
   let polling: AbortController | null = null
@@ -142,7 +144,7 @@ export function registrant(options: RegistrantOptions) {
           const matches = await registry.matches({ limit: 10, wait: POLL_WAIT_S, signal: controller.signal })
           await Promise.all(matches.map(runOne))
           // Sync's inbox too: an event that failed tries again once its wait is over.
-          await bound().pull()
+          await options.pull()
           pause = 1000
         } catch (error) {
           if (controller.signal.aborted) break

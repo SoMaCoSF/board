@@ -27,6 +27,29 @@ delivery receipts, lookups by platform ID, and an inbox of platform events. So
 it works the same on Vercel's board, on `local()`, and on a
 [backend of your own](../01-board/01-mounting.md#a-backend-of-your-own).
 
+### On Vercel's board
+
+Vercel's API gives each entry key on a board one owner, a project in one
+environment, and a preview runs production's code. So only production
+registers `sync`: a preview, a custom environment, or `next dev` with the
+project's OIDC token registers its
+[watchers](../01-board/06-watchers.md#woken-by-the-board) without its sync
+entries, and syncs nothing. To sync from one too, name its environment:
+
+```ts app/api/board/[[...path]]/route.ts
+import { board } from '@vercel/board'
+import { channels, slack } from '@vercel/board/sync-slack'
+
+const team = board({
+  sync: { slack: slack('slack/acme', channels({ '#prs': 'prs' })) },
+  syncEnvironments: ['production', 'preview'],
+})
+export const GET = team.fetch, POST = team.fetch
+```
+
+Two deployments that sync one key race for it, and the one Vercel's API
+refuses it to (409 `sync_key_taken`) registers none of its watchers either.
+
 ### With `BOARD_URL` set
 
 Sync runs where the board's log is. `board()` with `BOARD_URL` set and `sync`

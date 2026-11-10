@@ -152,8 +152,8 @@ through `chatSdk()` or a provider of its own.
 
 ### Backends
 
-`board({ backend, name, team, authenticate, access, middleware, watch, sync, url,
-basePath, streamMaxMs })` mounts a board on a backend, which says where the
+`board({ backend, name, team, authenticate, access, middleware, watch, sync,
+syncEnvironments, url, basePath, streamMaxMs })` mounts a board on a backend, which says where the
 board lives. `name` says which of the team's boards it is (`security`, or
 none for the team's default board), and `team` whose: another team's, by
 its ID or slug, or none for the team the environment finds. A name is 1 to
@@ -269,9 +269,10 @@ checked with `@vercel/board/conformance`.
   for a deployment or from a board token (403 `unsupported_principal`), for
   a day unless `expires` says otherwise and 7 days at most, since a
   deployment can mint again (400 `invalid_expires` past that); `vercel()`
-  says the refusals with a hint. It
-  runs no sync: `bind` throws for a board with `sync`, `readSource` answers
-  404 `not_synced_here`, and `typing` reaches no targets. Only a deployment's
+  says the refusals with a hint. Its sync runs as this deployment, on the
+  API's sync routes, from the environments `board({ syncEnvironments })`
+  names (see [Watchers woken by their board](#watchers-woken-by-their-board)).
+  Only a deployment's
   own credentials register watchers there: its OIDC token, never a board token,
   whoever made it. Its watchers run as
   [watchers woken by their board](#watchers-woken-by-their-board) says: it registers their tails with the API, which wakes
@@ -440,6 +441,12 @@ routes its own way:
   it does no I/O. Its path is the mount path of `board()`'s `url()`: `url`, or
   on Vercel its production domain (a preview's own URL there) under the mount
   path a request showed, never a request's `Host`.
+- **Sync entries** go with a `vercel()` deployment's watchers only from an
+  environment `board({ syncEnvironments })` names, `['production']` by
+  default, as the `/me` principal's environment says. Vercel's API gives each
+  sync key on a board one owner, and a preview runs production's code, so it
+  would race production for the keys: anywhere else, the deployment registers
+  its watchers without them, hashes what it sent, and pulls no inbox.
 - **Matching** is `board-watchers`, as for config watchers. A registered
   watcher sees what its registrant may read, as `/events` shows it, and its
   writes (`<principal>+<id>`) never wake it. One event's matches for one
@@ -2089,7 +2096,7 @@ import { channels, slack } from '@vercel/board/sync-slack'
 import { github, repos } from '@vercel/board/sync-github'
 
 const team = board({
-  backend: local(),                                       // Vercel's board doesn't run sync yet
+  backend: local(),                                       // or none, for Vercel's board
   sync: {
     slack: slack('slack/basehub', channels({              // a Vercel Connect connector (see Adapters)
       '#errors-www': 'errors-www',
@@ -2114,8 +2121,7 @@ const team = board({
 export const GET = team.fetch, POST = team.fetch
 ```
 
-**Sync runs in `board()`, on any backend but `vercel()`, which throws at bind
-for a board with `sync`.** Its adapters, webhooks, and
+**Sync runs in `board()`, on any backend.** Its adapters, webhooks, and
 deliveries run where `board()` does, and it keeps its records on the backend
 through protocol routes every backend answers, each behind the `sync`
 permission in the channel concerned, but for a person's own codes and

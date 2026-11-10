@@ -48,6 +48,13 @@ export type BoardOptions = PolicyOptions & (BackendOptions | DefaultOptions) & {
    * deployment `sync` in those channels.
    */
   sync?: Record<string, SyncProvider>
+  /**
+   * On Vercel's board, the environments whose deployments register `sync`: `['production']` by
+   * default. Vercel's API gives each sync key on a board one owner, so a preview that sent `slack`
+   * would race production for it. A deployment anywhere else registers its watchers without its
+   * sync entries. Name environments as Vercel does: `['production', 'preview']`.
+   */
+  syncEnvironments?: readonly string[]
   /** The board's public URL, which every token's audience must equal. Inferred from requests otherwise. */
   url?: string
   /** The mount path, e.g. `/api/board`. Inferred from requests otherwise: the shallowest one they show. */
@@ -249,6 +256,7 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
     receive: async (key, item, meta) => (await server()).receive(key, item, meta),
     pull: async () => (ownEntries.length > 0 ? (await server()).pull() : 0),
     sync: ownEntries,
+    syncEnvironments: options.syncEnvironments ?? ['production'],
     readSource: async (key, target, limit, after) => (await server()).readSource(key, target, limit, after),
     joinSource: async (key, target) => (await server()).joinSource(key, target),
     locate: (url) => {

@@ -1373,6 +1373,55 @@ describe('vercel()', () => {
     await vi.waitFor(() => expect(s.edits.map((edit) => edit.text)).toEqual([JSON.stringify({ markdown: '[merged] PR #1' }), JSON.stringify({ markdown: '[-] PR #1' })]))
   })
 
+  describe('sync from a preview', () => {
+    /** A deployment of the project in `environment`, every one with the same watcher and Slack sync, as previews of production's code are. */
+    function deployed(api: ReturnType<typeof fakeMessageboard>, environment: string, ran: string[] = [], options: { syncEnvironments?: string[] } = {}) {
+      const backend = vercel({ team: 'team_test', api: API, fetch: as(api, `project:prj_pong:${environment}`) })
+      onTestFinished(() => backend.close())
+      return board({
+        backend,
+        url: `https://pong-${environment}.example/api/board`,
+        watch: { pings: { tail: 'pings', run: async ({ event }) => void ran.push(event.message!.text) } },
+        sync: { slack: slack({ adapter: fakePlatform('slack').adapter }, channels({ C1: 'general' })) },
+        ...options,
+      })
+    }
+    const registered = (api: ReturnType<typeof fakeMessageboard>, environment: string) =>
+      vi.waitFor(() => {
+        const found = api.registrations.get(`vercel:project:prj_pong:${environment}`)
+        expect(found).toBeDefined()
+        return found!
+      })
+    const onVercel = () => {
+      for (const [name, value] of Object.entries({ VERCEL: '1', VERCEL_ENV: 'preview', VERCEL_TARGET_ENV: '', VERCEL_GIT_COMMIT_REF: '' })) vi.stubEnv(name, value)
+      onTestFinished(() => void vi.unstubAllEnvs())
+    }
+
+    it("registers a preview's watchers without its sync entries, so production takes the keys though the preview came first, and runs them when it's woken", async () => {
+      onVercel()
+      const api = fakeMessageboard()
+      const ran: string[] = []
+      const preview = deployed(api, 'preview', ran)
+      await preview.me()
+      expect(await registered(api, 'preview')).toMatchObject({ path: '/api/board', watch: { pings: expect.anything() }, sync: [] })
+      await deployed(api, 'production').me()
+      expect((await registered(api, 'production')).sync).toEqual([{ key: 'slack', platform: 'slack' }])
+      // Woken for its watcher, it pulls no inbox for keys it doesn't own.
+      await handleOn(api, 'user:u_ada').post('pings', 'ping')
+      const woken = await preview.fetch(new Request('https://pong-preview.example/api/board/wake', { method: 'POST' }))
+      expect([woken.status, await woken.json(), ran]).toEqual([200, { ran: 1 }, ['ping']])
+    })
+
+    it('registers its sync entries from an environment syncEnvironments names, and none from one it leaves out', async () => {
+      onVercel()
+      const api = fakeMessageboard()
+      await deployed(api, 'preview', [], { syncEnvironments: ['production', 'preview'] }).me()
+      expect((await registered(api, 'preview')).sync).toEqual([{ key: 'slack', platform: 'slack' }])
+      await deployed(api, 'production', [], { syncEnvironments: ['preview'] }).me()
+      expect((await registered(api, 'production')).sync).toEqual([])
+    })
+  })
+
   it("hands a thread's new target to the sync that owns its key as thread.synced, about the thread's root", async () => {
     const api = fakeMessageboard()
     const pong = handleOn(api, 'project:prj_pong:production')
