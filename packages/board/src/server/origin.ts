@@ -17,3 +17,9 @@ export type WriteOrigin = {
   respond?: (text: string) => Promise<void>
   schedule?: { id: number; n: number }
 }
+
+/**
+ * Sync in board() itself, on a board whose log is in this deployment (`local()`): it checked each
+ * platform event itself, so what it imports is by the platform user, not a profile of anyone.
+ */
+export const SYNC_ACTOR = 'board:sync'

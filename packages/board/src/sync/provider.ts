@@ -47,9 +47,11 @@ export const channelMissing = (error: unknown) => error instanceof UnreadableErr
 export type ProviderFile = { data: Uint8Array; filename: string; mimeType?: string }
 /**
  * Who a post is from, for a platform that can show it as the sender (Slack's per-message
- * username and icon): `name` is the label the text opens with (`**name**: …`).
+ * username and icon): `name` is the label the text opens with (`**name**: …`), and `attribution`
+ * the end of it that says whose word it is (` via support (preview) (slack)`), empty for a
+ * person as themselves, which a platform that cuts names short keeps whole.
  */
-export type ProviderSender = { name: string; avatar: string | null }
+export type ProviderSender = { name: string; avatar: string | null; attribution?: string }
 export type ProviderPost = { markdown: string; files?: ProviderFile[]; as?: ProviderSender }
 export type ProviderDelivery = { thread: string; message: string; files?: string[] }
 export type ProviderOptions = {

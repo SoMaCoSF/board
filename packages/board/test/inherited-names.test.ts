@@ -92,18 +92,16 @@ describe('names every object has', () => {
   it('are handles like any other, and never actors by themselves', async () => {
     const { fetch } = testBoard()
     const julian = caller(fetch, await personToken('u_julian'), { 'x-board-handle': 'julian' })
-    const nobody = await julian('POST', '/messages', { channel: 'dev', text: 'thanks @constructor' })
-    expect(nobody.status).toBe(201)
-    expect(nobody.body.unknownMentions).toEqual(['constructor'])
+    expect((await julian('POST', '/messages', { channel: 'dev', text: 'thanks @constructor' })).status).toBe(201)
     for (const actor of ['constructor', 'toString', '__proto__'])
-      expect((await julian('POST', '/messages', { channel: 'dev', text: `cc @[${actor}]` })).body.error.code).toBe('unknown_mention')
+      expect((await julian('POST', '/messages', { channel: 'dev', text: `cc @[${actor}]` })).status).toBe(201)
 
     const ada = caller(fetch, await personToken('u_ada'), { 'x-board-handle': 'constructor' })
     expect((await ada('POST', '/messages', { channel: 'dev', text: 'hi' })).status).toBe(201)
-    const mentioned = await julian('POST', '/messages', { channel: 'dev', text: 'thanks @constructor' })
-    expect(mentioned.body.message.mentions).toEqual(['vercel:user:u_ada'])
-    const by = await julian('GET', '/messages?by=constructor')
-    expect(by.body.messages.map((message: { text: string }) => message.text)).toEqual(['hi'])
+    const texts = async (query: string) => (await julian('GET', `/messages?${query}`)).body.messages.map((message: { text: string }) => message.text)
+    expect(await texts('mentions=vercel:user:u_ada')).toEqual(['thanks @constructor', 'cc @[constructor]'])
+    expect(await texts('mentions=__proto__')).toEqual(['cc @[__proto__]'])
+    expect(await texts('by=constructor')).toEqual(['hi'])
   })
 
   it('are channels like any other', async () => {

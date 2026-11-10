@@ -193,7 +193,8 @@ describe('chatSdk() hooks', () => {
     await say(10, 'do you ship to Lima?')
     await vi.waitFor(async () => expect(await read(julian, 'leads')).toHaveLength(1))
     const [root] = await read(julian, 'leads')
-    expect(root).toMatchObject({ text: 'Ada on tg: do you ship to Lima?', by: { actor: `tg:user:${ADA.id}` } })
+    // The platform names it; its user is named for the sync key they came through.
+    expect(root).toMatchObject({ text: 'Ada on tg: do you ship to Lima?', by: { actor: `telegram:user:${ADA.id}` } })
 
     await julian('POST', '/messages', { re: root!.id, text: 'we do' })
     await vi.waitFor(() => expect(api.sent()).toHaveLength(1))

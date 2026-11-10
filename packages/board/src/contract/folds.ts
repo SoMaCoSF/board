@@ -5,6 +5,7 @@ import { own, setOwn } from './own.ts'
 import { actorKind, type ActorKind, type Attachment, type Author, type Labels } from './schemas.ts'
 import type { BoardEvent } from './events.ts'
 import { externalMessageKey, isThreadTarget, type Link, type Origin } from './external.ts'
+import type { Via } from './profiles.ts'
 
 // A2 clones state at every read and snapshot boundary, so these folds mutate
 // in place: an event costs O(1) instead of a copy of every message. A key a
@@ -21,7 +22,6 @@ export type Message = {
   thread: string
   labels: Labels
   reactions: Record<string, string[]>
-  mentions: string[]
   by: Author
   noSync: boolean
   /** Where it came from on a platform, if it did. */
@@ -84,7 +84,6 @@ function foldMessage(state: MessagesState, event: BoardEvent): Message | undefin
         thread: payload.thread,
         labels: { ...payload.labels },
         reactions: {},
-        mentions: payload.mentions,
         by: payload.by,
         noSync: payload.noSync,
         origin: payload.origin,
@@ -106,7 +105,6 @@ function foldMessage(state: MessagesState, event: BoardEvent): Message | undefin
       const message = state.byId[event.payload.id]
       if (!message || message.deleted) return undefined
       message.text = event.payload.text
-      message.mentions = event.payload.mentions
       message.editedAt = iso(event.createdAt)
       return message
     }
@@ -118,7 +116,6 @@ function foldMessage(state: MessagesState, event: BoardEvent): Message | undefin
       message.reactions = {}
       // Labels are state a filter finds: a tombstone in a label's view would still look open.
       message.labels = {}
-      message.mentions = []
       message.attachments = []
       message.links = []
       return message
@@ -192,8 +189,14 @@ export type Actor = {
   handle: string
   name: string
   avatar: string | null
+  /** Who an actor with a profile (an agent, or a platform user a sync speaks for) acts through. */
+  via?: Via
+  /** A platform user's platform (`slack`), as their sync key was registered with: for display. */
+  platform?: string
   /** A host's principal, or one of its profiles: once it's seen as one, it stays one. Views leave it out. */
   host?: true
+  /** Its last `actor.seen` was by a write whose credential named it as shown. Each write says it anew. */
+  verified?: true
 }
 
 export type ActorsState = {
@@ -205,7 +208,7 @@ export type ActorsState = {
 /** Who's who: `actor.seen`. */
 export function foldActors(state: ActorsState, event: BoardEvent): ActorsState {
   if (event.type !== 'actor.seen') return state
-  const { actor, kind, handle, name, avatar, host } = event.payload
+  const { actor, kind, handle, name, avatar, via, platform, host, verified } = event.payload
   const previous = own(state.byId, actor)
   if (previous) {
     const key = previous.handle.toLowerCase()
@@ -213,7 +216,7 @@ export function foldActors(state: ActorsState, event: BoardEvent): ActorsState {
     if (remaining.length > 0) setOwn(state.byHandle, key, remaining)
     else delete state.byHandle[key]
   }
-  setOwn(state.byId, actor, { id: actor, kind: actorKind(kind), handle, name, avatar, ...(host || previous?.host ? { host: true as const } : {}) })
+  setOwn(state.byId, actor, { id: actor, kind: actorKind(kind), handle, name, avatar, ...(via ? { via: { ...via } } : {}), ...(platform ? { platform } : {}), ...(host || previous?.host ? { host: true as const } : {}), ...(verified ? { verified: true as const } : {}) })
   const key = handle.toLowerCase()
   const ids = own(state.byHandle, key) ?? setOwn(state.byHandle, key, [])
   if (!ids.includes(actor)) ids.push(actor)

@@ -11,7 +11,7 @@ import { fileSize } from '../../contract/files.ts'
 import type { Attachment } from '../../contract/schemas.ts'
 import * as board from './board.ts'
 import { Ago } from './nav.tsx'
-import { continues, type Groupable, type Pending } from './store.ts'
+import { continues, sourcePlatform, type Groupable, type Pending } from './store.ts'
 import { ContextMenuArea, EmojiPicker, fieldMenu, LabelEditor, Panel, Menu, MenuEmojiRow, MenuItem, MenuSeparator, nativeMenu, type KnownLabels } from './ui.tsx'
 
 const MENU_EMOJI = ['thumbs_up', 'heart', 'laugh', 'party', 'eyes', 'check']
@@ -322,7 +322,7 @@ export function MessageRow({ m, options, continued = false }: { m: MessageView; 
           ) : (
             <span className="avatar-wrap">
               <Avatar name={name} url={m.author?.avatar} />
-              {m.from && <SourceLogo platform={options.platforms?.[m.from] ?? m.from} />}
+              {m.from && <SourceLogo platform={sourcePlatform(m, options.platforms) ?? m.from} />}
             </span>
           )}
         </div>

@@ -42,25 +42,21 @@ import type { SyncEvent } from '../sync/engine.ts'
 import { SYNC, type Caller, type InboxDelivery, type ProtocolMethods, type SelfCaller, type VerifiedCaller } from './backend.ts'
 import type { Board, BoardContext } from './board.ts'
 import { derivedId } from '../client/ids.ts'
-import { claimsOf, KNOWN_AGENTS } from './actors.ts'
+import { claimsOf, KNOWN_AGENTS, viaOf } from './actors.ts'
+import { importedHandle, userIdOf } from '../contract/profiles.ts'
 import type { CallerRequest } from './auth.ts'
 import { avatarSvg } from './avatars.ts'
 import { badRequest, forbidden, HttpError, json, notFound, toErrorResponse } from './errors.ts'
 import { DroppedError, runMiddleware, type Write, type WriteSource } from './middleware.ts'
 import { createRouter, METHODS, openapi, queryObject, readCapped, readJson, type BoardRoute } from './routing.ts'
 import type { Access } from './access.ts'
-import { mentionsEmails, syncTarget, withEmailMentions, type SyncTarget } from './targets.ts'
-import type { WriteOrigin } from './origin.ts'
+import { syncTarget, type SyncTarget } from './targets.ts'
+import { SYNC_ACTOR, type WriteOrigin } from './origin.ts'
 import type { WatcherContext } from './watcher.ts'
 import { VERSION } from '../version.ts'
 
 /** The methods whose answer is something new. */
 const CREATED = new Set<Method>(['post', 'schedule', 'upload', 'uploadFinish'])
-
-/** An email, as `--mentions` names one: sync looks its platform user up. */
-const EMAIL = /^[^\s@]+@[^\s@]+$/
-/** How long a filter's email lookup holds. */
-const EMAIL_TTL_MS = 5 * 60_000
 
 /** Shown inline only when a browser can't run it: everything else downloads. */
 const INLINE = /^(image\/(png|jpeg|gif|webp|avif)|video\/(mp4|webm)|text\/plain)$/
@@ -200,8 +196,21 @@ export type PlatformCaller = {
   origin: WriteOrigin & { via: Extract<WriteSource, { kind: 'sync' }> }
 }
 
-/** A platform user, as the middleware is told who's writing. */
-const externalActor = (author: ExternalAuthor): Actor => ({ id: author.id, kind: 'external', handle: author.handle, name: author.name, avatar: author.avatar })
+/**
+ * A platform user an import by `importer` is by, as the board records them: themselves for the
+ * board's own sync on a board that keeps its log here, which checked them, and a profile of
+ * anyone else's principal, whose word they are, under its name.
+ */
+const externalActor = (author: ExternalAuthor, importer: { principal: string; actor: Actor }): Actor => {
+  const own = importer.principal === SYNC_ACTOR
+  return {
+    id: own ? author.id : `${importer.principal}+${author.id}`,
+    kind: 'external',
+    handle: own ? author.handle : importedHandle(viaOf({ id: importer.principal, handle: importer.actor.handle }).name, author.handle, userIdOf(author.id)),
+    name: author.name,
+    avatar: author.avatar,
+  }
+}
 
 /** A write's caller, as the middleware is told: where it came from. The middleware's own handle and sync's lookups skip it. */
 function sourceOf(caller: Caller): WriteSource | null {
@@ -260,48 +269,12 @@ export async function createServe(context: BoardContext): Promise<Serve> {
     return { identity: await policy.identify(request), origin: { via: { kind: 'api' } } }
   }
 
-  /** What a board that serves no requests answers them: one that uses another board's. */
-  const servesOnly = () => new HttpError(404, 'not_found', `${ownUrl() ?? 'this board'} answers only wake-ups and webhooks`)
-
   /**
-   * `@[ada@vercel.com]`: an email a synced platform knows becomes that user's mention, and the
-   * board learns who they are; the rest stay plain text.
+   * What a board that serves no requests answers them: one that uses another board's. One on
+   * Vercel's still takes wake-ups and webhooks; one at `BOARD_URL` has neither.
    */
-  async function withEmails(text: string): Promise<string> {
-    return (await withEmailMentions(text, engine ? learnEmail : undefined)).text
-  }
-
-  /**
-   * The synced platform's user with this email, whom the board learns: a post can mention only
-   * an actor it knows, and a platform mention of them resolves only once it does.
-   */
-  async function learnEmail(email: string): Promise<Actor | null> {
-    const actor = await engine!.findByEmail(email)
-    if (actor) await backend.syncImport(engine!.caller, { op: 'seen', author: { ...actor, isBot: false } }, new AbortController().signal)
-    return actor
-  }
-
-  /** Emails filters named, as sync found them, for a few minutes: `tail` and `wait` ask at every page. */
-  const mentioned = new Map<string, { at: number; actor: Promise<Actor | null> }>()
-
-  /**
-   * `--mentions ada@vercel.com`: the synced platform's user with that email, for a caller that may
-   * read somewhere. Anything else, and an email sync doesn't know, goes on as it came.
-   */
-  async function withMentioned<Q extends { mentions?: string | undefined }>(caller: Caller, query: Q): Promise<Q> {
-    const email = query.mentions?.toLowerCase()
-    if (!engine || email === undefined || !EMAIL.test(email)) return query
-    const access = accessOf(caller)
-    if (access !== null && !access.anywhere('read')) return query
-    let found = mentioned.get(email)
-    if (!found || Date.now() - found.at > EMAIL_TTL_MS) {
-      if (mentioned.size >= 1000) mentioned.clear()
-      found = { at: Date.now(), actor: learnEmail(email).catch(() => null) }
-      mentioned.set(email, found)
-    }
-    const actor = await found.actor
-    return actor ? { ...query, mentions: actor.id } : query
-  }
+  const servesOnly = () =>
+    new HttpError(404, 'not_found', `${ownUrl() ?? 'this board'} answers ${backend.routes.length > 0 || engine ? 'only wake-ups and webhooks' : 'nothing itself'}`)
 
   /**
    * A sync target as the board that syncs it resolves it. One for an entry this board doesn't
@@ -319,9 +292,9 @@ export async function createServe(context: BoardContext): Promise<Serve> {
 
   /**
    * What a verified caller may do, as board()'s `access` said when it verified them: board() checks
-   * it before it does anything for them past calling the backend (a platform call, an email lookup,
-   * sync's own write, reading an upload, the middleware), so a caller it won't let in starts none of
-   * it. Null for this deployment's own code, which may do everything.
+   * it before it does anything for them past calling the backend (a platform call, sync's own write,
+   * reading an upload, the middleware), so a caller it won't let in starts none of it. Null for this
+   * deployment's own code, which may do everything.
    */
   const accessOf = (caller: Caller): Access | null => ('identity' in caller ? caller.identity.principal.access : null)
 
@@ -529,20 +502,24 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       const source = await importSource(caller, body, null, signal)
       if (!source) return send(body)
       const attachments = await attachmentsOf(caller, body.attachments, signal)
+      const author = externalActor(body.author, await whoIs(caller, signal))
       return dropped(async () =>
-        screen({ kind: 'post', channel: channel!, re, text: body.text, labels: body.labels ?? {}, attachments }, externalActor(body.author), source, async (write) =>
+        screen({ kind: 'post', channel: channel!, re, text: body.text, labels: body.labels ?? {}, attachments }, author, source, async (write) =>
           send({ ...body, text: write.text, labels: write.labels }),
         ),
       )
     }
     if ((body.origin === undefined) === (body.message === undefined)) return send(body)
     const found = await importTarget(caller, body, signal)
-    // Only an edit that would land reaches the middleware: the author's own, when it's named by board ID.
-    if (!found || found.deleted || (access && !access.can('sync', found.channel)) || (body.message !== undefined && found.by.principal !== body.author.id)) return send(body)
+    const author = externalActor(body.author, await whoIs(caller, signal))
+    // Only an edit that would land reaches the middleware: the author's own, when it's named by board ID. A
+    // backend that names imports by the platform user alone (Vercel's, before profiles) stored them so.
+    const own = found !== null && (found.by.actor === author.id || found.by.actor === body.author.id)
+    if (!found || found.deleted || (access && !access.can('sync', found.channel)) || (body.message !== undefined && !own)) return send(body)
     const source = await importSource(caller, body, found, signal)
     if (!source) return send(body)
     return dropped(async () =>
-      screen({ kind: 'edit', id: found.id, channel: found.channel, re: found.re, text: body.text }, externalActor(body.author), source, async (write) => send({ ...body, text: write.text })),
+      screen({ kind: 'edit', id: found.id, channel: found.channel, re: found.re, text: body.text }, author, source, async (write) => send({ ...body, text: write.text })),
     )
   }
 
@@ -557,25 +534,17 @@ export async function createServe(context: BoardContext): Promise<Serve> {
     }
   }
 
-  /**
-   * A post, with the emails it mentions resolved once the caller may post there (and sync, for
-   * targets it names), through the middleware.
-   */
+  /** A post, with the targets it names resolved once the caller may post and sync there, through the middleware. */
   async function post(caller: Caller, input: Protocol['post']['input'], signal: AbortSignal): Promise<Protocol['post']['output']> {
     const send = (poster: Caller, body: Protocol['post']['input']) => screenPost(poster, body, signal, (patched) => backend.post(poster, patched, signal))
     // Without sync, nothing here calls a platform: its targets only take their shape.
     if (!engine) return send(caller, input.sync?.length ? { ...input, sync: await Promise.all(input.sync.map(resolveTarget)) } : input)
-    const work = (input.sync?.length ?? 0) > 0 || mentionsEmails(input.text)
-    const allowed = work ? await mayPost(caller, input, signal) : null
+    const allowed = input.sync?.length ? await mayPost(caller, input, signal) : null
     if (!allowed) return send(caller, input)
     const { access, channel } = allowed
     // A reply's targets are a mistake the backend names: only a new thread's go to the platform.
-    const syncs = input.re === undefined && (input.sync?.length ?? 0) > 0 && (access === null || access.can('sync', channel))
-    const body = syncs ? { ...input, sync: await Promise.all(input.sync!.map(resolveTarget)) } : input
-    const text = await withEmails(body.text)
-    const answer = await send(caller, { ...body, text })
-    // One that can't read where it posted gets back what it sent: who its emails are isn't its to see.
-    return text !== input.text && access !== null && !access.readable(answer.message.channel) ? { ...answer, message: { ...answer.message, text: input.text } } : answer
+    const syncs = input.re === undefined && (access === null || access.can('sync', channel))
+    return send(caller, syncs ? { ...input, sync: await Promise.all(input.sync!.map(resolveTarget)) } : input)
   }
 
   /**
@@ -609,7 +578,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
         return importPost(caller, input as Protocol['post']['input'], signal)
       case 'edit': {
         const { id, text, revision } = input as Protocol['edit']['input']
-        return change({ op: 'edit', author, from: null, message: id, text: await withEmails(text), source, ...(revision !== undefined ? { revision } : {}) })
+        return change({ op: 'edit', author, from: null, message: id, text, source, ...(revision !== undefined ? { revision } : {}) })
       }
       case 'delete': {
         const { id, revision } = input as Protocol['delete']['input']
@@ -654,7 +623,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
         origin: null,
         source: { key, channel: via.channel, thread: via.thread },
         ...(input.channel !== undefined ? { channel: input.channel } : { re: input.re! }),
-        text: await withEmails(input.text),
+        text: input.text,
         ...(input.labels ? { labels: input.labels } : {}),
         ...(input.noSync ? { noSync: true } : {}),
         ...(input.attachments?.length ? { attachments: input.attachments } : {}),
@@ -668,31 +637,18 @@ export async function createServe(context: BoardContext): Promise<Serve> {
     return { message: await read(message!) }
   }
 
-  /** The protocol method `name`, as board() serves it: what it posts and edits, and the filters it reads by, with their emails resolved. */
+  /** The protocol method `name`, as board() serves it: what it posts, edits, and imports goes through the middleware. */
   async function invoke(name: Method, caller: Caller, input: unknown, signal: AbortSignal): Promise<unknown> {
-    if (name === 'messages' || name === 'threads' || name === 'events') input = await withMentioned(caller, input as { mentions?: string })
     switch (name) {
       case 'post':
         return post(caller, input as Protocol['post']['input'], signal)
-      case 'edit': {
-        // Its emails resolve once the caller may post where the message is, and read it.
-        const edit = input as Protocol['edit']['input']
-        const send = (body: Protocol['edit']['input']) => screenEdit(caller, body, signal, (patched) => backend.edit(caller, patched, signal))
-        if (!engine || !mentionsEmails(edit.text) || !(await mayPost(caller, { re: edit.id }, signal))) return send(edit)
-        return send({ ...edit, text: await withEmails(edit.text) })
-      }
+      case 'edit':
+        return screenEdit(caller, input as Protocol['edit']['input'], signal, (patched) => backend.edit(caller, patched, signal))
       case 'syncImport':
         return syncImport(caller, input as Protocol['syncImport']['input'], signal)
       case 'schedule': {
         const body = input as Protocol['schedule']['input']
-        const schedule = (made: Protocol['schedule']['input']) => (backend.sendsSchedulesHere === false ? screenSchedule(caller, made, signal) : backend.schedule(caller, made, signal))
-        const allowed = engine && mentionsEmails(body.text) ? await mayPost(caller, body, signal) : null
-        if (!allowed) return schedule(body)
-        const text = await withEmails(body.text)
-        const answer = await schedule({ ...body, text })
-        // As for a post: one that can't read where it lands gets back what it sent.
-        const { access } = allowed
-        return text !== body.text && access !== null && !access.readable(answer.schedule.channel) ? { ...answer, schedule: { ...answer.schedule, text: body.text } } : answer
+        return backend.sendsSchedulesHere === false ? screenSchedule(caller, body, signal) : backend.schedule(caller, body, signal)
       }
       case 'inbox': {
         const query = input as Protocol['inbox']['input']
@@ -742,6 +698,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
   engine?.bind({
     backend: synced,
     client: (platform, trigger) => clientAs({ platform: { author: platform.author, key: platform.key, respond: platform.respond }, origin: { via: platform.via } }, trigger),
+    syncedHere: async (key) => (backend.syncedHere ? backend.syncedHere(key) : true),
   })
 
   /**
@@ -852,7 +809,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
 
       const input = await inputOf(target.name, request, url, match.params)
       if (target.name === 'events' && (request.headers.get('accept') ?? '').includes('text/event-stream'))
-        return await sse(caller, await withMentioned(caller, input as Protocol['events']['input']), request, asked ? () => callerOf(asked) : null)
+        return await sse(caller, input as Protocol['events']['input'], request, asked ? () => callerOf(asked) : null)
       const output = injected && 'platform' in injected ? await asPlatform(target.name, injected, input, request.signal) : await invoke(target.name, caller, input, request.signal)
       if (target.name === 'attachment') return attachmentResponse(output as Protocol['attachment']['output'])
       // A channel that was there already is answered, not created.

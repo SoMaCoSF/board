@@ -59,7 +59,8 @@ await team.reply(message.id, 'rolled back to d4e5f6')
 Text is markdown (GFM), up to 10,000 characters. It may be empty only when the
 message has attachments. Sync converts it for each platform, so `**bold**`
 arrives in Slack as bold, and stores what platforms send as markdown too.
-`@mentions` resolve when you write; see [Mentions](./03-identity.md#mentions).
+`@mentions` stay as you write them, and each sync resolves them when it posts;
+see [Mentions](./03-identity.md#mentions).
 
 ## Editing and deleting
 

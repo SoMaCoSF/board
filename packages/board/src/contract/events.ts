@@ -40,7 +40,6 @@ export const boardEvents = {
       thread: ThreadKey,
       labels: Labels,
       noSync: z.boolean(),
-      mentions: z.array(ActorId),
       by: Author,
       origin: Origin.nullable(),
       from: From,
@@ -73,7 +72,6 @@ export const boardEvents = {
       id: MessageId,
       thread: ThreadKey,
       text: MessageText,
-      mentions: z.array(ActorId),
       by: Author,
       from: From,
     }),
@@ -137,10 +135,23 @@ export const boardEvents = {
       name: z.string().min(1).max(128).refine(storable, 'name has a NUL character or a lone surrogate'),
       avatar: z.string().url().nullable(),
       /**
+       * (server) Who an actor with a profile acts through, as the board shows it: its principal's name
+       * (a deployment's project, anyone else's handle), and a deployment's environment.
+       */
+      via: z.object({ name: Handle, environment: z.string().min(1).max(128).nullable() }).optional(),
+      /** (server) A platform user's platform (`slack`), as their sync key was registered with: for display. */
+      platform: z.string().min(1).max(64).optional(),
+      /**
        * (server) A principal a host's `authenticate` made, or one of its profiles: someone the board
        * signs in, whatever its ID or kind, so sync never writes as it. Others have none.
        */
       host: z.literal(true).optional(),
+      /**
+       * (server) Whether this write's credential named the actor as shown, rather than taking it from what
+       * the caller sent: under the handle it gave the principal, as itself or after `via`. Unlike `host`,
+       * each `actor.seen` says it anew. Others, and events from before, have none.
+       */
+      verified: z.literal(true).optional(),
     }),
 }
 

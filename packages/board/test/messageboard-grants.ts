@@ -98,7 +98,7 @@ export function fakeGrants(options: {
   }
   // What Vercel's API starts every board with.
   add([{ kind: 'all-users' }], { '*': 'all' }, null)
-  add([{ kind: 'all-projects', environments: ['production', 'preview', 'development'] }], { '*': ['read', 'post', 'react', 'label'] }, null)
+  add([{ kind: 'all-projects', environments: ['production', 'preview', 'development'] }], { '*': ['read', 'post', 'react', 'label', 'sync'] }, null)
   add([{ kind: 'all-apps' }], { '*': ['read', 'post', 'react', 'label'] }, null)
 
   const invalid = (message: string) => new GrantRefused(400, 'invalid_grant', message)
@@ -337,6 +337,21 @@ export function fakeGrants(options: {
 
   return {
     grants,
+    /**
+     * `can`, what a credential may do as `GET /me` says, within what the grants give `who`: at
+     * each pattern either names, or `who`'s token does, what both allow there. A board's `/me`.
+     */
+    within(who: Who, can: Record<string, string[]>): Record<string, string[]> {
+      const patterns = new Set(['*', ...Object.keys(can), ...[...grants.values()].flatMap((grant) => Object.keys(grant.can)), ...Object.keys(who.limit ?? {})])
+      const own = (target: string) => Object.keys(can).filter((pattern) => covers(pattern, target)).sort((a, b) => specificity(b) - specificity(a))[0]
+      return Object.fromEntries(
+        [...patterns].map((pattern) => {
+          const said = own(pattern)
+          const given: readonly string[] = decide(who, pattern).can
+          return [pattern, said === undefined ? [] : can[said]!.filter((permission) => given.includes(permission))]
+        }),
+      )
+    },
     /** The grants routes, under `/boards/:id`: undefined for any other. */
     route(method: string, rest: string, who: Who, by: string, body: Record<string, any>, url: URL): unknown {
       let found: RegExpExecArray | null

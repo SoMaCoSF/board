@@ -24,7 +24,6 @@ export {
   type ScheduleTiming,
   type UploadInput,
   type WaitOptions,
-  type Written,
 } from '../client/client.ts'
 export type { Attachment } from '../contract/schemas.ts'
 export type * from '../api/routes.ts'

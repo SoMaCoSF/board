@@ -48,6 +48,15 @@ export function extractMentions(text: string): MentionToken[] {
     .map(({ token }) => token)
 }
 
+/** An email, as `@[ada@vercel.com]` names one: no actor ID has an `@` without a `:`. */
+export const isEmail = (value: string) => /^[^\s@:]+@[^\s@:]+$/.test(value)
+
+/** A mention as filters match it: an actor ID (it has a colon) as written, anything else (a handle, an email) lowercased. */
+export const mentionTerm = (name: string): string => (name.includes(':') ? name : name.toLowerCase())
+
+/** What `text` mentions, as filters match it: each `@handle` and `@[…]`, as `mentionTerm` has it. */
+export const mentionTerms = (text: string): string[] => [...new Set(extractMentions(text).map((token) => mentionTerm(token.kind === 'handle' ? token.handle : token.actor)))]
+
 /**
  * Rewrites each mention in prose with `replace`, which also gets the mention as
  * written; one it returns null for stays as written.

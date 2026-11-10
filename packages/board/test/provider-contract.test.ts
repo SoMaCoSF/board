@@ -7,6 +7,12 @@ import { channels, mirror, type SyncIn } from '../src/sync/fn.ts'
 import { envelope, eventSchema, type SyncResult } from '../src/sync/events.ts'
 import { fakePlatform } from './sync-fixtures.ts'
 import { BOARD_URL, caller, personToken, testBoard } from './harness.ts'
+import { oidcTokens, type CallerRequest, type HostPrincipal } from '../src/access/index.ts'
+import { testAuth } from './tokens.ts'
+
+/** A host's own verifier, which names the people its tokens are. */
+const hostVerifier = (people: Record<string, HostPrincipal>) => (request: CallerRequest) =>
+  people[request.credential ?? ''] ?? Response.json({ error: { code: 'unauthorized', message: 'who are you?' } }, { status: 401 })
 
 const channel = 'https://provider.test/team:inbox'
 const thread = `${channel}:conversation:1`
@@ -211,7 +217,8 @@ function providerContract(name: string, fixture: typeof nativeFixture | typeof c
       await test.send({ id: 'r3', kind: 'reaction', added: true })
       await test.send({ id: 'r3', kind: 'reaction', added: true })
       await vi.waitFor(() => expect(test.events.map((event) => event.type)).toEqual(['message', 'reaction.added', 'reaction.removed', 'reaction.added']))
-      expect((await test.read())[0]?.reactions).toEqual({ eyes: [test.author] })
+      // The provider names its user on its platform; the board, under the key it came through.
+      expect((await test.read())[0]?.reactions).toEqual({ eyes: [test.author.replace(/^opaque:/, 'tickets:')] })
       expect(new Set(test.events.map((event) => event.id)).size).toBe(4)
     })
 
@@ -291,46 +298,92 @@ providerContract('Chat SDK bridge', chatFixture)
 providerContract('chatSdk() with no hooks', chatSdkFixture)
 
 describe('who a post is from', () => {
-  it("gives a platform an agent's name and avatar to post under, and nothing for a person", async () => {
+  it("gives a platform a sender only for an author the board verified: a host's person under the handle it named, and their agent", async () => {
+    const posted = async (verified: boolean) => {
+      const provider = new NativeProvider(async (sync) => { await sync.import('tickets') }, {})
+      const board = testBoard({ sync: { tickets: provider }, ...(verified ? { authenticate: hostVerifier({ pt_julian: { id: 'vercel:user:u_julian', kind: 'person', handle: 'julian' } }) } : {}) })
+      const token = verified ? 'pt_julian' : await personToken()
+      const writers = [
+        caller(board.fetch, token, { 'x-board-handle': 'julian', 'x-board-avatar': 'https://example.com/julian.png' }),
+        caller(board.fetch, token, { 'x-board-handle': 'julian', 'x-board-name': encodeURIComponent('Julián Benegas'), 'x-board-avatar': 'https://example.com/julian.png' }),
+        caller(board.fetch, token, { 'x-board-handle': 'julian', 'x-board-profile': 'clever-lemur', 'x-board-avatar': 'https://example.com/lemur.png' }),
+      ]
+      // What the board's view of each author says as it posts: sync reads the same from `/actors`.
+      const authors: boolean[] = []
+      for (const [i, writer] of writers.entries()) {
+        const { message } = (await writer('POST', '/messages', { channel: 'tickets', text: `post ${i}` })).body as { message: { author: { verified?: true } } }
+        authors.push(message.author.verified ?? false)
+        await vi.waitFor(() => expect(provider.posts).toHaveLength(i + 1))
+      }
+      expect(authors).toEqual(verified ? [true, false, true] : [false, false, false])
+      return provider.posts.map((post) => [post.body.as, post.body.markdown])
+    }
+    expect(await posted(true)).toEqual([
+      [{ name: 'julian', avatar: 'https://example.com/julian.png', attribution: '' }, '**julian**: post 0'],
+      // A name the person's client sent is theirs to say, not the verifier's: only the label.
+      [undefined, '**Julián Benegas**: post 1'],
+      [{ name: 'clever-lemur via julian', avatar: 'https://example.com/lemur.png', attribution: ' via julian' }, '**clever-lemur via julian**: post 2'],
+    ])
+    // A Vercel login's name and handle are what its CLI sent: no sender, only the label.
+    expect((await posted(false)).map(([as]) => as)).toEqual([undefined, undefined, undefined])
+  })
+
+  it("gives a person a sender only as the handle and name their token gave them, not a handle they send", async () => {
     const provider = new NativeProvider(async (sync) => { await sync.import('tickets') }, {})
     const board = testBoard({ sync: { tickets: provider } })
-    const token = await personToken()
-    const person = caller(board.fetch, token)
-    const agent = caller(board.fetch, token, { 'x-board-profile': 'clever-lemur', 'x-board-avatar': 'https://example.com/lemur.png' })
-    await person('POST', '/messages', { channel: 'tickets', text: 'from a person' })
+    const token = await personToken('u_julian')
+    const named = (await caller(board.fetch, token)('GET', '/me')).body.handle as string
+    await caller(board.fetch, token)('POST', '/messages', { channel: 'tickets', text: 'as my token names me' })
     await vi.waitFor(() => expect(provider.posts).toHaveLength(1))
-    await agent('POST', '/messages', { channel: 'tickets', text: 'from an agent' })
+    // Its name is the token's handle, but the handle it shows is one it sent.
+    await caller(board.fetch, token, { 'x-board-handle': 'someone-else', 'x-board-name': encodeURIComponent(named) })('POST', '/messages', { channel: 'tickets', text: 'as I say' })
     await vi.waitFor(() => expect(provider.posts).toHaveLength(2))
-    expect(provider.posts[0]!.body.as).toBeUndefined()
-    const as = provider.posts[1]!.body.as
-    expect(as).toEqual({ name: expect.stringMatching(/^clever-lemur via /), avatar: 'https://example.com/lemur.png' })
-    expect(provider.posts[1]!.body.markdown).toBe(`**${as!.name}**: from an agent`)
+    expect(provider.posts.map((post) => [post.body.as?.name ?? null, post.body.markdown])).toEqual([
+      [named, `**${named}**: as my token names me`],
+      [null, `**${named}**: as I say`],
+    ])
+  })
+
+  it("gives a sender only to a write its verifier named as shown, not to an actor a host once named", async () => {
+    const provider = new NativeProvider(async (sync) => { await sync.import('tickets') }, {})
+    // A host that also takes Vercel logins: the same person through either.
+    const host = hostVerifier({ pt_julian: { id: 'vercel:user:u_julian', kind: 'person', handle: 'julian' } })
+    const tokens = oidcTokens(testAuth)
+    const board = testBoard({ sync: { tickets: provider }, authenticate: (request) => (request.credential === 'pt_julian' ? host(request) : tokens(request)) })
+    await caller(board.fetch, 'pt_julian')('POST', '/messages', { channel: 'tickets', text: 'as the host named me' })
+    await vi.waitFor(() => expect(provider.posts).toHaveLength(1))
+    await caller(board.fetch, await personToken('u_julian'), { 'x-board-handle': 'ceo' })('POST', '/messages', { channel: 'tickets', text: 'as I say I am' })
+    await vi.waitFor(() => expect(provider.posts).toHaveLength(2))
+    expect(provider.posts.map((post) => [post.body.as?.name ?? null, post.body.markdown])).toEqual([
+      ['julian', '**julian**: as the host named me'],
+      [null, '**ceo**: as I say I am'],
+    ])
   })
 
   it("gives an agent with the board's built-in avatar its person's Vercel avatar", async () => {
     const provider = new NativeProvider(async (sync) => { await sync.import('tickets') }, {})
-    const board = testBoard({ sync: { tickets: provider } })
-    const claude = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian', 'x-board-profile': 'claude' })
+    const people = { pt_julian: { id: 'vercel:user:u_julian', kind: 'person', handle: 'julian' }, pt_ada: { id: 'vercel:user:u_ada', kind: 'person', handle: 'user-u_ada' } } as const
+    const board = testBoard({ sync: { tickets: provider }, authenticate: hostVerifier(people) })
+    const claude = caller(board.fetch, 'pt_julian', { 'x-board-profile': 'claude' })
     // No username to go by: the handle the board made up isn't one.
-    const unnamed = caller(board.fetch, await personToken('u_ada'), { 'x-board-profile': 'claude' })
+    const unnamed = caller(board.fetch, 'pt_ada', { 'x-board-profile': 'claude' })
     await claude('POST', '/messages', { channel: 'tickets', text: 'from claude' })
     await vi.waitFor(() => expect(provider.posts).toHaveLength(1))
     await unnamed('POST', '/messages', { channel: 'tickets', text: 'from another claude' })
     await vi.waitFor(() => expect(provider.posts).toHaveLength(2))
-    expect(provider.posts[0]!.body.as).toEqual({ name: 'claude via julian', avatar: 'https://vercel.com/api/www/avatar?u=julian&s=64&format=png' })
+    expect(provider.posts[0]!.body.as).toEqual({ name: 'claude via julian', avatar: 'https://vercel.com/api/www/avatar?u=julian&s=64&format=png', attribution: ' via julian' })
     expect(provider.posts[1]!.body.as?.avatar).toBe(`${BOARD_URL}/avatars/claude`)
   })
 
   it("prefers the person's own picture to one guessed from a handle they chose", async () => {
     const provider = new NativeProvider(async (sync) => { await sync.import('tickets') }, {})
-    const board = testBoard({ sync: { tickets: provider } })
-    const token = await personToken()
-    const julian = caller(board.fetch, token, { 'x-board-handle': 'jb', 'x-board-avatar': 'https://vercel.com/api/www/avatar/c275ff?s=128' })
-    const claude = caller(board.fetch, token, { 'x-board-handle': 'jb', 'x-board-profile': 'claude' })
+    const board = testBoard({ sync: { tickets: provider }, authenticate: hostVerifier({ pt_jb: { id: 'vercel:user:u_julian', kind: 'person', handle: 'jb' } }) })
+    const julian = caller(board.fetch, 'pt_jb', { 'x-board-avatar': 'https://vercel.com/api/www/avatar/c275ff?s=128' })
+    const claude = caller(board.fetch, 'pt_jb', { 'x-board-profile': 'claude' })
     await julian('POST', '/messages', { channel: 'tickets', text: 'from julian' })
     await vi.waitFor(() => expect(provider.posts).toHaveLength(1))
     await claude('POST', '/messages', { channel: 'tickets', text: 'from claude' })
     await vi.waitFor(() => expect(provider.posts).toHaveLength(2))
-    expect(provider.posts[1]!.body.as).toEqual({ name: 'claude via jb', avatar: 'https://vercel.com/api/www/avatar/c275ff?s=128' })
+    expect(provider.posts[1]!.body.as).toEqual({ name: 'claude via jb', avatar: 'https://vercel.com/api/www/avatar/c275ff?s=128', attribution: ' via jb' })
   })
 })

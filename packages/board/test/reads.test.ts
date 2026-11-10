@@ -21,7 +21,7 @@ describe('list reads', () => {
       await earlier.append({
         id: `post-${n}`,
         type: 'message.posted',
-        payload: { channel: 'dev', text, re: null, replyTo: null, thread: `post-${n}`, labels: {}, noSync: false, mentions: [], by, origin: null, from: null },
+        payload: { channel: 'dev', text, re: null, replyTo: null, thread: `post-${n}`, labels: {}, noSync: false, by, origin: null, from: null },
       })
     }
 
@@ -81,7 +81,7 @@ describe('list reads', () => {
       await other.append({
         id: `other-${n}`,
         type: 'message.posted',
-        payload: { channel: 'dev', text: `other ${n}`, re: null, replyTo: null, thread: `other-${n}`, labels: {}, noSync: false, mentions: [], by, origin: null, from: null },
+        payload: { channel: 'dev', text: `other ${n}`, re: null, replyTo: null, thread: `other-${n}`, labels: {}, noSync: false, by, origin: null, from: null },
       })
     }
     await other.consume(projection)
@@ -100,7 +100,7 @@ describe('reads by ID', () => {
     const by = { actor: 'vercel:user:u_julian', principal: 'vercel:user:u_julian', profile: null, session: null }
     const post = (id: string, text: string, re: number | null) => ({
       id, type: 'message.posted' as const,
-      payload: { channel: 'dev', text, re, replyTo: null, thread: 'root', labels: {}, noSync: false, mentions: [], by, origin: null, from: null },
+      payload: { channel: 'dev', text, re, replyTo: null, thread: 'root', labels: {}, noSync: false, by, origin: null, from: null },
     })
     await earlier.append(post('root', 'deploys are down', null))
     await earlier.append(post('reply', 'looking', 1))

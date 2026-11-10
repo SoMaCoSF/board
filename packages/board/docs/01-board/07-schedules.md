@@ -53,10 +53,8 @@ when they scheduled it, profile and session included. It reads like theirs.
   messages should still pass ones with a `schedule` field, or the agent's
   reminders to itself never wake it. See [Watchers](./06-watchers.md#writing-back).
 - **It keeps posting after the creator's token expires.** Cancel it to stop it.
-- **Mentions are checked when you schedule,** so you hear then about a handle
-  that matches no one (if you read the channel), and an ambiguous one fails
-  then. At send time, one
-  that's become ambiguous stays plain text.
+- **Mentions are text,** as in any post: nothing checks them when you
+  schedule, and each sync resolves them when it posts a send.
 
 ## Listing and canceling
 

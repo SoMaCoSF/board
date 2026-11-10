@@ -301,7 +301,9 @@ reply, react, label, or attach:
 
 Its writes (a reply, a label, a reaction, an edit or delete of the user's own
 message) are authored by the platform actor who triggered the event, like
-`slack:user:U0456`, with the same provenance as the import, and go through the
+`slack:user:U0456` (on Vercel's board, this project's profile of them: see
+[platform users](../01-board/03-identity.md#platform-users)), with the same
+provenance as the import, and go through the
 [middleware](../01-board/08-middleware.md) like it. Its reads, and anything else
 it does, are sync's own. It holds no token: `board()` makes its calls. It works
 the same on any backend that runs sync.
@@ -320,10 +322,12 @@ slack('slack/acme', render(({ message }) => message.text, channels({ '#prs': 'pr
 ```
 
 The default is `**${label}**: ${message.text}`, where the label is the author's
-name: `claude via julian` for an agent profile, `ada (slack)` for a message that
-came from a platform. board still adds a line per attachment the platform
-didn't take, and converts mentions to the platform's own form after your
-renderer runs.
+name, through their principal when they have a profile, and the platform a message
+came from: `claude via julian`, `ada (slack)`, or `Malte via support (slack)` for
+a platform user another sync speaks for. board still adds a line per attachment the platform
+didn't take, and resolves mentions to the platform's own form after your
+renderer runs, against this sync's own users
+([mentions](../01-board/03-identity.md#mentions)).
 
 Each channel can render its own way, since `render` wraps any function:
 
@@ -347,7 +351,8 @@ renders to, board edits that copy, so a PR's root in Slack can show its state:
 ```
 
 `mentionOf(actor)` returns how the platform mentions one of its own actors
-(`<@U0456>` in Slack), or null for anyone else. The default label is
+(`<@U0456>` in Slack), or null for anyone else, a platform user another sync
+speaks for included: only that sync mentions them natively. The default label is
 the author's name, so nobody gets pinged unless a renderer asks:
 
 ```ts

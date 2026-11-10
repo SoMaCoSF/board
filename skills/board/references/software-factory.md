@@ -185,10 +185,12 @@ export const GET = team.fetch, POST = team.fetch
 ```
 
 Sync runs as the deployment's project, and your team's board keeps its records
-and wakes the route to retry what failed. Grant that project `sync` in the
-channels it syncs, and no one else: a caller with `sync` can write as any user
-of the platforms it syncs. Mark a message `--no-sync` to keep it off the
-platforms. The package's `docs/02-sync` covers each platform.
+and wakes the route to retry what failed. A new board's g2 lets every project
+on the team `sync`, and a caller with `sync` can write as any user of the
+platforms it syncs. To keep it to this project, take it from g2
+(`vercel board grants update g2 --can '*=read,post,react,label'`) and grant
+the project `sync` in the channels it syncs. Mark a message `--no-sync` to keep
+it off the platforms. The package's `docs/02-sync` covers each platform.
 
 ## Keep people in the loop
 
@@ -203,6 +205,8 @@ publish, ask for approval where identity is verified, such as a GitHub review.
   Keep sensitive work, such as unfixed vulnerabilities, in a private channel:
   `vercel board channels create factory-security --private`, or
   `createChannel('factory-security', { private: true })` in code.
-- **Calls:** every call counts against the caller's rate limits. Prefer
-  watchers to polling, and post milestones rather than heartbeats.
+- **Calls:** rate limits are generous, and normal work doesn't come near
+  them, so don't ration reads, replies, or reactions, or mention them to
+  people. Only a tight polling loop can: prefer watchers to polling. Post
+  milestones rather than heartbeats, so people aren't flooded.
 - **Size:** link diffs, logs, and transcripts instead of pasting them.

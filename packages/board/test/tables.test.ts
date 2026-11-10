@@ -45,6 +45,8 @@ const SEEN = [
 ] as const
 const CHANNELS = ['dev', 'dev/sub', 'dev_x', 'ops', 'constructor']
 const WORDS = ['PR', '#1', 'fix', 'Bug', 'deploy', 'ÉCLAIR', 'naïve', '100%', 'a_b', 'shipit']
+/** Mentions as people write them, by handle, actor ID, or email, and one in code that doesn't count. */
+const MENTIONS = ['@bo', '@ADA', '@ada/claude', '@sam', '@constructor', '@[vercel:user:u_bo]', '@[vercel:user:u_ada+claude]', '@[slack:user:U1]', '@[Bo@Vercel.com]', '`@bo`']
 const FILES = ['f_one', 'f_two', 'f_three', 'f_four']
 const LABELS: Record<string, string>[] = [{ kind: 'bug' }, { kind: 'feature' }, { pr: '1' }, { pr: '2' }, { 'tag.x': 'y' }, { constructor: 'x' }]
 
@@ -59,8 +61,9 @@ function history(seed: number, length: number): BoardEvent[] {
     events.push({ index: events.length + 1, id, type, payload, createdAt: new Date(at).toISOString() } as unknown as BoardEvent)
   }
   for (const seen of SEEN) push('actor.seen', seen)
-  const text = () => Array.from({ length: 1 + Math.floor(r.next() * 4) }, () => r.pick(WORDS)).join(' ')
+  const text = () => Array.from({ length: 1 + Math.floor(r.next() * 4) }, () => (r.chance(0.15) ? r.pick(MENTIONS) : r.pick(WORDS))).join(' ')
   const labels = () => (r.chance(0.5) ? { ...r.pick(LABELS), ...(r.chance(0.3) ? r.pick(LABELS) : {}) } : {})
+  // A log from before mentions were text alone has the actor IDs they resolved to: nothing reads them now.
   const mentions = () => (r.chance(0.3) ? [r.pick(AUTHORS).actor] : [])
   const files = () => [...new Set([r.pick(FILES), r.pick(FILES)])].map((id) => ({ id, name: `${id}.png`, type: 'image/png', size: 1 }))
   while (events.length < length) {
@@ -162,6 +165,11 @@ const FILTERS: ParsedFilters[] = [
   { by: 'sam' },
   { mentions: 'bo' },
   { mentions: 'me' },
+  { mentions: 'ada' },
+  { mentions: 'ada/claude' },
+  { mentions: 'vercel:user:u_bo' },
+  { mentions: 'bo@vercel.com' },
+  { mentions: 'nobody' },
   { from: 'board' },
   { from: 'slack' },
   { text: 'pr #1' },
@@ -212,10 +220,10 @@ function conformance(open: () => Promise<MessageTables>) {
     const events = history(seed, 400)
     const tables = await applied(events)
     const { messages, actors } = fold(events)
-    const me = 'vercel:user:u_bo'
+    const me = { id: 'vercel:user:u_bo', handle: 'bo' }
     for (const filters of FILTERS) {
       const matches = compileFilter(filters, { me, actors, messages, access: FULL_ACCESS })
-      const filter = toMessageFilter(filters, { me, actors })
+      const filter = toMessageFilter(filters, { me, actors, access: FULL_ACCESS })
       for (const page of [{ limit: 50 }, { limit: 7, after: 120 }, { limit: 7, before: 300 }, { limit: 500 }]) {
         const got = await tables.messages(filter, page)
         expect(got.messages, JSON.stringify({ filters, page })).toEqual(expectedMessages(messages, matches, page))
@@ -278,7 +286,7 @@ function conformance(open: () => Promise<MessageTables>) {
       const access = compileAccess(can)
       for (const filters of FILTERS) {
         const matches = compileFilter(filters, { me: null, actors, messages, access })
-        const filter = readableFilter(toMessageFilter(filters, { me: null, actors }), known, access)
+        const filter = readableFilter(toMessageFilter(filters, { me: null, actors, access }), known, access)
         const expected = expectedMessages(messages, matches, { limit: 500 })
         const got = filter.channels?.length === 0 ? [] : (await tables.messages(filter, { limit: 500 })).messages
         expect(got, JSON.stringify({ can, filters })).toEqual(expected)
@@ -306,7 +314,7 @@ function conformance(open: () => Promise<MessageTables>) {
     const by = AUTHORS[0]
     const labels = Object.fromEntries(Array.from({ length: 11_000 }, (_, i) => [`k${i}`, 'v']))
     const events = [
-      { type: 'message.posted', id: 'p', payload: { channel: 'dev', text: 'many', re: null, replyTo: null, thread: 'p', labels: {}, noSync: false, mentions: [], by, origin: null, from: null } },
+      { type: 'message.posted', id: 'p', payload: { channel: 'dev', text: 'many', re: null, replyTo: null, thread: 'p', labels: {}, noSync: false, by, origin: null, from: null } },
       { type: 'labels.changed', id: 'l', payload: { id: 1, thread: 'p', by, set: labels, unset: [] } },
     ].map((event, i) => ({ ...event, index: i + 1, createdAt: new Date(Date.UTC(2026, 9, 1, 0, 0, i)).toISOString() }) as unknown as BoardEvent)
     const tables = await applied(events)
@@ -321,8 +329,8 @@ function conformance(open: () => Promise<MessageTables>) {
     const by = AUTHORS[0]
     const odd = 'a\u0000b \ud800 c\udc00'
     const events = [
-      { type: 'message.posted', id: `p${odd}`, payload: { channel: 'dev', text: `naïve ${odd}`, re: null, replyTo: null, thread: `p${odd}`, labels: { kind: odd }, noSync: false, mentions: [], by, origin: { channel: 'slack:C9', thread: `slack:C9:${odd}`, subthread: null, message: `${odd}.0`, context: null }, from: 'slack' } },
-      { type: 'message.posted', id: 'r', payload: { channel: 'dev', text: odd, re: 1, replyTo: null, thread: `p${odd}`, labels: {}, noSync: false, mentions: [], by, origin: null, from: null } },
+      { type: 'message.posted', id: `p${odd}`, payload: { channel: 'dev', text: `naïve ${odd}`, re: null, replyTo: null, thread: `p${odd}`, labels: { kind: odd }, noSync: false, by, origin: { channel: 'slack:C9', thread: `slack:C9:${odd}`, subthread: null, message: `${odd}.0`, context: null }, from: 'slack' } },
+      { type: 'message.posted', id: 'r', payload: { channel: 'dev', text: odd, re: 1, replyTo: null, thread: `p${odd}`, labels: {}, noSync: false, by, origin: null, from: null } },
       { type: 'labels.changed', id: 'l', payload: { id: 1, thread: `p${odd}`, by, set: { tag: odd }, unset: [] } },
       { type: 'thread.synced', id: 's', payload: { thread: `p${odd}`, target: `slack:C1:${odd}`, cause: 'request', by } },
       { type: 'message.synced', id: 'd', payload: { id: 2, thread: `p${odd}`, target: `slack:C1:${odd}`, external: { thread: `slack:C1:${odd}`, message: `${odd}.9` } } },
@@ -376,7 +384,7 @@ describe("a message's version", () => {
   it('is the last event that changed it, and an event that changes nothing writes nothing', () => {
     const state: MessagesState = { byId: {}, replies: {} }
     foldMessages(state, { ...event(5, 'message.posted', {}), payload: {
-      channel: 'dev', text: 'hi', re: null, replyTo: null, thread: 'e5', labels: {}, noSync: false, mentions: [], by, origin: null, from: null,
+      channel: 'dev', text: 'hi', re: null, replyTo: null, thread: 'e5', labels: {}, noSync: false, by, origin: null, from: null,
     } } as BoardEvent)
     expect(state.byId[5]!.version).toBe(5)
     const react = event(6, 'reaction.added', { emoji: 'eyes', by, from: null })
@@ -398,11 +406,36 @@ describe("a message's version", () => {
 })
 
 describe('the SQL tables', () => {
+  it('index the mentions in a message text on a board written when they were the actor IDs a write resolved', async () => {
+    const by = AUTHORS[0]
+    const path = join(dir, 'mentions-before-text.db')
+    const posted = (index: number, text: string) =>
+      ({ index, id: `p${index}`, type: 'message.posted', createdAt: new Date(Date.UTC(2026, 9, 1, 0, 0, index)).toISOString(), payload: { channel: 'dev', text, re: null, replyTo: null, thread: `p${index}`, labels: {}, noSync: false, mentions: ['vercel:user:u_sam'], by, origin: null, from: null } }) as unknown as BoardEvent
+    // Written as boards were: each mention as the actor ID it resolved to, and no record of reindexing.
+    const old = sqlite({ path })
+    for (const event of [posted(1, '@sam can you look?'), posted(2, 'over to @sam/claude'), posted(3, 'nothing here')]) await old.tables.apply(event)
+    await old.close()
+    const raw = sqliteDb(path)
+    await raw.commit({ text: 'select 1 as claimed', values: [] }, [
+      { text: "update board_terms set value = 'vercel:user:u_sam' where term = '@'", values: [] },
+      { text: 'drop table board_meta', values: [] },
+    ])
+    await raw.close()
+
+    const upgraded = sqlite({ path })
+    const found = async (terms: string[], prefixes: string[] = []) => (await upgraded.tables.messages({ mentions: { terms, prefixes } }, { limit: 10 })).messages.map((m) => m.text)
+    // A caller that can't read every channel matches what it names as written.
+    expect(await found(['sam'], ['sam/'])).toEqual(['@sam can you look?', 'over to @sam/claude'])
+    expect(await found(['vercel:user:u_sam'])).toEqual([])
+    expect((await upgraded.tables.threads({ mentions: { terms: ['sam'], prefixes: [] } }, { limit: 10 })).threads.map((t) => t.root.text)).toEqual(['@sam can you look?'])
+    await upgraded.close()
+  })
+
   it("never fold a writer's event onto what it read before the event ahead of it landed", async () => {
     const by = AUTHORS[0]
     const at = (index: number) => new Date(Date.UTC(2026, 9, 1, 0, 0, index)).toISOString()
     const events = [
-      { type: 'message.posted', id: 'p', payload: { channel: 'dev', text: 'secret', re: null, replyTo: null, thread: 'p', labels: {}, noSync: false, mentions: [], by, origin: null, from: null } },
+      { type: 'message.posted', id: 'p', payload: { channel: 'dev', text: 'secret', re: null, replyTo: null, thread: 'p', labels: {}, noSync: false, by, origin: null, from: null } },
       { type: 'message.deleted', id: 'd', payload: { id: 1, thread: 'p', by, from: null } },
       { type: 'labels.changed', id: 'l', payload: { id: 1, thread: 'p', by, set: { kind: 'bug' }, unset: [] } },
     ].map((event, i) => ({ ...event, index: i + 1, createdAt: at(i) }) as unknown as BoardEvent)

@@ -252,7 +252,7 @@ describe('slack message links', () => {
   })
 
   it('quotes linked messages under the message in `vb read`', () => {
-    const base = { id: '7', version: 7, revision: 7, channel: 'dev', text: 'see these', re: '6', replyTo: null, thread: 't', labels: {}, reactions: {}, mentions: [], noSync: false, origin: null, from: 'slack', createdAt: new Date().toISOString(), editedAt: null, deleted: false, undelivered: {}, attachments: [], author: null, by: { actor: 'slack:user:U_JB', principal: 'slack:user:U_JB', profile: null, session: null } }
+    const base = { id: '7', version: 7, revision: 7, channel: 'dev', text: 'see these', re: '6', replyTo: null, thread: 't', labels: {}, reactions: {}, noSync: false, origin: null, from: 'slack', createdAt: new Date().toISOString(), editedAt: null, deleted: false, undelivered: {}, attachments: [], author: null, by: { actor: 'slack:user:U_JB', principal: 'slack:user:U_JB', profile: null, session: null } }
     const view = { ...base, links: [
       { url: permalink('C1'), message: '5', unavailable: null, snapshot: { author: 'Ada', text: 'export is broken\nsince monday', createdAt: null, files: [{ name: 'shot.png', url: null }] } },
       { url: permalink('C9'), message: null, snapshot: null, unavailable: 'not_in_channel' },

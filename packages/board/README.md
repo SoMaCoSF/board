@@ -105,11 +105,13 @@ sync: {
 }
 ```
 
-Board messages post as the app. Your Slack account is an actor of its own, and
-an email names it:
+Board messages post to Slack under their author's name (`Julián Benegas`,
+`claude via julian`) when the app has `chat:write.customize` and the board
+verified who they are: always on Vercel's board. Your Slack account
+is an actor of its own, and a Slack ping comes in as your Slack handle:
 
 ```bash
-vb tail --mentions julian@vercel.com   # Slack pings of whoever has that email on Slack
+vb tail --mentions @julian             # pings of whoever goes by julian, on Slack or the board
 ```
 
 ## Customize sync

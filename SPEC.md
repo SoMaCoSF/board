@@ -92,8 +92,8 @@ board post errors-www "deploy failed on a1b2c3"   # in a linked project: the tea
 - **No accounts.** The board has no login page, sessions, or user table.
   Principals are strings derived from verified OIDC claims, from verified
   platform webhooks, or from a host's own `authenticate`.
-- **Provenance is server-authored.** The `by`, `mentions`, `origin`, and
-  sync receipt fields are never taken from the request body. This is the same
+- **Provenance is server-authored.** The `by`, `origin`, and sync receipt
+  fields are never taken from the request body. This is the same
   rule as Just Chat's trusted message metadata.
 - **Wiring is code; the log holds facts.** Sync functions, watchers,
   and the verifier live in `board()` and its backend's config, where they're reviewed and deployed.
@@ -274,7 +274,7 @@ checked with `@vercel/board/conformance`.
   404 `not_synced_here`, and `typing` reaches no targets. Only a deployment's
   own credentials register watchers there: its OIDC token, never a board token,
   whoever made it. Its watchers run as
-  `http()`'s do (below): it registers their tails with the API, which wakes
+  [watchers woken by their board](#watchers-woken-by-their-board) says: it registers their tails with the API, which wakes
   this deployment by its path on its project, through Deployment Protection,
   from every deployment on Vercel (production, a branch's preview, which names
   its branch, a `vercel deploy` preview, a custom environment), which never
@@ -347,26 +347,17 @@ checked with `@vercel/board/conformance`.
   `:`, and 32 hex characters, since one principal's ID can be the start of
   another's), so the same `id` never posts
   twice and no one can post with one first (and `posted`, a retry's lookup,
-  asks for the same). Its board answers only wake-ups and webhooks: a
-  request, discovery included, answers 404 `<url> answers only wake-ups and
-  webhooks`, and none is verified. Its `discovery` for its own handle reads
-  the other board's. `readSource` for one of its own sync's entries, and `typing` through
-  its own sync, it answers here too, beside the other board's. Its own routes
-  are `POST /wake` and `POST /watchers` (no token; a handle's `POST /watchers`
-  registers its own there, as the protocol's does). Its watchers run here, on what the other board matches for them
-  (below), and so does its sync: it registers its sync entries (`sync: [{ key,
-  platform }]`), pulls what to deliver as matches of watcher `@sync`,
-  and pulls back what it pushed to its inbox after each webhook and when it's
-  woken. Sync's own calls go as the deployment itself, which the other board
-  must let `sync`, and wait for that registration. The other board lists the
-  registered entries in its discovery while their registrant may still sync: a
-  key its own sync has is its own (registering it is 409 `sync_key_taken`, and
-  one registered before the board's own sync took it holds nothing under it).
-  A key names its sync's platform
-  locations, so each sync sees and changes only the copies it recorded
-  (`importedBy` and `syncedBy` on its events), and two that claim one key share
-  its platform threads on the board: give each key one sync. People and
-  the CLI use the other board, by its URL.
+  asks for the same). Its board answers nothing itself: a request, discovery
+  included, answers 404 `<url> answers nothing itself`, and none
+  is verified, and it has no routes of its own. Its `discovery` for its own
+  handle reads the other board's. It registers nothing with the other board,
+  and nothing wakes it: its config watchers run in this process as tails, from
+  its first use, following `events` from the head as `vb tail` does, with
+  local()'s retries, and skipping their own writes, which go as this
+  deployment with the watcher's ID as its profile. On Vercel none run, since a
+  function doesn't outlive its request, and it logs so once. `bind` throws for
+  a board with `sync`: sync runs where the log is, in that board's own config
+  or Vercel's. People and the CLI use the other board, by its URL.
 
 ### IDs, cursors, and versions
 
@@ -421,34 +412,34 @@ The backend picks them; the protocol only says their shape:
 
 ### Watchers woken by their board
 
-A deployment's watchers run on what the board they're registered with
-matches: Vercel's board for `board()` with no backend (its registry is
-Vercel's API), and with `BOARD_URL` set, the board at that URL. The board that
-keeps the log matches the tails; the registered deployment runs `run`.
-Nothing is pushed but a wake-up with nothing in it. What follows is how a
-board on the internal engine (`local()`) keeps the registry; Vercel's API
-answers the same routes its own way:
+A deployment's watchers on Vercel's board (`board()` with no backend) run on
+what Vercel's API matches for them: the API matches the tails, wakes the
+deployment at its path with nothing in the wake-up, and the deployment pulls
+and runs `run`. A board on the internal engine (`local()`) keeps a registry
+too, and matches what's registered there, but wakes nothing: its registrants
+pull. What follows is how it keeps the registry; Vercel's API answers the same
+routes its own way:
 
 | Route, on the board with the log | What |
 | --- | --- |
-| `POST /watchers` | `{ url?, watch, sync? }` or `{ path, branch?, watch, sync? }`, never both: registers the caller's watchers and sync entries, replacing its last registration. Needs `read` somewhere, and `sync` somewhere for sync entries; at most 32 watchers; `url` must be `https`, and without one (or a `path`) the caller pulls on its own. `path`, on a board whose discovery says `wake_by_path`, wakes the caller's own Vercel project there instead, through its Deployment Protection: the board takes the project and environment from the caller's token and finds the deployment, so a project can only register itself, and a caller that isn't a Vercel project (a person, say) gets 403 `not_a_project`. Production wakes its best production domain; a preview of a branch names its `branch`, and wakes that branch's latest ready preview; a preview with no branch (`vercel deploy`) wakes that deployment, and a custom environment its latest ready deployment, as the caller's token says. The board finds the deployment again for each wake-up. A board that can't find a project's deployments answers 501 `no_wake_by_path`. A registration answers the same way: `{ url }`, or `{ url: null, path, branch? }` |
+| `POST /watchers` | `{ watch, sync? }` or `{ path, branch?, watch, sync? }`: registers the caller's watchers and sync entries, replacing its last registration. Needs `read` somewhere, and `sync` somewhere for sync entries; at most 32 watchers. Without a `path` the caller pulls on its own. A `url` answers 501 `no_wake_by_url` on the internal engine, which wakes nothing, and 400 on Vercel's API, which wakes only paths. `path`, on a board whose discovery says `wake_by_path`, wakes the caller's own Vercel project there instead, through its Deployment Protection: the board takes the project and environment from the caller's token and finds the deployment, so a project can only register itself, and a caller that isn't a Vercel project (a person, say) gets 403 `not_a_project`. Production wakes its best production domain; a preview of a branch names its `branch`, and wakes that branch's latest ready preview; a preview with no branch (`vercel deploy`) wakes that deployment, and a custom environment its latest ready deployment, as the caller's token says. The board finds the deployment again for each wake-up. A board that can't find a project's deployments answers 501 `no_wake_by_path`. A registration answers `{ url: null }`, or `{ url: null, path, branch? }` |
 | `GET /watchers` | Every registration to `manage` in every channel, the caller's own to anyone else |
 | `GET /watchers/matches?limit&wait` | What the caller can run now, each leased to it for 5 minutes. `wait` holds the request up to 25 seconds for one |
 | `POST /watchers/matches/:id/ack` | `{ lease, error?, skip? }`: done, an error to try again, or a skip |
 
-| Route, on the registered deployment's board | What |
+| Route, on a deployment's board on `vercel()` | What |
 | --- | --- |
-| `POST /watchers` | Registers its own watchers with the other board, now. No body, no token |
+| `POST /watchers` | Registers its own watchers with Vercel's API, now. No body, no token |
 | `POST /wake` | Something matched. It registers again if `x-board-watchers` isn't its own hash, then pulls, runs, and acks until nothing's left. It answers `{ ran }` when that's done, or 202 after 2 seconds while it keeps going |
 
 - **Registrations** live in `board-registry`, session `registry`, one per
   principal with its token facts, so its access is worked out again at each
-  match under the grants as they are then. The registered board registers on
-  its first use (a method call or one of its routes) if it knows its URL, on
-  `POST /watchers`, and on a wake-up with a stale hash; creating it does no
-  I/O. Its URL is `board()`'s `url()`: `url`, or on Vercel its production
-  domain (a preview's own URL there) under the mount path a request showed,
-  never a request's `Host`.
+  match under the grants as they are then. A deployment on `vercel()`
+  registers on its first use (a method call or one of its routes) if it knows
+  its URL, on `POST /watchers`, and on a wake-up with a stale hash; creating
+  it does no I/O. Its path is the mount path of `board()`'s `url()`: `url`, or
+  on Vercel its production domain (a preview's own URL there) under the mount
+  path a request showed, never a request's `Host`.
 - **Matching** is `board-watchers`, as for config watchers. A registered
   watcher sees what its registrant may read, as `/events` shows it, and its
   writes (`<principal>+<id>`) never wake it. One event's matches for one
@@ -458,46 +449,14 @@ answers the same routes its own way:
   order. Pulling leases it (`watch.leased`, an ID derived from the match and
   its try, so two pulls at once lease it once); acking ends it
   (`watch.acked`). What one pull changes is one append, and one read after it
-  tells which leases are its own. An error waits 1 second, doubling to 30, by
-  its own timer (`watch.due`). A lease that runs out (`watch.expired`)
-  counts as a try. After 5 tries it's `watch.failed`, and the thread goes on.
+  tells which leases are its own. An error waits 1 second, doubling to 30,
+  before a pull hands it out again. A lease that runs out (`watch.expired`,
+  recorded by the next pull) counts as a try. After 5 tries it's `watch.failed`, and the thread goes on.
   A pull drops what the registrant can't read anymore (`watch.skipped`).
-- **Sweeps** stand in for a timer per lease: a registrant has at most one
-  timer a minute (`watch.armed`, then `watch.due` with `sweep`), set on the
-  minute after a pull's leases run out, or after a wake-up that didn't get
-  there. A sweep wakes the registrant if anything is free to pull: a lease
-  whose time has passed counts, and the pull records it.
-- **Wake-ups** go to `<url>/wake` from `board-wake`, one at a time per
-  registrant (its lane is `wake` in the registrant's session), and only when
-  something is free to pull. The board woken pulls until nothing's left, so a
-  burst of matches wakes it once. `https` to a public address only, checked as
-  it connects, with no redirects and no event; the board woken trusts nothing
-  in it. A run that keeps throwing (the store is down) stops after three
-  tries and leaves the wake-up to the next match or sweep, so the lane never
-  dead-letters.
-- **A wake-up that doesn't get there** (an error, or an answer that isn't
-  2xx) is `watch.unreachable` in the registrant's session, with how many
-  failed in a row and when the next may go: a minute, doubling to an hour
-  (`wakeBackoff`). Until then a match only queues, and the sweep armed for
-  that time wakes it. `watch.reachable` ends the wait: a wake-up that gets
-  there, a pull, or a registration (`POST /watchers`, changed or not, since a
-  new deployment registers on its first use). The board logs the first
-  failure and the second, when the back-off starts, and not the rest.
-- **Through Deployment Protection:** a wake-up carries no credential, ever:
-  no OIDC token and no `VERCEL_AUTOMATION_BYPASS_SECRET`. A registrant behind
-  Deployment Protection lets `POST /wake` through itself (a public
-  production domain, or a Deployment Protection Exception for the domain it
-  registers). Credentials sent with wake-ups would go to whatever URL a
-  registrant chose, and Trusted Sources checks no audience on a Vercel
-  project's entry, so the board sends none. Waking projects through their
-  protection is the platform's to do, the way Connect forwards webhooks.
-- **A board that can't be woken** (no `https` URL, as on a dev server)
-  registers with no `url` and pulls on its own from its first use, each pull
-  held open until something matches. One on Vercel registers its deployment's
-  URL and never pulls on its own, since a function doesn't outlive its
-  request: behind Deployment Protection, its wake-ups get through only where
-  its project lets `POST /wake` through (a public production domain, or a
-  Deployment Protection Exception).
+- **A deployment Vercel's API can't wake** (off Vercel, as on a dev server)
+  registers with no `path` and pulls on its own from its first use, each pull
+  held open until something matches. One on Vercel registers its path and
+  never pulls on its own, since a function doesn't outlive its request.
 
 ### Install
 
@@ -733,10 +692,19 @@ await team.createGrant({ principals: [{ kind: 'project', project: 'prj_self', en
   - `vercel:user:u_abc123`
   - `vercel:project:prj_x:production`
   - `github:repo:123456` (an Actions workflow)
-  - `github:user:583231` (a GitHub user, arriving through sync)
-  - `slack:user:U0456` (a Slack user, arriving through sync)
+  - `github:user:583231` (a GitHub user the board's own sync checked)
+  - `slack:user:U0456` (a Slack user the board's own sync checked)
 
-  Principals name the platform identity, so they don't include sync keys.
+  A platform user's ID starts with the sync key they came through, not the
+  platform: `slack:user:U0456` under the default key `slack`,
+  `slack-eu:user:U0456` under a key `slack-eu` registered for Slack. The key
+  is the connection, and a user is that connection's; the platform is
+  display (the inspector's logo, a relayed message's label), on each actor
+  view of a platform user as `platform`. Renaming a key changes its users'
+  IDs. Providers name their users on their platform (`slack:user:…`), and
+  the engine puts them under the key. On Vercel's board each project's keys
+  are its own: support's `slack` and www's are two connections, whose users
+  are each project's profiles.
 - **Profile:** an optional named identity within a principal, with an avatar.
   It's Just Chat's delegated profile, slimmed down.
   - **Selection:** `team.as('claude')` on a handle, `--as claude` in the CLI.
@@ -755,12 +723,24 @@ await team.createGrant({ principals: [{ kind: 'project', project: 'prj_self', en
     principal.
   - **What a profile gets:** its own actor, handle, mentions, and read cursors.
     It's always displayed together with its principal: **claude via julian**.
+  - **Platform profiles:** a platform user a sync speaks for is a profile of
+    the sync's principal, `<sync key>:<user ID there>`, as in
+    `vercel:project:prj_support:production+slack:user:U0456`. No agent's name
+    has a colon, so the two never meet. Only the board's own sync, which
+    checks each platform webhook itself, imports as the platform user alone;
+    every sync elsewhere (each one on Vercel's board) only says who wrote a
+    message, so its word is its own principal's. One shows like any profile:
+    **Malte via support**, with a deployment's environment outside production
+    (**Malte via support (preview)**).
   - **What it doesn't get:** permissions of its own (authorization always uses
     the verified principal), a separate login (it shares the principal's
     token), or a registration step (its first write records it in
     `actor.seen`).
 - **Actor:** the thing messages are attributed to. Its ID is `principal` or
-  `principal+profile`, for example `vercel:user:u_abc123+claude`. Profile names
+  `principal+profile`, for example `vercel:user:u_abc123+claude`. Display is
+  one rule for every actor: its name, plus `via <principal>` when it has a
+  profile, the principal by its project's name (and environment outside
+  production) on Vercel's board, and by its handle or ID elsewhere. Profile names
   match case-insensitively, so `Claude` and `claude` are the same actor, and the
   spelling supplied is the one displayed. Runtime session IDs are recorded as
   metadata on each message, not as part of the identity. They do scope read
@@ -822,18 +802,17 @@ await team.createGrant({ principals: [{ kind: 'project', project: 'prj_self', en
   `/schedules`, and `/actors` drop what you can't read. An event about no
   message (`actor.*`, `thread.synced`) reaches only a caller that reads every
   channel. Links to an unreadable board message lose their snapshot when read.
-- **A write doesn't answer what a read wouldn't.** A post or a schedule in a
-  channel its caller can't read comes back with the text it sent and no
-  mentions: the board resolves handles and emails to actor IDs, which
-  `/actors` hides from that caller. The board stores the resolved text and
-  mentions, so they still notify. Where that caller reads its post again
-  (`GET /posts/:id`) or lists its schedules, each exact mention but of itself
-  shows as `@…`. Nor does it list the handles that matched no one
-  (`unknownMentions`), which would say which ones exist: a known and an
-  unknown handle answer alike. Still, an ambiguous handle fails (without
-  candidates) and an `@[actor-id]` the board doesn't know is `unknown_mention`
-  for anyone, so a write-only caller can tell that a handle is shared, or that
-  an actor ID exists, but not whose it is.
+- **A write doesn't answer what a read wouldn't.** A post in a channel its
+  caller can't read comes back with the text it sent, not what the middleware
+  made of it. Where that caller reads its post again (`GET /posts/:id`) or
+  lists its schedules, each exact mention but of itself shows as `@…`: before
+  mentions were text, the board turned emails into actor IDs, and a sync's
+  import names its own profiles. A mention is text, resolved by no write: a
+  handle one actor has, one several share, one no one has, and an
+  `@[actor-id]` the board doesn't know all answer alike, so a write tells no
+  one which handles or actors exist. Nor does a read: only a caller that reads
+  every channel finds someone through their other name (`--mentions` by ID
+  matching their handle); anyone else's matches what it names as written.
 - Only the principal that wrote a message may edit or delete it. A person can
   edit their own profiles' messages. A principal ID is coarser than access (a
   repo's workflows share one), so where a caller can't read, its own is only
@@ -865,11 +844,12 @@ await team.createGrant({ principals: [{ kind: 'project', project: 'prj_self', en
   seen it can't tell from a platform user, so a host names its principals in
   a scheme no sync registers (not `support:` where a sync could register
   platform `support`), and gives `sync` carefully.
-- A platform user's record (name, handle, avatar) shows in every channel, so
-  only the board's own sync, or one with `sync` in every channel, changes it,
-  through `seen` or an import's author. Anyone else's imports carry the author
-  on what they write and leave the record be. An import's avatar that isn't
-  an `https` URL is dropped.
+- An import by a sync elsewhere is by a profile of its principal
+  (`<principal>+<author ID>`), so its platform users are that principal's
+  word and show through it. Their record (name, handle, avatar) is that
+  profile's, which only that principal's imports change, through an import's
+  author: no sync renames another's platform users, or the board's
+  own sync's. An import's avatar that isn't an `https` URL is dropped.
 
 ### Grants and tokens
 
@@ -945,11 +925,13 @@ await team.revokeToken(token.id)
   workflow a grant names.
 - **Every board starts with three grants,** as Vercel's API seeds a team's
   board: g1 names `all-users` with `*` at `all`, capped by role, g2 names
-  `all-projects` in production, preview, and development, and g3 names
-  `all-apps`, each with read, post, react, and label everywhere. On a local
+  `all-projects` in production, preview, and development with read, post,
+  react, label, and sync everywhere, and g3 names `all-apps` with read, post,
+  react, and label everywhere. On a local
   board they're in the access fold's initial state, so every board has them
   without a write, and a grant's ID comes from the fold's counter (g4 next).
-  A local board has no apps, so g3 lets no one in there.
+  A starting grant a local board never changed is the one its release
+  starts with. A local board has no apps, so g3 lets no one in there.
 - **`GET /grants/explain?channel=…`** says which grants decide a channel for
   the caller, or with `manage` at `*` for the principal its query names
   (`user`, `project` and `environment`, `github` and `workflow`, `branch`,
@@ -1094,7 +1076,8 @@ doesn't have. What its grant rules refuse, it answers 403 `grant_forbidden`,
 which `vercel()` gives back as the board's. Its `me` is what the API's `GET /me` says the credentials may do and
 until when: `can`, board's own summary of it (a person's team role,
 everything for owners, members, and developers, `read` and `react` for
-viewers, and a project's read, post, react, and label), and `expiresAt` in milliseconds, null
+viewers, and for a deployment's own credential, a project's read, post,
+react, label, and sync), and `expiresAt` in milliseconds, null
 until board tokens. Board reads `can` as it reads its own: a pattern it can't
 parse is dropped, and what each permission implies is added. An `expiresAt`
 under 10^12 is epoch seconds, as a JWT's `exp` is. Where it says neither, read,
@@ -1107,13 +1090,19 @@ deployment's OIDC token, and the login, as `vb` sends one to any board.
 
 One person shows up as several actors: `vercel:user:u_abc123` on the board,
 `slack:user:U0456` in Slack, `github:user:583231` on GitHub, and their agents
-(`…+claude`). The board doesn't link them. A person's `--by` and `--mentions`
-cover their own actor and their agents (`julian/claude`, by `by.principal`);
-their Slack or GitHub account is an actor of its own, named to cover it
-(`--by slack:user:U0456`, or `--mentions ada@vercel.com` for whoever has that
-email on Slack). A person mentioned on the board reads as their name
-on a platform; a platform user mentioned by actor or email
-(`@[ada@vercel.com]`) renders natively there (`<@U0456>`).
+(`…+claude`). The board doesn't link them. A person's `--by` covers their own
+actor and their agents (`julian/claude`, by `by.principal`), and their
+`--mentions` covers mentions of their handle and ID and of their agents'
+(`@julian/claude`). Their Slack or GitHub account is an actor of its own, named
+to cover it (`--by slack:user:U0456`, `--mentions slack:user:U0456`), and each
+sync elsewhere's profile of that account is another
+(`--by vercel:project:prj_support:production+slack:user:U0456`), under its
+project's name: support's Malte is `@support/malte`, and www's `@www/malte`.
+`@malte` is text, so it fails no write and each sync reads it as its own Malte,
+and `--mentions support` covers everyone support imported. A person mentioned on the board
+reads as their name on a platform; a platform user mentioned by handle, actor,
+or email (`@[ada@vercel.com]`) renders natively there (`<@U0456>`), and only
+through the sync that speaks for them, under the key it imported them through.
 
 ### Handles and mentions
 
@@ -1125,55 +1114,85 @@ on a platform; a platform user mentioned by actor or email
   - A profile's handle is `<person-handle>/<profile>`, for example
     `julian/claude`.
   - A deployment's handle is its project name, plus `@<env>` outside
-    production.
+    production. On Vercel's board it's the project name in every environment,
+    as Vercel's API names it, and a deployment outside production shows as
+    `support (preview)`; where nothing names its project, its ID
+    (`prj_support`, `prj_support@preview`).
   - An Actions principal's handle is `owner/repo`.
   - A GitHub user's handle is their login. A Slack user's handle is their Slack
-    display name.
+    display name. That's the board's own sync's users; a platform user a sync
+    elsewhere imports is `<the importing principal's name>/<their handle>`:
+    `support/malte`, in every environment of project `support`. The handle has
+    no `@<env>`, which mention syntax can't take; the environment shows only in
+    the name (**Malte via support (preview)**). The part after `/` is typable:
+    diacritics taken off (NFKD, then combining marks removed), lowercased, each
+    run of anything but `a-z`, `0-9`, `.`, `_`, and `-` turned into one `-`,
+    and `-`, `.`, and `_` trimmed from the ends, so "Jürgen Ubl" is
+    `support/jurgen-ubl`. When nothing is left, it's the user's ID on the
+    platform without the sync key, the same way: `T_EU:U0MALTE` is
+    `t_eu-u0malte`. The whole handle fits the 128 characters a handle holds: a
+    part longer than `128 - <principal name's length> - 1` is cut there, on whole
+    characters, and its ends trimmed again, and `vercel()` cuts one the API
+    gives the same way. A principal's agents and platform users can share a handle
+    (`support/claude`): their IDs differ. Vercel's API names them by the same rule,
+    and `vercel()` composes it from the profile's project name (or its ID) for
+    an API that names them as their platform does.
 - **Syntax:**
   - `@handle` and `@person/profile`. The parser is a port of Just Chat's
     `extractMentions`, extended to allow one `/`.
   - Mentions inside inline code or fenced code blocks don't count, the same
     invariant as Just Chat.
   - `@[actor-id]`, e.g. `@[slack:user:U0456]`, mentions an exact actor. It's
-    the escape hatch for ambiguous handles.
+    the way to name one of several who share a handle.
   - `@[ada@vercel.com]` mentions whoever has that email on a synced platform,
-    for a person the board may not have seen: Slack looks it up with
-    `users.lookupByEmail` (the app needs `users:read.email`). The write stores
-    the exact actor, `@[slack:user:U0456]`, so it renders natively; an email no
-    platform knows stays plain text instead of failing the write.
-- **Resolution** happens inside the write request, before the append:
-  1. Extract the tokens from the prose.
-  2. Look each one up in the `actors` reducer's `byHandle` index (lowercased
-     handle → actor IDs).
-  3. Exactly one match resolves. Zero leaves it plain text, and the write's
-     answer lists it in `unknownMentions` so the writer is warned, if the
-     writer reads the channel. More than
-     one is a 400 `ambiguous_mention`, `ambiguous mention @x`, listing the actor IDs to use with
-     `@[…]`.
-  4. Store the actor IDs on the event. Edits resolve again.
-
-  There's no separate cache. The `actors` state is small, the engine snapshots it, and
-  a warm function keeps an in-memory copy keyed by log index that it updates
-  incrementally.
-- **Only actors the board has seen can be mentioned, or named by email.** An actor becomes known
-  when it writes or reacts, or when it's mentioned on its own platform. A Slack
-  user who has never interacted with a synced channel can't be @-mentioned from
-  the board in v1.
-- **Mentions are stored as actor IDs**, so a later handle change never reroutes
-  an old mention. Display always uses the current name. A new actor appearing
-  between resolution and the append doesn't change the stored ID.
+    for a person the board may not have seen.
+- **Mentions are text.** The text is the only record: no write resolves a
+  mention, stores who it named, or fails over one. A handle no one has, one
+  several actors share, and an `@[actor-id]` the board doesn't know all post as
+  written, from a person, a schedule, or a platform alike, and an edit's text
+  is simply the new text. A message's view and its events carry no list of
+  whom it mentions.
+- **Filters match the text.** `--mentions <who>` on `read`, `tail`, and `wait`,
+  and a watcher's `--mentions`, match a message whose text, outside code, has
+  `@<handle>` or `@[<actor id>]` for who it names: a handle covers each actor
+  with it, an actor ID covers that actor's handle, and a name covers what's
+  under it: a person's agents (`@julian/claude`, `@[vercel:user:u_1+claude]`),
+  and the platform users a project imported (`--mentions support` finds
+  `@support/malte`). `me` is the
+  caller's handle and ID. An email matches `@[ada@vercel.com]`, as written, and
+  nothing asks a platform who has it. Who goes by what is the actors' records,
+  which only a reader of every channel sees, so for anyone else a value matches
+  as written, with the agents under it (`@sam`, `@sam/claude`).
+- **Each sync resolves mentions when it posts,** against its own users only:
+  its own profiles of platform users under the key it posts through
+  (`<principal>+<key>:…`), and users named under the key alone (`<key>:…`),
+  the board's own sync's and, on Vercel's board, imports from before profiles.
+  - **`@handle`:** natively (`<@U0456>`) when exactly one of its users has that
+    handle. `@support/malte` is a user of support's sync, and plain `@malte` is
+    the shorthand: whichever of this sync's users is `<its principal>/malte`,
+    or the board's own sync's `malte`. Of several, the one who wrote in the
+    message's thread, if exactly one did. Otherwise it goes out as written.
+  - **`@[actor-id]`:** natively when it's one of its users, and as the actor's
+    name otherwise; as written when the board doesn't know the actor.
+  - **`@[email]`:** looked up when it posts (Slack's `users.lookupByEmail`, which
+    needs `users:read.email`), each answer kept a few minutes. One the platform
+    finds is mentioned natively; one it doesn't, or a platform that can't look
+    emails up, goes out as the plain email (`ada@vercel.com`).
+  - The board's stored message is unchanged: two syncs that post one message
+    each resolve it for their own users, so the board's own Slack leaves
+    `@malte` as written while each sync elsewhere mentions its own Malte.
 - **Platform round-trips:**
-  - **Inbound mentions resolve on their own platform.** A Slack `<@U0456>`
-    becomes `slack:user:U0456`. A GitHub `@login` resolves only among
-    `github:user:` actors, so it never lands on a same-named Slack user.
-  - **If an inbound mention names an actor the board hasn't seen,** the inbound
-    consumer fetches that user's profile through the adapter and appends
-    `actor.seen` in the same batch.
-  - **Platform text never fails a write.** Each mention resolves on its own: one
-    that doesn't stays plain text, and the rest still count.
+  - **Inbound mentions are the platform's text.** A Slack `<@U0456>` comes in
+    as `@<their display name>`, which Chat SDK's Slack adapter writes; a GitHub
+    `@login` stays as written. A sync elsewhere's import that mentions one of
+    its keys' users, `@[<key>:<user>]`, mentions its own profile of them,
+    `@[<principal>+<key>:<user>]`.
+  - **Outbound, a platform user renders natively only through their own
+    key,** with the key's prefix taken off to find them on the platform, and a
+    profile only through the sync of its own principal.
   - **Outbound mentions render natively on the actor's own platform:**
-    `<@U0456>` in Slack, `@login` on GitHub. Anywhere else a mention is the
-    plain name.
+    `<@U0456>` in Slack, `@login` on GitHub. Anywhere else a mention by actor is
+    the plain name, and one by handle is as written.
 
 ## Entities
 
@@ -1207,7 +1226,12 @@ on a platform; a platform user mentioned by actor or email
   - `github:acme/web:123` is a PR thread.
 
   Wherever an external target is accepted, `slack:#prs` also works and resolves
-  through a cached name lookup.
+  through a cached name lookup. On Vercel's board a key is its project's, and
+  a reader outside that project sees it as `<project>/<key>`
+  (`www/slack:C0123ABC`), by the project's name (the handle its deployments go
+  by, `support`, or that their agents go by under it, `support/sync`, or else
+  the `via` its imported users name) or its ID; the project's own deployments
+  see it bare.
 - **Emoji are stored as normalized short names** (`eyes`, `white_check_mark`),
   using Chat SDK's emoji normalization. The CLI accepts `eyes`, `:eyes:`, or 👀.
 - **Labels:** keys match `[a-z0-9][a-z0-9_.-]*` (up to 64 characters); values are
@@ -1313,7 +1337,6 @@ export const boardContract = contract({
       thread: ThreadKey,                    // the root's event ID: lanes and sync state are keyed by it
       labels: Labels,
       noSync: z.boolean(),                  // keep this message on the board
-      mentions: z.array(ActorId),           // (server)
       by: Author,                           // (server) { actor, principal, profile, session }
       origin: Origin.nullable(),            // (server) { channel?, thread, subthread, message, context } when it came from a platform
       from: z.string().nullable(),          // (server) the sync key it came through, or null
@@ -1326,7 +1349,7 @@ export const boardContract = contract({
     // Every event below also carries `thread`, and each change from a platform its `from`.
     'channel.created':   z.object({ channel: ChannelPath, by: Author }),   // one made before anything posted to it; a post makes one with no event of its own
     'message.linked':    z.object({ id: MessageId, links: z.array(Link), by: Author }), // (server) a platform edit or unfurl changed them
-    'message.edited':    z.object({ id: MessageId, text: MessageText, mentions: z.array(ActorId), by: Author }),
+    'message.edited':    z.object({ id: MessageId, text: MessageText, by: Author }),
     'message.deleted':   z.object({ id: MessageId, by: Author }),
     'reaction.added':    z.object({ id: MessageId, emoji: Emoji, by: Author }),
     'reaction.removed':  z.object({ id: MessageId, emoji: Emoji, by: Author }),
@@ -1335,7 +1358,7 @@ export const boardContract = contract({
     'message.synced':    z.object({ id: MessageId, target: ExternalTarget, external: ExternalMessage, syncedBy: ActorId.optional() }), // (server) external: { thread, message }
     'message.files_synced': z.object({ id: MessageId, target: ExternalTarget, files: z.array(z.string()).nullable(), syncedBy: ActorId.optional() }), // (server) null: the platform refused files
     'message.sync_failed': z.object({ id: MessageId, target: ExternalTarget, error: z.string() }),      // (server)
-    'actor.seen':        z.object({ actor: ActorId, kind: SeenActorKind, handle: Handle, name: z.string(), avatar: z.string().url().nullable(), host: z.literal(true).optional() }),
+    'actor.seen':        z.object({ actor: ActorId, kind: SeenActorKind, handle: Handle, name: z.string(), avatar: z.string().url().nullable(), via: z.object({ name, environment }).optional(), host: z.literal(true).optional(), verified: z.literal(true).optional() }), // via: who a profile acts through, as it shows; verified: this write's credential named it as shown, said anew each time
   },
 })
 
@@ -1549,7 +1572,7 @@ reads from Vercel's API, which answers the same views.
   order, to tables in the board's SQLite file: `board_messages` (each message
   as it is now, plus columns to filter on, and a root's thread summary),
   `board_versions` (each message after every event that changed it),
-  `board_terms` (labels and mentions, as an index), the sync state's four maps
+  `board_terms` (labels and the mentions in each message's text, as an index), the sync state's four maps
   (`board_sync_threads`, `board_external_threads`, `board_copies`,
   `board_external_messages`), and `board_positions` (the last log index
   applied). Each event is one transaction that claims its index first, so a
@@ -1571,7 +1594,7 @@ reads from Vercel's API, which answers the same views.
 | Reducer | State | Used by |
 | --- | --- | --- |
 | `channels` | path → last index, message count, thread count | `channels`, the feed's start |
-| `actors` | actor → handle, name, avatar, kind; plus a `byHandle` index of lowercased handle → actor IDs | mention resolution, `actors`, rendering, `--by` and `--mentions` |
+| `actors` | actor → handle, name, avatar, kind; plus a `byHandle` index of lowercased handle → actor IDs | `actors`, rendering, `--by` and `--mentions` |
 
 - **Consistency:** a write answers once the tables hold it, so any later read
   includes it. A read that names a message ID waits until the tables reach it;
@@ -1580,9 +1603,9 @@ reads from Vercel's API, which answers the same views.
   catching up without waiting for them: on a board opened from an older file,
   nothing else may have.
 - **Filters** (`channel`, `re`, `by`, `mentions`, `from`, `text`, `label`) are
-  SQL queries over the tables for `/messages` and `/threads`. `by` and
-  `mentions` are resolved to actor and principal sets first, from the
-  `actors` state.
+  SQL queries over the tables for `/messages` and `/threads`. `by` is resolved
+  to actor and principal sets first, and `mentions` to the handles and actor
+  IDs it matches in the text, from the `actors` state.
 - **The event feed and watchers** see each change before and after: they load
   the message an event concerns, and its root, from `board_versions` as of the
   event before, and fold the event in memory. The same filters are a JS
@@ -1679,17 +1702,17 @@ Registered watchers' routes (`/watchers`, `/watchers/matches`) are in
 
 **Filters:**
 - `channel=www/` (with a trailing slash) matches a whole subtree.
-- `mentions=me` resolves to the caller's actor. `mentions=ada@vercel.com`, on
-  the board that runs sync and for a caller that may read somewhere, resolves to
-  the user with that email on a synced platform that looks emails up (Slack),
-  whom the board learns, so their pings resolve from then on. Sync is asked once
-  per email every few minutes; an email it doesn't know matches nothing.
+- `mentions` matches the text (see [Handles and mentions](#handles-and-mentions)):
+  `mentions=me` is the caller's handle and ID, and `mentions=ada@vercel.com` is
+  `@[ada@vercel.com]` as written.
 - `label=status=open` may be repeated; repeated labels are combined with AND.
 - `after` and `before` take a cursor or a message ID, as opaque strings (see
   [IDs, cursors, and versions](#ids-cursors-and-versions)). A bad one is 400
   `invalid_cursor`.
 - `from` is a sync key (`slack`), or `board` for what was written on the
-  board; `text` is words the text contains, case-insensitively.
+  board; `text` is words the text contains, case-insensitively. On Vercel's
+  board, another project's key is `<project>/<key>`, by its name (`www/slack`)
+  or its ID (`prj_…/slack`), and a bare key is the caller's own project's.
 - The profile is sent as `x-board-profile`, `x-board-avatar`, and
   `x-board-session`, and the server records them after verifying the token.
 - `x-board-can` narrows the token's access for that request (see
@@ -1980,12 +2003,13 @@ it, and nothing is hosted.
   - On a reply, the reply isn't delivered to the thread's external threads.
   - Combining `--no-sync` with `--sync` is a usage error.
 
-**Shared filters:** `--re <id>`, `--mentions [@handle|email]` (mentions of me, or of them),
+**Shared filters:** `--re <id>`, `--mentions [@handle|actor|email]` (mentions of me, or of them, in the text),
 `--by <handle>`, `--source <source>`, `--label <key>[=<value>[|<value>…]]`,
 `--text <words>`, and `--after <id>` (a message ID or a cursor). All of them
 must match.
 - **`--source`** is a sync key (`slack`, `github`), or `board` for messages
-  written on the board.
+  written on the board. On Vercel's board, `www/slack` or `prj_…/slack` is
+  www's key, as a message's `from` names it to anyone outside www.
 - **`--label`** with a key alone means "has it"; `state=open|draft` means
   either value. A label matches on the message **or its thread's root**: sync
   labels roots, so `--label pr=owner/repo#1` is the PR's whole conversation.
@@ -2029,13 +2053,8 @@ $ board read 812
     thanks, fixing the env now
 ```
 
-A platform user shows by name (`Ada Lovelace`).
-
-```
-$ board post errors-www "@ada the rollback is live"
-error: Can't post to errors-www.
-  ambiguous mention @ada: use @[slack:user:U0456] (ada) or @[vercel:user:u_9f] (Ada Lovelace)
-```
+A platform user shows by name (`Ada Lovelace`), and through the sync that
+speaks for them when it isn't the board's own (`Malte via support (preview)`).
 
 ### Walkthrough: a Slack triage agent (the agent isn't managed by the board)
 
@@ -2152,8 +2171,7 @@ const team = board({
 export const GET = team.fetch, POST = team.fetch
 ```
 
-**Sync runs in `board()`, on any backend but `vercel()`, which throws at bind
-for a board with `sync`.** Its adapters, webhooks, and
+**Sync runs in `board()`, on any backend.** Its adapters, webhooks, and
 deliveries run where `board()` does, and it keeps its records on the backend
 through protocol routes every backend answers, each behind the `sync`
 permission in the channel concerned, but for a person's own codes and
@@ -2161,7 +2179,7 @@ unlinking their own account:
 
 | Method | Route | What it keeps |
 | --- | --- | --- |
-| `syncImport` | `POST /sync/imports` | a platform's write as its platform author, with its origin and sync key (null for a sync function's own): `post` (idempotent by an ID derived from the platform event), or `edit`, `delete`, `react`, `labels`, `links` on the message the backend finds from its platform IDs or that it names by board ID, or `seen` (a platform user to know, for `@[email]`) |
+| `syncImport` | `POST /sync/imports` | a platform's write as its platform author (a profile of the caller's principal, for any sync but the board's own), with its origin and sync key (null for a sync function's own): `post` (idempotent by an ID derived from the platform event), or `edit`, `delete`, `react`, `labels`, `links` on the message the backend finds from its platform IDs or that it names by board ID |
 | `syncReceipt` | `POST /sync/receipts` | `message.synced` (with `message.files_synced`), `message.files_synced`, `message.sync_failed`, or `thread.synced` with its `cause` |
 | `syncThread` | `GET /sync/threads/:thread` | a thread's root, channel, targets, and external threads |
 | `syncFind` | `GET /sync/find` | the board thread and message for platform IDs, and the post an import made with a client ID |
@@ -2171,19 +2189,42 @@ unlinking their own account:
 Only these take provenance (an author, an origin) from a body, and only from a
 caller with `sync` where it lands: `sync` says this project may speak for
 platform users there. An author is a user of a
-platform the caller syncs (its own sync's entries, or those it registered),
-never an ID the board authenticates (`vercel:`, `github:repo:`, `oidc:`,
+sync key the caller syncs (its own sync's entries, or those it registered),
+named under it: the import's `from` (`slack-eu:user:U0456` through
+`slack-eu`), or with none, any of its keys. Never an ID the board authenticates (`vercel:`, `github:repo:`, `oidc:`,
 `local:`, `board:`), nor a host's principal the board has seen register or
 write, or its agents and registered watchers (`<principal>+<id>`). A caller
 that pushes to an inbox pulls it back:
 `local()` delivers its own sync's in-process on `board-inbox` and queues anyone
 else's in their registrant session. Outbound, sync is one of the board's
 subscriptions, beside its watchers: `local()` delivers it on `board-sync`'s thread
-lanes, and a board on `http()` registers it (its sync entries) and pulls it as
+lanes, and a sync elsewhere registers it (its sync entries) and pulls it as
 matches of watcher `@sync`. A new root, however it reached the board, goes to
 each sync function as sync sees it, and the function starts its threads. Two
 syncers on one platform channel would each import and each deliver: that's
 config's to avoid.
+
+**On Vercel's board, a project's sync keys are its own,** and one deployment of
+the project holds each, so a project never delivers a message twice. Production
+takes a key over from the project's previews and development; otherwise the
+first to register it keeps it. Registering never fails over a key:
+`PUT /watchers` registers the watchers, lists the keys it holds in `sync`, and
+names who holds each of the rest in `elsewhere`
+(`{ key, platform, owner, environment }`). A deployment runs sync only through
+the keys it holds (`Backend.syncedHere(key)`). For one it doesn't, its webhook
+answers 200 before its adapter reads anything, it pulls no inbox, offers no
+root, and delivers to no target, and it says once who holds the key
+(`[board] slack is synced by production`). Its keyed calls answer without the
+API: an inbox push or ack is dropped, a pull or listing is empty, and an import
+or a receipt is 404 `not_synced_here`. A key another deployment took since it
+registered, however recently, the API refuses with 403 `sync_key_not_owned`:
+it registers again at once, and answers the same way. Another project may also hold `slack`:
+its targets and bindings say whose they are (`projectId`), and a
+`thread.synced` for another project's is not this one's to backfill, nor a
+target its thread's sync doesn't list. Against an API from before each project
+had its own keys (no `elsewhere`), a deployment holds every key it registered,
+a second registrant's is 409 `sync_key_taken`, and a target that names no
+project is the caller's own.
 
 **Each platform takes its app and one sync function**: `slack(app, sync)`,
 where `app` is a connector name or the options. board calls the function with
@@ -2354,9 +2395,10 @@ the default author label, the actual resolved destination, and
 `mentionOf(actor)`, which returns an actor's native mention there through linked
 accounts, or null. It returns the
 message body as markdown; board still adds attachment notes.
-The board's stored message and verified author are unchanged. Resolved mentions
-are converted to the destination's native form in the rendered body, after the
-custom renderer runs; code spans retain their usual treatment.
+The board's stored message and verified author are unchanged. Mentions in the
+rendered body are resolved for the destination, after the custom renderer runs,
+as [Handles and mentions](#handles-and-mentions) says; code spans retain their
+usual treatment.
 
 ```ts
 slack('slack/acme', render(({ message }) => message.text, channels({ '#prs': 'prs' })))
@@ -2377,8 +2419,9 @@ state. The default renderer reads no labels, so labels alone never edit a copy.
 1. **Delivery.** Every message, edit, delete, and reaction in a thread goes to
    every external thread the thread is synced with, except those under the
    sync key it came through: a reply from `slack:C1` doesn't reach the
-   thread's `slack:C2` copy either. Messages written with `noSync` stay on the
-   board. Where a platform doesn't
+   thread's `slack:C2` copy either. Another project's key on Vercel's board is
+   another key: a reply www imported reaches support's Slack copy. Messages
+   written with `noSync` stay on the board. Where a platform doesn't
    support something, that delivery is skipped.
 2. **Starting a thread.** A root posted on the board, including one posted by a
    watcher, goes to the sync function of every platform that can start threads
@@ -2419,7 +2462,7 @@ state. The default renderer reads no labels, so labels alone never edit a copy.
    Slack's 3-second retry window, and platform retries do nothing.
 3. On `local()`, the inbound consumer, `board-inbox`, hands each event back to
    `board()`'s sync on the external thread's lane, and sync runs the entry's
-   function. On a board on `http()`, the deployment that pushed them pulls
+   function. For a sync elsewhere, whoever pushed them pulls
    them back right after (`inboxNext`, then `inboxAck`), one platform thread at
    a time and in order. Its writes are imports (`syncImport`) on the board
    that keeps the log.
@@ -2428,10 +2471,11 @@ state. The default renderer reads no labels, so labels alone never edit a copy.
 reaches the board and its defaults differ:
 
 - **Its calls reach `board()` in process,** with no token. `board()` then calls
-  the backend as sync: on `http()`, a request to the board it uses, with this
-  deployment's credentials.
+  the backend as sync.
 - **Writes are authored by the platform actor that triggered the event,** for
-  example `slack:user:U0456`, with `origin` set from the event for the import.
+  example `slack:user:U0456`, or on a board elsewhere a profile of this
+  deployment, `vercel:project:prj_x:production+slack:user:U0456`, with
+  `origin` set from the event for the import.
   The function's own writes (`post`, `reply`, `label`, `react`, and `edit` and
   `delete` of the actor's own messages) are imports too, `syncImport` as that actor
   with `from: null`, naming a message by its board ID: they sync out like a
@@ -2444,11 +2488,11 @@ reaches the board and its defaults differ:
 
 **Failure:** on `local()`, a function that keeps throwing dead-letters after
 10 tries. That blocks only its thread's lane in that channel's inbox. Other
-threads, other channels, and the board log itself keep flowing. On a board on
-`http()`, sync gives an event up after 5 tries, and its thread moves on.
+threads, other channels, and the board log itself keep flowing. A sync
+elsewhere's inbox gives an event up after 5 tries, and its thread moves on.
 
 A retried function can produce a different write under the same derived ID,
-for example if mentions resolved differently the second time. The board finds
+for example if it read the board differently the second time. The board finds
 the post that landed under that ID and returns it, so the first one stands; the
 same ID in another place is 409 `duplicate_id`.
 
@@ -2462,8 +2506,7 @@ platform code in board; Slack needs `files:read`. A file that can't come
 over gets a line in the text instead, and the message still lands:
 `📎 run.mov (50.0 MB) didn't come over: over 25 MB`. That covers files over
 25 MB, empty files, files past a message's 10, and an adapter that can't
-fetch. On `http()`, a file over 4 MB goes to the board it uses as a direct
-upload, and becomes an `over 4 MB` line where that board's store takes none. A fetch that fails is tried 3 times first, so one bad file can't stop
+fetch. A fetch that fails is tried 3 times first, so one bad file can't stop
 its thread. On a board that keeps no files (one that answers `no_files`), each file comes
 over as a link to where it lives, one line each:
 `📎 [shot.png](https://files.slack.com/…) (7 B) didn't come over: this board keeps no files`,
@@ -2523,8 +2566,7 @@ dead-letters and holds up its thread's lane.
 `POST /messages/:id/typing`, `board.typing(id)`, or `vb typing <id>` shows
 typing in the platform threads the answering board's sync delivers the
 message's thread to, through the adapter's `startTyping`: on `local()`, the
-sync that runs beside it. On a board on `http()`, its own code's call also shows it
-where its own sync does. It's ephemeral: nothing is written to the log, and it
+sync that runs beside it. It's ephemeral: nothing is written to the log, and it
 isn't synced or replayed.
 
 - **Best-effort,** like edits and reactions: a platform that fails is skipped
@@ -2567,7 +2609,7 @@ adapter: createSlackAdapter({
 With a Slack adapter of your own whose bot token is async (Connect's
 credentials passed to `createSlackAdapter`, say), `slack()` needs a public
 `client` resolver, for name lookups, joining, avatars, email lookups, link and
-on-demand reads, permalinks, agents' names, and file deletion. The resolver
+on-demand reads, permalinks, sender names, and file deletion. The resolver
 gets the bot token and returns `adapter.withBotToken(token, () =>
 adapter.webClient)`. board never calls the SDK's protected token resolver.
 Static-token adapters can use their public `webClient` directly. An
@@ -2789,18 +2831,40 @@ on its own: someone `/invite`s it to each mapped channel. Name lookups need
 `channels:read`. Private channels also need `groups:read`; without it (Vercel
 Connect's Slack app doesn't request it), map a private channel by its ID.
 
-**Agents post under their own names.** A message from an agent profile
-(`clever-lemur via vboard-factory`) goes to Slack with that name as the
-message's sender, and the `**name**: ` label it would open with is left out.
-Its avatar is the agent's own picture when it's an https image Slack can show.
-An agent with the board's built-in SVG avatar shows its person's Vercel avatar:
-the picture the person's CLI sent on their own messages, or else
-`vercel.com/api/www/avatar?u=<handle>`. Without either, the agent keeps the
-app's icon. This
-needs `chat:write.customize`, which the board checks once with `auth.test`;
-without it, agents post as the app with the label, as everyone else does. An
-edit leaves the label out only where Slack shows the message under the
-agent's name. People's messages, and messages with files, post as the app.
+**Messages post under their author's name.** A message whose author the board
+verified goes to Slack with their shown name as the message's sender, and the
+`**name**: ` label it would open with is left out. Verified is everyone on
+Vercel's board, which names its accounts and projects itself. On a local board
+it's whoever the message shows under the handle a credential the board checked
+gave them: an OIDC token it trusts, a board token, or a host's verifier, never
+the board's own code. An agent or an import shows that principal after `via`
+(`clever-lemur via vboard-factory` from the project's OIDC token), and its
+profile name is the principal's to choose; a person, deployment, or workflow
+writing as itself shows that handle as its name. A handle or display name the
+client sends instead (`x-board-handle`, `x-board-name`) isn't checked, so it
+keeps the label, and so do the board's own sync's platform users. It's what the
+actor's last write said (`verified` on its `actor.seen`), not the `host` mark
+that stays: one a host named that then writes through another verifier, under a
+handle it sends, isn't verified. Their actor views say `verified: true`. Anyone
+else's messages post as the app with the label, which no one mistakes for a
+Slack user's. "via" names the principal: a person posting as
+themselves is just their name (`Julián Benegas`), and anything written on a
+principal's behalf is `<name> via <principal>` (`clever-lemur via
+vboard-factory`, `Malte via support (preview)`). A message imported through
+another sync key keeps its ` (<platform>)` suffix (`Malte via support (preview)
+(slack)`). Its avatar is the author's own picture when it's an https image Slack
+can show. A name longer than Slack's 80 characters is cut before its
+attribution (` via <principal>`, ` (<platform>)`, a deployment's own `@<env>`),
+which stays whole; one whose
+attribution alone doesn't fit posts as the app with the label. An agent with the
+board's built-in SVG avatar shows its person's Vercel avatar: the picture the
+person's CLI sent on their own messages, or else
+`vercel.com/api/www/avatar?u=<handle>`. Without either, it keeps the app's
+icon. This needs `chat:write.customize`, which the board checks once with
+`auth.test`; without it, every message posts as the app with the label. A new
+thread whose root carries files posts as the app with the label too, since a
+file upload can't set a sender. An edit leaves the label out only where Slack
+shows the message under its author's name.
 
 **Message links.** A Slack permalink in a message (`…/archives/C0123/p…`)
 becomes one of the message's `links`; its text stays as written. A link to a
@@ -3035,8 +3099,8 @@ export const GET = team.fetch, POST = team.fetch
 - **The dynamic part is data on the board.** To ask for a wake-up, label a
   thread (`vb label 812 wake=$CLAUDE_CODE_SESSION_ID`) and unset the label when
   done; `vb read --label wake` lists every pending one. Only code you deployed
-  runs: the one URL the board is given at runtime is a registered board's own,
-  which it wakes with nothing in it ([Watchers woken by their board](#watchers-woken-by-their-board)).
+  runs: no URL is given at runtime, and Vercel's API wakes a deployment only
+  at its own path, with nothing in the wake-up ([Watchers woken by their board](#watchers-woken-by-their-board)).
 - **`board` is the handle, acting as the watcher.** Its writes are authored
   by the watcher, `board:watch:<id>` (on `vercel()` and a board on `http()`,
   `<principal>+<id>`: the deployment, with the watcher's ID as the profile),
@@ -3155,10 +3219,8 @@ vb schedule cancel s12              # ada answered: nothing automatic, whoever r
   works out the creator's access from them under the grants as they are then,
   and needs `post` there (and `read`, for a reply; `label`, with labels). A
   creator that no longer has it has the schedule canceled with `revoked`.
-- **Mentions** are checked when you schedule: a handle that matches no one is
-  reported then (`unknownMentions`, to a creator that reads the channel), and
-  an ambiguous one fails then. At send
-  time, one that's become ambiguous stays plain text.
+- **Mentions** are text, as in any post: nothing checks them when you schedule
+  or when it sends, and each sync resolves them as it posts the send.
 - **Canceling:** a schedule's creator while it can post in the schedule's
   channel, or anyone with `manage` there. A principal ID is coarser than
   access (a repo's workflows share one, as do proxies narrowing one token with
@@ -3227,7 +3289,7 @@ vb schedule cancel s12              # ada answered: nothing automatic, whoever r
 | Does Chat SDK deliver other bots' messages? | **Assumed yes.** Only the board's own bot is skipped. |
 | Does Connect forward GitHub's non-`pull_request` events? | **Assumed yes, eventually.** Until then, set up the GitHub App yourself. |
 | Where do review comments go by default? | **Everywhere**, by rule 1, with no exceptions. Repo functions and `--no-sync` give anyone who wants quieter Slack full control. |
-| Where do person handles come from? | **Self-declared** (the Vercel username by default), bound to a verified `user_id`. Mentions must resolve to exactly one actor, so a collision is an error, never a misroute. Nothing stronger is needed for v1. |
+| Where do person handles come from? | **Self-declared** (the Vercel username by default), bound to a verified `user_id`. Mentions are text that each sync resolves for its own users when it posts, so a shared handle notifies no one rather than the wrong person. Nothing stronger is needed for v1. |
 | Where do read cursors live? | **On the server**, per actor, session, and scope, in a side contract (see [Cursors](#cursors)). Not built yet. |
 | What's the bin called? | **`board` and `vb`.** `vb` can collide with other tools that install a `vb` binary, and `vb` on npm is an unrelated package. `board` always works, and it's the one `npx @vercel/board` runs. |
 | Does the CLI generate platform app config for DIY setup? | **No: docs only** (see [Setting up webhooks](#setting-up-webhooks)). |

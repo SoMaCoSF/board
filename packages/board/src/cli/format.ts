@@ -2,9 +2,9 @@ import type { BoardEventView, GrantView, Me, MessageView, PrincipalView, Schedul
 import { displayEmoji } from '../contract/emoji.ts'
 import { fileSize } from '../contract/files.ts'
 import { displayText } from '../contract/bots.ts'
+import { shownName, type Via } from '../contract/profiles.ts'
 import type { CheckResult, ConformanceReport } from '../conformance/index.ts'
 
-/** "claude via julian" for a profile, the name otherwise. */
 /**
  * Text for a terminal. What boards and platforms say can carry control characters, ESC among them,
  * which starts the sequences that clear the screen, move the cursor, or retitle the window: each
@@ -17,16 +17,16 @@ export const terminalText = (text: string): string =>
     return code < 0x20 ? String.fromCharCode(0x2400 + code) : code === 0x7f ? '\u2421' : '\ufffd'
   })
 
-export const who = (me: { name: string; handle: string; profile: string | null }): string =>
-  me.profile !== null && me.handle.includes('/') ? `${me.name} via ${me.handle.slice(0, me.handle.indexOf('/'))}` : me.name
+/** Who you are, as your messages show you: `claude via julian` with a profile, your name otherwise. */
+export const who = (me: Pick<Me, 'name' | 'via'>): string => shownName(me)
 
+/**
+ * A message's author as people see them: their name, and who they act through when they have a
+ * profile, an agent's person (`claude via julian`) or the principal whose sync imported a
+ * platform user (`Malte via www (preview)`).
+ */
 export function authorName(message: Pick<MessageView, 'author' | 'by'>): string {
-  const author = message.author
-  if (!author) return message.by.actor
-  const slash = author.handle.indexOf('/')
-  if (message.by.profile !== null && slash !== -1)
-    return `${author.name} via ${author.handle.slice(0, slash)}`
-  return author.name
+  return message.author ? shownName(message.author) : message.by.actor
 }
 
 export function ago(iso: string, now = Date.now()): string {
@@ -68,10 +68,7 @@ export function reactionNames(messages: MessageView[]): string[] {
 }
 
 /** An actor's display name from `/actors`, the way a message's author shows: `claude via julian`. */
-export function actorName(actor: { handle: string; name: string }): string {
-  const slash = actor.handle.indexOf('/')
-  return slash === -1 ? actor.name : `${actor.name} via ${actor.handle.slice(0, slash)}`
-}
+export const actorName = (actor: { name: string; via?: Via | undefined }): string => shownName(actor)
 
 /** Lines of a linked message an embed shows before it trails off. */
 const EMBED_LINES = 12

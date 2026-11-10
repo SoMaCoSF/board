@@ -10,7 +10,7 @@ const pictograph = /\p{Extended_Pictographic}/u
 describe('CLI output has no emoji', () => {
   it('a scheduled message with a file', () => {
     const message = {
-      id: 812, channel: 'dev', text: 'hi', re: null, replyTo: null, thread: 't', labels: {}, reactions: {}, mentions: [], by,
+      id: 812, channel: 'dev', text: 'hi', re: null, replyTo: null, thread: 't', labels: {}, reactions: {}, by,
       noSync: false, origin: null, from: null, createdAt: new Date().toISOString(), editedAt: null, deleted: false,
       undelivered: {}, attachments: [file], links: [], schedule: { id: 's12', n: 0 }, author,
     } as unknown as MessageView
@@ -38,7 +38,7 @@ describe('read <channel>', () => {
   it("cuts a root's first line to fit 80 columns, and marks that more follows", () => {
     const root = (text: string) =>
       ({
-        id: 812, channel: 'dev', text, re: null, labels: {}, reactions: {}, mentions: [], by, from: null,
+        id: 812, channel: 'dev', text, re: null, labels: {}, reactions: {}, by, from: null,
         createdAt: new Date().toISOString(), deleted: false, attachments: [], author,
       }) as unknown as MessageView
     const shown = (text: string) => formatThreadSummaries([{ message: root(text), replies: 0, last: null }]).split('\n')[1]!
@@ -50,7 +50,7 @@ describe('read <channel>', () => {
   it("counts the root's reactions under its text, and shows nothing for none", () => {
     const root = (reactions: Record<string, string[]>) =>
       ({
-        id: 812, channel: 'dev', text: 'deploys are green', re: null, labels: {}, reactions, mentions: [], by, from: null,
+        id: 812, channel: 'dev', text: 'deploys are green', re: null, labels: {}, reactions, by, from: null,
         createdAt: new Date().toISOString(), deleted: false, attachments: [], author,
       }) as unknown as MessageView
     const lines = (reactions: Record<string, string[]>) => formatThreadSummaries([{ message: root(reactions), replies: 0, last: null }]).split('\n')
@@ -63,7 +63,7 @@ describe('reactions', () => {
   it('name the first three, count the rest, and use names from outside the thread', () => {
     const reactors = Array.from({ length: 12 }, (_, n) => `vercel:user:u${n}`)
     const message = {
-      id: 812, channel: 'dev', text: 'hi', re: null, labels: {}, reactions: { eyes: reactors, tada: [by.actor] }, mentions: [], by,
+      id: 812, channel: 'dev', text: 'hi', re: null, labels: {}, reactions: { eyes: reactors, tada: [by.actor] }, by,
       from: null, createdAt: new Date().toISOString(), deleted: false, attachments: [], author,
     } as unknown as MessageView
     const out = formatThreads([message], new Map([['vercel:user:u0', 'Ada'], ['vercel:user:u1', 'claude via ada']]))

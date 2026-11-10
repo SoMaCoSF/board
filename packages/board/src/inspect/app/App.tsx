@@ -324,7 +324,7 @@ function remembered(name: string): board.Profile {
 function ProfileMenu({ me, board: url }: { me: Me; board: string }) {
   // The profile you're naming or changing, as it starts out; null while the menu shows.
   const [editing, setEditing] = useState<board.Profile | null>(null)
-  const person = me.handle.split('/')[0]
+  const person = me.via?.name ?? me.handle
   const choose = (name: string | null) => void board.setProfile(name === null ? null : remembered(name))
   if (editing)
     return (

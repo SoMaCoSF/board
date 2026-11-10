@@ -339,23 +339,16 @@ describe('cli', () => {
     expect([thread.message, ...thread.replies].map((m: { text: string }) => m.text)).toEqual(['deploy failed on a1b2c3', 'rolled back to d4e5f6'])
   })
 
-  it('posts a mention of a handle no one has as plain text, and warns', async () => {
+  it('posts a mention of a handle no one has as written, and warns about nothing', async () => {
     const posted = await vb(['post', 'unknown-mentions', 'ping @tk about it'])
-    expect(posted).toMatchObject({ code: 0, stderr: 'warning: @tk matches no one on the board, so it stays plain text and notifies no one.\n' })
+    expect(posted).toMatchObject({ code: 0, stderr: '' })
     const id = posted.stdout.trim()
-    const reply = await vb(['reply', id, '@tk and @tk2, see `@code`'])
-    expect(reply).toMatchObject({ code: 0, stderr: 'warning: @tk and @tk2 match no one on the board, so they stay plain text and notify no one.\n' })
-    expect(await vb(['edit', id, 'ping @tk3'])).toMatchObject({ code: 0, stderr: expect.stringContaining('@tk3 matches no one') })
-    // With --json, the warning is in the result, and stderr stays empty.
+    expect(await vb(['reply', id, '@tk and @tk2, see `@code`'])).toMatchObject({ code: 0, stderr: '' })
     const edited = await vb(['edit', id, 'ping @tk3', '--json'])
     expect(edited).toMatchObject({ code: 0, stderr: '' })
-    expect(JSON.parse(edited.stdout)).toMatchObject({ message: { id }, outcome: 'edited', warnings: [{ reason: 'unknown_mention' }] })
+    expect(JSON.parse(edited.stdout)).toEqual({ message: { id }, outcome: 'edited' })
     const thread = JSON.parse((await vb(['read', id, '--json'])).stdout)
-    expect([thread.message, ...thread.replies].map((m: { text: string; mentions: string[] }) => [m.text, m.mentions])).toEqual([
-      ['ping @tk3', []],
-      ['@tk and @tk2, see `@code`', []],
-    ])
-    expect(await vb(['post', 'unknown-mentions', 'no mentions here'])).toMatchObject({ code: 0, stderr: '' })
+    expect([thread.message, ...thread.replies].map((m: { text: string }) => m.text)).toEqual(['ping @tk3', '@tk and @tk2, see `@code`'])
   })
 
   it('says what each write did, and to which message', async () => {

@@ -71,6 +71,26 @@ type SlackInternals = Omit<Adapter, 'decodeThreadId'> & {
   resolveMessageMentions?(message: { markdown: string }, threadId: string): Promise<{ markdown: string }>
 }
 
+/** The most characters Slack shows of a message's username. */
+const USERNAME_MAX = 80
+
+/**
+ * A sender's name as Slack shows it, at most 80 characters: a long name is cut, never whose word it
+ * is. Null when that alone doesn't fit, for the message to go as the app with its label.
+ */
+export function slackUsername({ name, attribution = '' }: Pick<ProviderSender, 'name' | 'attribution'>): string | null {
+  if (Array.from(name).length <= USERNAME_MAX) return name
+  const room = USERNAME_MAX - Array.from(attribution).length - 1
+  if (room < 1) return null
+  // Cut on whole characters as people see them, so a flag or a family emoji isn't left half there.
+  let cut = ''
+  for (const { segment } of new Intl.Segmenter().segment(name.slice(0, name.length - attribution.length))) {
+    if (Array.from(cut + segment).length > room) break
+    cut += segment
+  }
+  return `${cut.trimEnd()}…${attribution}`
+}
+
 /** The `**name**: ` a message's text opens with, taken out when Slack shows the name as the sender. */
 export function withoutLabel(markdown: string, name: string): string {
   const label = new RegExp(`^\\*\\*${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\*\\*: `)
@@ -708,9 +728,10 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
   }
 
   /**
-   * An agent's message goes out under its own name (`clever-lemur via vboard-factory`), and its
-   * picture when it has one Slack can show, instead of the app's, with the text's
-   * `**name**: ` label dropped. Without `chat:write.customize` it posts as the app, label and all.
+   * A message goes out under its author's name (`Julián Benegas`, `clever-lemur via vboard-factory`,
+   * `Malte via support (slack)`), and their picture when it has one Slack can show, instead of the
+   * app's, with the text's `**name**: ` label dropped. Without `chat:write.customize` it posts as
+   * the app, label and all.
    */
   override async post(target: string, kind: ResolvedTarget['kind'], body: ProviderPost): Promise<ProviderDelivery> {
     const { as, ...given } = body
@@ -747,15 +768,22 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
       file_uploads: files.map((file) => ({ file: Buffer.from(file.data), filename: slackFileName(file.filename, file.mimeType) })),
     })
     const ids = (uploaded.files?.[0]?.files ?? []).map((file) => file.id).filter((id): id is string => !!id)
-    // From here on the message is in Slack, so no error may read as a refusal, which would post the text again.
+    // From here on the message is in Slack, so no error may read as a refusal, which would post the text again,
+    // and a passing one is waited out: a throw retries the delivery, and that uploads it all again.
     const found = async () => {
+      let failure: unknown = new Error('never shared')
       for (let attempt = 0; attempt < SHARE_POLLS; attempt++) {
-        const shares = (await web.files!.info!({ file: ids[0]! })).file?.shares
-        const ts = shares?.public?.[channel]?.[0]?.ts ?? shares?.private?.[channel]?.[0]?.ts
-        if (ts) return ts
+        try {
+          const shares = (await web.files!.info!({ file: ids[0]! })).file?.shares
+          const ts = shares?.public?.[channel]?.[0]?.ts ?? shares?.private?.[channel]?.[0]?.ts
+          if (ts) return ts
+        } catch (error) {
+          if (REFUSED.has((error as { data?: { error?: string } } | null)?.data?.error ?? '')) throw error
+          failure = error
+        }
         await new Promise((resolve) => setTimeout(resolve, Math.min(250 * 2 ** attempt, 2000)))
       }
-      throw new Error('never shared')
+      throw failure
     }
     if (!ids[0]) throw new Error('slack: files.uploadV2 returned no file IDs')
     let ts: string
@@ -767,18 +795,20 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
     return { thread: this.toNative(`${adapter.name}:${channel}:${ts}`), message: ts, files: ids }
   }
 
-  /** An edit keeps the label out only where the message went out under the agent's name. */
+  /** An edit keeps the label out only where the message went out under its author's name. */
   override async edit(thread: string, message: string, body: ProviderPost) {
     const { as, ...given } = body
     const post = { ...given, markdown: withoutHtml(given.markdown) }
-    const named = as ? await this.sentAs(thread, message, as.name) : false
+    // Only an app that may name a message's sender ever sent one under a name.
+    const named = as && (await this.web().then((web) => !!web && this.canCustomize(web), () => false)) ? await this.sentAs(thread, message, as) : false
     await super.edit(thread, message, named && as ? { ...post, markdown: withoutLabel(post.markdown, as.name) } : post)
   }
 
   private async postNamed(target: string, as: ProviderSender, markdown: string): Promise<ProviderDelivery | null> {
     const adapter = (await this.ready()) as SlackInternals
     const web = await this.web()
-    if (!web?.chat || !adapter.formatConverter?.toSlackPayload || !(await this.canCustomize(web))) return null
+    const username = slackUsername(as)
+    if (!web?.chat || !adapter.formatConverter?.toSlackPayload || username === null || !(await this.canCustomize(web))) return null
     const threadId = this.toChat(target)
     const { channel, threadTs } = adapter.decodeThreadId(threadId)
     const message = { markdown: withoutLabel(markdown, as.name) }
@@ -790,7 +820,7 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
       ...adapter.formatConverter.toSlackPayload(resolved),
       unfurl_links: false,
       unfurl_media: false,
-      username: as.name.slice(0, 80),
+      username,
       ...(icon ? { icon_url: icon } : {}),
     })
     if (!sent.ts) throw new Error('slack: chat.postMessage returned no ts')
@@ -812,15 +842,17 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
     return (await this.scopes).includes(scope)
   }
 
-  /** Whether a message Slack has went out under `name`. */
-  private async sentAs(thread: string, message: string, name: string): Promise<boolean> {
+  /** Whether a message Slack has went out under the sender's name. */
+  private async sentAs(thread: string, message: string, as: ProviderSender): Promise<boolean> {
+    const username = slackUsername(as)
+    if (username === null) return false
     const web = await this.web().catch(() => undefined)
     const channel = thread.slice(0, thread.indexOf(':'))
     if (!web?.conversations.replies || !channel) return false
     const found = await web.conversations
       .replies({ channel, ts: message, oldest: message, latest: message, inclusive: true, limit: 1 })
       .then((page) => page.messages?.find((m) => m.ts === message), () => undefined)
-    return found?.username === name.slice(0, 80)
+    return found?.username === username
   }
 
   /**

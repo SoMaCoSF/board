@@ -412,8 +412,9 @@ describe('scheduled messages', () => {
     expect(await refused({ in: '1m', every: '1h', for: '100000001d' })).toContain('at most a year out')
     expect(await refused({ every: '100000001d' })).toContain('at most a year')
     expect((await julian('GET', '/schedules?all=1')).status).toBe(200)
-    const unknown = await julian('POST', '/schedules', { channel: 'dev', in: '1h', text: 'hey @nobody' })
-    expect(unknown).toMatchObject({ status: 201, body: { unknownMentions: ['nobody'] } })
+    // A mention is text, sent as written: a handle no one has is no reason to refuse.
+    const unknown = await julian('POST', '/schedules', { channel: 'dev', in: '1h', text: 'hey @nobody and @[vercel:user:u_nobody]' })
+    expect([unknown.status, Object.keys(unknown.body), unknown.body.schedule.text]).toEqual([201, ['schedule'], 'hey @nobody and @[vercel:user:u_nobody]'])
 
     const plain = caller(testBoard().fetch, await personToken())
     const { body: thread } = await plain('POST', '/messages', { channel: 'dev', text: 'hi' })

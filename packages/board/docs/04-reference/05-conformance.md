@@ -105,6 +105,9 @@ The whole protocol, on every board:
   `label_conflict`.
 - **`after` takes a cursor or a message ID,** and reads oldest first.
 - **Threads** come with their reply count and latest reply.
+- **`text` matches anywhere in a message's own text,** in any case, with `%`
+  and `_` as themselves: a reply isn't found by its root's text, its thread is
+  found by the reply's, and an edited message by what it says now.
 - **Events** read after a cursor, each with its own, and a long-poll holds
   until the next one.
 - **A delete leaves a tombstone.**

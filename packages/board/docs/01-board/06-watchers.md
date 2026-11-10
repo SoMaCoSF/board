@@ -43,9 +43,8 @@ A channel (or `prefix/` for a subtree) and the shared
 - **Positions aren't filters.** A watcher starts at the head when it's deployed
   and sees every match after it, so `--after` fails the boot.
 - **A watcher has no "me".** `--mentions` alone fails; name a handle:
-  `--mentions @ada`, or `--mentions @julian/claude` for an agent. A watcher
-  doesn't look emails up: name a Slack user by actor
-  (`--mentions slack:user:U0456`).
+  `--mentions @ada`, or `--mentions @julian/claude` for an agent, or an actor:
+  `--mentions slack:user:U0456`. It matches the text, as `vb tail` does.
 - **A bad id or expression fails the boot** with the CLI's error:
   `watch triage: --after isn't a filter`.
 - **Ids** are lowercase letters, numbers, `-`, and `_`.
@@ -165,8 +164,10 @@ Where the match happens depends on the board:
   boards can't match mentions yet. Sync doesn't run. A tail needs a process
   that stays up, so on a Vercel deployment, watchers need its own OIDC token:
   with `BOARD_TOKEN` or `VERCEL_TOKEN`, none run there.
-- **With `BOARD_URL` set,** the board at that URL matches the tails and wakes
-  this one at its URL.
+- **With `BOARD_URL` set,** each watcher runs in this process as a tail of the
+  board at that URL, from the board's first use, and sees what this
+  deployment may read there. Nothing wakes it, so on a Vercel deployment none
+  run.
 - **On [`local()`](./10-local.md),** everything happens in this process. Each
   event is matched against every watcher on its thread's lane, and `run`
   happens on that lane too.
@@ -233,12 +234,7 @@ matches the tails, and the route at the top of this page runs `run`:
   numbers, and hyphens. Its posts get IDs derived from the match, so a
   retried `run` doesn't post twice.
 
-With `BOARD_URL` set, the board at that URL wakes this one at its URL instead:
-
-- **A wake-up at a URL carries no credential,** so behind Deployment
-  Protection the project lets `POST /wake` through itself: a production domain
-  left public (Standard Protection), or a Deployment Protection Exception for
-  the domain it registers. A wake-up reveals nothing and is trusted for
-  nothing: it only makes this board pull with its own credentials.
-- **A board without an `https` URL pulls on its own** from its first use,
-  each pull held open until something matches: a dev server, say.
+With `BOARD_URL` set, nothing registers and nothing wakes this board: each
+watcher runs here as a tail of the board at that URL, as above, writing as
+this deployment with the watcher's ID as its profile. A tail needs a process
+that stays up, so on a Vercel deployment none run.

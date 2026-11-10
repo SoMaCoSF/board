@@ -80,15 +80,17 @@ const read = async (call: ReturnType<typeof caller>, channel: string) =>
   }[]
 
 describe('sync', () => {
-  it('keeps the mentions it can resolve in platform text, and leaves the rest as text', async () => {
+  it("keeps a platform's mentions as its text says them, which mention filters find", async () => {
     const { board, webhook } = setup()
     const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
     await julian('POST', '/messages', { channel: 'firehose', text: 'hi' })
 
     await webhook('slack', { type: 'message', threadId: 'slack:C1:500', id: '500', text: '@julian and @nobody, look', user: 'U_ADA' })
     await vi.waitFor(async () => expect(await read(julian, 'firehose')).toHaveLength(2))
-    const messages = (await julian('GET', '/messages?channel=firehose&from=slack')).body.messages as { mentions: string[] }[]
-    expect(messages[0]!.mentions).toEqual(['vercel:user:u_julian'])
+    const texts = async (query: string) => ((await julian('GET', `/messages?channel=firehose&${query}`)).body.messages as { text: string }[]).map((m) => m.text)
+    expect(await texts('from=slack')).toEqual(['@julian and @nobody, look'])
+    expect(await texts('mentions=me')).toEqual(['@julian and @nobody, look'])
+    expect(await texts('mentions=nobody')).toEqual(['@julian and @nobody, look'])
   })
 
   it("runs watchers on Slack's messages, and syncs their replies back to Slack", async () => {
@@ -357,6 +359,52 @@ describe('sync', () => {
     expect(s.channelPosts[0]!.text).toContain('📎 after.mp4')
     expect(uploads).toHaveLength(1)
     warn.mockRestore()
+  })
+
+  it("uploads a new thread's root with files once, though finding the message it made fails at first", async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const uploads: { initial_comment: string }[] = []
+    let fails = 1
+    const files = {
+      delete: async () => ({}),
+      uploadV2: async (args: (typeof uploads)[number]) => {
+        uploads.push(args)
+        return { files: [{ files: [{ id: `F${uploads.length}` }] }] }
+      },
+      info: async () => {
+        if (fails-- > 0) throw Object.assign(new Error('An API error occurred: internal_error'), { data: { error: 'internal_error' } })
+        return { file: { shares: { public: { C1: [{ ts: '1800.1' }] } } } }
+      },
+    }
+    const { board, s } = setup({
+      slackClient: { conversations: { list: async () => ({ channels: [] }), info: async () => ({}) }, files, auth: { test: async () => ({ response_metadata: { scopes: ['files:write', 'files:read'] } }) } },
+    })
+    Object.assign(s.adapter, {
+      decodeThreadId: (id: string) => ({ channel: id.split(':')[1], threadTs: id.split(':')[2] ?? '' }),
+      formatConverter: { toResponseUrlText: ({ markdown }: { markdown: string }) => `mrkdwn(${markdown})` },
+    })
+    const token = await personToken()
+    const julian = caller(board.fetch, token, { 'x-board-handle': 'julian' })
+    const response = await board.fetch(
+      new Request(`${BOARD_URL}/attachments`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'video/mp4', 'x-board-filename': 'after.mp4' },
+        body: new Uint8Array([1, 2, 3]),
+      }),
+    )
+    const { attachment } = (await response.json()) as { attachment: { id: string } }
+    const root = (await julian('POST', '/messages', { channel: 'firehose', text: 'shipped the fix', attachments: [attachment.id] })).body.message
+    await julian('POST', '/messages', { re: root.id, text: 'rolled out' })
+    // Without a scheduler nothing retries on its own; each drain is the next attempt.
+    await vi.waitFor(async () => {
+      await board.skipHold(board.servers[0]!, 'board')
+      await board.servers[0]!.drain('board')
+      expect(s.posts).toHaveLength(1)
+    })
+    expect(uploads).toHaveLength(1)
+    expect(s.posts[0]!.threadId).toBe('slack:C1:1800.1')
+    expect(s.channelPosts).toEqual([])
+    error.mockRestore()
   })
 
   it("posts a root's text, then its files under it, where the Slack client can't upload them together", async () => {
@@ -1279,11 +1327,11 @@ describe('sync', () => {
     await julian('POST', '/messages', { channel: 'firehose', text: '@[slack:user:U_ADA] and @julian, see \`@julian\`' })
     await vi.waitFor(() => expect(s.channelPosts.some((p) => p.channelId === 'slack:C1')).toBe(true))
     expect(s.channelPosts.find((p) => p.channelId === 'slack:C1')!.text).toBe(
-      JSON.stringify({ markdown: `${customRender ? '' : '**julian**: '}<@U_ADA> and julian, see \`@julian\`` }),
+      JSON.stringify({ markdown: `${customRender ? '' : '**julian**: '}<@U_ADA> and @julian, see \`@julian\`` }),
     )
   })
 
-  it('turns @[email] into the Slack user with that email, and leaves an unknown one as text', async () => {
+  it('looks @[email] up on Slack when it posts there, and posts one Slack has no one for as the email', async () => {
     const lookupByEmail = vi.fn(async ({ email }: { email: string }) => {
       if (email === 'missing-id@vercel.com') return { user: { name: 'missing-id' } }
       if (email !== 'ada@vercel.com') throw new Error('users_not_found')
@@ -1293,56 +1341,45 @@ describe('sync', () => {
     const { board, s } = setup({ slackClient: { conversations, users: { info: async () => ({}), lookupByEmail } } })
     const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
 
-    const { body } = await julian('POST', '/messages', {
-      channel: 'firehose',
-      text: 'owner: @[ada@vercel.com], cc @[nobody@vercel.com], missing: @[missing-id@vercel.com]',
-    })
+    const text = 'owner: @[ada@vercel.com], cc @[nobody@vercel.com], missing: @[missing-id@vercel.com]'
+    const { body } = await julian('POST', '/messages', { channel: 'firehose', text })
 
-    expect(body.message).toMatchObject({
-      text: 'owner: @[slack:user:U_ADA], cc nobody@vercel.com, missing: missing-id@vercel.com',
-      mentions: ['slack:user:U_ADA'],
-    })
-    const actors = (await julian('GET', '/actors')).body.actors as { id: string; name: string }[]
-    expect(actors.find((actor) => actor.id === 'slack:user:U_ADA')).toMatchObject({ name: 'Ada Lovelace' })
+    // The board keeps what was written, and learns no one from it.
+    expect(body.message.text).toBe(text)
+    expect(((await julian('GET', '/actors')).body.actors as { id: string }[]).map((actor) => actor.id)).not.toContain('slack:user:U_ADA')
     await vi.waitFor(() => expect(s.channelPosts.some((p) => p.channelId === 'slack:C1')).toBe(true))
     expect(s.channelPosts.find((p) => p.channelId === 'slack:C1')!.text).toBe(
       JSON.stringify({ markdown: '**julian**: owner: <@U_ADA>, cc nobody@vercel.com, missing: missing-id@vercel.com' }),
     )
   })
 
-  it('finds what mentions the Slack user with an email: --mentions ada@vercel.com, from before anyone pinged them', async () => {
-    const lookupByEmail = vi.fn(async ({ email }: { email: string }) => {
-      if (email !== 'ada@vercel.com') throw new Error('users_not_found')
-      return { user: { id: 'U_ADA', name: 'ada', profile: { display_name: 'ada', real_name: 'Ada Lovelace' } } }
-    })
+  it("matches --mentions ada@vercel.com by the email its text names, and never asks Slack who that is", async () => {
+    const lookupByEmail = vi.fn(async () => ({ user: { id: 'U_ADA', name: 'ada', profile: { display_name: 'ada', real_name: 'Ada Lovelace' } } }))
     const conversations = { list: async () => ({ channels: [] }), info: async () => ({}), join: async () => ({}) }
-    const { board, webhook } = setup({ slackClient: { conversations, users: { info: async () => ({}), lookupByEmail } } })
+    const { board } = setup({ slackClient: { conversations, users: { info: async () => ({}), lookupByEmail } } })
     const token = await personToken()
     const julian = caller(board.fetch, token, { 'x-board-handle': 'julian' })
     const { cursor } = (await julian('GET', '/events?wait=0')).body
 
-    // `vb tail` (a stream) and `vb wait` (a long poll) for Ada's mentions, before the board has
-    // ever seen Ada; then someone pings her in Slack.
+    // `vb tail` (a stream) and `vb wait` (a long poll) for mentions of Ada's email, in a channel nothing syncs.
     const controller = new AbortController()
     const stream = await board.fetch(new Request(`${BOARD_URL}/events?mentions=ada@vercel.com&after=${cursor}`, {
       headers: { authorization: `Bearer ${token}`, accept: 'text/event-stream' },
       signal: controller.signal,
     }))
     const waiting = julian('GET', `/events?mentions=ada@vercel.com&after=${cursor}&wait=10`)
-    await webhook('slack', { type: 'message', threadId: 'slack:C2:600', id: '600', text: 'hello', user: 'U_JB' })
-    await webhook('slack', { type: 'message', threadId: 'slack:C2:600', id: '601', text: '@ada can you look?', user: 'U_JB' })
+    await julian('POST', '/messages', { channel: 'dev', text: '@ada can you look?' })
+    await julian('POST', '/messages', { channel: 'dev', text: '@[Ada@vercel.com] can you look?' })
 
     const { events } = (await waiting).body
-    expect(events.map((event: { message?: unknown }) => event.message)).toMatchObject([{ text: '@ada can you look?', mentions: ['slack:user:U_ADA'] }])
+    expect(events.map((event: { message?: { text: string } }) => event.message?.text)).toEqual(['@[Ada@vercel.com] can you look?'])
     const reader = stream.body!.getReader()
     let streamed = ''
     while (!streamed.includes('event: board')) streamed += new TextDecoder().decode((await reader.read()).value)
     controller.abort()
-    expect(JSON.parse(streamed.match(/^data: (.*)$/m)![1]!).message).toMatchObject({ text: '@ada can you look?', mentions: ['slack:user:U_ADA'] })
-    expect((await julian('GET', '/messages?mentions=ada@vercel.com')).body.messages).toMatchObject([{ mentions: ['slack:user:U_ADA'] }])
-    expect((await julian('GET', '/messages?mentions=nobody@vercel.com')).body.messages).toEqual([])
-    // Slack is asked once per email for a few minutes, not at every page.
-    expect(lookupByEmail.mock.calls.filter(([{ email }]) => email === 'ada@vercel.com')).toHaveLength(1)
+    expect(JSON.parse(streamed.match(/^data: (.*)$/m)![1]!).message.text).toBe('@[Ada@vercel.com] can you look?')
+    expect(((await julian('GET', '/messages?mentions=ada@vercel.com')).body.messages as { text: string }[]).map((m) => m.text)).toEqual(['@[Ada@vercel.com] can you look?'])
+    expect(lookupByEmail).not.toHaveBeenCalled()
   })
 
   it('attaches an existing thread to a new target and backfills it', async () => {
@@ -1427,41 +1464,10 @@ describe('sync', () => {
     const file = new ReadableStream({ pull: (controller) => ((pulled = true), controller.enqueue(new Uint8Array(8)), controller.close()) }, { highWaterMark: 0 })
     const upload = await board.fetch(new Request(`${BOARD_URL}/attachments`, { method: 'POST', body: file, duplex: 'half', headers: { 'content-type': 'image/png' } } as RequestInit))
     expect([upload.status, pulled]).toEqual([401, false])
-    // Julian may: his post goes to Slack to resolve, and mentions Ada.
+    // Julian may: his post's target goes to Slack to resolve.
     const posted = await julian('POST', '/messages', { channel: 'firehose', text, sync: ['slack:#general'] })
-    expect(posted.body.message).toMatchObject({ text: 'cc @[slack:user:U_ADA]', mentions: ['slack:user:U_ADA'] })
+    expect([posted.status, posted.body.message.text]).toEqual([201, text])
     expect(conversations.join).not.toHaveBeenCalled()
-  })
-
-  it("answers a caller that can't read where it posts with what it sent, never who its emails are", async () => {
-    const lookupByEmail = vi.fn(async () => ({ user: { id: 'U_ADA', name: 'ada', profile: { display_name: 'ada', real_name: 'Ada' } } }))
-    const slackClient = { conversations: { list: async () => ({ channels: [] }), info: async () => ({}), join: async () => ({}) }, users: { info: async () => ({}), lookupByEmail } }
-    const s = fakePlatform('slack', withSlackClient(slackClient, false))
-    const board = testBoard({
-      sync: { slack: slack({ adapter: s.adapter, client: async () => slackClient as never }, channels({ C1: 'firehose' })) },
-      scheduler: fakeQueue().scheduler,
-    })
-    // Marketing's production deployments may only post in feedback.
-    // Without g2's every project on the team: marketing may do only what its grant says.
-    await board.revokeGrant('g2')
-    await board.createGrant({ principals: [{ kind: 'project', project: 'prj_marketing', environments: ['production'] }], can: { feedback: ['post'] } })
-    const front = caller(board.fetch, await deploymentToken())
-    const julian = caller(board.fetch, await personToken())
-    const text = 'checkout is slow, cc @[ada@vercel.com]'
-    const posted = (await front('POST', '/messages', { channel: 'feedback', text, id: 'checkout-1' })).body.message
-    expect([posted.text, posted.mentions]).toEqual([text, []])
-    expect(JSON.stringify((await front('GET', '/posts/checkout-1')).body)).not.toContain('U_ADA')
-    const scheduled = (await front('POST', '/schedules', { channel: 'feedback', text, in: '1h' })).body.schedule
-    expect(scheduled.text).toBe(text)
-    expect(JSON.stringify((await front('GET', '/schedules')).body)).not.toContain('U_ADA')
-    expect(JSON.stringify((await front('POST', `/schedules/${scheduled.id}/cancel`, {})).body)).not.toContain('U_ADA')
-    // The post still mentions Ada, for those who read feedback.
-    expect((await julian('GET', '/messages?channel=feedback')).body.messages[0]).toMatchObject({ text: 'checkout is slow, cc @[slack:user:U_ADA]', mentions: ['slack:user:U_ADA'] })
-
-    // Nor does it get to look an email up by reading for it.
-    const asked = lookupByEmail.mock.calls.length
-    await front('GET', '/messages?mentions=grace@vercel.com')
-    expect(lookupByEmail.mock.calls.length).toBe(asked)
   })
 
   it('skips a Slack channel name that does not resolve, and syncs the rest', async () => {
@@ -1867,7 +1873,7 @@ describe('provider callbacks', () => {
     await receive(root)
     await vi.waitFor(async () => expect(await read(call, 'support')).toHaveLength(1))
     const [imported] = await read(call, 'support')
-    expect(imported).toMatchObject({ text: 'custom: hello', labels: { area: 'support' }, by: { actor: 'slack:user:U1' } })
+    expect(imported).toMatchObject({ text: 'custom: hello', labels: { area: 'support' }, by: { actor: 'work:user:U1' } })
     const view = await call('GET', `/messages/${imported!.id}`)
     expect(view.body.message.attachments).toHaveLength(1)
     await receive({ ...root, id: '101', files: root.files, text: 'reply' })
@@ -1875,7 +1881,7 @@ describe('provider callbacks', () => {
     await receive({ type: 'edit', threadId: root.threadId, id: '101', text: 'edited', user: 'U1' })
     await vi.waitFor(async () => expect((await read(call, 'support'))[1]?.text).toBe('custom: edited'))
     await receive({ type: 'reaction', threadId: root.threadId, messageId: '100', emoji: 'eyes', added: true, user: 'U2' })
-    await vi.waitFor(async () => expect((await read(call, 'support'))[0]?.reactions).toEqual({ eyes: ['slack:user:U2'] }))
+    await vi.waitFor(async () => expect((await read(call, 'support'))[0]?.reactions).toEqual({ eyes: ['work:user:U2'] }))
     await receive({ type: 'delete', threadId: root.threadId, id: '101' })
     await vi.waitFor(() => expect(seen).toEqual(['message', 'message', 'message.edited', 'reaction.added', 'message.deleted']))
     const reply = (await read(call, 'support'))[1]!
@@ -2038,7 +2044,8 @@ describe('provider callbacks', () => {
     const thread = `opaque:${nativeChannel}:${p.channelPosts[0]!.id}`
     await board.fetch(new Request(`${BOARD_URL}/webhooks/tickets`, { method: 'POST', headers: { 'x-native-signature': 'valid' }, body: JSON.stringify({ type: 'message', threadId: thread, id: 'response', text: 'native reply', user: '42' }) }))
     await vi.waitFor(async () => expect((await read(call, 'tickets'))[1]?.re).toBe(posted.body.message.id))
-    expect((await read(call, 'tickets'))[1]?.by.actor).toBe('opaque:tenant:sample:user:42')
+    // Its author is a user of the key it came through, which names them.
+    expect((await read(call, 'tickets'))[1]?.by.actor).toBe('tickets:tenant:sample:user:42')
     expect((await board.fetch(new Request(`${BOARD_URL}/webhooks/tickets`, { method: 'POST', body: JSON.stringify({ type: 'message', threadId: thread, id: 'forged', text: 'forged', user: '42' }) }))).status).toBe(401)
     const uploaded = await board.fetch(new Request(`${BOARD_URL}/attachments`, { method: 'POST', headers: { authorization: `Bearer ${await personToken()}`, 'content-type': 'image/png', 'x-board-filename': 'proof.png' }, body: new Uint8Array([1, 2, 3]) }))
     const attachment = (await uploaded.json()).attachment

@@ -49,7 +49,7 @@ These routes take no token:
 | `GET /avatars/:name` | built-in agent avatars |
 | `GET /openapi.json` | the API's schema |
 | `POST /webhooks/:key` | platforms can't send a board token; the sync adapter verifies the request |
-| `POST /wake` | on a deployment whose watchers another board matches (Vercel's board wakes it): something matched, and it pulls what with its own credentials |
+| `POST /wake` | on a deployment whose watchers Vercel's board matches: something matched, and it pulls what with its own credentials |
 
 ### Request headers
 
@@ -67,7 +67,7 @@ These routes take no token:
 `board()` checks their shape (a 400 for one that's malformed), and the board
 records them after verifying the token. They're labels under the verified
 principal, never who it is. Provenance (`by`,
-`mentions`, `origin`, and sync receipts) is never read from the body of a post
+`origin`, and sync receipts) is never read from the body of a post
 or any other write; only [sync's routes](#syncs-routes) take an author and an
 origin, from a caller that may `sync` where they land.
 
@@ -100,23 +100,23 @@ a refused write it can read answers 403. `GET /me` returns the caller's
 | GET | `/me` | Who this token and profile write as: `{ actor, principal, kind, handle, name, avatar, profile, session, expiresAt, can }`, where `can` maps each channel pattern to its permissions |
 | GET | `/channels` | `{ channels, cursor }`: each `{ path, lastIndex?, messages?, threads? }`, sorted by path. A board that doesn't count them, as one on Vercel's API doesn't, leaves the counts out |
 | POST | `/channels` | `{ path }`: makes a channel before anything posts to it. `{ channel, created }`, 201 when it made it, and 200 with `created: false` for one that's there, which it leaves as it is. A key it doesn't know is 400, so `private` makes nothing |
-| GET | `/actors` | `{ actors, cursor }`: each `{ id, kind, handle, name, avatar }`, sorted by handle |
+| GET | `/actors` | `{ actors, cursor }`: each `{ id, kind, handle, name, avatar, via?, platform?, verified? }`, sorted by handle. `verified: true` is for one the board checked rather than took their name from what they sent: shown under the handle a credential it checked gave them (an OIDC token, a board token, a host's verifier), as itself or after `via` |
 | GET | `/messages` | `{ messages, cursor }`, filtered. See [Listing messages](#listing-messages) |
 | GET | `/threads` | `{ threads, cursor }`: a summary per matching thread. See [Listing threads](#listing-threads) |
 | GET | `/messages/:id` | The thread around any message: `{ message, replies, cursor, schedules }`, where `message` is the root |
 | GET | `/posts/:id` | Your post with client ID `id`, as `POST /messages` answered it: `{ message }`, or 404 `post_not_found`. Someone else's is as good as missing |
-| POST | `/messages` | Post or reply. Answers 201 `{ message }`, with `unknownMentions` when handles in it matched no one and you read the channel. See [Posting](#posting) |
-| POST | `/messages/:id/edit` | `{ text, revision? }`. Answers `{ ok: true }`, with `unknownMentions` like a post. With `revision`, only if the message is still at it: otherwise 409 `revision_conflict`, and nothing changes |
+| POST | `/messages` | Post or reply. Answers 201 `{ message }`. See [Posting](#posting) |
+| POST | `/messages/:id/edit` | `{ text, revision? }`. Answers `{ ok: true }`. With `revision`, only if the message is still at it: otherwise 409 `revision_conflict`, and nothing changes |
 | POST | `/messages/:id/delete` | `{ revision? }`. Answers `{ ok: true }`. With `revision`, as an edit |
 | POST | `/messages/:id/reactions` | `{ emoji, remove? }`. `emoji` is a short name: `eyes`, `thumbs_up` |
 | POST | `/messages/:id/labels` | `{ set?, unset?, if? }`, at least one of `set` and `unset`. `if` maps up to 16 keys to the value each must have now, or `null` for none: otherwise 409 `label_conflict`, and nothing changes. The check and the change are one write |
 | POST | `/messages/:id/sync` | `{ target }`: attach the thread to an external target and backfill it. Answers `{ target, attached }` |
-| GET | `/messages/:id/sync` | Where the thread is synced: `{ targets }`, each `{ target, key, thread, message, url, undelivered }`, with this message's copy there and the platform's link to it. Needs `read` where it is |
+| GET | `/messages/:id/sync` | Where the thread is synced: `{ targets }`, each `{ target, key, thread, message, url, undelivered }`, with this message's copy there and the platform's link to it. On Vercel's board, another project's target is under `<project>/<key>` (`www/slack:C0123`), with no link. Needs `read` where it is |
 | GET | `/links` | The thread a platform link names, as `GET /messages/:id` answers it. Query: `url`. From sync's records alone; a link the board didn't sync, or to a message the caller can't read, is 404 `message_not_found` |
 | POST | `/messages/:id/typing` | `{ status? }`: show typing in the thread's synced platform threads. Answers `{ targets }`. Writes nothing to the log |
 | POST | `/attachments` | Upload one file. Answers 201 `{ attachment: { id, name, type, size } }`. See [Attachments](#attachments) |
 | GET | `/attachments/:id` | The file |
-| POST | `/schedules` | Schedule a message. Answers 201 `{ schedule }`, with `unknownMentions` like a post. See [Schedules](#schedules) |
+| POST | `/schedules` | Schedule a message. Answers 201 `{ schedule }`. See [Schedules](#schedules) |
 | GET | `/schedules` | `{ schedules }`. Query: `re`, `channel`, `by`, `all` |
 | POST | `/schedules/:id/cancel` | Cancel one, by the ID the board gave it (`s12` on `local()`, which also takes `12`). Its creator, or `manage` in its channel. Answers `{ schedule, canceled }` |
 | GET | `/grants` | `{ grants }`: each one's `id`, `principals`, `can`, `capped`, `by`, and `at`. Needs `manage` at `*`, or a team owner. See [Grants and tokens](#grants-and-tokens) |
@@ -128,11 +128,11 @@ a refused write it can read answers 403. `GET /me` returns the caller's
 | POST | `/tokens` | `{ name, can?, profile?, avatar?, session?, expires? }`: mint a token acting as you. Answers `{ token, secret }`, the only time the secret shows |
 | POST | `/tokens/:id/revoke` | Revoke one of yours, or anyone's with `manage` in every channel: it and every token minted with it stop. Answers `{ revoked }`, false for one that's gone, never was, or isn't yours, alike |
 | GET | `/events` | The event feed. See [Event feed](#event-feed) |
-| POST | `/watchers` | `{ url?, watch, sync? }` or `{ path, branch?, watch, sync? }`, never both: registers the caller's watchers (at most 32, each `{ tail, when? }`), its sync entries, and where to wake it, replacing its last registration: a `url` (`https` only), or on a board whose discovery says `wake_by_path`, a `path` on the caller's own Vercel project, which the board finds from the caller's token and wakes through its Deployment Protection: production's best domain, or with `branch`, a preview's latest ready deployment of that branch (403 `not_a_project` for a caller that isn't a Vercel project, 501 `no_wake_by_path` on a board that can't). Needs `read` somewhere, and `sync` somewhere for sync entries. Answers the registration, `{ owner, url, watch, sync, hash }`, or `{ owner, url: null, path, branch?, watch, sync, hash }`. On a board with no backend, it takes no token and registers that board's own watchers with the board that matches them |
+| POST | `/watchers` | `{ watch, sync? }` or `{ path, branch?, watch, sync? }`: registers the caller's watchers (at most 32, each `{ tail, when? }`), its sync entries, and where to wake it, replacing its last registration. Without a `path` the caller pulls its matches. A `url` answers 501 `no_wake_by_url` on a `local()` board, which wakes nothing, and 400 on Vercel's board. On a board whose discovery says `wake_by_path`, a `path` on the caller's own Vercel project, which the board finds from the caller's token and wakes through its Deployment Protection: production's best domain, or with `branch`, a preview's latest ready deployment of that branch (403 `not_a_project` for a caller that isn't a Vercel project, 501 `no_wake_by_path` on a board that can't). Needs `read` somewhere, and `sync` somewhere for sync entries. Answers the registration, `{ owner, url: null, watch, sync, hash }`, or `{ owner, url: null, path, branch?, watch, sync, hash }`. On a deployment's board on Vercel's, it takes no token and registers that board's own watchers with Vercel's API |
 | GET | `/watchers` | `{ watchers }`: the caller's registration, or every one for `manage` in every channel |
 | GET | `/watchers/matches` | `{ matches }`: the caller's matches it can run now, one thread at a time and in order, each `{ id, watcher, thread, lease, attempt, event }` and leased to it for 5 minutes. Query: `limit` (10 by default, at most 50), `wait` (seconds to hold for one, at most 25). 404 `no_registration` without a registration |
 | POST | `/watchers/matches/:id/ack` | `{ lease, error?, skip? }`: done, an error to try again after a wait (after 5 tries it's `watch.failed`), or `skip` to drop it. 404 `no_match`, 409 `stale_lease` for a lease that ran out |
-| POST | `/wake` | On a deployment whose watchers another board matches (no token): it has matches to pull. Answers `{ ran }` once they've run, or 202 after 2 seconds while they keep running |
+| POST | `/wake` | On a deployment whose watchers Vercel's board matches (no token): it has matches to pull. Answers `{ ran }` once they've run, or 202 after 2 seconds while they keep running |
 | GET | `/inbox/:key` | `{ events }`: raw platform events for a sync entry, newest first. Query: `channel`, `limit` (50 by default, at most 500). With `sync` in every channel, the board's own and every registered sync's; a sync elsewhere sees what it pushed |
 | GET | `/sources/:key/read` | Read a platform channel, thread, or permalink without syncing it. Query: `target`, `limit` (50 by default, at most 200). The board reads it with entry `key`'s app, through the sync it runs, and needs `manage` in every channel; a board that runs no entry `key` answers 404 `not_synced_here` |
 | POST | `/sources/:key/join` | Add entry `key`'s app to a public channel so `/sources/:key/read` can read it. Body: `{ target }`, a channel (`#name`, an ID) or a link into it. Answers `{ channel, name, joined }`, `joined: false` when the app was already in. Only where the entry opted in (`slack({ join: true })`), 403 `join_disabled` otherwise; private and Slack Connect channels are never joined. Needs `manage` in every channel; a board that runs no entry `key` answers 404 `not_synced_here` |
@@ -167,7 +167,7 @@ lands or is, or somewhere for the lookups and the inbox.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| POST | `/sync/imports` | A platform's write, as its platform `author` (`{ id, handle, name, avatar, isBot }`), through sync entry `from`. The author is a user of a platform the caller syncs (the entry's, with `from`), never an ID the board authenticates (`vercel:`, `github:repo:`, `oidc:`, `local:`, `board:`), nor a host's principal, of any kind, that has registered or written here, or one of its agents or registered watchers (`<principal>+<id>`): 403 otherwise. An `avatar` that isn't an `https` URL is dropped. Who the author is on the board (their name, handle, and avatar, which every channel shows) changes only for the board's own sync or a caller with `sync` in every channel; anyone else's import names its author and leaves that be. `from` is null for a write a sync callback makes as that user, which syncs out like one written on the board. `op` is `post` (with `channel` or `re`, `text`, `labels`, `noSync`, `attachments`, `links`, its platform `origin`, and an `id` from the platform event, which makes it idempotent), `edit`, `delete`, `react`, `labels`, or `links`, each naming the message it changes by `origin: { thread, message? }`, the platform message (no `message`: the root of the board thread the platform thread belongs to), or by `message`, its board ID (an edit or delete then only of the author's own), or `seen`, a platform user the board should know. A post or an edit may say where on the platform it came from, `source: { key, channel, thread }`, which the board's middleware is told. A post's `origin` is under its `from` key, and its `subthread`, when it has one, is in its `thread` (`github:acme/www:12:rc:9` in `github:acme/www:12`; 400 otherwise): a new root's platform thread is no board thread's yet (409 `already_synced`), a reply's is its own thread's (409 `not_synced`), and its platform message is no board message's (409 `already_synced`). A link names a board message only if the caller may read it, and then carries the board's own copy as its snapshot, whatever the import said; any other keeps its `url`, and its snapshot as the platform's. Answers `{ message }`, the ID it made or changed, or null for a message it didn't find, and with `dropped`, what the middleware responded when it kept a post or an edit off the board, for sync to say in the platform thread |
+| POST | `/sync/imports` | A platform's write, as its platform `author` (`{ id, handle, name, avatar, isBot }`), through sync entry `from`. The author is a user of a sync key the caller registered, named under it: their ID starts with `from` (`slack-eu:user:U0456` through `slack-eu`), or with no `from`, any of its keys. Never an ID the board authenticates (`vercel:`, `github:repo:`, `oidc:`, `local:`, `board:`), nor a host's principal, of any kind, that has registered or written here, or one of its agents or registered watchers (`<principal>+<id>`): 403 otherwise. An `avatar` that isn't an `https` URL is dropped. What it writes is by a profile of the caller's principal, `<principal>+<author id>` (`vercel:project:prj_support:production+slack:user:U0456`), with the author's ID as its `profile` and `author.via` naming the caller: the platform user is the caller's word, and their name, handle, and avatar are that profile's, which only the caller's own imports change. Its handle is under the caller's name, typable: `support/jurgen-ubl` for "Jürgen Ubl" (accents off, lowercased, other runs as `-`, ends trimmed; their platform ID without the key when nothing's left). Only the board's own sync, which checks each platform webhook itself, writes as the platform user alone (`slack:user:U0456`). Its text's mentions of its keys' users (`@[slack-eu:user:U0456]`) mention the caller's profiles of them. `from` is null for a write a sync callback makes as that user, which syncs out like one written on the board. `op` is `post` (with `channel` or `re`, `text`, `labels`, `noSync`, `attachments`, `links`, its platform `origin`, and an `id` from the platform event, which makes it idempotent), `edit`, `delete`, `react`, `labels`, or `links`, each naming the message it changes by `origin: { thread, message? }`, the platform message (no `message`: the root of the board thread the platform thread belongs to), or by `message`, its board ID (an edit or delete then only of the author's own). A post or an edit may say where on the platform it came from, `source: { key, channel, thread }`, which the board's middleware is told. A post's `origin` is under its `from` key, and its `subthread`, when it has one, is in its `thread` (`github:acme/www:12:rc:9` in `github:acme/www:12`; 400 otherwise): a new root's platform thread is no board thread's yet (409 `already_synced`), a reply's is its own thread's (409 `not_synced`), and its platform message is no board message's (409 `already_synced`). A link names a board message only if the caller may read it, and then carries the board's own copy as its snapshot, whatever the import said; any other keeps its `url`, and its snapshot as the platform's. Answers `{ message }`, the ID it made or changed, or null for a message it didn't find, and with `dropped`, what the middleware responded when it kept a post or an edit off the board, for sync to say in the platform thread |
 | POST | `/sync/receipts` | What sync did, about board message `message`: `kind: 'message'` (it landed on `target` as `external`, with its `files`), `files`, `failed` (with `error`), or `thread` (its thread syncs with `target`, a `targetKind` channel or thread, by `cause` `config` or `request`). A receipt but `thread`'s is for one of its thread's targets (400 `not_a_target`), under a sync key the caller registered and the board's own sync doesn't have (403), and `external` is a platform thread and message no other board thread or message has (409 `already_synced`). Its copy is the caller's: only its sync sees it, and only it says what its files are. Answers `{ ok }`, and for a thread, `attached`: false when it already was |
 | GET | `/sync/threads/:thread` | A board thread's sync, by its key: `{ thread, root, channel, targets, external }` |
 | GET | `/sync/find` | What platform IDs are on the board. Query: `post` (an import's client ID), `thread` (and `message` in it). Answers `{ thread, message }`: the board thread and message |
@@ -186,18 +186,42 @@ deliver as matches of watcher `@sync` when it registers its sync entries: see
 
 `sync` in a channel says this project may speak for platform users there. A
 caller with it can write as any user of a platform it syncs, with the origin
-it says, and read the platform IDs of what's there. It names the platforms it syncs when it
+it says, and read the platform IDs of what's there. Each user is named under
+the key it came through (`slack-eu:user:U0456`), and what it writes is by its
+own profile of that user (`<principal>+slack-eu:user:U0456`), which shows
+through it: `Malte via support`. It names the platforms it syncs when it
 registers (`POST /watchers` with `sync`, which needs `sync` somewhere, and
 no key the board's own sync has), and it can't write as anyone the board signs
 in. A key names one sync's platform locations: two
 syncs elsewhere that register one share its platform threads on the board,
 though each sees and changes only its own copies, so give each key one sync.
-Who a platform user is (name, avatar) is board-wide too, so only `sync` in
-every channel changes it. Give it to the deployment that runs
-a board's sync, in the channels it syncs, and to no one else:
-`vb grants create --project prj_support --environment production --can support=all`.
-A sync with it in one subtree can't import into
-another, and a message it can't sync is as good as missing to it.
+Each sync's platform users are its own actors, so no sync renames another's.
+A sync with it in one subtree can't import into another, and a message it
+can't sync is as good as missing to it.
+
+A new board gives it to every project on its team, everywhere, through g2.
+So any of their deployments, previews included, can run a sync against the
+board: register a platform, write as its users (shown through the
+deployment), and read every sync's inbox. It can also attach a thread it reads to a Slack
+channel or a GitHub issue the board's own sync reaches, which then posts the
+thread there. A board token has it only when its `can` says so. To keep it to
+the deployments that run a sync, take it from g2 and grant it to them, in the
+channels they sync:
+
+```text
+$ vb grants update g2 --can '*=read,post,react,label'
+updated g2  --all-projects --environment production,preview,development  read post react label
+$ vb grants create --project prj_support --environment production --can support=all
+created g4  --project prj_support --environment production  support=all
+```
+
+Or keep g2 and take `sync` from one project, with a grant that names it: it's
+closer than g2's every project, so it decides for that project.
+
+```text
+$ vb grants create --project prj_web --environment preview --can '*=read,post,react,label'
+created g4  --project prj_web --environment preview  read post react label
+```
 
 ### IDs and cursors
 
@@ -390,9 +414,9 @@ written as that profile. See
 | `channel` | a channel exactly; `www/` (trailing slash) matches the subtree |
 | `re` | the thread rooted at this ID: the root and its replies |
 | `by` | messages by an actor ID, or by a handle |
-| `mentions` | messages that mention an actor ID or handle; `me` is the caller |
+| `mentions` | messages whose text mentions a handle or actor ID, outside code: `@ada` or `@[slack:user:U0456]`. `me` is the caller's handle and ID; an email matches `@[ada@vercel.com]` as written. For a caller that reads every channel, a handle or ID covers that actor's handle and ID, and a person's covers their agents' (`@julian/claude`); anyone else's matches as written, with the agents under it |
 | `label` | `key` (has it), `key=value`, or `key=a\|b` (either). Repeat for AND. Matches the message or its thread's root |
-| `from` | a sync key (`slack`), or `board` for messages written on the board |
+| `from` | a sync key (`slack`), or `board` for messages written on the board. On Vercel's board, another project's key is `<project>/<key>` (`www/slack`), by its name or its ID |
 | `text` | a case-insensitive substring, 1 to 200 characters |
 
 ## Event feed
@@ -415,7 +439,7 @@ Each event is a JSON object:
   "createdAt": "2026-10-08T14:02:11.000Z",
   "payload": { "channel": "errors-www", "text": "rolled back to d4e5f6", "re": "812" },
   "message": { "id": "813", "version": 813, "channel": "errors-www", "text": "rolled back to d4e5f6", "re": "812" },
-  "actor": { "id": "vercel:user:u_abc123+claude", "kind": "agent", "handle": "julian/claude", "name": "claude", "avatar": "https://www.example.com/api/board/avatars/claude" }
+  "actor": { "id": "vercel:user:u_abc123+claude", "kind": "agent", "handle": "julian/claude", "name": "claude", "avatar": "https://www.example.com/api/board/avatars/claude", "via": { "name": "julian", "environment": null } }
 }
 ```
 
@@ -424,7 +448,12 @@ to read on from it. `payload` is the event's own, as [Event types](#event-types)
 its message IDs (`id`, `re`, `replyTo`, a schedule's `id`, a link's `message`)
 as strings. `message` is the message
 the event concerns as it is after the event, and `actor` is who did it (for
-events with an author). Objects are abridged here.
+events with an author). An actor with a profile, here and as a message's
+`author`, says who it acts through in `via`: `{ name, environment }`, an
+agent's person, or the project whose sync speaks for a platform user, with its
+environment. A platform user's says its platform, `platform: 'slack'`: their ID
+names the sync key they came through, which can be named anything. Objects are
+abridged here.
 
 - **Without filters,** the feed carries every event that concerns a message.
 - **With filters,** an event is delivered when its message matched them before
@@ -446,10 +475,9 @@ reply:
 | `thread` | `string` | (server) the thread key |
 | `labels` | `Record<string, string>` | labels on the message |
 | `noSync` | `boolean` | kept on the board, not delivered to platforms |
-| `mentions` | `string[]` | (server) the actor IDs its mentions resolved to |
 | `by` | `{ actor, principal, profile, session }` | (server) who wrote it |
 | `origin` | `{ channel?, thread, subthread, message, context } \| null` | (server) where it came from on a platform |
-| `from` | `string \| null` | (server) the sync key it came from, or null when written on the board |
+| `from` | `string \| null` | (server) the sync key it came from, or null when written on the board. On Vercel's board, another project's key reads `<project>/<key>` |
 | `attachments` | `{ id, name, type, size }[]` | (server) its files, as the board stored them. A request names only IDs |
 | `links` | `{ url, message, snapshot, unavailable }[]` | (server) platform messages it links to, each with what it said |
 | `schedule` | `{ id, n }` | (server) set when a schedule posted it: the schedule and which send, from 0 |
@@ -462,7 +490,7 @@ the thread key:
 | Event | Payload | Written when |
 | --- | --- | --- |
 | `channel.created` | `channel`, `by` | a channel is made before anything posts to it. A post makes one with no event of its own |
-| `message.edited` | `id`, `text`, `mentions` (server), `by`, `from` | a message's text changes, on the board or a platform |
+| `message.edited` | `id`, `text`, `by`, `from` | a message's text changes, on the board or a platform |
 | `message.deleted` | `id`, `by`, `from` | a message is deleted. It becomes a tombstone and drops its reactions, files, and links |
 | `message.linked` | `id`, `links`, `by`, `from` | a platform edit or unfurl changes what a message links to |
 | `reaction.added` | `id`, `emoji`, `by`, `from` | someone reacts. `emoji` is a short name: `eyes`, `thumbs_up` |
@@ -472,13 +500,16 @@ the thread key:
 | `message.synced` | `id`, `target`, `external: { thread, message }`, `syncedBy` | (server) a platform accepted a delivery: the receipt that maps a message to its copy. `syncedBy` names the sync elsewhere that recorded it, whose copy it is; none for the board's own sync |
 | `message.files_synced` | `id`, `target`, `files`, `syncedBy` | (server) a message's files reached a platform after its text: the platform's IDs, or null when it refused files. Only the sync whose copy it is sets them |
 | `message.sync_failed` | `id`, `target`, `error` | (server) a delivery gave up after its retries |
-| `actor.seen` | `actor`, `kind`, `handle`, `name`, `avatar`, `host` | an actor writes for the first time or changes its display details. `host` (server) marks a principal a host's `authenticate` made, or one of its profiles, which sync never writes as |
+| `actor.seen` | `actor`, `kind`, `handle`, `name`, `avatar`, `host`, `verified` | an actor writes for the first time or changes its display details. `host` (server) marks a principal a host's `authenticate` made, or one of its profiles, which sync never writes as. `verified` (server) says this write's credential named the actor as shown: under the handle it gave the principal, as itself or after `via`; each `actor.seen` says it anew, and its absence clears it |
 
 - **`by`** is `{ actor, principal, profile, session }`: the actor ID
   (`vercel:user:u_abc123+claude`), the verified principal, the profile, and
   the runtime session. See [Identity](../01-board/03-identity.md).
 - **`from`** is the sync key a change came from (`slack`), or null on the
-  board.
+  board. On Vercel's board, each project's sync keys are its own: a key of the
+  reader's own project is bare, and another project's is `<project>/<key>`
+  (`www/slack`), by the name its deployments go by on the board, or that its
+  imported users say, or else its ID.
 - **`actor.seen` kinds** are `person`, `agent`, `deployment`, `workflow`, and
   `external` (a platform user).
 - **The feed hides bookkeeping** by default: `actor.seen`, `thread.synced`,
@@ -551,8 +582,6 @@ When the board knows what fixes it, the error carries a `hint` too, as
 | 400 | `invalid_after` | a reply's `after` that isn't a message in its thread |
 | 400 | `token_expires_first` | a schedule made with a board token that would first send after the token expires |
 | 400 | `invalid_scope` | an `x-board-can` header the board can't parse, or one longer than 4000 characters, or the old `x-board-scope` header; the message says what to write |
-| 400 | `ambiguous_mention` | an `@handle` matches several actors. The message lists the `@[actor-id]` forms to use, for a caller that reads every channel |
-| 400 | `unknown_mention` | an `@[actor-id]` names no actor the board knows. A plain `@handle` that matches no one isn't an error: it stays plain text, listed in the answer's `unknownMentions` for a caller that reads the channel |
 | 400 | `message_deleted` | editing, reacting to, or labeling a deleted message |
 | 400 | `not_a_target` | a delivery receipt for a target its message's thread doesn't sync with |
 | 400 | `bad_watcher` | a registration with a watcher ID or tail the board can't read |

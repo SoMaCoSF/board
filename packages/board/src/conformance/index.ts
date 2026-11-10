@@ -107,9 +107,9 @@ async function narrowedOut(attempt: Promise<unknown>, what: string) {
   throw new Mismatch(`${what}, by a caller narrowed with x-board-can: expected 403 forbidden, and it succeeded`)
 }
 
-/** Where a registration is woken, to put back after a check replaces it: its path (and branch) on a board that wakes by path, or its url. */
-function wokenAt(registered: RegistrationView | undefined): { url: string | null } | { path: string; branch?: string } {
-  if (!registered?.path) return { url: registered?.url ?? null }
+/** Where a registration is woken, to put back after a check replaces it: its path (and branch) on a board that wakes by path, or nowhere. */
+function wokenAt(registered: RegistrationView | undefined): { path?: undefined } | { path: string; branch?: string } {
+  if (!registered?.path) return {}
   return { path: registered.path, ...(registered.branch ? { branch: registered.branch } : {}) }
 }
 
@@ -313,7 +313,7 @@ async function registerSync(ctx: Context): Promise<{ where: ReturnType<typeof wo
     return { skip: 'this token has watchers or a sync registered here, which registering would replace' }
   const where = wokenAt(registered)
   try {
-    await ctx.board.register({ url: null, watch: {}, sync: [{ key: SYNC_KEY, platform: SYNC_KEY }] })
+    await ctx.board.register({ watch: {}, sync: [{ key: SYNC_KEY, platform: SYNC_KEY }] })
   } catch (error) {
     if (error instanceof BoardError && error.status === 403) return { skip: "this token can't register a sync here" }
     throw error
@@ -514,6 +514,28 @@ const CHECKS: Check[] = [
       check(found, `the threads should include ${root.id}`)
       same(found.replies, 1, 'its reply count')
       same(found.last?.id, reply.id, 'its latest reply')
+    },
+  },
+  {
+    group: 'core',
+    name: "matches text anywhere in a message's own, in any case, as it reads now",
+    run: async (ctx) => {
+      // Roots of its own: the second matches the first's searches only where % or _ is a wildcard.
+      const literal = await post(ctx, 'conformance: Deploy FAILED at 100% on a_b')
+      const lookalike = await post(ctx, 'conformance: deploy failed at 1000 on axb')
+      const under = await reply(ctx, lookalike.id, 'conformance: a reply that says Crème Brûlée')
+      const found = async (text: string) => (await ctx.board.messages({ channel: ctx.channel, label: ctx.labels, after: ctx.start, text })).messages.map((m) => m.id)
+      alike(await found('DEPLOY failed'), [literal.id, lookalike.id], 'the messages "DEPLOY failed" finds')
+      alike(await found('100%'), [literal.id], 'the messages "100%" finds, % being a character')
+      alike(await found('a_b'), [literal.id], 'the messages "a_b" finds, _ being a character')
+      // A reply by its own text, not its root's, and its thread by the reply.
+      alike(await found('BRÛLÉE'), [under.id], 'the messages "BRÛLÉE" finds')
+      const { threads } = await ctx.board.threads({ channel: ctx.channel, label: ctx.labels, text: 'crème brûlée' })
+      alike(threads.map((t) => t.message.id), [lookalike.id], 'the threads "crème brûlée" finds')
+      // An edit changes what finds it.
+      await ctx.board.edit(lookalike.id, 'conformance: deploy fixed')
+      alike(await found('1000'), [], 'the messages "1000" finds, once the one that said it is edited')
+      alike(await found('deploy fixed'), [lookalike.id], 'the messages "deploy fixed" finds, once one is edited to say it')
     },
   },
   {
@@ -968,7 +990,7 @@ const CHECKS: Check[] = [
         return 'this token has watchers or a sync registered here, and checking would replace them'
       // Nothing's woken while it checks, and an empty one gets back where it's woken after.
       const where = wokenAt(registered)
-      await ctx.board.register({ url: null, watch: { conformance: { tail: `${ctx.channel} --label conformance=${ctx.labels.conformance}` } } })
+      await ctx.board.register({ watch: { conformance: { tail: `${ctx.channel} --label conformance=${ctx.labels.conformance}` } } })
       try {
         const message = await post(ctx, 'conformance: for a watcher')
         const deadline = Date.now() + 10_000
@@ -998,7 +1020,7 @@ const CHECKS: Check[] = [
       const branch = environment === 'preview' ? { branch: 'conformance' } : {}
       const attempt = () => ctx.board.register({ path: '/conformance', ...branch, watch: {} })
       try {
-        if (!byPath) await rejects(attempt(), 501, 'no_wake_by_path', 'a path, on a board that wakes only urls')
+        if (!byPath) await rejects(attempt(), 501, 'no_wake_by_path', 'a path, on a board that wakes nothing')
         else if (environment === null) await rejects(attempt(), 403, 'not_a_project', "a path, from a token that isn't a Vercel project's")
         else {
           const view = await attempt()
@@ -1027,7 +1049,7 @@ const CHECKS: Check[] = [
   },
   {
     group: 'sync',
-    name: "keeps sync's records: an import as a platform author, its lookups by platform ID, a receipt, and where it's synced",
+    name: "keeps sync's records: an import as a profile of its importer, its lookups by platform ID, a receipt, and where it's synced",
     run: async (ctx) => {
       const key = SYNC_KEY
       const thread = `${key}:${ctx.labels.conformance}:1`
@@ -1053,7 +1075,12 @@ const CHECKS: Check[] = [
       isRef(id, "an import's message")
       try {
         const message = (await ctx.board.thread(id!)).message
-        same(message.by.actor, author.id, "the import's author")
+        // A sync elsewhere's word: the platform user as a profile of its principal, shown through it.
+        same(message.by.actor, `${ctx.me.principal}+${author.id}`, "the import's author")
+        same(message.by.principal, ctx.me.principal, "the import's principal")
+        same(message.by.profile, author.id, "the import's profile")
+        same(message.author?.name, author.name, "the import's author's name")
+        check(message.author?.via !== undefined, `the import's author should say who it's via, got ${show(message.author)}`)
         same(message.from, key, "the import's from")
         same(message.origin?.thread, thread, "the import's origin")
         const found = await ctx.board.syncFind({ thread, message: '1' })

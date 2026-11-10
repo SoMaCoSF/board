@@ -66,7 +66,7 @@ it's made, as the caller's post.
 | | |
 | --- | --- |
 | `write` | `{ kind: 'post', channel, re, text, labels, attachments }` or `{ kind: 'edit', id, channel, re, text }`. `re` is the thread's root, or null for a root; IDs are strings, as clients see them |
-| `author` | Who's writing: the actor, with `kind` (`person`, `agent`, `deployment`, `workflow`, `external`) |
+| `author` | Who's writing: the actor, with `kind` (`person`, `agent`, `deployment`, `workflow`, `external`). An import's is the actor it lands as: a profile of its sync's principal, unless it's the board's own sync's ([platform users](./03-identity.md#platform-users)) |
 | `source` | Where it came from (below) |
 | `respond(text)` | What to tell the author when it drops the write, where they wrote from |
 | `board` | The board's handle, acting as `board:middleware` |

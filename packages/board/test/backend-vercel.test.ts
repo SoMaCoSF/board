@@ -14,7 +14,7 @@ import type { Watcher } from '../src/server/watcher.ts'
 import { slack } from '../src/sync/slack.ts'
 import { channels, render } from '../src/sync/fn.ts'
 import { as, fakeMessageboard } from './messageboard.ts'
-import { fakePlatform } from './sync-fixtures.ts'
+import { fakePlatform, withSlackClient } from './sync-fixtures.ts'
 
 const API = 'http://localhost'
 
@@ -44,6 +44,7 @@ const ADA = { id: 'vercel:user:u_ada', kind: 'person', handle: 'ada' } as const
 
 /** The project's own board on Vercel's, as its deployment runs it, with `middleware`: what board() serves is its own code. */
 const PONG_URL = 'https://pong.example/api/board'
+const WEB_URL = 'https://web.example/api/board'
 function pongBoard(api: ReturnType<typeof fakeMessageboard>, middleware: Middleware[] = [], options: { authenticate?: Authenticate } = {}) {
   return board({ backend: vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:production'), files: api.files }), url: PONG_URL, middleware, ...options })
 }
@@ -81,6 +82,7 @@ describe('vercel()', () => {
       'core: drops a deleted message from what its labels find': 'passed',
       'core: reads a channel after a cursor or a message ID, oldest first': 'passed',
       'core: lists threads, each with its reply count and latest reply': 'passed',
+      "core: matches text anywhere in a message's own, in any case, as it reads now": 'passed',
       'core: reads events after a cursor, each with a cursor of its own': 'passed',
       'core: holds a long-poll open until the next event': 'passed',
       'core: deletes a message, leaving a tombstone': 'passed',
@@ -112,7 +114,7 @@ describe('vercel()', () => {
       'attachments: takes a file, posts it, and gives it back': 'passed',
       'watchers: matches a registered tail, hands the match to a pull, and takes its ack': 'skipped',
       'watchers: wakes by path only where its discovery says so, and only a Vercel project': 'skipped',
-      "sync: keeps sync's records: an import as a platform author, its lookups by platform ID, a receipt, and where it's synced": 'skipped',
+      "sync: keeps sync's records: an import as a profile of its importer, its lookups by platform ID, a receipt, and where it's synced": 'skipped',
       "sync: queues a platform thread's events in its sync's inbox once, and leases each after the one before is acked": 'skipped',
       'sync: hands a sync each message change as a match of its @sync watcher': 'skipped',
       'sync: keeps noSync on a post and a reply, so sync sends neither': 'passed',
@@ -178,11 +180,11 @@ describe('vercel()', () => {
   it('names someone after a read of the names fails, and every message of someone new in one read', async () => {
     const api = fakeMessageboard()
     let failing = true
-    // The list of names answers 503 once.
+    // The list of names fails once.
     const flaky: typeof fetch = async (input, init) => {
       if (failing && new URL(String(input)).pathname.endsWith('/actors')) {
         failing = false
-        return Response.json({ error: { code: 'unavailable', message: 'try again' } }, { status: 503 })
+        return Response.json({ error: { code: 'internal', message: 'boom' } }, { status: 500 })
       }
       return as(api, 'user:u_jb')(input, init)
     }
@@ -215,20 +217,32 @@ describe('vercel()', () => {
     }
   })
 
-  it('writes as the project a deployment is, per environment, and as an agent with its profile', async () => {
-    const api = fakeMessageboard()
-    const pong = handleOn(api, 'project:prj_pong:production')
-    const { id } = await pong.post('pings', { text: 'ping' })
-    const reply = await pong.as('claude').reply(id, { text: 'pong', labels: { kind: 'task' } })
-    const { message, replies } = await pong.thread(id)
-    expect(message).toMatchObject({ channel: 'pings', by: { principal: 'vercel:project:prj_pong:production', profile: null }, author: { kind: 'deployment', handle: 'prj_pong' } })
-    expect(replies).toMatchObject([{ id: reply.id, re: id, labels: { kind: 'task' }, by: { actor: 'vercel:project:prj_pong:production+claude', profile: 'claude' }, author: { kind: 'agent', handle: 'claude' } }])
-    // `me` is who the handle writes as, its profile included.
-    expect((await pong.as('claude').messages({ channel: 'pings', by: 'me' })).messages.map((m) => m.id)).toEqual([reply.id])
-    expect((await pong.messages({ channel: 'pings', by: 'me' })).messages.map((m) => m.id)).toEqual([id])
-    // A preview is someone else.
-    const preview = handleOn(api, 'project:prj_pong:preview')
-    expect((await preview.me()).principal).toBe('vercel:project:prj_pong:preview')
+  it("writes as the project a deployment is, per environment, and as an agent with its profile, each shown by the project's name or its ID", async () => {
+    for (const [projectIdHandles, production, preview] of [
+      [false, { handle: 'pong', name: 'pong' }, { handle: 'pong', name: 'pong (preview)' }],
+      // An API that names a deployment by its ID names pong nowhere.
+      [true, { handle: 'prj_pong', name: 'prj_pong' }, { handle: 'prj_pong@preview', name: 'prj_pong@preview' }],
+    ] as const) {
+      const api = fakeMessageboard({ projectIdHandles })
+      const pong = handleOn(api, 'project:prj_pong:production')
+      const { id } = await pong.post('pings', { text: 'ping' })
+      const reply = await pong.as('claude').reply(id, { text: 'pong', labels: { kind: 'task' } })
+      // A preview is someone else, of the same project.
+      const previewed = handleOn(api, 'project:prj_pong:preview')
+      expect(await previewed.me()).toMatchObject({ principal: 'vercel:project:prj_pong:preview', kind: 'deployment', ...preview })
+      await previewed.reply(id, { text: 'from a preview' })
+      const { message, replies } = await handleOn(api).thread(id)
+      expect(message).toMatchObject({ channel: 'pings', by: { principal: 'vercel:project:prj_pong:production', profile: null }, author: { kind: 'deployment', ...production } })
+      expect(replies).toMatchObject([
+        { id: reply.id, re: id, labels: { kind: 'task' }, by: { actor: 'vercel:project:prj_pong:production+claude', profile: 'claude' }, author: { kind: 'agent', handle: 'claude', via: { name: production.handle, environment: 'production' } } },
+        { text: 'from a preview', author: { kind: 'deployment', ...preview } },
+      ])
+      const actors = await handleOn(api).actors()
+      expect(['vercel:project:prj_pong:production', 'vercel:project:prj_pong:preview'].map((at) => actors.find((actor) => actor.id === at))).toMatchObject([production, preview])
+      // `me` is who the handle writes as, its profile included.
+      expect((await pong.as('claude').messages({ channel: 'pings', by: 'me' })).messages.map((m) => m.id)).toEqual([reply.id])
+      expect((await pong.messages({ channel: 'pings', by: 'me' })).messages.map((m) => m.id)).toEqual([id])
+    }
   })
 
   it('reads and lists schedules by a handle as the board shows it, a person covering their agents', async () => {
@@ -432,7 +446,7 @@ describe('vercel()', () => {
     const api = fakeMessageboard({ roles: { u_jb: 'owner', u_ada: 'viewer' } })
     expect(await said(handleOn(api, 'user:u_jb'))).toEqual(everything)
     expect(await said(handleOn(api, 'user:u_ada'))).toEqual({ can: { '*': ['read', 'react'] }, expiresAt: null })
-    expect(await said(handleOn(api, 'project:prj_pong:production'))).toEqual({ can: { '*': ['read', 'post', 'react', 'label'] }, expiresAt: null })
+    expect(await said(handleOn(api, 'project:prj_pong:production'))).toEqual({ can: { '*': ['read', 'post', 'react', 'label', 'sync'] }, expiresAt: null })
     for (const role of ['member', 'developer'] as const) expect(await said(handleOn(fakeMessageboard({ roles: { u_jb: role } })))).toEqual(everything)
     // Credentials it says less of, and until when, as it will of board tokens: board's own permissions, as it gives them.
     const expiresAt = Date.now() + 59 * 60_000
@@ -450,6 +464,27 @@ describe('vercel()', () => {
     expect((await said(handleOn(jwtStyle))).expiresAt).toBe(new Date(seconds * 1000).toISOString())
     // An API that says neither, as before it sent them: what any credentials it lets in may do, with no expiry.
     expect(await said(handleOn(fakeMessageboard({ me: false }), 'user:u_jb'))).toEqual({ can: { '*': ['read', 'post', 'react', 'label'] }, expiresAt: null })
+  })
+
+  it("says what the board's grants leave its credentials there, a channel they close included", async () => {
+    const api = fakeMessageboard()
+    const jb = handleOn(api, 'user:u_jb')
+    const all = ['read', 'post', 'react', 'label', 'sync', 'manage']
+    await jb.createGrant({ principals: [{ kind: 'everyone' }], can: { 'security/': [] } })
+    await jb.createGrant({ principals: [{ kind: 'project', project: 'pong', environments: ['production'] }], can: { 'ci/': ['read', 'post'] } })
+    expect((await jb.me()).can).toEqual({ '*': all, 'security/': [] })
+    expect((await handleOn(api, 'project:prj_pong:production').me()).can).toEqual({
+      '*': ['read', 'post', 'react', 'label', 'sync'],
+      'ci/': ['read', 'post'],
+      'security/': [],
+    })
+  })
+
+  it('asks its board what its credentials may do there, and tells a project the board shuts out that it needs a grant', async () => {
+    const api = fakeMessageboard()
+    await handleOn(api, 'user:u_jb').me()
+    expect(api.requests.filter((request) => request.endsWith('/me'))).toEqual(['GET /boards/brd_test/me'])
+    await expect(handleOn(fakeMessageboard({ boardId: null }), 'project:prj_pong:production').me()).rejects.toMatchObject({ status: 403, code: 'board_not_granted' })
   })
 
   it("sends a board token you set, in Node, ahead of VERCEL_TOKEN and the deployment's OIDC token", async () => {
@@ -701,7 +736,7 @@ describe('vercel()', () => {
     })
     await pong.me()
     while (!api.registrations.has('vercel:project:prj_pong:production')) await new Promise((resolve) => setTimeout(resolve, 5))
-    expect(api.registrations.get('vercel:project:prj_pong:production')).toMatchObject({ url: null, path: '/api/board' })
+    expect(api.registrations.get('vercel:project:prj_pong:production')).toMatchObject({ path: '/api/board' })
     await handleOn(api).post('pings', { text: 'ping' })
     const wake = () => pong.fetch(new Request('https://pong.example/api/board/wake', { method: 'POST' })).then((response) => response.json())
     await expect(wake()).resolves.toEqual({ ran: 1 })
@@ -734,7 +769,7 @@ describe('vercel()', () => {
     // A function can freeze once it answers, so what the call started is handed to the platform to finish.
     expect(kept.length).toBeGreaterThan(0)
     await Promise.all(kept)
-    expect(api.registrations.get('vercel:project:prj_pong:production')).toMatchObject({ url: null, path: '/api/board' })
+    expect(api.registrations.get('vercel:project:prj_pong:production')).toMatchObject({ path: '/api/board' })
   })
 
   it('registers a deployment off Vercel with no url, and pulls what its watchers match, with its env pulled too', async () => {
@@ -760,7 +795,8 @@ describe('vercel()', () => {
       },
     })
     await pong.me()
-    await vi.waitFor(() => expect(api.registrations.get('vercel:project:prj_pong:development')).toMatchObject({ url: null }))
+    // With no path, and no url, which the API refuses: it pulls.
+    await vi.waitFor(() => expect(api.registrations.has('vercel:project:prj_pong:development')).toBe(true))
     expect(api.registrations.get('vercel:project:prj_pong:development')!.path).toBeUndefined()
     // Nothing wakes it: it pulls the match itself.
     const ping = await handleOn(api, 'user:u_ada').post('pings', 'ping')
@@ -783,7 +819,7 @@ describe('vercel()', () => {
       const pong = board({ backend, url: 'https://pong-abc123.vercel.app/api/board', watch: { pings: { tail: 'pings', run: async ({ event }) => void ran.push(event.message!.text) } } })
       await pong.me()
       await vi.waitFor(() => expect(api.registrations.has(`vercel:project:prj_pong:${environment}`)).toBe(true))
-      expect(api.registrations.get(`vercel:project:prj_pong:${environment}`)).toMatchObject({ url: null, path: '/api/board' })
+      expect(api.registrations.get(`vercel:project:prj_pong:${environment}`)).toMatchObject({ path: '/api/board' })
       expect(api.registrations.get(`vercel:project:prj_pong:${environment}`)!.branch).toBeUndefined()
       await handleOn(api, 'user:u_ada').post('pings', 'ping')
       await new Promise((resolve) => setTimeout(resolve, 300))
@@ -1024,7 +1060,7 @@ describe('vercel()', () => {
     const api = fakeMessageboard()
     const report = await conformance(handleOn(api, 'project:prj_pong:production'), { withCan: narrowedOn(api, 'project:prj_pong:production') })
     expect(Object.fromEntries(report.checks.filter((check) => check.group === 'sync').map((check) => [check.name, check.status]))).toEqual({
-      "keeps sync's records: an import as a platform author, its lookups by platform ID, a receipt, and where it's synced": 'passed',
+      "keeps sync's records: an import as a profile of its importer, its lookups by platform ID, a receipt, and where it's synced": 'passed',
       "queues a platform thread's events in its sync's inbox once, and leases each after the one before is acked": 'passed',
       'hands a sync each message change as a match of its @sync watcher': 'passed',
       'keeps noSync on a post and a reply, so sync sends neither': 'passed',
@@ -1046,8 +1082,8 @@ describe('vercel()', () => {
       const api = fakeMessageboard()
       const backend = vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:production') })
       board({ backend, url: 'https://pong.vercel.app/api/board', watch: { ping: { tail: 'pings', run: async () => {} } } })
-      expect(await backend.registerWatchers()).toMatchObject({ url: null, path: '/api/board' })
-      expect(api.registrations.get('vercel:project:prj_pong:production')).toMatchObject({ url: null, path: '/api/board' })
+      expect(await backend.registerWatchers()).toMatchObject({ path: '/api/board' })
+      expect(api.registrations.get('vercel:project:prj_pong:production')).toMatchObject({ path: '/api/board' })
     } finally {
       vi.unstubAllEnvs()
     }
@@ -1059,7 +1095,7 @@ describe('vercel()', () => {
     const flaky: typeof fetch = async (input, init) => {
       if (failing && init?.method === 'PUT') {
         failing = false
-        return Response.json({ error: { code: 'unavailable', message: 'try again' } }, { status: 503 })
+        return Response.json({ error: { code: 'internal', message: 'boom' } }, { status: 500 })
       }
       return as(api, 'project:prj_pong:production')(input, init)
     }
@@ -1079,7 +1115,7 @@ describe('vercel()', () => {
       const at = Date.now()
       clock.mockReturnValue(at + 11_000)
       await pong.me()
-      await vi.waitFor(() => expect(api.registrations.get('vercel:project:prj_pong:production')).toMatchObject({ url: null }))
+      await vi.waitFor(() => expect(api.registrations.has('vercel:project:prj_pong:production')).toBe(true))
     } finally {
       clock.mockRestore()
       errors.mockRestore()
@@ -1189,6 +1225,25 @@ describe('vercel()', () => {
     expect((await pong.thread(id)).message.text).toBe('EDITED')
   })
 
+  it("screens a sync's edit by board ID of its user's own message, from an API that names imports by the platform user alone", async () => {
+    const api = fakeMessageboard({ externalImports: true })
+    const screened: string[] = []
+    const pong = pongBoard(api, [
+      async ({ write, next }) => {
+        screened.push(`${write.kind} ${write.text}`)
+        await next({ text: write.text.toUpperCase() })
+      },
+    ])
+    await pong.register({ url: null, watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })
+    const ada = { id: 'slack:user:U_ADA', handle: 'ada', name: 'Ada', avatar: null, isBot: false }
+    const origin = { thread: 'slack:C1:1', subthread: null, message: '1', context: null }
+    const { message } = await pong.syncImport({ op: 'post', author: ada, from: 'slack', channel: 'general', text: 'from slack', origin })
+    expect((await pong.thread(message!)).message.by.actor).toBe('slack:user:U_ADA')
+    await pong.syncImport({ op: 'edit', author: ada, from: null, message: message!, text: 'edited by the sync, as Ada' })
+    expect(screened).toEqual(['post from slack', 'edit edited by the sync, as Ada'])
+    expect((await pong.thread(message!)).message.text).toBe('EDITED BY THE SYNC, AS ADA')
+  })
+
   it("screens a schedule's message through board()'s middleware when it's made, since Vercel's API posts its sends", async () => {
     const api = fakeMessageboard()
     const screened: string[] = []
@@ -1219,7 +1274,7 @@ describe('vercel()', () => {
     const author = { id: 'linear:user:U1', handle: 'jb', name: 'Julián', avatar: null, isBot: false }
     const event = { kind: 'message' as const, channel: 'linear:C1', thread: 'linear:C1:1', subthread: null, message: '1', isRoot: true, text: 'hi', context: null, author }
     await expect(pong.inboxPush('slack', [{ id: 'e1', event, raw: null }])).rejects.toMatchObject({ status: 400, code: 'invalid_request' })
-    await expect(ping.syncImport({ op: 'seen', author: { ...author, id: 'slack:user:U1' } })).rejects.toMatchObject({ status: 403, code: 'forbidden' })
+    await expect(ping.syncImport({ op: 'post', author: { ...author, id: 'slack:user:U1' }, from: 'slack', channel: 'general', text: 'hi' })).rejects.toMatchObject({ status: 403, code: 'forbidden' })
     await expect(julian.register({ url: null, watch: {}, sync: [{ key: 'linear', platform: 'linear' }] })).rejects.toMatchObject({ status: 403, code: 'forbidden' })
     // A conflict or a write too big, on sync's routes and nowhere else.
     const refusing = (path: RegExp, status: number, code: string) =>
@@ -1253,7 +1308,179 @@ describe('vercel()', () => {
     ])
   })
 
-  it("syncs Slack through the engine from its first webhook, a file as a link to it on Slack, and a board reply back to Slack", async () => {
+  it("shows a project's import as the platform user through that project, in its environment, with its key's platform, as the API names them", async () => {
+    const api = fakeMessageboard()
+    const preview = handleOn(api, 'project:prj_pong:preview')
+    await preview.register({ url: null, watch: {}, sync: [{ key: 'slack-eu', platform: 'slack' }] })
+    const malte = { id: 'slack-eu:user:U_MALTE', handle: 'malte', name: 'Malte', avatar: null, isBot: false }
+    await preview.syncImport({ op: 'post', author: malte, from: 'slack-eu', channel: 'general', text: 'ship it', origin: { thread: 'slack-eu:C1:1', subthread: null, message: '1', context: null } })
+    const julian = handleOn(api)
+    await julian.post('general', { text: 'on the board' })
+    const { messages } = await julian.messages({ channel: 'general' })
+    expect(messages.map((message) => [message.text, message.by, message.author])).toEqual([
+      [
+        'ship it',
+        { actor: 'vercel:project:prj_pong:preview+slack-eu:user:U_MALTE', principal: 'vercel:project:prj_pong:preview', profile: 'slack-eu:user:U_MALTE', session: null },
+        { id: 'vercel:project:prj_pong:preview+slack-eu:user:U_MALTE', kind: 'external', handle: 'pong/malte', name: 'Malte', avatar: null, via: { name: 'pong', environment: 'preview' }, platform: 'slack', verified: true },
+      ],
+      ['on the board', { actor: 'vercel:user:u_jb', principal: 'vercel:user:u_jb', profile: null, session: null }, expect.not.objectContaining({ via: expect.anything() })],
+    ])
+    expect((await julian.actors()).find((actor) => actor.id.endsWith('+slack-eu:user:U_MALTE'))).toMatchObject({ name: 'Malte', via: { name: 'pong', environment: 'preview' }, platform: 'slack' })
+    // A profile name covers that agent of anyone's, but a platform user is only ever themselves.
+    expect((await julian.messages({ channel: 'general', by: 'slack-eu:user:U_MALTE' })).messages).toEqual([])
+  })
+
+  it("imports through a sync key not named for its platform, its users named for the key", async () => {
+    const api = fakeMessageboard()
+    const s = fakePlatform('slack')
+    const pong = board({
+      backend: vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:production'), files: api.files }),
+      url: PONG_URL,
+      basePath: '/api/board',
+      sync: { 'slack-eu': slack({ adapter: s.adapter }, channels({ C1: 'general' })) },
+    })
+    const webhook = await pong.fetch(new Request(`${PONG_URL}/webhooks/slack-eu`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'message', threadId: 'slack:C1:300', id: '300', text: 'hej', user: 'U_ADA', name: 'Ada' }) }))
+    expect(webhook.status).toBe(200)
+    const julian = handleOn(api)
+    await vi.waitFor(async () => expect((await julian.messages({ channel: 'general' })).messages).toHaveLength(1))
+    const [message] = (await julian.messages({ channel: 'general' })).messages
+    expect([message!.by.actor, message!.from, message!.author?.platform]).toEqual(['vercel:project:prj_pong:production+slack-eu:user:U_ADA', 'pong/slack-eu', 'slack'])
+  })
+
+  it("puts an import's handle under its project's name, typable, from an API that names them as their platform does", async () => {
+    const api = fakeMessageboard({ platformHandles: true })
+    // The second project's name isn't one the API knows.
+    for (const [principal, key] of [['project:prj_pong:preview', 'slack'], ['project:prj_unnamed:production', 'slack-eu']] as const) {
+      const project = handleOn(api, principal)
+      await project.register({ url: null, watch: {}, sync: [{ key, platform: 'slack' }] })
+      const author = { id: `${key}:user:U_MALTE`, handle: 'Malte Ubl', name: 'Malte Ubl', avatar: null, isBot: false }
+      await project.syncImport({ op: 'post', author, from: key, channel: 'general', text: 'hi' })
+    }
+    const julian = handleOn(api)
+    const handles = (await julian.messages({ channel: 'general' })).messages.map((message) => message.author?.handle)
+    expect(handles).toEqual(['pong/malte-ubl', 'prj_unnamed/malte-ubl'])
+    expect((await julian.actors()).filter((actor) => actor.id.includes('+slack')).map((actor) => actor.handle).sort()).toEqual(['pong/malte-ubl', 'prj_unnamed/malte-ubl'])
+  })
+
+  it('fits a handle from the API in the 128 characters a handle holds, however long the API named it', async () => {
+    const api = fakeMessageboard({ platformHandles: true })
+    const pong = handleOn(api, 'project:prj_pong:production')
+    await pong.register({ url: null, watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })
+    // One with a slash is as the API names imports, under a project: this one ran long.
+    for (const [id, handle] of [['slack:user:U_SLASH', `team/${'b'.repeat(200)}`], ['slack:user:U_PLAIN', 'c'.repeat(200)]] as const)
+      await pong.syncImport({ op: 'post', author: { id, handle, name: 'Long', avatar: null, isBot: false }, from: 'slack', channel: 'general', text: 'hi' })
+    const handles = (await handleOn(api).messages({ channel: 'general' })).messages.map((message) => message.author?.handle)
+    expect(handles).toEqual([`team/${'b'.repeat(123)}`, `pong/${'c'.repeat(123)}`])
+  })
+
+  it('shows an import as the platform user alone, as before, from an API that names them so', async () => {
+    const api = fakeMessageboard({ externalImports: true })
+    const preview = handleOn(api, 'project:prj_pong:preview')
+    await preview.register({ url: null, watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })
+    const malte = { id: 'slack:user:U_MALTE', handle: 'malte', name: 'Malte', avatar: null, isBot: false }
+    await preview.syncImport({ op: 'post', author: malte, from: 'slack', channel: 'general', text: 'ship it' })
+    const [message] = (await handleOn(api).messages({ channel: 'general' })).messages
+    expect([message!.by, message!.author]).toEqual([
+      { actor: 'slack:user:U_MALTE', principal: 'slack:user:U_MALTE', profile: null, session: null },
+      { id: 'slack:user:U_MALTE', kind: 'external', handle: 'malte', name: 'Malte', avatar: null, verified: true },
+    ])
+  })
+
+  it("mentions a platform user natively only from the sync that speaks for them, under the key it imported them through", async () => {
+    const api = fakeMessageboard()
+    const s = fakePlatform('slack')
+    // The documented renderer: a root mentions its owner where the platform can.
+    const owner = render(({ message, label, mentionOf }) => {
+      const who = message.labels.owner ? mentionOf(message.labels.owner) : null
+      return who ? `${message.text} · ${who}` : `**${label}**: ${message.text}`
+    }, channels({ C1: 'general' }))
+    const pong = board({
+      backend: vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:production'), files: api.files }),
+      url: PONG_URL,
+      basePath: '/api/board',
+      sync: { slack: slack({ adapter: s.adapter }, owner) },
+    })
+    // A preview held the key first and spoke for "Ada" under it, then let it go.
+    const preview = handleOn(api, 'project:prj_pong:preview')
+    await preview.register({ url: null, watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })
+    await preview.syncImport({ op: 'post', author: { id: 'slack:user:U_ADA', handle: 'ada', name: 'Ada', avatar: null, isBot: false }, from: 'slack', channel: 'random', text: 'hi' })
+    await preview.register({ url: null, watch: {}, sync: [] })
+    // Production's own Slack brings Ada in under the same key.
+    await pong.fetch(new Request(`${PONG_URL}/webhooks/slack`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'message', threadId: 'slack:C1:300', id: '300', text: 'hi', user: 'U_ADA', name: 'Ada' }) }))
+    const julian = handleOn(api)
+    await vi.waitFor(async () => expect((await julian.messages({ channel: 'general' })).messages).toHaveLength(1))
+    expect((await julian.actors()).map((actor) => actor.id).filter((id) => id.endsWith('+slack:user:U_ADA')).sort()).toEqual([
+      'vercel:project:prj_pong:preview+slack:user:U_ADA',
+      'vercel:project:prj_pong:production+slack:user:U_ADA',
+    ])
+    await julian.post('general', { text: 'yours', labels: { owner: 'vercel:project:prj_pong:production+slack:user:U_ADA' } })
+    await julian.post('general', { text: 'not yours', labels: { owner: 'vercel:project:prj_pong:preview+slack:user:U_ADA' } })
+    await pong.fetch(new Request(`${PONG_URL}/wake`, { method: 'POST' }))
+    await vi.waitFor(() =>
+      expect(s.channelPosts.map((post) => JSON.parse(post.text).markdown).sort()).toEqual(['**Julián Benegas**: not yours', 'yours · <@U_ADA>']),
+    )
+  })
+
+  it("posts to Slack under the names the API gives, which it checked: a person as themselves", async () => {
+    const api = fakeMessageboard()
+    const posted: Record<string, unknown>[] = []
+    const client = {
+      conversations: { list: async () => ({ channels: [] }), info: async () => ({}), join: async () => ({}), replies: async () => ({ messages: [] }) },
+      chat: { postMessage: async (args: Record<string, unknown>) => (posted.push(args), { ts: '1700000000.000200' }) },
+      auth: { test: async () => ({ response_metadata: { scopes: ['chat:write.customize'] } }) },
+      users: { info: async () => ({}) },
+    }
+    const s = fakePlatform('slack', (adapter) => {
+      withSlackClient(client, false)(adapter)
+      Object.assign(adapter, {
+        formatConverter: { toSlackPayload: (message: { markdown: string }) => ({ markdown_text: message.markdown }) },
+        decodeThreadId: (id: string) => ({ channel: id.split(':')[1], threadTs: id.split(':')[2] ?? '' }),
+      })
+    })
+    const pong = board({
+      backend: vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:production'), files: api.files }),
+      url: PONG_URL,
+      basePath: '/api/board',
+      sync: { slack: slack({ adapter: s.adapter, client: async () => client as never }, channels({ C1: 'general' })) },
+    })
+    // Its first request registers its sync, which sees what's posted after.
+    await pong.fetch(new Request(`${PONG_URL}/wake`, { method: 'POST' }))
+    await handleOn(api).post('general', { text: 'the deploy is red' })
+    await pong.fetch(new Request(`${PONG_URL}/wake`, { method: 'POST' }))
+    await vi.waitFor(() => expect(posted.map(({ username, markdown_text }) => [username, markdown_text])).toEqual([['Julián Benegas', 'the deploy is red']]))
+  })
+
+  it("resolves mentions as each project's sync posts, against its own users: two syncs' Maltes, and an email its Slack knows", async () => {
+    const api = fakeMessageboard()
+    const lookupByEmail = vi.fn(async ({ email }: { email: string }) => {
+      if (email !== 'ada@vercel.com') throw new Error('users_not_found')
+      return { user: { id: 'U_ADA', name: 'ada', profile: { display_name: 'ada', real_name: 'Ada' } } }
+    })
+    const client = { conversations: { list: async () => ({ channels: [] }), info: async () => ({}), join: async () => ({}) }, users: { info: async () => ({}), lookupByEmail } }
+    const pongSlack = fakePlatform('slack', withSlackClient(client, false))
+    const webSlack = fakePlatform('slack')
+    const project = (principal: string, url: string, sync: NonNullable<Parameters<typeof board>[0]>['sync']) =>
+      board({ backend: vercel({ team: 'team_test', api: API, fetch: as(api, principal), files: api.files }), url, basePath: '/api/board', sync })
+    const pong = project('project:prj_pong:production', PONG_URL, { slack: slack({ adapter: pongSlack.adapter, client: async () => client as never }, channels({ C1: 'general' })) })
+    const web = project('project:prj_web:production', WEB_URL, { webchat: slack({ adapter: webSlack.adapter }, channels({ C9: 'general' })) })
+    // Each one's Slack brings in its own Malte.
+    const webhook = (deployment: typeof pong, url: string, key: string, body: object) =>
+      deployment.fetch(new Request(`${url}/webhooks/${key}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'message', ...body }) }))
+    await webhook(pong, PONG_URL, 'slack', { threadId: 'slack:C1:300', id: '300', text: 'hi', user: 'U_M1', name: 'malte' })
+    await webhook(web, WEB_URL, 'webchat', { threadId: 'slack:C9:400', id: '400', text: 'hej', user: 'U_M2', name: 'malte' })
+    const julian = handleOn(api)
+    await vi.waitFor(async () => expect((await julian.messages({ channel: 'general' })).messages).toHaveLength(2))
+    await julian.post('general', { text: '@malte have a look, @pong/malte and @web/malte, cc @[ada@vercel.com]' })
+    await pong.fetch(new Request(`${PONG_URL}/wake`, { method: 'POST' }))
+    await web.fetch(new Request(`${WEB_URL}/wake`, { method: 'POST' }))
+    const posted = (platform: typeof pongSlack) => platform.channelPosts.map((post) => JSON.parse(post.text).markdown).filter((text: string) => text.includes('have a look'))
+    await vi.waitFor(() => expect([posted(pongSlack), posted(webSlack)]).toEqual([
+      ['**Julián Benegas**: <@U_M1> have a look, <@U_M1> and @web/malte, cc <@U_ADA>'],
+      ['**Julián Benegas**: <@U_M2> have a look, @pong/malte and <@U_M2>, cc ada@vercel.com'],
+    ]))
+  })
+
+  it("syncs Slack through the engine from its first webhook, a file as an attachment on the board, and a board reply back to Slack", async () => {
     const api = fakeMessageboard()
     const s = fakePlatform('slack')
     const pong = board({
@@ -1280,12 +1507,12 @@ describe('vercel()', () => {
     await vi.waitFor(async () => {
       const { messages } = await julian.messages({ channel: 'general' })
       expect(messages.map((message) => [message.from, message.text, message.attachments])).toEqual([
-        ['slack', "the export page\n\n📎 [shot.png](https://files.slack.test/shot.png) (7 B) didn't come over: Vercel's board takes no files from sync yet", []],
+        ['pong/slack', 'the export page', [{ id: expect.any(String), name: 'shot.png', type: 'image/png', size: png.byteLength }]],
       ])
     })
-    // Vercel's API keeps no file for it.
-    expect(api.requests.filter((request) => request.includes('/attachments'))).toEqual([])
     const [root] = (await julian.messages({ channel: 'general' })).messages
+    // Anyone who reads the board reads the file, not only the project that uploaded it.
+    expect(new Uint8Array(await (await julian.download(root!.attachments![0]!.id)).arrayBuffer())).toEqual(png)
     await julian.reply(root!.id, { text: 'looking' })
     await pong.fetch(new Request(`${PONG_URL}/wake`, { method: 'POST' }))
     await vi.waitFor(() => expect(s.posts.map((post) => [post.threadId, post.text])).toEqual([['slack:C1:300', expect.stringContaining('looking')]]))
@@ -1380,19 +1607,21 @@ describe('vercel()', () => {
     })
     await pong.me()
     while (!api.registrations.has('vercel:project:prj_pong:production')) await new Promise((resolve) => setTimeout(resolve, 5))
-    const ping = handleOn(api, 'project:prj_ping:production')
-    await ping.register({ url: null, watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })
+    // Its project's preview syncs Slack: a key of its own project's, which it names bare.
+    const preview = handleOn(api, 'project:prj_pong:preview')
+    await preview.register({ url: null, watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })
     const author = { id: 'slack:user:U1', handle: 'jb', name: 'Julián', avatar: null, isBot: false }
-    await ping.syncImport({ op: 'post', author, from: 'slack', channel: 'general', text: 'from slack', origin: { thread: 'slack:C1:1', subthread: null, message: '1', context: null } })
+    await preview.syncImport({ op: 'post', author, from: 'slack', channel: 'general', text: 'from slack', origin: { thread: 'slack:C1:1', subthread: null, message: '1', context: null } })
     await handleOn(api).post('general', { text: 'on the board' })
     await pong.fetch(new Request('https://pong.example/api/board/wake', { method: 'POST' }))
     expect(ran.sort()).toEqual(['imported: from slack', 'written: on the board'])
+    // A person names it by its project.
     const read = async (from: string) => (await handleOn(api).messages({ channel: 'general', from })).messages.map((message) => message.text)
-    expect(await read('slack')).toEqual(['from slack'])
+    expect(await read('pong/slack')).toEqual(['from slack'])
     expect(await read('board')).toEqual(['on the board'])
     // A thread read finds the threads with a message from there, as a read of messages does.
     const threads = async (from: string) => (await handleOn(api).threads({ channel: 'general', from })).threads.map((thread) => thread.message.text)
-    expect(await threads('slack')).toEqual(['from slack'])
+    expect(await threads('pong/slack')).toEqual(['from slack'])
     expect(await threads('board')).toEqual(['on the board'])
   })
 
@@ -1417,15 +1646,18 @@ describe('vercel()', () => {
     expect(api.registrations.get('vercel:project:prj_pong:production')!.hash).toBe(watchersHash(watch, [{ key: 'slack', platform: 'slack' }]))
   })
 
-  it("refuses a project it names by name that turns out to be the run's own, after one grant it revokes", async () => {
-    const api = fakeMessageboard()
-    await handleOn(api).createGrant({ principals: [{ kind: 'project', project: 'web', environments: ['production'] }], can: { '*': 'all' } })
-    const before = [...api.grants.keys()]
-    // web's own deployment names web: only the API knows that's prj_web, so the kit asks it with a grant that changes nothing for the run.
-    await expect(conformance(handleOn(api, 'project:prj_web:production'), { principals: { project: 'web', repository: 'acme/api' } })).rejects.toThrow(
-      "principals.project is this run's own project, web (prj_web)",
-    )
-    expect([...api.grants.keys()]).toEqual(before)
+  it("refuses a project it names by name that turns out to be the run's own: by its handle, or after one grant it revokes where the API names it by ID", async () => {
+    for (const [projectIdHandles, refusal] of [
+      [false, "principals.project is this run's own project, web: "],
+      // Only the API knows web is prj_web, so the kit asks it with a grant that changes nothing for the run.
+      [true, "principals.project is this run's own project, web (prj_web)"],
+    ] as const) {
+      const api = fakeMessageboard({ projectIdHandles })
+      await handleOn(api).createGrant({ principals: [{ kind: 'project', project: 'web', environments: ['production'] }], can: { '*': 'all' } })
+      const before = [...api.grants.keys()]
+      await expect(conformance(handleOn(api, 'project:prj_web:production'), { principals: { project: 'web', repository: 'acme/api' } })).rejects.toThrow(refusal)
+      expect([...api.grants.keys()]).toEqual(before)
+    }
   })
 
   it("fails a board whose team role lets a viewer post, in the conformance kit's viewer check", async () => {
@@ -1467,7 +1699,7 @@ describe('vercel()', () => {
     const jb = handleOn(api)
     expect(await jb.grants()).toEqual([
       { id: 'g1', principals: [{ kind: 'all-users' }], can: { '*': 'all' }, capped: true, by: null, at: null },
-      { id: 'g2', principals: [{ kind: 'all-projects', environments: ['production', 'preview', 'development'] }], can: { '*': ['read', 'post', 'react', 'label'] }, capped: false, by: null, at: null },
+      { id: 'g2', principals: [{ kind: 'all-projects', environments: ['production', 'preview', 'development'] }], can: { '*': ['read', 'post', 'react', 'label', 'sync'] }, capped: false, by: null, at: null },
       { id: 'g3', principals: [{ kind: 'all-apps' }], can: { '*': ['read', 'post', 'react', 'label'] }, capped: false, by: null, at: null },
     ])
     const { grant } = await jb.createGrant({
@@ -1557,6 +1789,314 @@ describe('vercel()', () => {
   })
 })
 
+describe("each project's sync keys on Vercel's API", () => {
+  const NAMES = { prj_support: 'support', prj_www: 'www' }
+  const SUPPORT_URL = 'https://support.example/api/board'
+  const PREVIEW_URL = 'https://support-git-fix.example/api/board'
+  const WWW_URL = 'https://www.example/api/board'
+
+  /** A deployment of a project on the fake's board, with `options`: its board, its backend, and what it asked the API, as `METHOD /path` under its board. */
+  function deployment(api: ReturnType<typeof fakeMessageboard>, principal: string, url: string, options: Pick<NonNullable<Parameters<typeof board>[0]>, 'sync' | 'watch'>) {
+    const asked: string[] = []
+    const fetch = as(api, principal)
+    const backend = vercel({
+      team: 'team_test',
+      api: API,
+      files: api.files,
+      fetch: (input, init) => {
+        const request = new Request(input, init)
+        asked.push(`${request.method} ${new URL(request.url).pathname.replace(/^\/v1\/messageboard(\/boards\/[^/]+)?/, '')}`)
+        return fetch(input, init)
+      },
+    })
+    onTestFinished(() => backend.close())
+    const team = board({ backend, url, basePath: '/api/board', ...options })
+    const webhook = (key: string, body: object) =>
+      team.fetch(new Request(`${url}/webhooks/${key}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'message', ...body }) }))
+    return { team, backend, asked, webhook, wake: () => team.fetch(new Request(`${url}/wake`, { method: 'POST' })) }
+  }
+  const markdown = (posts: { text: string }[]) => posts.map((post) => JSON.parse(post.text).markdown as string)
+
+  it("syncs a key two projects each call slack for each, the board's posts to both Slacks, and one's import to the other's, never back", async () => {
+    const api = fakeMessageboard({ projects: NAMES })
+    const getPermalink = async ({ channel, message_ts }: { channel: string; message_ts: string }) => ({ permalink: `https://acme.slack.com/archives/${channel}/p${message_ts.replace('.', '')}` })
+    const client = { conversations: { list: async () => ({}), info: async () => ({}), join: async () => ({}) }, chat: { getPermalink } }
+    const supportSlack = fakePlatform('slack', withSlackClient(client, false))
+    const wwwSlack = fakePlatform('slack', withSlackClient(client, false))
+    const support = deployment(api, 'project:prj_support:production', SUPPORT_URL, { sync: { slack: slack({ adapter: supportSlack.adapter }, channels({ C_SUP: 'general' })) } })
+    const www = deployment(api, 'project:prj_www:production', WWW_URL, { sync: { slack: slack({ adapter: wwwSlack.adapter }, channels({ C_WWW: 'general' })) } })
+    await support.backend.registerWatchers()
+    await www.backend.registerWatchers()
+    const julian = handleOn(api)
+    const root = await julian.post('general', { text: 'checkout is down' })
+    await Promise.all([support.wake(), www.wake()])
+    await vi.waitFor(() => expect([markdown(supportSlack.channelPosts), markdown(wwwSlack.channelPosts)]).toEqual([['**Julián Benegas**: checkout is down'], ['**Julián Benegas**: checkout is down']]))
+    // Ada answers in www's Slack thread: www imports it, and support's Slack gets it.
+    const webhook = await www.webhook('slack', { threadId: `slack:C_WWW:${wwwSlack.channelPosts[0]!.id}`, id: '500', text: 'on it', user: 'U_ADA', name: 'Ada' })
+    expect(webhook.status).toBe(200)
+    await vi.waitFor(async () => expect((await julian.thread(root.id)).replies.map((reply) => reply.text)).toEqual(['on it']))
+    await Promise.all([support.wake(), www.wake()])
+    await vi.waitFor(() =>
+      expect(supportSlack.posts.map((post) => [post.threadId, JSON.parse(post.text).markdown])).toEqual([[`slack:C_SUP:${supportSlack.channelPosts[0]!.id}`, '**Ada via www (slack)**: on it']]),
+    )
+    expect(wwwSlack.posts).toEqual([])
+    // Each names its own project's key bare, and the other's by its project; a person names both by theirs.
+    const from = async (team: { thread(id: string): Promise<{ replies: { from: string | null }[] }> }) => (await team.thread(root.id)).replies.map((reply) => reply.from)
+    expect([await from(www.team), await from(support.team), await from(julian)]).toEqual([['slack'], ['www/slack'], ['www/slack']])
+    // Only its own sync, which has the app, links its copies.
+    // Each binds its target as it starts the thread, so they come in whichever order the two did.
+    const targets = async (team: typeof julian) => (await team.sync(root.id)).targets.map(({ key, target, url }) => [key, target, url]).sort(([a], [b]) => a!.localeCompare(b!))
+    expect(await targets(support.team)).toEqual([
+      ['slack', 'slack:C_SUP', `https://acme.slack.com/archives/C_SUP/p${supportSlack.channelPosts[0]!.id}`],
+      ['www/slack', 'www/slack:C_WWW', null],
+    ])
+    // Support has imported no one, but its deployment wrote as itself, by its project's name.
+    expect(await targets(julian)).toEqual([
+      ['support/slack', 'support/slack:C_SUP', null],
+      ['www/slack', 'www/slack:C_WWW', null],
+    ])
+  })
+
+  it("names another project by the handle its deployments and their agents go by, else by what its users say, else by its ID", async () => {
+    for (const [projectIdHandles, keys] of [
+      [false, ['support/slack', 'www/slack']],
+      // An API that names a deployment by its ID, and its profiles under that, names support nowhere, and www on the user it imported.
+      [true, ['prj_support/slack', 'www/slack']],
+    ] as const) {
+      const api = fakeMessageboard({ projects: NAMES, projectIdHandles })
+      const support = handleOn(api, 'project:prj_support:production')
+      const www = handleOn(api, 'project:prj_www:production')
+      for (const project of [support, www]) await project.register({ url: null, watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })
+      const julian = handleOn(api)
+      const root = await julian.post('general', { text: 'checkout is down' })
+      // Support binds the thread through its sync, as a profile of its deployment, www as its deployment, and www brings Ada's reply in.
+      await support.as('sync').syncReceipt({ kind: 'thread', message: root.id, target: 'slack:C_SUP', targetKind: 'channel', cause: 'request' })
+      await www.syncReceipt({ kind: 'thread', message: root.id, target: 'slack:C_WWW:1', targetKind: 'thread', cause: 'request' })
+      const ada = { id: 'slack:user:U_ADA', handle: 'ada', name: 'Ada', avatar: null, isBot: false }
+      await www.syncImport({ op: 'post', author: ada, from: 'slack', re: root.id, text: 'on it', origin: { thread: 'slack:C_WWW:1', subthread: null, message: '2', context: null } })
+      expect((await julian.sync(root.id)).targets.map((target) => target.key)).toEqual(keys)
+      expect((await julian.thread(root.id)).replies.map((reply) => reply.from)).toEqual(['www/slack'])
+      expect((await support.thread(root.id)).replies.map((reply) => reply.from)).toEqual(['www/slack'])
+    }
+  })
+
+  it("says another project's deployment holds a key by its project's name, where the API names it", async () => {
+    for (const [projectIdHandles, holder] of [
+      [false, 'www (production)'],
+      [true, 'prj_www (production)'],
+    ] as const) {
+      const api = fakeMessageboard({ projects: NAMES, projectIdHandles })
+      await handleOn(api, 'project:prj_www:production').post('general', { text: 'deployed' })
+      const said = vi.spyOn(console, 'info').mockImplementation(() => {})
+      const fetch = as(api, 'project:prj_support:production')
+      // An API that says a key of support's is another project's deployment's.
+      const backend = vercel({
+        team: 'team_test',
+        api: API,
+        fetch: async (input, init) => {
+          const request = new Request(input, init)
+          const response = await fetch(input, init)
+          if (request.method !== 'PUT' || !new URL(request.url).pathname.endsWith('/watchers')) return response
+          const elsewhere = [{ key: 'slack', platform: 'slack', owner: 'vercel:project:prj_www:production', environment: 'production' }]
+          return Response.json({ ...(await response.json()), sync: [], elsewhere })
+        },
+      })
+      board({ backend, url: SUPPORT_URL, basePath: '/api/board', sync: { slack: slack({ adapter: fakePlatform('slack').adapter }, channels({ C_SUP: 'general' })) } })
+      await backend.registerWatchers()
+      backend.close()
+      expect(said.mock.calls).toEqual([[`[board] slack is synced by ${holder}`]])
+      said.mockRestore()
+    }
+  })
+
+  it("runs nothing through a key production holds from a preview, whose watchers run, and says once who has it", async () => {
+    const api = fakeMessageboard({ projects: NAMES })
+    const productionSlack = fakePlatform('slack')
+    const production = deployment(api, 'project:prj_support:production', SUPPORT_URL, { sync: { slack: slack({ adapter: productionSlack.adapter }, channels({ C_SUP: 'general' })) } })
+    await production.backend.registerWatchers()
+    const said = vi.spyOn(console, 'info').mockImplementation(() => {})
+    onTestFinished(() => said.mockRestore())
+    const previewSlack = fakePlatform('slack')
+    const offered: string[] = []
+    const ran: string[] = []
+    const preview = deployment(api, 'project:prj_support:preview', PREVIEW_URL, {
+      sync: {
+        slack: slack({ adapter: previewSlack.adapter }, async (sync) => void offered.push(sync.direction)),
+        // A key of its own, which has the API hand it every post on the board.
+        alerts: slack({ adapter: fakePlatform('slack').adapter }, channels({ C_ALERTS: 'alerts' })),
+      },
+      watch: { seen: { tail: 'general', run: async ({ event }) => void ran.push(event.message!.text) } },
+    })
+    // Slack's webhook is answered, and nothing of it lands: the adapter never reads it.
+    const read = vi.spyOn(previewSlack.adapter, 'handleWebhook')
+    const webhook = await preview.webhook('slack', { threadId: 'slack:C_SUP:300', id: '300', text: 'to the preview', user: 'U_ADA', name: 'Ada' })
+    expect(webhook.status).toBe(200)
+    expect(read).not.toHaveBeenCalled()
+    await handleOn(api).post('general', { text: 'deploy failed' })
+    await Promise.all([production.wake(), preview.wake()])
+    await vi.waitFor(() => expect(markdown(productionSlack.channelPosts)).toEqual(['**Julián Benegas**: deploy failed']))
+    await vi.waitFor(() => expect(ran).toEqual(['deploy failed']))
+    // It registers again once its last registration is old: still not its key, and nothing more to say.
+    const now = Date.now.bind(Date)
+    vi.spyOn(Date, 'now').mockImplementation(() => now() + 60_000)
+    onTestFinished(() => vi.mocked(Date.now).mockRestore())
+    await preview.backend.registerWatchers()
+    await preview.wake()
+    expect(preview.asked.filter((asked) => asked === 'PUT /watchers').length).toBeGreaterThan(1)
+    expect(offered).toEqual([])
+    expect([previewSlack.channelPosts, previewSlack.posts]).toEqual([[], []])
+    expect(preview.asked.filter((asked) => /\/sync\/(imports|receipts|inbox\/slack)/.test(asked))).toEqual([])
+    expect((await handleOn(api).messages({ channel: 'general' })).messages.map((message) => message.text)).toEqual(['deploy failed'])
+    expect(said.mock.calls).toEqual([['[board] slack is synced by production']])
+  })
+
+  it("posts a deployment to Slack under its project's name, keeping its environment whole when the name is cut to fit", async () => {
+    const project = `www-${'x'.repeat(86)}`
+    const api = fakeMessageboard({ projects: { ...NAMES, prj_www: project } })
+    const posted: Record<string, unknown>[] = []
+    const client = {
+      conversations: { list: async () => ({}), info: async () => ({}), replies: async () => ({ messages: [] }) },
+      chat: { postMessage: async (args: Record<string, unknown>) => (posted.push(args), { ts: `1700000000.00010${posted.length}` }) },
+      auth: { test: async () => ({ response_metadata: { scopes: ['chat:write', 'chat:write.customize'] } }) },
+    }
+    const s = fakePlatform('slack', (adapter) => {
+      withSlackClient(client, false)(adapter)
+      Object.assign(adapter, {
+        formatConverter: { toSlackPayload: (message: { markdown: string }) => ({ markdown_text: message.markdown }) },
+        decodeThreadId: (id: string) => ({ channel: id.split(':')[1], threadTs: id.split(':')[2] ?? '' }),
+      })
+    })
+    const support = deployment(api, 'project:prj_support:production', SUPPORT_URL, { sync: { slack: slack({ adapter: s.adapter, client: async () => client as never }, channels({ C_SUP: 'general' })) } })
+    await support.backend.registerWatchers()
+    for (const environment of ['preview', 'production']) await handleOn(api, `project:prj_www:${environment}`).post('general', { text: environment })
+    await support.wake()
+    await vi.waitFor(() => expect(posted).toHaveLength(2))
+    // The two roots go out side by side: each by what it says.
+    const by = Object.fromEntries(posted.map(({ username, markdown_text }) => [markdown_text as string, username as string]))
+    expect(by.preview).toMatch(/^www-x+… \(preview\)$/)
+    expect(by.production).toMatch(/^www-x+…$/)
+    for (const username of Object.values(by)) expect(Array.from(username).length).toBeLessThanOrEqual(80)
+  })
+
+  it("stops syncing a key production takes from it moments after it registered, at the first call the API refuses", async () => {
+    // On Vercel, where each registers its path and never pulls on its own: only what the test does registers.
+    for (const [name, value] of Object.entries({ VERCEL: '1', VERCEL_ENV: 'production', VERCEL_TARGET_ENV: '', VERCEL_GIT_COMMIT_REF: '' })) vi.stubEnv(name, value)
+    onTestFinished(() => void vi.unstubAllEnvs())
+    const api = fakeMessageboard({ projects: NAMES })
+    const said = vi.spyOn(console, 'info').mockImplementation(() => {})
+    onTestFinished(() => said.mockRestore())
+    const preview = deployment(api, 'project:prj_support:preview', PREVIEW_URL, { sync: { slack: slack({ adapter: fakePlatform('slack').adapter }, channels({ C_SUP: 'general' })) } })
+    await preview.backend.registerWatchers()
+    expect(api.registrations.get('vercel:project:prj_support:preview')?.sync).toEqual([{ key: 'slack', platform: 'slack' }])
+    const production = deployment(api, 'project:prj_support:production', SUPPORT_URL, { sync: { slack: slack({ adapter: fakePlatform('slack').adapter }, channels({ C_SUP: 'general' })) } })
+    await production.backend.registerWatchers()
+    // The preview still holds slack as far as it knows: the API's refusal of its webhook's event tells it otherwise.
+    const body = { threadId: 'slack:C_SUP:300', id: '300', text: 'to the preview', user: 'U_ADA', name: 'Ada' }
+    expect((await preview.webhook('slack', body)).status).toBe(200)
+    expect(preview.asked.filter((asked) => asked === 'PUT /watchers')).toHaveLength(2)
+    expect(said.mock.calls).toEqual([['[board] slack is synced by production']])
+    // From then on it asks the API nothing through the key.
+    const asked = preview.asked.length
+    expect((await preview.webhook('slack', { ...body, id: '301' })).status).toBe(200)
+    expect(preview.asked.slice(asked).filter((call) => /\/sync\//.test(call))).toEqual([])
+    expect((await handleOn(api).messages({ channel: 'general' })).messages).toEqual([])
+  })
+
+  it("takes no other project's thread an API hands it under a key of its own name", async () => {
+    // An API that hands a thread's binding to every registrant of its key, and lists every target of a thread.
+    const api = fakeMessageboard({ projects: NAMES, unscopedSync: true })
+    const supportSlack = fakePlatform('slack')
+    const support = deployment(api, 'project:prj_support:production', SUPPORT_URL, { sync: { slack: slack({ adapter: supportSlack.adapter }, channels({ C_SUP: 'general' })) } })
+    await support.backend.registerWatchers()
+    const www = handleOn(api, 'project:prj_www:production')
+    await www.register({ url: null, watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })
+    // A thread in a channel support doesn't mirror, which www syncs to its own Slack.
+    const root = await handleOn(api).post('random', { text: 'checkout is down' })
+    await www.syncReceipt({ kind: 'thread', message: root.id, target: 'slack:C_WWW', targetKind: 'channel', cause: 'request' })
+    await support.wake()
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect([supportSlack.channelPosts, supportSlack.posts]).toEqual([[], []])
+    expect(support.asked.filter((asked) => asked === 'POST /sync/receipts')).toEqual([])
+  })
+
+  it("delivers to no target under a key another deployment holds, though an API lists it", async () => {
+    const api = fakeMessageboard({ projects: NAMES, unscopedSync: true })
+    const productionSlack = fakePlatform('slack')
+    const production = deployment(api, 'project:prj_support:production', SUPPORT_URL, { sync: { slack: slack({ adapter: productionSlack.adapter }, channels({ C_SUP: 'general' })) } })
+    await production.backend.registerWatchers()
+    const previewSlack = fakePlatform('slack')
+    const preview = deployment(api, 'project:prj_support:preview', PREVIEW_URL, {
+      sync: {
+        slack: slack({ adapter: previewSlack.adapter }, channels({ C_SUP: 'general' })),
+        // A key of its own, which has the API hand it every post on the board.
+        alerts: slack({ adapter: fakePlatform('slack').adapter }, channels({ C_ALERTS: 'alerts' })),
+      },
+    })
+    await preview.backend.registerWatchers()
+    const julian = handleOn(api)
+    const root = await julian.post('general', { text: 'deploy failed' })
+    await production.wake()
+    await vi.waitFor(() => expect(markdown(productionSlack.channelPosts)).toEqual(['**Julián Benegas**: deploy failed']))
+    await julian.reply(root.id, { text: 'rolled back' })
+    await Promise.all([production.wake(), preview.wake()])
+    await vi.waitFor(() => expect(markdown(productionSlack.posts)).toEqual(['**Julián Benegas**: rolled back']))
+    await preview.wake()
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect([previewSlack.channelPosts, previewSlack.posts]).toEqual([[], []])
+  })
+
+  it("finds another project's imports by its name, though the filter was made before the project imported anything", async () => {
+    const api = fakeMessageboard({ projects: NAMES })
+    const julian = handleOn(api)
+    await julian.post('general', { text: 'before www syncs' })
+    const read = async () => (await julian.messages({ channel: 'general', from: 'www/slack' })).messages.map((message) => message.text)
+    // Twice, so the names it reads are kept, and nothing in them is www.
+    expect([await read(), await read()]).toEqual([[], []])
+    const www = handleOn(api, 'project:prj_www:production')
+    await www.register({ url: null, watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })
+    const ada = { id: 'slack:user:U_ADA', handle: 'ada', name: 'Ada', avatar: null, isBot: false }
+    await www.syncImport({ op: 'post', author: ada, from: 'slack', channel: 'general', text: 'checkout is down', origin: { thread: 'slack:C1:1', subthread: null, message: '1', context: null } })
+    expect(await read()).toEqual(['checkout is down'])
+  })
+
+  it("takes a deployment by the name it shows for --by, a watcher's included, on an API that names it by its ID too", async () => {
+    for (const projectIdHandles of [false, true]) {
+      const api = fakeMessageboard({ projects: NAMES, projectIdHandles })
+      const www = handleOn(api, 'project:prj_www:production')
+      await www.register({ url: null, watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })
+      // An import of www's names it, wherever the API names its deployments by their IDs.
+      const ada = { id: 'slack:user:U_ADA', handle: 'ada', name: 'Ada', avatar: null, isBot: false }
+      await www.syncImport({ op: 'post', author: ada, from: 'slack', channel: 'random', text: 'hi', origin: { thread: 'slack:C1:1', subthread: null, message: '1', context: null } })
+      const root = await www.post('general', { text: 'deployed' })
+      await handleOn(api, 'project:prj_www:preview').reply(root.id, { text: 'deployed a preview' })
+      await handleOn(api).post('general', { text: 'not www' })
+      const julian = handleOn(api)
+      expect((await julian.thread(root.id)).message.author).toMatchObject({ handle: 'www' })
+      expect((await julian.messages({ channel: 'general', by: 'www' })).messages.map((message) => message.text)).toEqual(['deployed', 'deployed a preview'])
+      const pong = handleOn(api, 'project:prj_pong:production')
+      await pong.register({ url: null, watch: { deploys: { tail: 'general --by www' } } })
+      expect(api.registrations.get('vercel:project:prj_pong:production')!.watch.deploys!.filter.authors!.sort()).toEqual(['vercel:project:prj_www:preview', 'vercel:project:prj_www:production'])
+    }
+  })
+
+  it("syncs every key it registered against an API from before each project had its own, which refuses a second registrant's, and names each target its own", async () => {
+    const api = fakeMessageboard({ projects: NAMES, boardWideKeys: true })
+    const s = fakePlatform('slack')
+    const production = deployment(api, 'project:prj_support:production', SUPPORT_URL, { sync: { slack: slack({ adapter: s.adapter }, channels({ C_SUP: 'general' })) } })
+    await production.backend.registerWatchers()
+    const preview = deployment(api, 'project:prj_support:preview', PREVIEW_URL, { sync: { slack: slack({ adapter: fakePlatform('slack').adapter }, channels({ C_SUP: 'general' })) } })
+    await expect(preview.backend.registerWatchers()).rejects.toMatchObject({ status: 409, code: 'sync_key_taken' })
+    expect((await production.webhook('slack', { threadId: 'slack:C_SUP:300', id: '300', text: 'from slack', user: 'U_ADA', name: 'Ada' })).status).toBe(200)
+    const julian = handleOn(api)
+    await vi.waitFor(async () => expect((await julian.messages({ channel: 'general' })).messages.map((message) => message.text)).toEqual(['from slack']))
+    const root = await julian.post('general', { text: 'deploy failed' })
+    await production.wake()
+    await vi.waitFor(() => expect(markdown(s.channelPosts)).toEqual(['**Julián Benegas**: deploy failed']))
+    // Its targets name no project: each is the reader's own.
+    expect((await julian.sync(root.id)).targets.map(({ key, target }) => [key, target])).toEqual([['slack', 'slack:C_SUP']])
+  })
+})
+
 describe("board tokens on Vercel's API", () => {
   /** A handle on a board that sends `secret`, by the board's ID, as a board token reaches its board. */
   const holding = (api: ReturnType<typeof fakeMessageboard>, secret: string, id = 'brd_test') =>
@@ -1576,6 +2116,23 @@ describe("board tokens on Vercel's API", () => {
     const mint = { operationId: 'op_1', name: 'ci' }
     expect((await raw(api, 'project:prj_pong:production', 'POST', '/boards/brd_test/tokens', mint)).status).toBe(200)
     expect(await raw(api, 'project:prj_pong:production', 'POST', '/boards/brd_test/tokens', mint)).toMatchObject({ status: 409, body: { error: { code: 'token_already_minted' } } })
+  })
+
+  it("lists every token across the API's pages, and takes a page with no cursor as the last, as the API answered before it paged", async () => {
+    const api = fakeMessageboard()
+    const pong = handleOn(api, 'project:prj_pong:production')
+    const minted: string[] = []
+    for (const name of ['one', 'two', 'three', 'four', 'five']) minted.push((await pong.createToken({ name })).token.id)
+    expect((await pong.tokens()).map((listed) => listed.id)).toEqual(minted)
+    const unpaged = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const response = await as(api, 'project:prj_pong:production')(input, init)
+      if (!String(input).includes('/tokens')) return response
+      const body = await response.json()
+      delete body.cursor
+      return Response.json(body, { status: response.status })
+    }) as typeof fetch
+    const before = board({ backend: vercel({ team: 'team_test', api: API, fetch: unpaged, files: api.files }) })
+    expect((await before.tokens()).map((listed) => listed.id)).toEqual(minted.slice(0, 2))
   })
 
   it("answers 401 invalid_token for a token that's unknown, revoked, or expired", async () => {
@@ -1765,5 +2322,85 @@ describe("board tokens on Vercel's API", () => {
     // The project sees what acts as it.
     expect(await ids(pong)).toEqual([parent.token.id, sibling.token.id].sort())
     expect(await raw(api, 'project:prj_pong:production', 'POST', '/boards/brd_test/tokens', { operationId: 'op_2', name: 'ci', can: { 'dev/': ['fly'] } })).toMatchObject({ status: 400, body: { error: { code: 'invalid_scope' } } })
+  })
+})
+
+describe('a request the API puts off', () => {
+  /** Julian on a board whose API answers `refuse(request)`'s response instead of its own, when it gives one. */
+  const throttled = (refuse: (url: URL, init: RequestInit | undefined, answer: () => Promise<Response>) => Promise<Response | null> | Response | null) => {
+    const api = fakeMessageboard()
+    const inner = as(api, 'user:u_jb')
+    const sent: { method: string; path: string; at: number }[] = []
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const url = new URL(String(input))
+      sent.push({ method: init?.method ?? 'GET', path: url.pathname, at: Date.now() })
+      return (await refuse(url, init, () => inner(input, init))) ?? inner(input, init)
+    }
+    return { api, sent, julian: board({ backend: vercel({ team: 'team_test', api: API, fetch, files: api.files }) }) }
+  }
+  const tooMany = (retryAfter = '60') => Response.json({ error: { code: 'rate_limited', message: 'Too many requests' } }, { status: 429, headers: { 'retry-after': retryAfter } })
+  const busy = () => Response.json({ error: { code: 'board_busy', message: 'retry shortly' } }, { status: 503, headers: { 'retry-after': '2' } })
+  const posts = (sent: { method: string; path: string }[]) => sent.filter(({ method, path }) => method === 'POST' && path.endsWith('/threads'))
+  const timers = () => {
+    vi.useFakeTimers()
+    onTestFinished(() => void vi.useRealTimers())
+  }
+
+  it('waits and posts once when the API says 429, well inside the minute it asks for', async () => {
+    timers()
+    let refusals = 2
+    const { julian, sent } = throttled((url, init) => (init?.method === 'POST' && url.pathname.endsWith('/threads') && refusals-- > 0 ? tooMany() : null))
+    const posting = julian.post('dev', { text: 'hi' })
+    // A second, then two, each with up to as much again: both waits are over within six.
+    await vi.advanceTimersByTimeAsync(6000)
+    const { id } = await posting
+    expect(posts(sent)).toHaveLength(3)
+    const { threads } = await julian.threads({ channel: 'dev' })
+    expect(threads.map((thread) => thread.message.id)).toEqual([id])
+  })
+
+  it("doesn't send again before a second has passed", async () => {
+    timers()
+    let refusals = 1
+    const { julian, sent } = throttled((url, init) => (init?.method === 'POST' && url.pathname.endsWith('/threads') && refusals-- > 0 ? tooMany() : null))
+    const posting = julian.post('dev', { text: 'hi' })
+    await vi.advanceTimersByTimeAsync(999)
+    expect(posts(sent)).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(1001)
+    await posting
+    expect(posts(sent)).toHaveLength(2)
+  })
+
+  it('posts once when the API wrote the message and then answered 503', async () => {
+    timers()
+    let failing = true
+    const { julian } = throttled(async (url, init, answer) => {
+      if (!failing || init?.method !== 'POST' || !url.pathname.endsWith('/threads')) return null
+      failing = false
+      // The write lands, and its answer is lost.
+      await answer()
+      return busy()
+    })
+    const posting = julian.post('dev', { text: 'once' })
+    await vi.advanceTimersByTimeAsync(2000)
+    const { id } = await posting
+    const { threads } = await julian.threads({ channel: 'dev' })
+    expect(threads.map((thread) => thread.message.id)).toEqual([id])
+  })
+
+  it("gives up with the API's own error after five tries", async () => {
+    timers()
+    const { julian, sent } = throttled((url, init) => (init?.method === 'POST' && url.pathname.endsWith('/threads') ? tooMany() : null))
+    const posting = julian.post('dev', { text: 'hi' }).catch((error: unknown) => error)
+    // 1 + 2 + 4 + 8 seconds, each with up to as much again.
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(await posting).toMatchObject({ status: 429, code: 'rate_limited' })
+    expect(posts(sent)).toHaveLength(5)
+  })
+
+  it("answers a 503 at once for a write the API couldn't tell it had seen", async () => {
+    const { julian, sent } = throttled((url, init) => (init?.method === 'POST' && url.pathname.endsWith('/complete') ? busy() : null))
+    await expect(julian.upload({ data: new TextEncoder().encode('log'), name: 'a.log' })).rejects.toMatchObject({ status: 503 })
+    expect(sent.filter(({ path }) => path.endsWith('/complete'))).toHaveLength(1)
   })
 })

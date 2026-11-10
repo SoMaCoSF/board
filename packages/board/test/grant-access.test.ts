@@ -5,7 +5,7 @@ import { checkGrantChange, explainGrants, grantAccess, type DecidingGrant, type 
 
 const ALL = ['read', 'post', 'react', 'label', 'sync', 'manage']
 const g1: DecidingGrant = { principals: [{ kind: 'all-users' }], can: { '*': 'all' } }
-const g2: DecidingGrant = { principals: [{ kind: 'all-projects', environments: ['production', 'preview', 'development'] }], can: { '*': ['read', 'post', 'react', 'label'] } }
+const g2: DecidingGrant = { principals: [{ kind: 'all-projects', environments: ['production', 'preview', 'development'] }], can: { '*': ['read', 'post', 'react', 'label', 'sync'] } }
 const g3: DecidingGrant = { principals: [{ kind: 'all-apps' }], can: { '*': ['read', 'post', 'react', 'label'] } }
 const lock: DecidingGrant = { principals: [{ kind: 'everyone' }], can: { 'security/': [] } }
 const bob = { caller: { kind: 'user', userId: 'u_bob' }, member: true } as const
@@ -54,7 +54,7 @@ describe('grantAccess', () => {
 
   it("lets in a project, a run, an issuer's token, and an app, each as its principal or its group names it", () => {
     const web = { caller: { kind: 'project', projectId: 'prj_web', environment: 'preview' }, teamProject: true } as const
-    expect(summaries({ ...web, grants: [g1, g2] })?.caller).toEqual({ '*': ['read', 'post', 'react', 'label'] })
+    expect(summaries({ ...web, grants: [g1, g2] })?.caller).toEqual({ '*': ['read', 'post', 'react', 'label', 'sync'] })
     expect(grantAccess({ ...web, teamProject: false, grants: [g1, g2] })).toBeNull()
     const run = { caller: { kind: 'github', repository: 'acme/web', repositoryId: '7', workflowRef: 'acme/web/.github/workflows/ci.yml@refs/heads/main', ref: 'refs/heads/main', event: 'push' } } as const
     const ci: DecidingGrant = { principals: [{ kind: 'github', repository: 'acme/web', repositoryId: '7', workflow: '.github/workflows/ci.yml', branch: 'main' }], can: { 'ci/': ['post'] } }

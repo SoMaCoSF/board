@@ -4,7 +4,7 @@ import type { ExternalCopy, Message, SyncedThread } from '../contract/folds.ts'
 
 /**
  * What a query matches, resolved by the board: handles are already actor and
- * principal sets, so a backend never needs the actors.
+ * principal sets, and mentions the terms their text has, so a backend never needs the actors.
  */
 export type MessageFilter = {
   /** One channel, or with `subtree` it and every channel under it. */
@@ -15,8 +15,11 @@ export type MessageFilter = {
   re?: number
   /** Written by one of these actors, or by an agent of one of these people. */
   by?: { actors: readonly string[]; principals: readonly string[] }
-  /** Mentions one of these actors. */
-  mentions?: readonly string[]
+  /**
+   * Its text mentions one of these: a term `mentionTerms` gives (a handle, an actor ID, an email), or
+   * one that starts with a prefix (a person's agents, `julian/`).
+   */
+  mentions?: { terms: readonly string[]; prefixes: readonly string[] }
   /** The sync key it came from, or `board`. */
   from?: string
   /** Lowercased: a substring of the lowercased text. */

@@ -29,11 +29,8 @@ it works the same on Vercel's board, on `local()`, and on a
 
 ### With `BOARD_URL` set
 
-`board()` with `BOARD_URL` set syncs here, and keeps what it syncs on the
-board at that URL: webhooks land on this route, and what it imports, it writes
-there as this deployment. That board must let this deployment `sync` in those
-channels, and each sync entry's key must be one its own sync doesn't have:
-registering a key it has answers 409 `sync_key_taken`.
+Sync runs where the board's log is. `board()` with `BOARD_URL` set and `sync`
+throws: configure sync on the board at that URL, or on Vercel's board.
 
 ## Configure it
 
@@ -61,8 +58,8 @@ export const GET = team.fetch, POST = team.fetch
 
 > [!NOTE]
 > On Vercel's board, sync runs as this deployment's project, and Vercel's API
-> keeps its records and wakes this route to retry what failed. It takes no files
-> on imports yet: a file posted on a platform comes over as a link to it there.
+> keeps its records and wakes this route to retry what failed. A file posted on a
+> platform comes over as an attachment on the board, uploaded as this project.
 
 To pass your own Chat SDK adapter instead of a connector, see
 [Slack](./03-slack.md#your-own-adapter) and [GitHub](./04-github.md#setup). Any
@@ -131,6 +128,74 @@ Slack, `'owner/repo'` for GitHub, a team key (`'ENG'`) for Linear.
 Board labels never sync out to platforms. Messages from other bots (Sentry,
 Vercel alerts) sync like anyone's; only the board's own posts are skipped, so
 nothing echoes.
+
+## Who an import is by
+
+A platform user is named under the sync key they came through, not the
+platform: `slack:user:U0456` through key `slack`, `slack-eu:user:U0456` through a
+key `slack-eu` for a second Slack workspace, shown with Slack's logo either way.
+On `local()`, the board's own sync checks each platform webhook itself, so what
+it imports is by the platform user: `slack:user:U0456`. Every other sync, a
+project that registers one on the board and every sync on Vercel's board, only
+says who wrote a message, so what it imports is by that project's profile of the
+user, `<project>+<sync key>:<user>`, and shows through the project:
+
+```text
+$ vb read firehose
+firehose · 2 threads · cursor 6
+
+#2  Malte via support (preview) · 0s
+      ship it, I checked
+      no replies
+
+#6  Ada · 0s
+      the export page is blank
+      no replies
+```
+
+Each sync's Malte is an actor of its own, named only by that sync's imports. A
+mention resolves as each sync posts it, against its own users: support's Malte
+is `@support/malte`, `@malte` renders natively (`<@U0456>`) through the sync
+whose Malte it is, and a
+platform user named by actor only through the key they came through, and of a
+sync elsewhere's only through that sync; any other posts their name. Renaming a key changes its users' IDs. See
+[platform users](../01-board/03-identity.md#platform-users).
+
+## Each project's keys
+
+On Vercel's board, a project's sync keys are its own. Support's `slack` and
+www's `slack` are two keys on one board: each project imports and delivers
+through its own, and an import through one reaches the other's Slack threads
+like any message on the board, but never goes back through the key it came by.
+
+Within a project, one deployment holds each key, so a message never goes out
+twice. Production takes a key over from the project's previews and development;
+otherwise the first deployment to register a key keeps it. A deployment that
+doesn't hold a key runs nothing through it: its webhook for that key answers 200
+before its adapter reads anything, and it pulls, imports, starts, and delivers
+nothing there.
+Its watchers run as usual. It says once who holds the key:
+
+```text
+[board] slack is synced by production
+```
+
+Another project's key reads `<project>/<key>`, by the name its deployments go
+by on the board, or its ID where Vercel's API doesn't name it: in a message's
+`from`, in `vb sync <id>`, and in `--source`, which takes either. A
+deployment's own project's keys are bare, and a person sees each key under its
+project:
+
+```text
+$ vb read general --source www/slack --json   # trimmed to text and from
+{"text": "checkout is down", "from": "www/slack"}
+
+$ vb sync 812
+support/slack  C0C8XN8SQRG  message 1792780353.701549
+www/slack      C0D2K4R7Q1M  message 1792780391.118204
+```
+
+Only the project's own sync links its copies, since it has the platform's app.
 
 ## Targets
 

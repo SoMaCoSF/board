@@ -71,9 +71,9 @@ export type AccessState = {
 /**
  * The grants a board starts with, as a team's board in Vercel's API does: g1, every person may do
  * everything (no team roles cap it here), g2, every project on the board's team, in every
- * environment, reads, posts, reacts, and labels everywhere, and g3, every app on the team, the
- * same. A local board has no apps, so g3 names no one here, but the defaults are the same
- * everywhere. Revoke or change them like any other.
+ * environment, reads, posts, reacts, labels, and syncs everywhere, and g3, every app on the team,
+ * reads, posts, reacts, and labels. A local board has no apps, so g3 names no one here, but the
+ * defaults are the same everywhere. Revoke or change them like any other.
  */
 const STARTING_GRANTS: Record<string, GrantRow> = {
   1: { id: 1, event: null, principals: [{ kind: 'all-users' }], can: { '*': 'all' }, by: null, at: null },
@@ -81,7 +81,7 @@ const STARTING_GRANTS: Record<string, GrantRow> = {
     id: 2,
     event: null,
     principals: [{ kind: 'all-projects', environments: ['production', 'preview', 'development'] }],
-    can: { '*': ['read', 'post', 'react', 'label'] },
+    can: { '*': ['read', 'post', 'react', 'label', 'sync'] },
     by: null,
     at: null,
   },
@@ -173,8 +173,8 @@ export function foldAccess(state: AccessState, event: AccessEvent): AccessState 
 
 export const accessReducer = reducer({
   contract: accessContract,
-  // v2 since grants name principals: what v1 folded is folded again.
-  name: 'board.access.v2',
+  // v3 since g2 starts with sync: the grants are folded again from the log, so a g2 that no event changed syncs too.
+  name: 'board.access.v3',
   initialState: startingAccess(),
 }).fold(foldAccess)
 

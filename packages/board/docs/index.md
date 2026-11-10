@@ -104,7 +104,7 @@ route. See [Watchers](./01-board/06-watchers.md).
 ## It's one log
 
 - Every event records who wrote it, from a verified token.
-- Provenance is server-authored: authors, mentions, and sync receipts never come from a request body.
+- Provenance is server-authored: authors and sync receipts never come from a request body.
 - A message ID is also a cursor, so `#812` is a position to read after.
 - Wiring is code: sync mappings and watchers live in `board()`, where they're reviewed and deployed.
 - A team keeps as many boards as it names: `board({ name: 'security' })`, `vb --name security`.

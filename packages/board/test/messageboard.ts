@@ -3,6 +3,7 @@
 // `user:u_jb`, `app:oac_1`, or `project:prj_pong:production`.
 import { randomBytes, randomUUID } from 'node:crypto'
 import { fakeGrants, GrantRefused, type Role, type Who } from './messageboard-grants.ts'
+import { importedHandle, userIdOf } from '../src/contract/profiles.ts'
 
 type Principal =
   | { type: 'user'; userId: string }
@@ -12,7 +13,8 @@ type Principal =
 type Actor = {
   id: string
   principal: Principal
-  profile?: { name: string; avatar?: string }
+  /** An agent's name, or for a platform user a project's sync imported, `<key>:<user>`, with `platform` its key, that key's platform, and the user's ID. */
+  profile?: { name: string; avatar?: string; platform?: { key: string; platform: string; userId: string } }
   session?: string
   /** The board token the request came with: it acts as `principal`, narrowed, on its own board. */
   token?: Minted
@@ -90,7 +92,17 @@ type Thread = {
   messages: Message[]
 }
 type Change = Record<string, unknown> & { createdAt: number; messageId?: string }
-type ActorView = { id: string; kind: 'person' | 'agent' | 'deployment' | 'app' | 'external'; handle: string; name?: string; avatar?: string; lastSeenAt: number }
+/** On a platform user a project's sync imported, `via` is the project's name, or null, and its environment, and `platform` its key's platform. */
+type ActorView = {
+  id: string
+  kind: 'person' | 'agent' | 'deployment' | 'app' | 'external'
+  handle: string
+  name?: string
+  avatar?: string
+  via?: { name: string | null; environment: string }
+  platform?: string
+  lastSeenAt: number
+}
 
 const EMOJI = /^[a-z0-9_+-]{1,64}$/
 const CHANNEL = /^[a-z0-9_-]+(\/[a-z0-9_-]+)*$/
@@ -150,6 +162,12 @@ function actorOf(request: Request, tokens: Record<string, string> = {}, minted: 
 const TOKEN_PERMISSIONS = ['read', 'post', 'react', 'label', 'sync', 'manage']
 const TOKEN_PATTERN = /^(\*|[a-z0-9_-]+(\/[a-z0-9_-]+)*\/?)$/
 const DAY = 86_400_000
+
+function page<T>(items: T[], cursor: string | null, size: number) {
+  const from = cursor ? Number(cursor) : 0
+  const next = from + size < items.length ? String(from + size) : null
+  return { items: items.slice(from, from + size), cursor: next }
+}
 
 /**
  * Board tokens, as Vercel's API keeps them: each one board's, its secret shown once, a retried mint
@@ -216,7 +234,7 @@ function fakeTokens(shared: { now: () => number }) {
   }
 
   /** What `/boards/:id/tokens…` answers, or undefined for another route. */
-  function route(method: string, rest: string, body: Record<string, any>, actor: Actor, boardId: string): unknown {
+  function route(method: string, rest: string, url: URL, body: Record<string, any>, actor: Actor, boardId: string): unknown {
     if (rest === '/tokens' && method === 'POST') {
       // Only a workload mints: a deployment, or a board token, from itself. A person and an app don't.
       if (!actor.token && actor.principal.type !== 'project') throw new Refused(403, 'unsupported_principal', 'Only a deployment mints board tokens: mint from one.')
@@ -245,8 +263,10 @@ function fakeTokens(shared: { now: () => number }) {
       return { token: view(token), secret }
     }
     if (rest === '/tokens' && method === 'GET') {
-      const live = [...minted.values()].filter((token) => token.boardId === boardId && !token.revoked && token.expiresAt > shared.now() && mine(actor, token))
-      return { tokens: live.map(view) }
+      // In mint order, a page at a time, each leaving out what the caller doesn't see, so a page can come back short.
+      const { items, cursor } = page([...minted.values()].filter((token) => token.boardId === boardId), url.searchParams.get('cursor'), 2)
+      const live = items.filter((token) => !token.revoked && token.expiresAt > shared.now() && mine(actor, token))
+      return { tokens: live.map(view), cursor }
     }
     const revoking = /^\/tokens\/([^/]+)\/revoke$/.exec(rest)
     if (revoking && method === 'POST') {
@@ -264,12 +284,18 @@ function fakeTokens(shared: { now: () => number }) {
 
 type Accounts = Record<string, { username: string; name: string }>
 
-/** An actor as the API names them (`viewFor` in api-messageboard): a person by their account. */
-function viewOf(accounts: Accounts, actor: Actor): Omit<ActorView, 'lastSeenAt'> {
+/**
+ * An actor as the API names them: a person by their account, and a deployment by its project's name, in every
+ * environment, or with `projectIdHandles`, as `project:<id>:<environment>`, as the API named one before. One whose
+ * project it doesn't know it names that way too.
+ */
+function viewOf(names: Pick<Shared, 'accounts' | 'directory' | 'projectIdHandles'>, actor: Actor): Omit<ActorView, 'lastSeenAt'> {
   const p = actor.principal
   if (p.type === 'external') return { id: actor.id, kind: 'external', handle: p.id }
-  const account = p.type === 'user' ? accounts[p.userId] : undefined
-  const base = p.type === 'user' ? (account?.username ?? p.userId) : p.type === 'app' ? p.clientId : `project:${p.projectId}:${p.environment}`
+  const account = p.type === 'user' ? names.accounts[p.userId] : undefined
+  const project = p.type === 'project' && !names.projectIdHandles ? names.directory.projects[p.projectId] : undefined
+  const base = p.type === 'user' ? (account?.username ?? p.userId) : p.type === 'app' ? p.clientId : (project ?? `project:${p.projectId}:${p.environment}`)
+  if (actor.profile?.platform) return { id: actor.id, kind: 'external', handle: actor.profile.platform.userId, platform: actor.profile.platform.platform }
   if (actor.profile) return { id: actor.id, kind: 'agent', handle: `${base}/${actor.profile.name.toLowerCase()}`, name: actor.profile.name }
   if (p.type === 'user') return { id: actor.id, kind: 'person', handle: base, ...(account ? { name: account.name } : {}) }
   return { id: actor.id, kind: p.type === 'app' ? 'app' : 'deployment', handle: base }
@@ -296,8 +322,26 @@ const whoOf = (actor: Actor): Who => {
       : { kind: 'app', clientId: actor.principal.clientId, ...limit }
 }
 
-/** What every board in one fake API shares: its team, its accounts and directory, its clock, and its bucket. */
-type Shared = { teamId: string; accounts: Accounts; directory: Directory; now: () => number; stored: Map<string, Uint8Array<ArrayBuffer>> }
+/**
+ * What every board in one fake API shares: its team, its accounts and directory, its clock, and its bucket. `externalImports`:
+ * an import's author is the platform user alone, as Vercel's API named them before platform profiles. `platformHandles`: an
+ * import's handle is the platform user's own, as the API named them before it put them under their project's name. `boardWideKeys`:
+ * a sync key is one registrant's on the whole board, as Vercel's API kept them before each project had its own. `projectIdHandles`:
+ * a deployment's handle is `project:<id>:<environment>`, as the API named one before it named it by its project. `unscopedSync`:
+ * a thread's binding goes to every registrant of its key, and `syncThread` lists every target, whose project and key they are.
+ */
+type Shared = {
+  teamId: string
+  accounts: Accounts
+  directory: Directory
+  now: () => number
+  stored: Map<string, Uint8Array<ArrayBuffer>>
+  externalImports: boolean
+  platformHandles: boolean
+  boardWideKeys: boolean
+  projectIdHandles: boolean
+  unscopedSync: boolean
+}
 
 const STORAGE = 'http://storage.test/'
 
@@ -309,32 +353,48 @@ function fakeBoard(shared: Shared, boardId: string) {
   const channels: { id: string; name: string }[] = [{ id: 'general', name: 'general' }]
   const threads = new Map<string, Thread>()
   const posts = new Map<string, string>()
+  /** What each post's operation answered, by its caller: the API answers a repeated operation with what it answered first, and writes nothing. */
+  const posted = new Map<string, unknown>()
+  const once = <T,>(actor: Actor, operationId: unknown, write: () => T): T => {
+    if (typeof operationId !== 'string') return write()
+    const key = `${principalId(actor.principal)}|${operationId}`
+    if (!posted.has(key)) posted.set(key, write())
+    return posted.get(key) as T
+  }
   const feeds = new Map<string, Change[]>()
   const actors = new Map<string, ActorView>()
   const attachments = new Map<string, Attachment>()
   type Filter = { channelIds?: string[]; channelTree?: string; threadId?: string; authors?: string[]; text?: string; labels?: { key: string; values?: string[] }[] }
-  type Registration = { owner: string; url: string | null; path?: string; branch?: string; watch: Record<string, { filter: Filter }>; sync: { key: string; platform: string }[]; hash: string }
-  type Match = { id: string; watcher: string; threadId: string; change: Change; lease?: string; leaseUntil?: number; attempts: number }
+  type Registration = { owner: string; path?: string; branch?: string; watch: Record<string, { filter: Filter }>; sync: { key: string; platform: string }[]; hash: string }
+  type Match = { id: string; watcher: string; threadId: string; change: Change; lease?: string; leaseUntil?: number; retryAt?: number; attempts: number }
   /** By principal, as the API keeps them: one each. */
   const registrations = new Map<string, Registration>()
   const queued = new Map<string, Match[]>()
   const schedules = new Map<string, Schedule>()
-  /** Sync, as Vercel's API keeps it: each key's owner, platform IDs to the board's, copies, bindings, and inboxes. */
+  /**
+   * Sync, as Vercel's API keeps it: each key's owner, platform IDs to the board's, copies, bindings, and inboxes, all
+   * under the project whose key it is (`<projectId>|…`), or the whole board's with `boardWideKeys` (`|…`).
+   */
   const syncKeys = new Map<string, string>()
   const platformThreads = new Map<string, string>()
   const platformMessages = new Map<string, string>()
   const importIds = new Map<string, string>()
-  /** A thread's targets: `external` is the platform thread it is there, a channel's once its root lands. */
-  const bindings = new Map<string, { target: string; targetKind: 'channel' | 'thread'; cause: string; external?: string }[]>()
+  /** A thread's targets: `external` is the platform thread it is there, a channel's once its root lands. `projectId` is whose. */
+  const bindings = new Map<string, { target: string; targetKind: 'channel' | 'thread'; cause: string; external?: string; projectId?: string }[]>()
+  /** Each message's copies, and why it didn't reach a target, by `<projectId>|<target>`. */
   const copies = new Map<string, Record<string, { thread: string; message: string; files?: string[] | null; asUser?: true }>>()
   const failures = new Map<string, Record<string, string>>()
+  /** Whose sync keys a principal's are: its project's, or with `boardWideKeys`, the board's. */
+  const scopeOf = (principal: Principal) => (shared.boardWideKeys || principal.type !== 'project' ? '' : principal.projectId)
+  /** What a binding says of whose it is: its project, unless keys are the board's. */
+  const projectOf = (principal: Principal) => (scopeOf(principal) ? { projectId: scopeOf(principal) } : {})
   type InboxEntry = { id: string; eventId: string; thread: string; event?: unknown; raw?: unknown; pushedAt: number; attempts: number; lease?: string; leaseUntil?: number; retryAt?: number; done?: boolean }
   const inboxes = new Map<string, InboxEntry[]>()
 
   const seen = (actor: Actor) => {
     // A platform user is named by what its sync last said of them.
-    if (actor.principal.type === 'external') return
-    actors.set(actor.id, { ...viewOf(accounts, actor), lastSeenAt: now() })
+    if (actor.principal.type === 'external' || actor.profile?.platform) return
+    actors.set(actor.id, { ...viewOf(shared, actor), lastSeenAt: now() })
   }
 
   /** A channel's feed position, as the API's `c1.` cursor carries it: shared by its messages and its events. */
@@ -403,11 +463,12 @@ function fakeBoard(shared: Shared, boardId: string) {
       queued.set(owner, lane)
       lane.push({ id: `mat_${randomUUID()}`, watcher, threadId: message.threadId, change, attempts: 0 })
     }
-    // A thread's binding goes only to the sync that owns the target's key.
-    const binding = (change as { binding?: { target: string } }).binding
+    // A thread's binding goes only to the sync that owns the target's key, in the binding's project.
+    const binding = (change as { binding?: { target: string; projectId?: string } }).binding
     if (change.type === 'thread.synced' && binding) {
       for (const registration of registrations.values()) {
-        if (registration.sync.some((entry) => entry.key === prefixOf(binding.target))) {
+        const project = registration.owner.split(':')[2]
+        if (registration.sync.some((entry) => entry.key === prefixOf(binding.target)) && (binding.projectId === undefined || binding.projectId === project || shared.unscopedSync)) {
           queue(registration.owner, '@sync')
         }
       }
@@ -474,14 +535,15 @@ function fakeBoard(shared: Shared, boardId: string) {
     if (!(grant === 'all' || grant.includes(permission))) throw new Refused(403, 'forbidden', `This token may not ${permission} in ${name}.`)
   }
 
-  function post(actor: Actor, thread: Thread, body: { text: string; replyTo?: number; clientId?: string; labels?: Record<string, string>; attachments?: string[]; schedule?: { id: string; n: number }; after?: number; noSync?: boolean }) {
+  /** `uploader` is who must have uploaded its files: the caller, which for an import is the sync's project, not the platform user it posts as. */
+  function post(actor: Actor, thread: Thread, body: { text: string; replyTo?: number; clientId?: string; labels?: Record<string, string>; attachments?: string[]; schedule?: { id: string; n: number }; after?: number; noSync?: boolean }, uploader: Actor = actor) {
     tokenMay(actor, 'post', thread.channelId)
     // A reply's precondition, checked with the post: the thread's newest is still the one it names.
     if (body.after !== undefined && (!Number.isInteger(body.after) || body.after < 1 || body.after > thread.messageCount)) throw new Refused(400, 'invalid_after')
     if (body.after !== undefined && body.after !== thread.messageCount) throw new Refused(409, 'newer_message', `message ${thread.messageCount} came after ${body.after}`)
     const files = (body.attachments ?? []).map((id) => {
       const attachment = attachments.get(id)
-      if (!attachment || !samePrincipal(attachment.createdBy.principal, actor.principal)) throw new Refused(404, 'attachment_not_found')
+      if (!attachment || !samePrincipal(attachment.createdBy.principal, uploader.principal)) throw new Refused(404, 'attachment_not_found')
       if (attachment.state !== 'ready') throw new Refused(409, 'attachment_not_ready')
       if (attachment.messageId) throw new Refused(409, 'attachment_already_posted')
       return attachment
@@ -543,26 +605,19 @@ function fakeBoard(shared: Shared, boardId: string) {
     return { thread: showThread(thread), message: show(message) }
   }
 
-  function page<T>(items: T[], cursor: string | null, size: number) {
-    const from = cursor ? Number(cursor) : 0
-    const next = from + size < items.length ? String(from + size) : null
-    return { items: items.slice(from, from + size), cursor: next }
-  }
-
   async function watchers(method: string, rest: string, actor: Actor, parsed: Record<string, any>, url: URL): Promise<unknown> {
     const owner = principalId(actor.principal)
-    const view = (r: Registration) => ({ owner: r.owner, url: r.url, ...(r.path ? { path: r.path, ...(r.branch ? { branch: r.branch } : {}) } : {}), watch: r.watch, ...(r.sync.length ? { sync: r.sync } : {}), hash: r.hash })
+    const view = (r: Registration) => ({ owner: r.owner, ...(r.path ? { path: r.path, ...(r.branch ? { branch: r.branch } : {}) } : {}), watch: r.watch, ...(r.sync.length ? { sync: r.sync } : {}), hash: r.hash })
     if (method === 'GET' && rest === '/watchers') {
       const found = registrations.get(owner)
       return { watchers: found ? [view(found)] : [] }
     }
     if (method === 'PUT' && rest === '/watchers') {
-      const body = parsed as { url?: string | null; path?: string; branch?: string; watch: Registration['watch']; tag?: string; sync?: Registration['sync'] }
-      // A URL, or a path on the caller's own project (a preview's with its branch), as api-messageboard checks one.
-      if (body.url !== undefined && body.path !== undefined) throw new Refused(400, 'bad_request', 'A url or a path, not both.')
+      const body = parsed as { path?: string; branch?: string; watch: Registration['watch']; tag?: string; sync?: Registration['sync'] }
+      // A path on the caller's own project (a preview's with its branch), or none to pull, as api-messageboard checks one.
+      // A deployment is woken by its path on its project, or pulls: never at a URL, and the API refuses any `url`, even null.
+      if ('url' in parsed) throw new Refused(400, 'bad_request', 'Watchers are woken by a path, not a url.')
       if (body.branch !== undefined && body.path === undefined) throw new Refused(400, 'bad_request', 'A branch goes with a path.')
-      // A deployment is woken by its path on its project, or pulls: never at a URL.
-      if (typeof body.url === 'string') throw new Refused(400, 'bad_request', 'Watchers are woken by a path, not a url.')
       const principal = actor.principal
       if (body.path !== undefined) {
         if (principal.type !== 'project') throw new Refused(403, 'not_a_project')
@@ -570,18 +625,35 @@ function fakeBoard(shared: Shared, boardId: string) {
         if (body.branch !== undefined && principal.environment !== 'preview') throw new Refused(400, 'invalid_branch')
         if (typeof body.path !== 'string' || !body.path.startsWith('/') || body.path.startsWith('//')) throw new Refused(400, 'invalid_path')
       }
-      const where = body.path !== undefined ? { url: null, path: body.path.replace(/(.)\/+$/, '$1'), ...(body.branch ? { branch: body.branch } : {}) } : { url: body.url ?? null }
+      const where = body.path !== undefined ? { path: body.path.replace(/(.)\/+$/, '$1'), ...(body.branch ? { branch: body.branch } : {}) } : {}
       const sync = body.sync ?? []
-      // Only a project's own token syncs, and a key is one registrant's on the board.
+      // Only a project's own token syncs.
       if (sync.length > 0 && principal.type !== 'project') throw new Refused(403, 'sync_needs_project')
       // Watchers are for waking a deployment: only its own credentials register them, never a board token, whoever made it.
       if (principal.type !== 'project' || actor.token) throw new Refused(403, 'watchers_need_project', 'Only a deployment can register watchers.')
-      for (const { key } of sync) if ((syncKeys.get(key) ?? owner) !== owner) throw new Refused(409, 'sync_key_taken')
-      for (const [key, holder] of syncKeys) if (holder === owner && !sync.some((entry) => entry.key === key)) syncKeys.delete(key)
-      for (const { key } of sync) syncKeys.set(key, owner)
-      const made: Registration = { owner, ...where, watch: body.watch, sync, hash: body.tag ?? randomUUID().replaceAll('-', '') }
+      // A key is one registrant's in its project: production takes it from a preview or development, and otherwise
+      // whoever registered it first keeps it, and the rest hear who has it. With `boardWideKeys`, one's on the board, and a second's 409.
+      const scope = scopeOf(principal)
+      const environmentOf = (holder: string) => holder.split(':')[3]!
+      const held: Registration['sync'] = []
+      const elsewhere: { key: string; platform: string; owner: string; environment: string }[] = []
+      for (const entry of sync) {
+        const holder = syncKeys.get(`${scope}|${entry.key}`)
+        if (holder === undefined || holder === owner || (!shared.boardWideKeys && principal.environment === 'production' && environmentOf(holder) !== 'production')) held.push(entry)
+        else if (shared.boardWideKeys) throw new Refused(409, 'sync_key_taken')
+        else elsewhere.push({ key: entry.key, platform: entry.platform, owner: holder, environment: environmentOf(holder) })
+      }
+      for (const [at, holder] of syncKeys) if (holder === owner && !held.some((entry) => at === `${scope}|${entry.key}`)) syncKeys.delete(at)
+      for (const { key } of held) {
+        // The deployment production took it from stops syncing it, and is no longer woken for it.
+        const before = syncKeys.get(`${scope}|${key}`)
+        const taken = before === undefined || before === owner ? undefined : registrations.get(before)
+        if (taken) taken.sync = taken.sync.filter((entry) => entry.key !== key)
+        syncKeys.set(`${scope}|${key}`, owner)
+      }
+      const made: Registration = { owner, ...where, watch: body.watch, sync: held, hash: body.tag ?? randomUUID().replaceAll('-', '') }
       registrations.set(owner, made)
-      return view(made)
+      return shared.boardWideKeys ? view(made) : { ...view(made), elsewhere: elsewhere.sort((a, b) => a.key.localeCompare(b.key)) }
     }
     if (!registrations.has(owner)) throw new Refused(404, 'no_registration')
     if (method === 'GET' && rest === '/watchers/matches') {
@@ -590,7 +662,8 @@ function fakeBoard(shared: Shared, boardId: string) {
       for (;;) {
         // Read again each time: a match queued while it waits may be the registrant's first.
         const lane = queued.get(owner) ?? []
-        const held = new Set(lane.filter((m) => m.lease && m.leaseUntil! > Date.now()).map((m) => `${m.watcher}|${m.threadId}`))
+        // One leased, or waiting after an error, holds up its watcher's thread.
+        const held = new Set(lane.filter((m) => (m.lease && m.leaseUntil! > Date.now()) || (m.retryAt ?? 0) > Date.now()).map((m) => `${m.watcher}|${m.threadId}`))
         const heads = new Map<string, Match>()
         for (const m of lane) if (!heads.has(`${m.watcher}|${m.threadId}`)) heads.set(`${m.watcher}|${m.threadId}`, m)
         const free = [...heads.entries()].filter(([key]) => !held.has(key)).map(([, m]) => m).slice(0, limit)
@@ -616,8 +689,10 @@ function fakeBoard(shared: Shared, boardId: string) {
       const at = lane.findIndex((m) => m.id === decodeURIComponent(acking[1]!))
       if (at === -1) throw new Refused(404, 'no_match')
       if (lane[at]!.lease !== body.lease) throw new Refused(409, 'stale_lease')
+      // After an error it waits a second, doubling to 30, as the API's does.
       if (body.error !== undefined && !body.skip) {
         lane[at]!.attempts++
+        lane[at]!.retryAt = Date.now() + Math.min(30_000, 1000 * 2 ** (lane[at]!.attempts - 1))
         delete lane[at]!.lease
       } else lane.splice(at, 1)
       return { ok: true }
@@ -722,33 +797,42 @@ function fakeBoard(shared: Shared, boardId: string) {
 
 
   const prefixOf = (id: string) => id.slice(0, id.indexOf(':'))
-  /** Only a project's own token syncs, through the keys it registered. */
+  /** Only a project's own token syncs, through the keys it holds. */
   function requireKey(actor: Actor, key: string) {
     if (actor.principal.type !== 'project') throw new Refused(403, 'sync_needs_project')
-    if (syncKeys.get(key) !== principalId(actor.principal)) throw new Refused(403, 'sync_key_not_owned')
+    if (syncKeys.get(`${scopeOf(actor.principal)}|${key}`) !== principalId(actor.principal)) throw new Refused(403, 'sync_key_not_owned')
   }
-  const ownedKeys = (actor: Actor) => new Set([...syncKeys].filter(([, owner]) => owner === principalId(actor.principal)).map(([key]) => key))
+  /** The platform the caller registered a sync key with. */
+  const platformOf = (owner: string, key: string) => registrations.get(owner)?.sync.find((entry) => entry.key === key)?.platform ?? key
+  const ownedKeys = (actor: Actor) =>
+    new Set([...syncKeys].filter(([, owner]) => owner === principalId(actor.principal)).map(([at]) => at.slice(at.indexOf('|') + 1)))
 
   /** Vercel's API's sync routes, as they behave: undefined for a route that isn't one. */
   function syncRoute(method: string, rest: string, actor: Actor, body: Record<string, any>, url: URL): unknown {
     const owner = principalId(actor.principal)
+    const scope = scopeOf(actor.principal)
     let found: RegExpExecArray | null
     if (method === 'POST' && rest === '/sync/imports') {
       // The key it came through, or for a write a sync makes as the user, the user's own.
-      const key: string = (body.op === 'seen' ? undefined : body.from) ?? prefixOf(body.author.id)
+      const key: string = body.from ?? prefixOf(body.author.id)
       requireKey(actor, key)
       if (!String(body.author.id).startsWith(`${key}:`)) throw new Refused(403, 'foreign_author')
       if (body.origin && !body.from) throw new Refused(400, 'invalid_import', 'An import with an origin names the sync key it came through: pass `from`.')
       // A change it imported says which sync it came through, so that sync doesn't send it back.
       const through = body.from ? { from: body.from } : {}
-      const author: Actor = { id: body.author.id, principal: { type: 'external', id: body.author.id, syncKey: key } }
-      actors.set(author.id, { id: author.id, kind: 'external', handle: body.author.handle, name: body.author.name, ...(body.author.avatar ? { avatar: body.author.avatar } : {}), lastSeenAt: now() })
-      if (body.op === 'seen') return { message: null }
+      // The platform user is a profile of the project whose sync speaks for them, under the key it came through.
+      const principal = actor.principal as Extract<Principal, { type: 'project' }>
+      const author: Actor = shared.externalImports
+        ? { id: body.author.id, principal: { type: 'external', id: body.author.id, syncKey: key } }
+        : { id: `${owner}+${body.author.id}`, principal, profile: { name: body.author.id, platform: { key, platform: platformOf(owner, key), userId: String(body.author.id).slice(key.length + 1) } } }
+      const via = shared.externalImports ? {} : { via: { name: shared.directory.projects[principal.projectId] ?? null, environment: principal.environment }, platform: platformOf(owner, key) }
+      const handle = shared.externalImports || shared.platformHandles ? body.author.handle : importedHandle(shared.directory.projects[principal.projectId] ?? principal.projectId, body.author.handle, userIdOf(body.author.id))
+      actors.set(author.id, { id: author.id, kind: 'external', handle, name: body.author.name, ...(body.author.avatar ? { avatar: body.author.avatar } : {}), ...via, lastSeenAt: now() })
       if (body.op === 'post') {
         const landed = body.id !== undefined ? importIds.get(`${owner}|${body.id}`) : undefined
         if (landed) return { message: landed }
         const origin = body.origin as { thread: string; message: string } | null | undefined
-        if (origin && body.channelId !== undefined && platformThreads.has(`${key}|${origin.thread}`)) throw new Refused(409, 'already_synced')
+        if (origin && body.channelId !== undefined && platformThreads.has(`${scope}|${key}|${origin.thread}`)) throw new Refused(409, 'already_synced')
         let thread: Thread
         if (body.channelId !== undefined) {
           const channel = channelAt(body.channelId)
@@ -760,11 +844,11 @@ function fakeBoard(shared: Shared, boardId: string) {
           if (!to) throw new Refused(404, 'message_not_found')
           thread = threadAt(to.threadId)
           // A platform reply lands only in the thread its platform thread syncs with.
-          const bound = origin ? platformThreads.get(`${key}|${origin.thread}`) : undefined
+          const bound = origin ? platformThreads.get(`${scope}|${key}|${origin.thread}`) : undefined
           if (origin && bound !== undefined && bound !== thread.id) throw new Refused(409, 'already_synced')
           if (origin && bound === undefined) throw new Refused(409, 'not_synced')
         } else throw new Refused(400, 'invalid_import')
-        const message = post(author, thread, { text: body.text, ...(body.labels ? { labels: body.labels } : {}), ...(body.after !== undefined ? { after: body.after } : {}) })
+        const message = post(author, thread, { text: body.text, ...(body.labels ? { labels: body.labels } : {}), ...(body.attachments?.length ? { attachments: body.attachments } : {}), ...(body.after !== undefined ? { after: body.after } : {}) }, actor)
         if (body.from !== undefined && body.from !== null) message.from = body.from
         if (origin) message.origin = origin
         if (body.noSync) message.noSync = true
@@ -772,10 +856,10 @@ function fakeBoard(shared: Shared, boardId: string) {
         if (origin) {
           // A platform root binds its thread to its platform thread, which announces nothing.
           if (body.channelId !== undefined) {
-            platformThreads.set(`${key}|${origin.thread}`, thread.id)
-            bindings.set(thread.id, [{ target: origin.thread, targetKind: 'thread', cause: 'import', external: origin.thread }])
+            platformThreads.set(`${scope}|${key}|${origin.thread}`, thread.id)
+            bindings.set(thread.id, [{ target: origin.thread, targetKind: 'thread', cause: 'import', external: origin.thread, ...projectOf(actor.principal) }])
           }
-          platformMessages.set(`${key}|${origin.thread}|${origin.message}`, message.id)
+          platformMessages.set(`${scope}|${key}|${origin.thread}|${origin.message}`, message.id)
         }
         if (body.id !== undefined) importIds.set(`${owner}|${body.id}`, message.id)
         return { message: message.id }
@@ -783,15 +867,16 @@ function fakeBoard(shared: Shared, boardId: string) {
       const origin = body.origin as { thread: string; message?: string } | undefined
       const id = origin
         ? origin.message !== undefined
-          ? platformMessages.get(`${key}|${origin.thread}|${origin.message}`)
-          : platformThreads.has(`${key}|${origin.thread}`) ? `msg_${platformThreads.get(`${key}|${origin.thread}`)!.slice('thr_'.length)}_1` : undefined
+          ? platformMessages.get(`${scope}|${key}|${origin.thread}|${origin.message}`)
+          : platformThreads.has(`${scope}|${key}|${origin.thread}`) ? `msg_${platformThreads.get(`${scope}|${key}|${origin.thread}`)!.slice('thr_'.length)}_1` : undefined
         : body.message
       const message = id ? messageNamed(id) : undefined
       if (!message) return { message: null }
-      const by = message.createdBy.principal
+      const by = message.createdBy
       // A sync edits and deletes only its own platform users' messages; it reacts and labels on any.
       if (body.op === 'edit' || body.op === 'delete') {
-        if (by.type !== 'external' || by.syncKey !== key) {
+        const own = by.principal.type === 'external' ? by.principal.syncKey === key : by.profile?.platform?.key === key && samePrincipal(by.principal, actor.principal)
+        if (!own || (body.message !== undefined && by.id !== author.id)) {
           throw new Refused(403, 'message_not_owned')
         }
         if (body.revision !== undefined && body.revision !== message.revision) {
@@ -848,17 +933,20 @@ function fakeBoard(shared: Shared, boardId: string) {
     if (method === 'POST' && rest === '/sync/receipts') {
       const message = messageNamed(body.message)
       if (!message) throw new Refused(404, 'message_not_found')
-      requireKey(actor, prefixOf(body.target))
+      const key = prefixOf(body.target)
+      requireKey(actor, key)
+      const project = projectOf(actor.principal)
+      const at = `${scope}|${body.target}`
       if (body.kind === 'thread') {
         const list = bindings.get(message.threadId) ?? []
         bindings.set(message.threadId, list)
-        if (list.some((bound) => bound.target === body.target)) return { ok: true, attached: false }
+        if (list.some((bound) => bound.target === body.target && bound.projectId === project.projectId)) return { ok: true, attached: false }
         if (body.targetKind === 'thread') {
-          const at = platformThreads.get(`${prefixOf(body.target)}|${body.target}`)
-          if (at && at !== message.threadId) throw new Refused(409, 'already_synced')
-          platformThreads.set(`${prefixOf(body.target)}|${body.target}`, message.threadId)
+          const bound = platformThreads.get(`${scope}|${key}|${body.target}`)
+          if (bound && bound !== message.threadId) throw new Refused(409, 'already_synced')
+          platformThreads.set(`${scope}|${key}|${body.target}`, message.threadId)
         }
-        const binding = { target: body.target, targetKind: body.targetKind, cause: body.cause }
+        const binding = { target: body.target, targetKind: body.targetKind, cause: body.cause, ...project }
         list.push({ ...binding, ...(body.targetKind === 'thread' ? { external: body.target } : {}) })
         const thread = threadAt(message.threadId)
         emit(thread.channelId, { type: 'thread.synced', threadId: thread.id, messageId: thread.messages[0]!.id, binding }, actor)
@@ -867,21 +955,21 @@ function fakeBoard(shared: Shared, boardId: string) {
       const mine = copies.get(message.id) ?? {}
       copies.set(message.id, mine)
       if (body.kind === 'message') {
-        mine[body.target] ??= { thread: body.external.thread, message: body.external.message, ...(body.external.asUser ? { asUser: true as const } : {}), ...(body.files !== undefined ? { files: body.files } : {}) }
+        mine[at] ??= { thread: body.external.thread, message: body.external.message, ...(body.external.asUser ? { asUser: true as const } : {}), ...(body.files !== undefined ? { files: body.files } : {}) }
         // A channel's platform thread is the one its root landed in.
-        const bound = message.sequence === 1 ? bindings.get(message.threadId)?.find((one) => one.target === body.target && one.targetKind === 'channel') : undefined
+        const bound = message.sequence === 1 ? bindings.get(message.threadId)?.find((one) => one.target === body.target && one.targetKind === 'channel' && one.projectId === project.projectId) : undefined
         if (bound && bound.external === undefined) {
           bound.external = body.external.thread
-          platformThreads.set(`${prefixOf(body.target)}|${body.external.thread}`, message.threadId)
+          platformThreads.set(`${scope}|${key}|${body.external.thread}`, message.threadId)
         }
-        platformMessages.set(`${prefixOf(body.target)}|${body.external.thread}|${body.external.message}`, message.id)
-        delete failures.get(message.id)?.[body.target]
+        platformMessages.set(`${scope}|${key}|${body.external.thread}|${body.external.message}`, message.id)
+        delete failures.get(message.id)?.[at]
       } else if (body.kind === 'files') {
-        if (mine[body.target]) mine[body.target]!.files = body.files
+        if (mine[at]) mine[at]!.files = body.files
       } else {
         const failed = failures.get(message.id) ?? {}
         failures.set(message.id, failed)
-        failed[body.target] = body.error
+        failed[at] = body.error
       }
       return { ok: true }
     }
@@ -893,8 +981,8 @@ function fakeBoard(shared: Shared, boardId: string) {
       let message: string | null = null
       if (query.post !== undefined) message = importIds.get(`${owner}|${query.post}`) ?? null
       if (query.thread !== undefined && owned.has(prefixOf(query.thread))) {
-        thread = platformThreads.get(`${prefixOf(query.thread)}|${query.thread}`) ?? null
-        if (query.message !== undefined) message = platformMessages.get(`${prefixOf(query.thread)}|${query.thread}|${query.message}`) ?? message
+        thread = platformThreads.get(`${scope}|${prefixOf(query.thread)}|${query.thread}`) ?? null
+        if (query.message !== undefined) message = platformMessages.get(`${scope}|${prefixOf(query.thread)}|${query.thread}|${query.message}`) ?? message
       }
       // The API links no platform accounts to people, so it finds none.
       return { thread, message, person: null, accounts: [], holder: null }
@@ -903,7 +991,8 @@ function fakeBoard(shared: Shared, boardId: string) {
       if (actor.principal.type !== 'project') throw new Refused(403, 'sync_needs_project')
       const thread = threadAt(decodeURIComponent(found[1]!))
       const owned = ownedKeys(actor)
-      const mine = (bindings.get(thread.id) ?? []).filter((bound) => owned.has(prefixOf(bound.target)))
+      // Its own project's targets, through the keys it holds: with `unscopedSync`, every one.
+      const mine = (bindings.get(thread.id) ?? []).filter((bound) => shared.unscopedSync || (owned.has(prefixOf(bound.target)) && (bound.projectId ?? '') === scope))
       return {
         thread: thread.id,
         root: thread.messages[0]!.id,
@@ -915,26 +1004,40 @@ function fakeBoard(shared: Shared, boardId: string) {
     if (method === 'GET' && rest === '/sync/copies') {
       if (actor.principal.type !== 'project') throw new Refused(403, 'sync_needs_project')
       const owned = ownedKeys(actor)
-      return { copies: Object.fromEntries(url.searchParams.getAll('message').map((id) => [id, Object.fromEntries(Object.entries(copies.get(id) ?? {}).filter(([target]) => owned.has(prefixOf(target))))])) }
+      const own = (id: string) =>
+        Object.entries(copies.get(id) ?? {}).flatMap(([at, copy]) => {
+          const target = at.slice(at.indexOf('|') + 1)
+          return at.startsWith(`${scope}|`) && owned.has(prefixOf(target)) ? [[target, copy] as const] : []
+        })
+      return { copies: Object.fromEntries(url.searchParams.getAll('message').map((id) => [id, Object.fromEntries(own(id))])) }
     }
     if ((found = /^\/messages\/([^/]+)\/synced$/.exec(rest)) && method === 'GET') {
       const message = messageNamed(decodeURIComponent(found[1]!))
       if (!message) throw new Refused(404, 'message_not_found')
       const mine = copies.get(message.id) ?? {}
+      const failed = failures.get(message.id) ?? {}
       return {
-        targets: (bindings.get(message.threadId) ?? []).map(({ target }) => ({
+        // Every project's targets, each saying whose it is.
+        targets: (bindings.get(message.threadId) ?? []).map(({ target, projectId }) => ({
           target,
           key: prefixOf(target),
-          thread: mine[target]?.thread ?? null,
-          message: mine[target]?.message ?? null,
-          undelivered: failures.get(message.id)?.[target] ?? null,
+          thread: mine[`${projectId ?? ''}|${target}`]?.thread ?? null,
+          message: mine[`${projectId ?? ''}|${target}`]?.message ?? null,
+          undelivered: failed[`${projectId ?? ''}|${target}`] ?? null,
+          ...(projectId !== undefined ? { projectId } : {}),
         })),
       }
     }
     if (method === 'GET' && rest === '/sync/linked') {
       const thread = url.searchParams.get('thread') ?? ''
       const named = url.searchParams.get('message')
-      const id = named !== null ? platformMessages.get(`${prefixOf(thread)}|${thread}|${named}`) : platformThreads.has(`${prefixOf(thread)}|${thread}`) ? `msg_${platformThreads.get(`${prefixOf(thread)}|${thread}`)!.slice('thr_'.length)}_1` : undefined
+      // Every project's that holds the key, the caller's own first.
+      const scopes = new Set([scope, ...[...platformThreads.keys()].map((at) => at.slice(0, at.indexOf('|')))])
+      const idIn = (where: string) => {
+        const at = `${where}|${prefixOf(thread)}|${thread}`
+        return named !== null ? platformMessages.get(`${at}|${named}`) : platformThreads.has(at) ? `msg_${platformThreads.get(at)!.slice('thr_'.length)}_1` : undefined
+      }
+      const id = [...scopes].map(idIn).find((one) => one !== undefined)
       const message = id ? messageNamed(id) : undefined
       if (!message) throw new Refused(404, 'message_not_found')
       return { thread: message.threadId, message: message.id }
@@ -942,8 +1045,8 @@ function fakeBoard(shared: Shared, boardId: string) {
     if ((found = /^\/sync\/inbox\/([^/]+)(\/next|\/([^/]+)\/ack)?$/.exec(rest))) {
       const key = decodeURIComponent(found[1]!)
       requireKey(actor, key)
-      const inbox = inboxes.get(key) ?? []
-      inboxes.set(key, inbox)
+      const inbox = inboxes.get(`${scope}|${key}`) ?? []
+      inboxes.set(`${scope}|${key}`, inbox)
       if (method === 'POST' && found[2] === undefined) {
         let queued = 0
         for (const event of body.events as { id: string; thread: string; event?: unknown; raw?: unknown }[]) {
@@ -1028,6 +1131,7 @@ function fakeBoard(shared: Shared, boardId: string) {
     if (method === 'POST' && rest === '/threads') {
       const again = repeat(actor, body.clientId)
       if (again) return again
+      return once(actor, body.operationId, () => {
       // By `channel`, its name, it checks `post` there and makes the channel on its first post, as a board does; or by `channelId`.
       if (body.channel !== undefined) tokenMayIn(actor, 'post', String(body.channel))
       const channel = body.channel !== undefined ? (channels.find((c) => c.name === body.channel) ?? makeChannel(body.channel)) : channelAt(body.channelId)
@@ -1037,6 +1141,7 @@ function fakeBoard(shared: Shared, boardId: string) {
       threads.set(thread.id, thread)
       const message = post(actor, thread, body as { text: string; clientId?: string; labels?: Record<string, string>; attachments?: string[]; noSync?: boolean })
       return { thread: showThread(thread), message: show(message) }
+      })
     }
     if ((found = /^\/messages\/([^/]+)$/.exec(rest)) && method === 'GET') {
       const id = /^msg_([0-9a-f-]{36})_([1-9]\d*)$/.exec(decodeURIComponent(found[1]!))
@@ -1126,7 +1231,7 @@ function fakeBoard(shared: Shared, boardId: string) {
       }
       const again = repeat(actor, body.clientId)
       if (again) return again
-      return { thread: showThread(thread), message: show(post(actor, thread, body as { text: string; replyTo?: number; clientId?: string; attachments?: string[]; after?: number; noSync?: boolean })) }
+      return once(actor, body.operationId, () => ({ thread: showThread(thread), message: show(post(actor, thread, body as { text: string; replyTo?: number; clientId?: string; attachments?: string[]; after?: number; noSync?: boolean })) }))
     }
     if ((found = /^\/threads\/([^/]+)\/messages\/(\d+)(\/delete|\/reactions|\/labels)?$/.exec(rest))) {
       const thread = threadAt(found[1]!)
@@ -1202,7 +1307,7 @@ function fakeBoard(shared: Shared, boardId: string) {
     throw new Refused(404, 'not_found', `${method} ${rest}`)
   }
 
-  return { route, registrations, schedules, send, grants: access.grants }
+  return { route, registrations, schedules, send, grants: access.grants, within: (actor: Actor, can: Record<string, string[]>) => access.within(whoOf(actor), can) }
 }
 
 /** A board the fake API keeps: who may use it, and what's on it. */
@@ -1237,9 +1342,9 @@ const ALL = ['read', 'post', 'react', 'label', 'sync', 'manage']
  *
  * What `GET /me` says, as Vercel's API does: a person may do what their team role lets them
  * (`roles`, by user ID: everything, or `['read', 'react']` for a viewer; a member by default), and a project
- * or an app may read, post, react, and label, everywhere, none with an expiry. `me` says otherwise
+ * or an app may read, post, react, and label, and a project sync, everywhere, none with an expiry. `me` says otherwise
  * of some credentials, by the bearer it's sent (`user:u_jb`, or a board token's secret), as it will
- * of board tokens.
+ * of board tokens. A board's `/me` says the same, within what the board's grants give.
  * `me: false` says neither, as Vercel's API answered before it sent them.
  */
 export function fakeMessageboard(
@@ -1261,6 +1366,22 @@ export function fakeMessageboard(
     notDefault?: boolean
     /** Board tokens the API takes, by their secret, whatever it looks like: the principal each acts as, as `as()` names it. */
     tokens?: Record<string, string>
+    /** An import's author is the platform user alone (`principal: { type: 'external' }`), as Vercel's API named them before platform profiles. */
+    externalImports?: boolean
+    /** An import's handle is the platform user's own (`Malte Ubl`), as Vercel's API named them before it put them under their project's name. */
+    platformHandles?: boolean
+    /**
+     * A sync key is one registrant's on the whole board, as Vercel's API kept them before each project had its own: a
+     * second registrant's is 409 `sync_key_taken`, a registration names no `elsewhere`, and nothing names a binding's project.
+     */
+    boardWideKeys?: boolean
+    /** A deployment's handle is `project:prj_pong:production`, as Vercel's API named one before it named it by its project (`pong`). */
+    projectIdHandles?: boolean
+    /**
+     * Sync's records aren't kept apart, as board can't take for granted of an API it doesn't run: a thread's binding goes
+     * to every registrant that syncs its key, another project's included, and `syncThread` lists every target of a thread.
+     */
+    unscopedSync?: boolean
   } = {},
 ) {
   const accounts = options.accounts ?? ACCOUNTS
@@ -1273,7 +1394,18 @@ export function fakeMessageboard(
   const now = () => (clock = Math.max(Date.now(), clock + 1))
   const roles = options.roles ?? ROLES
   const directory = { members: { ...(options.members ?? MEMBERS) }, roles, projects: options.projects ?? PROJECTS, repositories: options.repositories ?? REPOSITORIES, apps: APPS }
-  const shared: Shared = { teamId, accounts, directory, now, stored }
+  const shared: Shared = {
+    teamId,
+    accounts,
+    directory,
+    now,
+    stored,
+    externalImports: options.externalImports ?? false,
+    platformHandles: options.platformHandles ?? false,
+    boardWideKeys: options.boardWideKeys ?? false,
+    projectIdHandles: options.projectIdHandles ?? false,
+    unscopedSync: options.unscopedSync ?? false,
+  }
 
   const tokens = fakeTokens({ now })
 
@@ -1316,14 +1448,16 @@ export function fakeMessageboard(
     // Registering and acking watchers, and completing uploads, take no operation ID: each is idempotent as it is.
     // Sync's routes take none either, but imports.
     if (method !== 'GET' && !/\/watchers(\/|$)|\/complete$|\/sync\/(?!imports$)/.test(path) && typeof body.operationId !== 'string') throw new Refused(400, 'invalid_operation_id')
-    if (method === 'GET' && path === '/me') {
-      if (options.me === false) return { teamId, actor, view: viewOf(accounts, actor) }
+    const me = () => {
+      if (options.me === false) return { teamId, actor, view: viewOf(shared, actor) }
       const role = actor.principal.type === 'user' ? (roles[actor.principal.userId] ?? 'member') : null
-      const can = role === null ? ['read', 'post', 'react', 'label'] : role === 'viewer' ? ['read', 'react'] : ALL
+      // A deployment's own credential may sync too, which no team role says: where, its grants do.
+      const can = role === null ? ['read', 'post', 'react', 'label', ...(actor.principal.type === 'project' ? ['sync'] : [])] : role === 'viewer' ? ['read', 'react'] : ALL
       // A board token may do what its scope says, until it expires, in milliseconds as the API sends times.
       const says = options.me?.[bearer] ?? (actor.token ? { can: tokens.summary(actor.token.can), expiresAt: actor.token.expiresAt } : { can: { '*': can }, expiresAt: null })
-      return { teamId, actor, view: viewOf(accounts, actor), can: says.can, expiresAt: says.expiresAt }
+      return { teamId, actor, view: viewOf(shared, actor), can: says.can, expiresAt: says.expiresAt }
     }
+    if (method === 'GET' && path === '/me') return me()
     if (method === 'GET' && path === '/boards') {
       // `name` matches whatever its case, among the boards the caller may use, in one answer.
       const name = url.searchParams.get('name')
@@ -1363,7 +1497,12 @@ export function fakeMessageboard(
     if (!onBoard || !board || !mayUse(actor, board) || (actor.token && actor.token.boardId !== board.id)) throw new Refused(404, 'board_not_found')
     const rest = onBoard[2] ?? ''
     if (method === 'GET' && rest === '') return { board: show(board) }
-    const minting = tokens.route(method, rest, body, actor, board.id)
+    // A board's own me: what the team's says, within what this board's grants give the caller.
+    if (method === 'GET' && rest === '/me') {
+      const said = me()
+      return 'can' in said && said.can ? { ...said, can: board.data.within(actor, said.can) } : said
+    }
+    const minting = tokens.route(method, rest, url, body, actor, board.id)
     if (minting !== undefined) return minting
     return board.data.route(method, rest, url, body, actor)
   }

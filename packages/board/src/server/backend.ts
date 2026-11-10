@@ -14,10 +14,8 @@ import type { WriteOrigin } from './origin.ts'
 /**
  * Who a verified caller is: its principal, with what board()'s `access` lets it do now (its scope
  * included, which only narrows), the author record its writes carry, and the actor it writes as.
- * `records: false`: its writes leave the board's record of its actor (name, avatar) as it is, for
- * a platform user a sync that can't sync everywhere writes as.
  */
-export type Identity = { principal: Granted; author: Author; actor: Actor; records?: false }
+export type Identity = { principal: Granted; author: Author; actor: Actor }
 
 /**
  * A caller board() verified, and what its policy lets it do: a request's, or for work a backend does
@@ -182,7 +180,7 @@ export interface Backend extends ProtocolMethods {
   /**
    * Whether the board lives here. One that keeps it (`local()`) serves requests: its people, the
    * board's own deployments, and whoever its grants and tokens let in. One that uses another board
-   * (Vercel's, or one at `BOARD_URL`) answers only wake-ups and webhooks.
+   * answers no requests: on Vercel's, only wake-ups and webhooks, and at `BOARD_URL`, nothing.
    */
   readonly keeps: boolean
   /**
@@ -191,6 +189,12 @@ export interface Backend extends ProtocolMethods {
    * board() screens a schedule's message once, when it's made. True when left out.
    */
   readonly sendsSchedulesHere?: boolean
+  /**
+   * Whether board()'s sync runs its entry `key` here: false for one another deployment holds, as vercel()'s
+   * deployments of one project hold each of its keys once (production takes one from a preview). Sync takes webhooks,
+   * pulls its inbox, starts threads, and delivers only through the keys it holds. Every key, when left out.
+   */
+  syncedHere?(key: string): Promise<boolean>
   /** Its grants and tokens, for a backend that keeps them (`local()`): board() checks requests against them. */
   readonly trust?: Trust
   /**

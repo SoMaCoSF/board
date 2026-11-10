@@ -74,8 +74,7 @@ on any backend, and the backend stores. SSE, [the handle](#the-handle),
   [How it runs](./06-watchers.md#how-it-runs).
 - **What Vercel's API doesn't keep yet answers 501 `not_supported`:** files on
   a scheduled message, labels on a scheduled reply, and a post's `sync`
-  targets. A platform message's files come over as links to them there. A
-  channel's message and thread counts are left out.
+  targets. A channel's message and thread counts are left out.
 
 A request's caller is who `board()` verified it is: `authenticate` checks its
 credential for the board's URL, which a token's audience must equal, works out
@@ -315,7 +314,7 @@ What a backend has:
 | --- | --- |
 | `discovery`, `me`, `messages`, `post`, … | One method per protocol route, `(caller, input, signal)`, named for it: the [HTTP reference](../04-reference/03-http.md#routes) lists them, and the `Protocol` type from `@vercel/board` says what each takes and answers |
 | `routes` | Routes of its own beside the protocol: `{ method, path, handle(request, { caller, param }) }`. One at a protocol route's path takes its place. `board()` verifies nothing for them: `caller` is null for a request, or the handle's own when its call reaches one |
-| `keeps` | Whether the board lives here. `true` serves its callers: the board's people, its own deployments, and whoever grants and board tokens let in. `false`, as on Vercel's board and the board at `BOARD_URL`, serves no requests but wake-ups and webhooks |
+| `keeps` | Whether the board lives here. `true` serves its callers: the board's people, its own deployments, and whoever grants and board tokens let in. `false` serves no requests: on Vercel's board, only wake-ups and webhooks, and at `BOARD_URL`, nothing |
 | `trust` | Its [grants](./09-access.md#grants) and [board tokens](./09-access.md#tokens), for a backend that keeps them: `grants()`, `token(hash)`, and `live(id)`. `board()` checks each request against them as they are then. Without it, they let no one in |
 | `bind(binding)` | Called once, when `board()` is created, before any request. It does no I/O. `binding.name` and `binding.team` are `board({ name, team })`'s, or null |
 
@@ -405,7 +404,10 @@ write.
   optionally `expiresAt`. Its handle stands: the one the CLI sends doesn't
   replace it, so a verifier that wants it returns `request.claims.handle`
   itself. The name, profile, and `x-board-can` the caller sends still apply
-  on top of it.
+  on top of it. The board takes the handle as checked: a person posts to Slack
+  under it as a plain sender ([who posts under a name](../02-sync/03-slack.md#messages-post-under-their-authors-name)),
+  so a verifier that echoes the caller's handle lets them pick the name they
+  post under.
 - **`kind: 'person'` is a person on the team:** it gets what grants give
   people, as the board's own people do (g1 gives everything), and a channel
   closed to `everyone` keeps it out unless a grant names it. So your verifier
@@ -462,7 +464,7 @@ curl https://www.example.com/api/board
 `board()` knows its project from `VERCEL_PROJECT_ID` on Vercel, or
 `.vercel/project.json` locally. Run `vercel link` in the app once, so a local
 board can verify the development tokens people send it. A route with no
-backend answers no discovery: it serves only wake-ups and webhooks.
+backend answers no discovery: it serves only wake-ups and webhooks, and with `BOARD_URL` set, nothing.
 
 The CLI doesn't take discovery's word for it. It mints a person's token only
 for the project Vercel says the board's host is a deployment of, so a board

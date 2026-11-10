@@ -4,6 +4,7 @@ import { duration, type ProfileOption } from '../client/client.ts'
 import { sha256 } from '../client/ids.ts'
 import { IMPORT_BYTES_MAX, RemoteWatcherId, type Attachment, type Author, type Labels } from '../contract/schemas.ts'
 import type { ExternalAuthor, Link, Origin } from '../contract/external.ts'
+import { actorParts, importedHandle, platformProfile, underPrincipal, type Via } from '../contract/profiles.ts'
 import { VERSION } from '../version.ts'
 import { compileAccess, parsePattern, PERMISSIONS, type AccessSummary, type Permission } from './access.ts'
 import { type Backend, type BackendRoute, type BoardBinding, type Caller, type ProtocolMethods } from './backend.ts'
@@ -22,8 +23,19 @@ type ApiPrincipal =
   | { type: 'user'; userId: string; clientId?: string }
   | { type: 'app'; clientId: string }
   | { type: 'project'; projectId: string; environment: string }
+  /** An imported message's author as the API named it before platform profiles: the platform user alone. */
   | { type: 'external'; id: string; syncKey: string }
-type ApiActor = { id: string; principal: ApiPrincipal; profile?: { name: string; avatar?: string }; session?: string }
+/**
+ * Who wrote something. An imported message's author is the importing project with a platform profile:
+ * `<project's principal>+<key>:<user>`, its `profile.platform` the sync key, the platform that key was
+ * registered with, and the user's ID there.
+ */
+type ApiActor = {
+  id: string
+  principal: ApiPrincipal
+  profile?: { name: string; avatar?: string; platform?: { key: string; platform?: string; userId: string } }
+  session?: string
+}
 type ApiChannel = { id: string; name: string }
 type ApiThread = {
   id: string
@@ -52,7 +64,7 @@ type ApiMessage = {
   /** Up to 20 actor IDs an emoji, earliest first. */
   reactors?: Record<string, string[]>
   labels?: Labels
-  /** The sync key an import came through, and where it is on its platform. */
+  /** The sync key an import came through, its importer's (`createdBy`), and where it is on its platform. */
   from?: string
   origin?: { channel?: string; thread: string; subthread?: string | null; message: string; context?: string | null }
   noSync?: boolean
@@ -88,7 +100,19 @@ type ApiSchedule = {
 }
 /** A file on the board: `messageId` once a post carries it. */
 type ApiAttachment = Attachment & { boardId: string; sha256: string; state: 'pending' | 'ready'; messageId?: string }
-type ApiActorView = { id: string; kind: 'person' | 'agent' | 'deployment' | 'app' | 'external'; handle: string; name?: string; avatar?: string }
+/**
+ * On a platform user a project's sync imported, `via` is that project's name, where the API knows it,
+ * and its environment, and `platform` the platform its sync key was registered with.
+ */
+type ApiActorView = {
+  id: string
+  kind: 'person' | 'agent' | 'deployment' | 'app' | 'external'
+  handle: string
+  name?: string
+  avatar?: string
+  via?: { name?: string | null; environment?: string | null }
+  platform?: string
+}
 type ApiChange = {
   type: string
   channelId: string
@@ -104,8 +128,11 @@ type ApiChange = {
   currentMessage?: ApiMessage
   /** The sync key a change a sync imported came through, so that sync doesn't send it back. */
   from?: string
-  /** For `thread.synced`, which only the sync owning the target's key gets: what the thread was bound to. */
-  binding?: { target: string; targetKind: 'channel' | 'thread'; cause: 'config' | 'request' }
+  /**
+   * For `thread.synced`, which only the sync owning the target's key gets: what the thread was bound to, and in
+   * which project's sync. An API from before each project had its own keys names no project.
+   */
+  binding?: { target: string; targetKind: 'channel' | 'thread'; cause: 'config' | 'request'; projectId?: string }
 }
 /**
  * Who these credentials are, as the API says: `can`, what they may do in each channel pattern, in
@@ -130,7 +157,19 @@ type ApiWatcherFilter = {
   labels?: { key: string; values?: string[] }[]
 }
 type ApiWatcherSpec = { filter: ApiWatcherFilter }
-type ApiRegistration = { owner: string; url: string | null; path?: string; branch?: string; watch: Record<string, ApiWatcherSpec>; sync?: SyncEntrySpec[]; hash: string }
+/**
+ * A registration: `sync` lists the keys it holds, and a `PUT` says in `elsewhere` which of its project's deployments
+ * holds each of the rest. An API from before each project had its own keys holds them all, or answers 409, and says neither.
+ */
+type ApiRegistration = {
+  owner: string
+  path?: string
+  branch?: string
+  watch: Record<string, ApiWatcherSpec>
+  sync?: SyncEntrySpec[]
+  elsewhere?: (SyncEntrySpec & { owner: string; environment?: string })[]
+  hash: string
+}
 type ApiMatch = { id: string; watcher: string; threadId: string; lease: string; attempt: number; event: ApiChange & { messageId: string } }
 
 export type VercelOptions = {
@@ -259,6 +298,31 @@ const servesNone = () => new HttpError(404, 'not_found', "this board uses Vercel
 
 const apiKind = (kind: ApiActorView['kind']): ActorView['kind'] => (kind === 'app' ? 'workflow' : kind)
 
+/** How many more times a request goes out after the API puts it off. */
+const RETRIES = 4
+/** The first wait before sending again, doubling each time. */
+const RETRY_MS = 1000
+
+/**
+ * How long to wait before sending a put-off request again: a second, doubling each time, with up to
+ * as long again added at random so callers the API put off together don't come back together, and
+ * never past what `Retry-After` asks. The API's 429s ask for a whole minute while its limit refills
+ * all the time, so that's a ceiling, not the wait.
+ */
+function retryWait(attempt: number, retryAfter: string | null): number {
+  const asked = retryAfter !== null && /^\d+$/.test(retryAfter) && Number(retryAfter) > 0 ? Number(retryAfter) * 1000 : Infinity
+  return Math.min(asked, RETRY_MS * 2 ** attempt * (1 + Math.random()))
+}
+
+/** `ms` passing, or `signal` stopping it first. */
+const pause = (ms: number, signal?: AbortSignal) =>
+  ms <= 0 || signal?.aborted
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, ms)
+        signal?.addEventListener('abort', () => (clearTimeout(timer), resolve()), { once: true })
+      })
+
 /** A UUIDv7, which the API takes as an operation ID. */
 function operationId(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16))
@@ -292,6 +356,100 @@ function principalId(principal: ApiPrincipal): string {
   return `vercel:project:${principal.projectId}:${principal.environment}`
 }
 
+/** A principal from a board actor ID, `vercel:project:prj_1:preview+slack:user:U1` say, or null for one the API doesn't name. */
+function principalFrom(actor: string): ApiPrincipal | null {
+  const id = actorParts(actor).principal
+  const project = /^vercel:project:([^:]+):([^:]+)$/.exec(id)
+  if (project) return { type: 'project', projectId: project[1]!, environment: project[2]! }
+  if (id.startsWith('vercel:user:')) return { type: 'user', userId: id.slice('vercel:user:'.length) }
+  if (id.startsWith('vercel:app:')) return { type: 'app', clientId: id.slice('vercel:app:'.length) }
+  return null
+}
+
+/**
+ * Who an actor with a profile acts through, as board shows it: a project by its name (`project`, as the
+ * actors list names it), or the one the API's view gives it, or its ID, in its environment; a person by
+ * their username, which the API puts before an agent's name in its handle (`julian/claude`); anyone
+ * else by a short form of their ID.
+ */
+function viaFor(principal: ApiPrincipal, view?: Pick<ApiActorView, 'handle' | 'via'>, project?: string): Via {
+  const named = view?.via?.name ?? null
+  if (principal.type === 'project') return { name: project ?? named ?? principal.projectId, environment: view?.via?.environment ?? principal.environment }
+  if (principal.type === 'external') return { name: named ?? principal.id, environment: null }
+  const slash = view?.handle.indexOf('/') ?? -1
+  const username = principal.type === 'user' && slash > 0 ? view!.handle.slice(0, slash) : null
+  return { name: named ?? username ?? shortName(principal), environment: null }
+}
+
+/**
+ * A platform user's handle as a project's sync imported them, `support/malte-ubl`, at most 128
+ * characters as the API keeps it: as the API names them, or from an API that names them as their
+ * platform does, under their project's name.
+ */
+const importedHandleOf = (handle: string, principal: ApiPrincipal, view: Pick<ApiActorView, 'handle' | 'via'> | undefined, userId: string, project?: string) =>
+  handle.includes('/') ? underPrincipal(handle.slice(0, handle.indexOf('/')), handle.slice(handle.indexOf('/') + 1)) : importedHandle(viaFor(principal, view, project).name, handle, userId)
+
+/**
+ * A deployment as board shows it: by its project's name (`project`) in every environment, and named
+ * with its environment outside production (`support (preview)`); or, where that isn't known, by its
+ * project's ID, and outside production with its environment (`prj_support@preview`).
+ */
+function deploymentNamed(principal: Extract<ApiPrincipal, { type: 'project' }>, project: string | undefined): { handle: string; name: string } {
+  const production = principal.environment === 'production'
+  if (project === undefined) {
+    const id = production ? principal.projectId : `${principal.projectId}@${principal.environment}`
+    return { handle: id, name: id }
+  }
+  return { handle: project, name: production ? project : `${project} (${principal.environment})` }
+}
+
+/**
+ * Projects' names by ID, from what the actors list says: a deployment's handle, which the API makes its project's
+ * name, then what comes before the `/` in one of its agents' (`support/sync`, its sync's), then the name the API gives
+ * a project on its users (their `via`). An API that names a deployment by its ID (`project:prj_…:production`,
+ * `project:prj_…:production/sync`) names its project only there. A platform user's handle names no project: an API
+ * may give the one they have on their platform, slash and all.
+ */
+function projectNamesOf(views: Iterable<readonly [string, Pick<ApiActorView, 'handle' | 'via'>]>): Map<string, string> {
+  const byHandle = new Map<string, string>()
+  const byProfile = new Map<string, string>()
+  const byVia = new Map<string, string>()
+  for (const [id, found] of views) {
+    const principal = principalFrom(id)
+    if (principal?.type !== 'project') continue
+    const { profile } = actorParts(id)
+    if (profile !== null && found.via?.name) byVia.set(principal.projectId, found.via.name)
+    if (found.handle.startsWith('project:')) continue
+    const slash = found.handle.indexOf('/')
+    if (profile === null) byHandle.set(principal.projectId, found.handle)
+    else if (slash > 0 && platformProfile(profile) === null) byProfile.set(principal.projectId, found.handle.slice(0, slash))
+  }
+  return new Map([...byVia, ...byProfile, ...byHandle])
+}
+
+/**
+ * The handle board shows an actor of the actors list by, with its project named as `names` says: a deployment by
+ * its project's (`www`, or by ID `prj_www@preview`), a platform user under it (`www/ada`), and anyone else as the
+ * API names them.
+ */
+function shownHandle(id: string, view: ApiActorView, names: Map<string, string>): string {
+  const principal = principalFrom(id)
+  if (principal?.type !== 'project') return view.handle
+  const project = names.get(principal.projectId)
+  const { profile } = actorParts(id)
+  if (profile === null) return deploymentNamed(principal, project).handle
+  const user = platformProfile(profile)
+  return user ? importedHandleOf(view.handle, principal, view, user.user, project) : view.handle
+}
+
+/** Who goes by `handle` in a read of the actors list: as the API names them, or as board shows them. */
+const goingBy = (views: Iterable<readonly [string, ApiActorView]>, names: Map<string, string>, handle: string) =>
+  [...views].filter(([id, view]) => view.handle.toLowerCase() === handle || shownHandle(id, view, names).toLowerCase() === handle).map(([id]) => id)
+
+/** A short name for a person or an app the API doesn't name: the start of their ID. */
+const shortName = (principal: Extract<ApiPrincipal, { type: 'user' | 'app' }>) =>
+  principal.type === 'user' ? `user-${principal.userId.slice(0, 6).toLowerCase()}` : `app-${principal.clientId.slice(0, 6).toLowerCase()}`
+
 const authorOf = (actor: ApiActor): Author => ({
   actor: actor.id,
   principal: principalId(actor.principal),
@@ -302,22 +460,24 @@ const authorOf = (actor: ApiActor): Author => ({
 /** Who cancels a schedule when no one did: the API, once its creator can no longer post it, as a local board's scheduler. */
 const SCHEDULER: Author = { actor: 'board:schedule', principal: 'board:schedule', profile: null, session: null }
 
-/** The API names nobody, so an actor's handle is its profile, or a short form of its principal. */
-function actorView(actor: ApiActor): ActorView & { id: string } {
-  const { principal } = actor
+/**
+ * An actor where the API doesn't name them: its handle is its profile, or a short form of its
+ * principal (a deployment by `project`, its project's name, where it's known), and one with a profile
+ * acts through its principal, as `view` names it if there's one.
+ */
+function actorView(actor: ApiActor, view?: ApiActorView, project?: string): ActorView & { id: string } {
+  const { principal, profile } = actor
   // A platform user a sync imported, by their ID on the platform until the API names them.
-  if (principal.type === 'external') return { id: actor.id, kind: 'external', handle: principal.id.slice(principal.id.lastIndexOf(':') + 1), name: principal.id, avatar: null }
-  const base =
-    principal.type === 'user'
-      ? `user-${principal.userId.slice(0, 6).toLowerCase()}`
-      : principal.type === 'app'
-        ? `app-${principal.clientId.slice(0, 6).toLowerCase()}`
-        : principal.environment === 'production'
-          ? principal.projectId
-          : `${principal.projectId}@${principal.environment}`
-  const handle = actor.profile?.name ?? base
-  const kind = actor.profile ? 'agent' : principal.type === 'user' ? 'person' : principal.type === 'project' ? 'deployment' : 'workflow'
-  return { id: actor.id, kind, handle, name: handle, avatar: actor.profile?.avatar ?? null }
+  if (principal.type === 'external') return { id: actor.id, kind: 'external', handle: principal.id.slice(principal.id.lastIndexOf(':') + 1), name: principal.id, avatar: null, verified: true }
+  if (profile?.platform) {
+    const { userId, platform, key } = profile.platform
+    const handle = importedHandleOf(view?.handle ?? '', principal, view, userId, project)
+    return { id: actor.id, kind: 'external', handle, name: profile.name, avatar: null, via: viaFor(principal, view, project), platform: view?.platform ?? platform ?? key, verified: true }
+  }
+  if (profile) return { id: actor.id, kind: 'agent', handle: profile.name, name: profile.name, avatar: profile.avatar ?? null, via: viaFor(principal, view, project), verified: true }
+  if (principal.type === 'project') return { id: actor.id, kind: 'deployment', ...deploymentNamed(principal, project), avatar: null, verified: true }
+  const handle = shortName(principal)
+  return { id: actor.id, kind: principal.type === 'user' ? 'person' : 'workflow', handle, name: handle, avatar: null, verified: true }
 }
 
 /** A message's labels just before a change, from what they are after it and what it changed. */
@@ -361,7 +521,11 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     return (team ??= given ? Promise.resolve(given) : (environment?.team() ?? Promise.resolve(null)))
   }
 
-  /** One request to the API, as `who`. Its errors are the API's own, with its status and code. */
+  /**
+   * One request to the API, as `who`. Its errors are the API's own, with its status and code. One the
+   * API puts off (429, or a 503) waits and goes again as it was, so a write keeps its operation ID
+   * and lands once.
+   */
   async function api<T>(who: Who, method: string, path: string, init: { query?: Record<string, string | readonly string[] | undefined>; body?: unknown; signal?: AbortSignal } = {}): Promise<T> {
     const url = new URL(`${origin}/v1/messageboard${path}`)
     const id = await teamId()
@@ -376,30 +540,39 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     if (who.profile) headers['x-board-profile'] = who.profile.name
     if (who.profile?.avatar?.startsWith('https://')) headers['x-board-avatar'] = who.profile.avatar
     if (who.session && SESSION.test(who.session)) headers['x-board-session'] = who.session
-    let response: Response
-    try {
-      response = await doFetch(url, {
-        method,
-        headers,
-        redirect: 'error',
-        ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
-        ...(init.signal ? { signal: init.signal } : {}),
-      })
-    } catch (error) {
-      if (error instanceof HttpError || (error instanceof Error && error.name === 'AbortError')) throw error
-      throw new HttpError(502, 'unreachable', `Vercel's API didn't answer: ${error instanceof Error ? error.message : String(error)}`)
+    // A 429 did nothing. A 503 may have: only a request the API can tell it has seen goes again.
+    const repeatable = (method !== 'POST' && method !== 'PATCH') || typeof (init.body as { operationId?: unknown } | undefined)?.operationId === 'string'
+    for (let attempt = 0; ; attempt++) {
+      let response: Response
+      try {
+        response = await doFetch(url, {
+          method,
+          headers,
+          redirect: 'error',
+          ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
+          ...(init.signal ? { signal: init.signal } : {}),
+        })
+      } catch (error) {
+        if (error instanceof HttpError || (error instanceof Error && error.name === 'AbortError')) throw error
+        throw new HttpError(502, 'unreachable', `Vercel's API didn't answer: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      const text = await response.text()
+      let body: unknown
+      try {
+        body = text ? JSON.parse(text) : undefined
+      } catch {}
+      if (response.ok) return body as T
+      if (attempt < RETRIES && !init.signal?.aborted && (response.status === 429 || (response.status === 503 && repeatable))) {
+        await pause(retryWait(attempt, response.headers.get('retry-after')), init.signal)
+        init.signal?.throwIfAborted()
+        continue
+      }
+      const error = (body as { error?: { code?: string; message?: string } } | undefined)?.error
+      // A board token reaches its own board by ID, and none of the team's routes: finding a board by its name or as the team's is one.
+      if (error?.code === 'board_token_scope')
+        throw new HttpError(403, 'board_token_scope', 'a board token reaches only its own board, by its ID.', { hint: 'Name its board by URL or ID: BOARD_URL, --url, or vercel({ board }).', origin: 'handle' })
+      throw new HttpError(response.status, error?.code ?? 'remote_error', error?.message ?? `Vercel's API answered ${response.status}`)
     }
-    const text = await response.text()
-    let body: unknown
-    try {
-      body = text ? JSON.parse(text) : undefined
-    } catch {}
-    if (response.ok) return body as T
-    const error = (body as { error?: { code?: string; message?: string } } | undefined)?.error
-    // A board token reaches its own board by ID, and none of the team's routes: finding a board by its name or as the team's is one.
-    if (error?.code === 'board_token_scope')
-      throw new HttpError(403, 'board_token_scope', 'a board token reaches only its own board, by its ID.', { hint: 'Name its board by URL or ID: BOARD_URL, --url, or vercel({ board }).', origin: 'handle' })
-    throw new HttpError(response.status, error?.code ?? 'remote_error', error?.message ?? `Vercel's API answered ${response.status}`)
   }
 
   /** A request on sync's routes, whose refusals board()'s sync knows only by the board's codes. */
@@ -407,9 +580,10 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     try {
       return await api<T>(...args).catch(async (error: unknown) => {
         // A sync key is this deployment's once it registers, which its first request starts without
-        // waiting: a webhook can get there first, so it registers and tries once more.
+        // waiting: a webhook can get there first, so it registers and tries once more. Or another
+        // deployment took the key since it registered, however recently: registering again says so.
         if (!(error instanceof HttpError && error.code === 'sync_key_not_owned' && (binding?.sync.length ?? 0) > 0)) throw error
-        await runner.registerNow()
+        await runner.registerNow(true)
         return api<T>(...args)
       })
     } catch (error) {
@@ -650,9 +824,63 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       if (!found && (await again.views.then(() => true, () => false))) unlisted.add(actor.id)
     }
     const kind = found && apiKind(found.kind)
-    // The API names a project or an app by its ID, and an agent under one after it: board's names say more.
-    if (!found || !(kind === 'person' || kind === 'external' || (kind === 'agent' && actor.principal.type === 'user'))) return actorView(actor)
-    return { id: actor.id, kind, handle: found.handle, name: found.name ?? found.handle, avatar: found.avatar ?? null }
+    // A project, its deployments and their agents alike, by its name as the actors list names it.
+    const project = actor.principal.type === 'project' ? await namedProject(who, actor.principal.projectId) : undefined
+    // board names a project, an app, and an agent under one its own way, from what the API says of them.
+    if (!found || !(kind === 'person' || kind === 'external' || (kind === 'agent' && actor.principal.type === 'user'))) return actorView(actor, found, project)
+    const via = actor.profile && actor.principal.type !== 'external' ? { via: viaFor(actor.principal, found, project) } : {}
+    const platform = found.platform ?? actor.profile?.platform?.platform
+    const user = actor.profile?.platform
+    const handle = user && actor.principal.type !== 'external' ? importedHandleOf(found.handle, actor.principal, found, user.userId, project) : found.handle
+    return { id: actor.id, kind, handle, name: found.name ?? found.handle, avatar: found.avatar ?? null, ...via, ...(platform ? { platform } : {}), verified: true }
+  }
+
+  /** Projects' names by ID, as `projectNamesOf` reads them from a read of the actors list. */
+  const namesRead = new WeakMap<object, Promise<Map<string, string>>>()
+  function namesIn(read: { views: Promise<Map<string, ApiActorView>> }): Promise<Map<string, string>> {
+    let names = namesRead.get(read)
+    if (!names) namesRead.set(read, (names = read.views.then(projectNamesOf, () => new Map<string, string>())))
+    return names
+  }
+  /** What a fresh read of the actors still didn't name: it isn't read again for them until names are read anyway. */
+  const unnamed = new Set<string>()
+  /**
+   * Projects' names by ID, as the actors list names them, read again at once when `wanted` (one or more projects, by
+   * their IDs) isn't among them, as for someone new since the list was read.
+   */
+  async function projectNames(who: Who, wanted?: { key: string; found: (names: Map<string, string>) => boolean }): Promise<Map<string, string>> {
+    const kept = actorNames && Date.now() - actorNames.at <= NAMES_FRESH_MS ? actorNames : null
+    let names = await namesIn(kept ?? readNames(who))
+    if (!wanted || wanted.found(names) || !kept || unnamed.has(wanted.key)) return names
+    names = await namesIn(actorNames && actorNames !== kept ? actorNames : readNames(who))
+    if (!wanted.found(names)) {
+      if (unnamed.size >= 1000) unnamed.clear()
+      unnamed.add(wanted.key)
+    }
+    return names
+  }
+  /** A project's name, as `projectNames` finds it: undefined where nothing names it. */
+  const namedProject = async (who: Who, project: string) => (await projectNames(who, { key: project, found: (names) => names.has(project) })).get(project)
+  /** A project's name, or its ID. */
+  const projectName = async (who: Who, project: string) => (await namedProject(who, project)) ?? project
+
+  /** The project these credentials are, whose sync keys a caller names bare: null for a person's or an app's. */
+  const ownProject = async (who: Who) => {
+    const { principal } = (await self(who)).actor
+    return principal.type === 'project' ? principal.projectId : null
+  }
+  /** The project whose sync imported a message or a change, as its author says: null for one that says none. */
+  const importerOf = (actor: ApiActor) => (actor.principal.type === 'project' ? actor.principal.projectId : null)
+
+  /**
+   * The sync key a message or a change came through, as this caller names it: bare for its own project's, since a
+   * project's keys are its own, and `<project>/<key>` for another's (`www/slack`), by the project's name, or its ID.
+   */
+  async function fromOf(who: Who, from: string | undefined, by: ApiActor): Promise<string | null> {
+    if (from === undefined) return null
+    const project = importerOf(by)
+    if (project === null || project === (await ownProject(who))) return from
+    return `${await projectName(who, project)}/${from}`
   }
 
   async function view(who: Who, message: ApiMessage, channel: string): Promise<MessageView> {
@@ -666,11 +894,10 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       thread: message.threadId,
       labels: labelsOf(message),
       reactions: message.deletedAt === undefined ? await reactors(who, message) : {},
-      mentions: [],
       by: authorOf(message.createdBy),
       noSync: message.noSync ?? false,
       origin: originOf(message.origin),
-      from: message.from ?? null,
+      from: await fromOf(who, message.from, message.createdBy),
       createdAt: iso(message.createdAt),
       editedAt: message.editedAt === undefined ? null : iso(message.editedAt),
       deleted: message.deletedAt !== undefined,
@@ -792,8 +1019,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     const named = new Set([by])
     if (!by.startsWith('vercel:')) {
       const handle = by.toLowerCase()
-      const find = async (read: { views: Promise<Map<string, ApiActorView>> }) =>
-        [...(await read.views)].filter(([, view]) => view.handle.toLowerCase() === handle).map(([id]) => id)
+      const find = async (read: { views: Promise<Map<string, ApiActorView>> }) => goingBy(await read.views, await namesIn(read), handle)
       const kept = actorNames && Date.now() - actorNames.at <= NAMES_FRESH_MS ? actorNames : null
       let ids = await find(kept ?? readNames(who))
       // Someone new since the list was read: one read again finds them. A value no fresh read had
@@ -806,21 +1032,51 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       }
       for (const id of ids) named.add(id)
     }
-    return (actor) => named.has(actor.id) || named.has(principalId(actor.principal)) || (actor.profile !== undefined && named.has(actor.profile.name))
+    // A profile name covers that agent of anyone's; a platform user a sync imported is only ever themselves.
+    return (actor) => named.has(actor.id) || named.has(principalId(actor.principal)) || (actor.profile !== undefined && !actor.profile.platform && named.has(actor.profile.name))
   }
 
+  /** Which messages a `--source` value covers. */
+  type Source = (message: ApiMessage) => boolean | Promise<boolean>
+
   /**
-   * Whether a message matches a read's filters. A label matches on the message or its thread's root:
-   * `thread`'s labels, as `labeledBy` gives them when the read filters on labels.
+   * Which messages `--source` names, as `fromOf` shows where they came from: `board`, a key bare for this caller's own
+   * project's (or an import that names no project), or `<project>/<key>` for any project's, by its name or its ID.
    */
-  function matches(filters: Omit<Filters, 'channel'>, message: ApiMessage, thread: ApiThread, by: By | undefined): boolean {
+  async function sourceOf(who: Who, from: string | undefined): Promise<Source | undefined> {
+    if (from === undefined) return undefined
+    if (from === 'board') return (message) => message.from === undefined
+    const slash = from.indexOf('/')
+    if (slash === -1) {
+      const own = await ownProject(who)
+      return (message) => message.from === from && [null, own].includes(importerOf(message.createdBy))
+    }
+    const [project, key] = [from.slice(0, slash), from.slice(slash + 1)]
+    // Its importer by ID, or by its name as the names say now: a project new since they were read is looked up
+    // as its first import comes, once, as `fromOf` names it, so a filter made before it names it from then on.
+    return async (message) => {
+      const importer = importerOf(message.createdBy)
+      return message.from === key && importer !== null && (importer === project || (await namedProject(who, importer)) === project)
+    }
+  }
+
+  /** What a read narrows its messages by beside what the API can: who `--by` names, and where `--source` does. */
+  type Narrow = { by?: By | undefined; source?: Source | undefined }
+  const narrowOf = async (who: Who, filters: { by?: string | undefined; from?: string | undefined }): Promise<Narrow> => ({
+    by: await byOf(who, filters.by),
+    source: await sourceOf(who, filters.from),
+  })
+
+  /**
+   * Whether a message matches a read's filters, `narrow` as `narrowOf` gives them for it. A label matches on the
+   * message or its thread's root: `thread`'s labels, as `labeledBy` gives them when the read filters on labels.
+   */
+  async function matches(filters: Omit<Filters, 'channel'>, message: ApiMessage, thread: ApiThread, narrow: Narrow): Promise<boolean> {
     if (filters.re !== undefined && filters.re !== message.id && filters.re !== idAt(thread.id, 1)) return false
-    if (by && !by(message.createdBy)) return false
+    if (narrow.by && !narrow.by(message.createdBy)) return false
     // Nothing here resolves mentions yet, so a mention filter matches nothing.
     if (filters.mentions !== undefined) return false
-    if (filters.from !== undefined && (message.from ?? 'board') !== filters.from) {
-      return false
-    }
+    if (filters.from !== undefined && !(await narrow.source?.(message))) return false
     if (filters.text !== undefined && !message.text.toLowerCase().includes(filters.text.toLowerCase())) return false
     for (const [key, values] of filters.label ?? []) {
       const on = (labels: Labels | undefined) => labels !== undefined && Object.hasOwn(labels, key) && (values === null || values.includes(labels[key]!))
@@ -924,7 +1180,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       threads = (await Promise.all(listed.map(async (channel) => (await threadsOf(who, channel, filters, signal)).map((thread) => ({ thread, channel }))))).flat()
     }
     const feeds = await heads(who, listed)
-    const by = await byOf(who, filters.by)
+    const narrow = await narrowOf(who, filters)
     let newest = 0
     const messages: { message: ApiMessage; thread: ApiThread; channel: ApiChannel }[] = []
     for (const { thread, channel } of threads) {
@@ -932,7 +1188,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       const labeled = labeledBy(thread, all.find((message) => message.sequence === 1))
       for (const message of all) {
         newest = Math.max(newest, message.createdAt)
-        if (matches(filters, message, labeled, by)) messages.push({ message, thread, channel })
+        if (await matches(filters, message, labeled, narrow)) messages.push({ message, thread, channel })
       }
     }
     messages.sort(byTime)
@@ -979,7 +1235,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     channel: string,
     cursor: string,
     filters: Filters,
-    authors: By | undefined,
+    narrow: Narrow,
     given?: { thread: ApiThread; message: ApiMessage },
     threads: (id: string) => Promise<ApiThread> = threadReader(who),
   ): Promise<BoardEventView | null> {
@@ -993,21 +1249,21 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     // A reply's read names its thread, not whether its root is deleted: a label filter reads the root.
     if (found && !given && filters.label?.length)
       found = { ...found, thread: found.message.sequence === 1 ? labeledBy(found.thread, found.message) : await threads(found.thread.id) }
-    if (!found || !matches(filters, found.message, found.thread, authors)) return null
+    if (!found || !(await matches(filters, found.message, found.thread, narrow))) return null
     const message = await view(who, found.message, channel)
     const by = authorOf(change.actor)
-    const from = change.from ?? null
+    const from = await fromOf(who, change.from, change.actor)
     const base = { id: message.id, thread: message.thread }
     let type: BoardEventView['type']
     let payload: Record<string, unknown>
     switch (change.type) {
       case 'message.posted':
         type = 'message.posted'
-        payload = { channel, text: message.text, re: message.re, replyTo: message.replyTo, thread: message.thread, labels: message.labels, noSync: message.noSync, mentions: [], by, origin: message.origin, from: message.from, attachments: message.attachments, links: message.links }
+        payload = { channel, text: message.text, re: message.re, replyTo: message.replyTo, thread: message.thread, labels: message.labels, noSync: message.noSync, by, origin: message.origin, from: message.from, attachments: message.attachments, links: message.links }
         break
       case 'message.edited':
         type = 'message.edited'
-        payload = { ...base, text: message.text, mentions: [], by, from }
+        payload = { ...base, text: message.text, by, from }
         break
       case 'message.deleted':
         type = 'message.deleted'
@@ -1054,29 +1310,20 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
         return { channel, at: from?.at ?? null, next: page.cursor, events }
       }),
     )
-    const by = await byOf(who, filters.by)
+    const narrow = await narrowOf(who, filters)
     const threads = threadReader(who, signal)
     const running: Record<string, Feed> = { ...position.feeds }
     const merged = pages.flatMap((page) => page.events.map((event) => ({ ...event, page }))).sort((a, b) => a.change.createdAt - b.change.createdAt)
     const events: BoardEventView[] = []
     for (const { change, i, page } of merged) {
       running[page.channel.id] = { at: page.at, skip: i + 1 }
-      const event = await eventOf(who, change, page.channel.name, cursorOf({ t: change.createdAt, feeds: { ...running } }), filters, by, undefined, threads)
+      const event = await eventOf(who, change, page.channel.name, cursorOf({ t: change.createdAt, feeds: { ...running } }), filters, narrow, undefined, threads)
       if (event) events.push(event)
     }
     const after: Record<string, Feed> = { ...position.feeds }
     for (const page of pages) after[page.channel.id] = { at: page.next, skip: 0 }
     return { events, position: { t: Math.max(position.t, ...merged.map(({ change }) => change.createdAt)), feeds: after } }
   }
-
-  /** `ms` passing, or `signal` stopping it first. */
-  const pause = (ms: number, signal: AbortSignal) =>
-    ms <= 0 || signal.aborted
-      ? Promise.resolve()
-      : new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, ms)
-          signal.addEventListener('abort', () => (clearTimeout(timer), resolve()), { once: true })
-        })
 
   /**
    * Until one of `listed`'s feeds has something after `position` (true), or it's `until` (false). The API's feed is
@@ -1128,9 +1375,9 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     const limit = query.limit ?? 50
     const thread = threadReader(who, signal)
     const narrowed = filtered(query)
-    const by = narrowed ? await byOf(who, query.by) : undefined
+    const narrow = narrowed ? await narrowOf(who, query) : {}
     const keep = async (message: ApiMessage) =>
-      !narrowed || matches(query, message, query.label?.length ? await thread(message.threadId) : ({ id: message.threadId } as ApiThread), by)
+      !narrowed || (await matches(query, message, query.label?.length ? await thread(message.threadId) : ({ id: message.threadId } as ApiThread), narrow))
     const kept: ApiMessage[] = []
     if (query.after === undefined) {
       // Without a cursor, the newest: a filtered read looks among the channel's latest page.
@@ -1152,7 +1399,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
   async function channelEvents(who: Who, channel: ApiChannel, query: Protocol['events']['input'], signal: AbortSignal) {
     const path = await onBoard(who, '/changes')
     const thread = threadReader(who, signal)
-    const by = await byOf(who, query.by)
+    const narrow = await narrowOf(who, query)
     const until = Date.now() + (query.wait ?? 0) * 1000
     let cursor = query.after
     for (;;) {
@@ -1167,7 +1414,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
         const message = change.currentMessage
         const found = message && change.threadId ? { message, thread: query.label?.length ? await thread(change.threadId) : ({ id: change.threadId } as ApiThread) } : null
         if (!found) continue
-        const event = await eventOf(who, change, channel.name, change.cursor ?? page.cursor, query, by, found)
+        const event = await eventOf(who, change, channel.name, change.cursor ?? page.cursor, query, narrow, found)
         if (event) events.push(event)
       }
       if (events.length > 0 || Date.now() >= until || signal.aborted) return { events, cursor }
@@ -1218,7 +1465,10 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     if (by === 'me') return [await actorOf(who)]
     if (by.startsWith('vercel:')) return [by]
     const listed = await all<ApiActorView>(who, await onBoard(who, '/actors'), 'actors')
-    const named = listed.filter((actor) => actor.handle === by || actor.id.endsWith(`+${by.toLowerCase()}`)).map((actor) => actor.id)
+    const views = listed.map((actor) => [actor.id, actor] as const)
+    // As the API names them, or as board shows them: a deployment by its project's name.
+    const shown = new Set(goingBy(views, projectNamesOf(views), by.toLowerCase()))
+    const named = listed.filter((actor) => shown.has(actor.id) || (!by.includes(':') && actor.id.endsWith(`+${by.toLowerCase()}`))).map((actor) => actor.id)
     if (named.length === 0) throw new HttpError(400, 'bad_watcher', `--by ${by}: nobody here goes by that yet: name them by their actor ID`)
     return named
   }
@@ -1279,10 +1529,12 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     return parts.join(' ')
   }
 
-  /** Where a registration is woken, as board shows it: its URL, or a path on its project (and a preview's branch). */
   const syncOf = (found: ApiRegistration) => (found.sync ?? []).map(({ key, platform }) => ({ key, platform }))
-  const whereOf = (found: ApiRegistration) =>
-    found.path ? { url: null, path: found.path, ...(found.branch ? { branch: found.branch } : {}) } : { url: found.url }
+  /**
+   * Where a registration is woken, as board shows it: a path on its project (and a preview's branch),
+   * or, with none, nowhere: it pulls. The API never wakes a URL, and its replies carry none.
+   */
+  const whereOf = (found: ApiRegistration) => (found.path ? { url: null, path: found.path, ...(found.branch ? { branch: found.branch } : {}) } : { url: null })
 
   /**
    * Vercel's API takes watchers only from a deployment's own credentials: never a person's, an app's,
@@ -1309,6 +1561,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     watch: Record<string, { tail: string }>,
     sync: readonly SyncEntrySpec[],
     fromHere: boolean,
+    registered: (made: ApiRegistration) => Promise<void> = async () => {},
   ): Promise<RegistrationView> {
     const specs: Record<string, WatcherSpec> = Object.fromEntries(Object.entries(watch).map(([id, spec]) => [id, { tail: spec.tail }]))
     const filters = Object.fromEntries(await Promise.all(Object.entries(specs).map(async ([id, spec]) => [id, await filterOf(who, id, spec, fromHere)] as const)))
@@ -1322,7 +1575,62 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     } catch (error) {
       throw needsProject(error)
     }
+    await registered(made)
     return { owner: made.owner, ...whereOf(made), watch: specs, sync: syncOf(made), hash: made.hash }
+  }
+
+  /** The sync keys this deployment holds, as its last registration said: null before one has. */
+  let held: Set<string> | null = null
+  /** Who holds each of its sync's keys that it doesn't, as people read it: `production`, or `support (production)`. */
+  const holders = new Map<string, string>()
+
+  /**
+   * What this deployment's registration says it holds: the keys in its `sync`. Vercel's API says who holds each of
+   * the rest, another of its project's deployments (production takes a key from a preview), which is said once each.
+   * An API from before each project had its own keys says none, and holds every key it lists.
+   */
+  async function holding(made: ApiRegistration) {
+    held = new Set((made.sync ?? []).map((entry) => entry.key))
+    const mine = principalFrom(made.owner)
+    for (const { key, owner, environment } of made.elsewhere ?? []) {
+      const holder = principalFrom(owner)
+      let shown = owner
+      if (holder?.type === 'project') {
+        // Its own project's deployment by its environment, and another project's by the project's name too.
+        const where = environment ?? holder.environment
+        shown = mine?.type === 'project' && mine.projectId === holder.projectId ? where : `${await projectName(deployment, holder.projectId)} (${where})`
+      }
+      if (holders.get(key) !== shown) console.info(`[board] ${key} is synced by ${shown}`)
+      holders.set(key, shown)
+    }
+  }
+
+  /**
+   * Whether this deployment holds its sync's key `key`, as its last registration said: another of its project's
+   * deployments may. Before one has said, it registers as on its first use; until one can, it holds every key, and
+   * the API decides.
+   */
+  async function holds(key: string): Promise<boolean> {
+    if (!binding?.sync.some((entry) => entry.key === key)) return true
+    if (held === null && (await isDeployment().catch(() => false))) await runner.start()
+    return held === null || held.has(key)
+  }
+
+  /** A write through a key another deployment holds: its holder imports and delivers through it. */
+  const notHeld = (key: string) => notFound(`${key} is synced by ${holders.get(key) ?? 'another deployment of this project'}, not this deployment`, 'not_synced_here')
+
+  /**
+   * A sync call through key `key`: `unheld` answers it here, asking the API nothing, once another deployment holds
+   * it. One may have taken it since this one registered: the API refuses the call, and registering again says so.
+   */
+  async function throughKey<T>(key: string, unheld: () => T, call: () => Promise<T>): Promise<T> {
+    if (!(await holds(key))) return unheld()
+    try {
+      return await call()
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 403 && !(await holds(key))) return unheld()
+      throw error
+    }
   }
 
   /** A match as vboard hands it out: its event as `vb tail --json` prints it, with its message as it is now. */
@@ -1335,17 +1643,20 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     if (!found || !channel) {
       return null
     }
-    const event = match.event.type === 'thread.synced' ? await syncedOf(who, match, found.message, channel.name) : await eventOf(who, match.event, channel.name, match.id, filters, undefined, found)
+    const event = match.event.type === 'thread.synced' ? await syncedOf(who, match, found.message, channel.name) : await eventOf(who, match.event, channel.name, match.id, filters, await narrowOf(who, filters), found)
     if (!event?.message) return null
     // Sync re-renders a copy only when a label change changes what it shows, so it gets the labels from before it too.
     const handed = match.watcher === '@sync' && event.type === 'labels.changed' ? { ...event, before: { ...event.message, labels: labelsBefore(event.message.labels, match.event.labels) } } : event
     return { id: match.id, watcher: match.watcher, thread: event.message.thread, lease: match.lease, attempt: match.attempt, event: handed }
   }
 
-  /** A thread bound to a target, as the event that has the sync owning its key backfill a channel: about the thread's root. */
+  /**
+   * A thread bound to a target, as the event that has the sync owning its key backfill a channel: about the thread's
+   * root. Another project's binding is that project's sync's, and one that names no project is this one's.
+   */
   async function syncedOf(who: Who, match: ApiMatch, root: ApiMessage, channel: string) {
     const { binding } = match.event
-    if (!binding) {
+    if (!binding || (binding.projectId !== undefined && binding.projectId !== (await ownProject(who)))) {
       return null
     }
     const message = await view(who, root, channel)
@@ -1393,7 +1704,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     remote: "Vercel's API",
     registry: {
       register: (where) =>
-        registerAs(deployment, where, tails, bound().sync, true).catch((error: unknown) => {
+        registerAs(deployment, where, tails, bound().sync, true, holding).catch((error: unknown) => {
           // These aren't a deployment's own credentials after all (a board token in a fetch): they run here from now on.
           if (error instanceof HttpError && error.code === 'watchers_need_project') {
             refused = true
@@ -1406,8 +1717,8 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       ack: (id, body) => ackAs(deployment, id, body),
     },
     // The API wakes a path on this project, through its Deployment Protection, from every deployment
-    // on Vercel, and nothing at a URL: off Vercel, it pulls.
-    wakeAt: async (here) => wakePath(here) ?? { url: null },
+    // on Vercel, and nothing at a URL: off Vercel, it registers no path, and pulls. The API refuses any `url`, even null.
+    wakeAt: async (here) => wakePath(here) ?? {},
     binding: bound,
     hash: () => tagOf(tails, bound().sync),
     hasWork: () => Object.keys(tails).length > 0 || bound().sync.length > 0,
@@ -1493,10 +1804,8 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
 
   /** An import as the API takes it: a channel by its ID, and a reply's `after` as its sequence in the thread. */
   async function importBody(who: Who, body: Protocol['syncImport']['input']): Promise<Record<string, unknown>> {
-    if (body.op === 'seen') return { op: 'seen', operationId: operationId(), author: platformUser(body.author) }
     const base = { op: body.op, operationId: operationId(), author: platformUser(body.author), ...(body.from !== undefined ? { from: body.from } : {}) }
     if (body.op === 'post') {
-      if (body.attachments?.length) throw notSupported('files on imports')
       let after: number | undefined
       if (body.after !== undefined) {
         const at = locate(body.after)
@@ -1513,6 +1822,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
         text: body.text,
         ...(body.labels && Object.keys(body.labels).length ? { labels: body.labels } : {}),
         ...(body.noSync ? { noSync: true } : {}),
+        ...(body.attachments?.length ? { attachments: body.attachments } : {}),
         ...(body.links?.length ? { links: body.links } : {}),
         ...(body.id !== undefined ? { id: body.id } : {}),
         ...(after !== undefined ? { after } : {}),
@@ -1590,10 +1900,20 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     },
     async me(caller) {
       const who = whoOf(caller)
-      const found = await api<ApiMe>(who, 'GET', '/me')
+      // Its board's: what the board's grants leave these credentials, as a board's own me says.
+      const found = await api<ApiMe>(who, 'GET', await onBoard(who, '/me'))
       const { view: named } = found
-      // The API names you by your account: your username, and an agent's profile under it.
-      const shown = named ? { kind: apiKind(named.kind), handle: named.handle, name: named.name ?? named.handle, avatar: named.avatar ?? null } : actorView(found.actor)
+      const { principal } = found.actor
+      // A deployment's own view names its project, as the actors list does once it has written.
+      const project = principal.type === 'project' ? (named ? projectNamesOf([[found.actor.id, named]]).get(principal.projectId) : undefined) ?? (await namedProject(who, principal.projectId)) : undefined
+      // The API names you by your account: your username, and an agent's profile under it. A deployment is its project's.
+      const shown =
+        principal.type === 'project' && !found.actor.profile
+          ? { kind: 'deployment' as const, ...deploymentNamed(principal, project), avatar: named?.avatar ?? null }
+          : named
+            ? { kind: apiKind(named.kind), handle: named.handle, name: named.name ?? named.handle, avatar: named.avatar ?? null }
+            : actorView(found.actor, undefined, project)
+      const via = found.actor.profile && principal.type !== 'external' ? { via: viaFor(principal, named, project) } : {}
       // What these credentials may do, and until when, as the API says; without a word, what any it lets in may.
       return {
         actor: found.actor.id,
@@ -1603,6 +1923,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
         name: shown.name,
         avatar: shown.avatar,
         profile: found.actor.profile?.name ?? null,
+        ...via,
         session: found.actor.session ?? null,
         expiresAt: expiryOf(found.expiresAt),
         can: canOf(found.can),
@@ -1622,13 +1943,28 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     },
     async actors(caller, _input, signal) {
       const who = whoOf(caller)
-      const listed = (await all<ApiActorView>(who, await onBoard(who, '/actors'), 'actors', {}, signal)).map((actor) => ({
-        id: actor.id,
-        kind: apiKind(actor.kind),
-        handle: actor.handle,
-        name: actor.name ?? actor.handle,
-        avatar: actor.avatar ?? null,
-      }))
+      const views = await all<ApiActorView>(who, await onBoard(who, '/actors'), 'actors', {}, signal)
+      const names = projectNamesOf(views.map((view) => [view.id, view] as const))
+      const listed = views.map((actor) => {
+        const { profile } = actorParts(actor.id)
+        const owner = principalFrom(actor.id)
+        const project = owner?.type === 'project' ? names.get(owner.projectId) : undefined
+        const principal = profile === null ? null : owner
+        const user = platformProfile(profile)
+        // A deployment is its project's, by its name where the list says it.
+        const deployment = profile === null && owner?.type === 'project' ? deploymentNamed(owner, project) : null
+        return {
+          id: actor.id,
+          kind: apiKind(actor.kind),
+          handle: deployment?.handle ?? (principal && user ? importedHandleOf(actor.handle, principal, actor, user.user, project) : actor.handle),
+          name: deployment?.name ?? actor.name ?? actor.handle,
+          avatar: actor.avatar ?? null,
+          ...(principal ? { via: viaFor(principal, actor, project) } : {}),
+          ...(actor.platform ? { platform: actor.platform } : {}),
+          // The API names everyone itself: its accounts' names, and its projects' for what they sync.
+          verified: true as const,
+        }
+      })
       return { actors: listed, cursor: cursorOf({ t: Date.now(), feeds: {} }) }
     },
     async messages(caller, query, signal) {
@@ -1716,8 +2052,6 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     },
     async upload(caller, { data, name, type }) {
       const who = whoOf(caller)
-      // What sync uploads is for its imports, which Vercel's API takes no files on: it links each where it lives.
-      if ('self' in caller && caller.self === 'sync') throw new HttpError(501, 'no_files', "Vercel's board takes no files from sync yet")
       if (data.byteLength === 0) throw new HttpError(400, 'bad_request', 'the file is empty')
       // This deployment's own code (sync's imports among it) holds the bytes already, with no request to fit under.
       if (data.byteLength > IMPORT_BYTES_MAX) throw new HttpError(413, 'too_large', `attachments are at most ${IMPORT_BYTES_MAX / 1024 / 1024} MB`)
@@ -1881,7 +2215,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     },
     async tokens(caller, _input, signal) {
       const who = whoOf(caller)
-      const { tokens } = await api<Protocol['tokens']['output']>(who, 'GET', await onBoard(who, '/tokens'), signal ? { signal } : {})
+      const tokens = await all<TokenView>(who, await onBoard(who, '/tokens'), 'tokens', {}, signal)
       return { tokens: tokens.map(tokenFrom) }
     },
     async createToken(caller, input, signal) {
@@ -1976,7 +2310,15 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     },
     async syncImport(caller, body, signal) {
       const who = whoOf(caller)
-      const found = await syncApi<{ message: string | null }>(who, 'POST', await onBoard(who, '/sync/imports'), { body: await importBody(who, body), signal }).catch((error: unknown) => {
+      // Through the key it came in by, or for a sync's own write as its user, the user's.
+      const key = body.from ?? body.author.id.split(':')[0]!
+      const found = await throughKey(
+        key,
+        () => {
+          throw notHeld(key)
+        },
+        async () => syncApi<{ message: string | null }>(who, 'POST', await onBoard(who, '/sync/imports'), { body: await importBody(who, body), signal }),
+      ).catch((error: unknown) => {
         if (error instanceof HttpError && error.code === 'newer_message' && body.op === 'post') throw new HttpError(409, 'newer_message', `a message came after ${body.after}`)
         throw error
       })
@@ -1984,7 +2326,14 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     },
     async syncReceipt(caller, body, signal) {
       const who = whoOf(caller)
-      return syncApi<{ ok: true; attached?: boolean }>(who, 'POST', await onBoard(who, '/sync/receipts'), { body, signal })
+      const key = body.target.split(':')[0]!
+      return throughKey(
+        key,
+        () => {
+          throw notHeld(key)
+        },
+        async () => syncApi<{ ok: true; attached?: boolean }>(who, 'POST', await onBoard(who, '/sync/receipts'), { body, signal }),
+      )
     },
     async syncFind(caller, query, signal) {
       const who = whoOf(caller)
@@ -2005,17 +2354,28 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       const who = whoOf(caller)
       const at = locate(id)
       if (!at) throw notFound(`message not found: ${id}`, 'message_not_found')
-      // The API reads the message as it answers, so one that isn't there is its 404.
-      const { targets } = await syncApi<{ targets: Omit<Protocol['synced']['output']['targets'][number], 'url'>[] }>(
+      // The API reads the message as it answers, so one that isn't there is its 404. Each target says whose sync's it is.
+      const { targets } = await syncApi<{ targets: (Omit<Protocol['synced']['output']['targets'][number], 'url'> & { projectId?: string })[] }>(
         who,
         'GET',
         await onBoard(who, `/messages/${encodeURIComponent(id)}/synced`),
         { signal },
       )
-      // The API keeps platform IDs and parses no URLs: the board's own sync knows its platforms' links.
+      const own = await ownProject(who)
+      const foreign = (projectId: string | undefined): projectId is string => projectId !== undefined && projectId !== own
+      const others = [...new Set(targets.flatMap(({ projectId }) => (foreign(projectId) ? [projectId] : [])))]
+      const names = others.length ? await projectNames(who, { key: others.join(' '), found: (names) => others.every((id) => names.has(id)) }) : new Map<string, string>()
+      // The API keeps platform IDs and parses no URLs: the board's own sync knows its platforms' links. Another project's
+      // key is named by that project (`www/slack`), and only that project's sync, which has its app, links its copies.
       return {
         targets: await Promise.all(
-          targets.map(async (target) => ({ ...target, url: binding && target.thread !== null && target.message !== null ? await binding.linkOf(target.key, target.thread, target.message) : null })),
+          targets.map(async ({ projectId, ...target }) => {
+            if (foreign(projectId)) {
+              const key = `${names.get(projectId) ?? projectId}/${target.key}`
+              return { ...target, key, target: `${key}${target.target.slice(target.key.length)}`, url: null }
+            }
+            return { ...target, url: binding && target.thread !== null && target.message !== null ? await binding.linkOf(target.key, target.thread, target.message) : null }
+          }),
         ),
       }
     },
@@ -2044,33 +2404,35 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
         }
       throw missing()
     },
+    // A key another deployment holds has no inbox here: what's pushed to it is dropped, and nothing comes out.
     async inboxPush(caller, { key, events }, signal) {
       const who = whoOf(caller)
       // The API orders by an opaque key and never reads an event: a platform thread's events go on its lane.
-      await syncApi(who, 'POST', await inboxPath(who, key), { body: { events: events.map(({ id, event, raw }) => ({ id, thread: event.thread, event, ...(raw !== undefined ? { raw } : {}) })) }, signal })
+      const body = { events: events.map(({ id, event, raw }) => ({ id, thread: event.thread, event, ...(raw !== undefined ? { raw } : {}) })) }
+      await throughKey(key, () => null, async () => syncApi(who, 'POST', await inboxPath(who, key), { body, signal }))
       return { ok: true }
     },
     async inboxNext(caller, { key, limit }, signal) {
       const who = whoOf(caller)
-      const { items } = await syncApi<{ items: (Omit<Protocol['inboxNext']['output']['items'][number], 'raw'> & { raw?: unknown })[] }>(who, 'GET', await inboxPath(who, key, '/next'), {
-        query: { limit: limit?.toString() },
-        signal,
-      })
+      type Items = { items: (Omit<Protocol['inboxNext']['output']['items'][number], 'raw'> & { raw?: unknown })[] }
+      const { items } = await throughKey<Items>(key, () => ({ items: [] }), async () =>
+        syncApi<Items>(who, 'GET', await inboxPath(who, key, '/next'), { query: { limit: limit?.toString() }, signal }),
+      )
       return { items: items.map(({ raw, ...item }) => ({ ...item, key, raw: raw ?? null })) }
     },
     async inboxAck(caller, { key, id, lease, error }, signal) {
       const who = whoOf(caller)
-      await syncApi(who, 'POST', await inboxPath(who, key, `/${encodeURIComponent(id)}/ack`), { body: { lease, ...(error !== undefined ? { error } : {}) }, signal })
+      await throughKey(key, () => null, async () => syncApi(who, 'POST', await inboxPath(who, key, `/${encodeURIComponent(id)}/ack`), { body: { lease, ...(error !== undefined ? { error } : {}) }, signal }))
       return { ok: true }
     },
     async inbox(caller, { key, channel, limit }, signal) {
       const who = whoOf(caller)
       const wanted = Math.min(limit ?? 50, INBOX_LIST_MAX)
+      type Listed = { events: { id: string; thread: string; createdAt: string; event?: InboxEntry['event']; raw?: unknown }[] }
       // The API reads no event, so it can't filter by channel: this filters the most it lists, so a filtered read may come back short.
-      const { events } = await syncApi<{ events: { id: string; thread: string; createdAt: string; event?: InboxEntry['event']; raw?: unknown }[] }>(who, 'GET', await inboxPath(who, key), {
-        query: { limit: String(channel === undefined ? wanted : INBOX_LIST_MAX) },
-        signal,
-      })
+      const { events } = await throughKey<Listed>(key, () => ({ events: [] }), async () =>
+        syncApi<Listed>(who, 'GET', await inboxPath(who, key), { query: { limit: String(channel === undefined ? wanted : INBOX_LIST_MAX) }, signal }),
+      )
       const entries = events.flatMap(({ id, createdAt, event, raw }) =>
         event ? [{ id, channel: typeof event.channel === 'string' ? event.channel : '', createdAt, sync: key, event, raw: raw ?? null }] : [],
       )
@@ -2094,7 +2456,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     async register(caller, body) {
       if (typeof body.url === 'string')
         throw new HttpError(400, 'invalid_request', "Vercel's API wakes a deployment only by its path.", { hint: 'Register a path, or no url to pull its matches.', origin: 'handle' })
-      return registerAs(whoOf(caller), typeof body.path === 'string' ? { path: body.path, ...(body.branch ? { branch: body.branch } : {}) } : { url: body.url ?? null }, body.watch, body.sync ?? [], false)
+      return registerAs(whoOf(caller), typeof body.path === 'string' ? { path: body.path, ...(body.branch ? { branch: body.branch } : {}) } : {}, body.watch, body.sync ?? [], false)
     },
     async matches(caller, query, signal) {
       return { matches: await pullAs(whoOf(caller), query, signal) }
@@ -2126,6 +2488,8 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     keeps: false,
     // Vercel's API posts each send, so board()'s middleware screens a schedule when it's made.
     sendsSchedulesHere: false,
+    // One deployment of a project holds each of its sync keys, as Vercel's API says when it registers.
+    syncedHere: holds,
     bind(next: BoardBinding) {
       if (binding) throw new Error('vercel: this backend already serves a board: create one vercel() per board()')
       // board({ team }) says whose board it is: a team of vercel()'s own must be the same one.

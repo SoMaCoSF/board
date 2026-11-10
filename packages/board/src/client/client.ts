@@ -250,12 +250,6 @@ export type ExplainPrincipal = {
   app?: string
 }
 
-/** What a write returns, with the handles in it that matched nobody and stayed plain text. */
-export type Written<T> = T & { unknownMentions?: string[] }
-
-const written = <T>(value: T, unknownMentions: string[] | undefined): Written<T> =>
-  unknownMentions?.length ? { ...value, unknownMentions } : (value as Written<T>)
-
 export function createBoardClient(options: ClientOptions) {
   const base = options.url.replace(/\/+$/, '')
   // Browsers reject a bare `fetch` detached from `window` ("Illegal invocation").
@@ -421,7 +415,7 @@ export function createBoardClient(options: ClientOptions) {
       const made = await call<{ channel: ChannelView; created: boolean }>('POST', '/channels', { body: { path } })
       return { ...made, grants: [own.grant, closed.grant] }
     },
-    actors: async () => (await call<{ actors: Actor[] }>('GET', '/actors')).actors,
+    actors: async () => (await call<{ actors: (Actor & Pick<ActorView, 'verified'>)[] }>('GET', '/actors')).actors,
 
     messages: (query: Filters & Omit<MessagesQueryInput, keyof FiltersInput> = {}) =>
       call<MessagesPage>('GET', `/messages${queryString(query)}`),
@@ -432,24 +426,20 @@ export function createBoardClient(options: ClientOptions) {
     threads: (query: Filters & Omit<ThreadsQueryInput, keyof FiltersInput> = {}) =>
       call<ThreadsPage>('GET', `/threads${queryString(query)}`),
 
-    /** `unknownMentions` lists the handles that matched nobody: they posted as plain text. */
-    async post(channel: string, input: string | PostOptions): Promise<Written<MessageView>> {
-      const { message, unknownMentions } = await call<{ message: MessageView; unknownMentions?: string[] }>('POST', '/messages', { body: { channel, ...messageBody(input) } })
-      return written(message, unknownMentions)
+    async post(channel: string, input: string | PostOptions): Promise<MessageView> {
+      return (await call<{ message: MessageView }>('POST', '/messages', { body: { channel, ...messageBody(input) } })).message
     },
-    async reply(id: string, input: string | ReplyOptions): Promise<Written<MessageView>> {
-      const { message, unknownMentions } = await call<{ message: MessageView; unknownMentions?: string[] }>('POST', '/messages', { body: { re: id, ...messageBody(input) } })
-      return written(message, unknownMentions)
+    async reply(id: string, input: string | ReplyOptions): Promise<MessageView> {
+      return (await call<{ message: MessageView }>('POST', '/messages', { body: { re: id, ...messageBody(input) } })).message
     },
     /**
      * Posts later, as you: a new thread when `target` is a channel, a reply when it's
      * `{ re }`, any message's ID in the thread. Each message it posts carries
      * `schedule: { id, n }`. Needs a board with a scheduler.
      */
-    async schedule(target: string | { re: string }, input: ScheduleOptions): Promise<Written<ScheduleView>> {
+    async schedule(target: string | { re: string }, input: ScheduleOptions): Promise<ScheduleView> {
       const where = typeof target === 'string' ? { channel: target } : { re: target.re }
-      const { schedule, unknownMentions } = await call<{ schedule: ScheduleView; unknownMentions?: string[] }>('POST', '/schedules', { body: { ...where, ...scheduleBody(input) } })
-      return written(schedule, unknownMentions)
+      return (await call<{ schedule: ScheduleView }>('POST', '/schedules', { body: { ...where, ...scheduleBody(input) } })).schedule
     },
     /** Pending schedules (`all` for done and canceled too), oldest first. `re` is any message in a thread. */
     schedules: async (query: Omit<SchedulesQueryInput, 'all'> & { all?: boolean } = {}) =>
@@ -534,7 +524,7 @@ export function createBoardClient(options: ClientOptions) {
      * changes, and it throws a 409 `revision_conflict`.
      */
     edit: (id: string, text: string, opts: { revision?: number } = {}) =>
-      call<{ ok: true; unknownMentions?: string[] }>('POST', `/messages/${path(id)}/edit`, { body: { text, ...opts } }),
+      call<{ ok: true }>('POST', `/messages/${path(id)}/edit`, { body: { text, ...opts } }),
     delete: (id: string, opts: { revision?: number } = {}) => call<{ ok: true }>('POST', `/messages/${path(id)}/delete`, { body: { ...opts } }),
     /** `emoji` is a short name, `:name:`, or the character itself. */
     react: (id: string, emoji: string, opts: { remove?: boolean } = {}) =>

@@ -35,7 +35,7 @@ describe('cli tokens and grants', () => {
     expect((await vb(['grants'])).stdout).toBe(
       [
         'g1  --all-users                                                  everything',
-        'g2  --all-projects --environment production,preview,development  read post react label',
+        'g2  --all-projects --environment production,preview,development  read post react label sync',
         'g3  --all-apps                                                   read post react label',
         '',
       ].join('\n'),

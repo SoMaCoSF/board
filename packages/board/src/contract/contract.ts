@@ -184,7 +184,14 @@ const Millis = z.number().int().nonnegative()
 export const ScheduleIdentity = z.object({
   author: Author,
   principal: StoredPrincipal,
-  actor: z.object({ id: ActorId, kind: SeenActorKind, handle: Handle, name: z.string().min(1).max(128), avatar: z.string().nullable() }),
+  actor: z.object({
+    id: ActorId,
+    kind: SeenActorKind,
+    handle: Handle,
+    name: z.string().min(1).max(128),
+    avatar: z.string().nullable(),
+    via: z.object({ name: Handle, environment: z.string().min(1).max(128).nullable() }).optional(),
+  }),
 })
 
 /**

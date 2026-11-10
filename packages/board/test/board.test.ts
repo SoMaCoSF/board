@@ -217,35 +217,20 @@ describe('messages', () => {
     expect(body.messages).toHaveLength(1)
   })
 
-  it('resolves mentions to actor IDs, posts unknown ones as plain text, and rejects ambiguous ones', async () => {
+  it('posts mentions as written: no handle or actor ID fails a write, whoever has it', async () => {
     const { fetch } = testBoard()
     const julian = caller(fetch, await personToken('u_julian'), { 'x-board-handle': 'julian' })
-    const ada = caller(fetch, await personToken('u_ada'), { 'x-board-handle': 'ada' })
-    await ada('POST', '/messages', { channel: 'x', text: 'hi' })
+    for (const id of ['u_ada', 'u_ada2']) await caller(fetch, await personToken(id), { 'x-board-handle': 'ada' })('POST', '/messages', { channel: 'x', text: 'hi' })
 
-    const posted = await julian('POST', '/messages', { channel: 'x', text: 'thanks @ada, not `@nobody`' })
-    expect(posted.body.message.mentions).toEqual(['vercel:user:u_ada'])
-
-    // A handle no one has doesn't lose the post: it stays plain text, and the writer hears which.
-    const unknown = await julian('POST', '/messages', { channel: 'x', text: 'thanks @ada and @nobody' })
-    expect(unknown.status).toBe(201)
-    expect(unknown.body.message).toMatchObject({ text: 'thanks @ada and @nobody', mentions: ['vercel:user:u_ada'] })
-    expect(unknown.body.unknownMentions).toEqual(['nobody'])
-    expect(unknown.body.message).not.toHaveProperty('unknownMentions')
-    expect(posted.body).not.toHaveProperty('unknownMentions')
-    const edited = await julian('POST', `/messages/${unknown.body.message.id}/edit`, { text: 'thanks @nobody2' })
-    expect(edited.body).toEqual({ ok: true, unknownMentions: ['nobody2'] })
-    const unknownActor = await julian('POST', '/messages', { channel: 'x', text: '@[vercel:user:u_nobody]' })
-    expect(unknownActor.body.error.code).toBe('unknown_mention')
-
-    const otherAda = caller(fetch, await personToken('u_ada2'), { 'x-board-handle': 'ada' })
-    await otherAda('POST', '/messages', { channel: 'x', text: 'me too' })
-    const ambiguous = await julian('POST', '/messages', { channel: 'x', text: '@ada' })
-    expect(ambiguous.body.error).toMatchObject({ code: 'ambiguous_mention' })
-    expect(ambiguous.body.error.message).toContain('@[vercel:user:u_ada]')
-
-    const exact = await julian('POST', '/messages', { channel: 'x', text: '@[vercel:user:u_ada2]' })
-    expect(exact.body.message.mentions).toEqual(['vercel:user:u_ada2'])
+    // Two people go by ada, no one by nobody, and the board knows no u_nobody.
+    for (const text of ['thanks @ada', 'thanks @nobody', 'cc @[vercel:user:u_nobody]', 'cc @[ada@vercel.com]']) {
+      const posted = await julian('POST', '/messages', { channel: 'x', text })
+      expect([posted.status, posted.body.message.text], text).toEqual([201, text])
+      expect(posted.body).toEqual({ message: expect.not.objectContaining({ mentions: expect.anything() }) })
+    }
+    const { id } = (await julian('POST', '/messages', { channel: 'x', text: 'draft' })).body.message
+    expect((await julian('POST', `/messages/${id}/edit`, { text: 'thanks @ada and @nobody' })).body).toEqual({ ok: true })
+    expect((await julian('GET', `/messages/${id}`)).body.message.text).toBe('thanks @ada and @nobody')
   })
 
   it('edits, reacts, labels, and tombstones', async () => {
@@ -291,6 +276,28 @@ describe('messages', () => {
     expect(await texts('label=status=open')).toEqual(['one'])
     expect(await texts('by=ada')).toEqual(['hey @julian'])
     expect(await texts('mentions=me')).toEqual(['hey @julian'])
+  })
+
+  it('finds mentions by what the text says: a handle, an actor ID, or an email, never in code', async () => {
+    const { fetch } = testBoard()
+    const julian = caller(fetch, await personToken('u_julian'), { 'x-board-handle': 'julian' })
+    const claude = caller(fetch, await personToken('u_julian'), { 'x-board-handle': 'julian', 'x-board-profile': 'claude' })
+    const ada = caller(fetch, await personToken('u_ada'), { 'x-board-handle': 'ada' })
+    await julian('POST', '/messages', { channel: 'docs', text: 'hi' })
+    await claude('POST', '/messages', { channel: 'docs', text: 'hi' })
+    for (const text of ['@Julian look', 'over to @julian/claude', 'cc @[vercel:user:u_julian]', 'cc @[vercel:user:u_julian+claude]', 'ask @[Julian@vercel.com]', 'run `@julian`', '@juliana hi'])
+      await ada('POST', '/messages', { channel: 'docs', text })
+
+    const texts = async (as: typeof julian, mentions: string) =>
+      (await as('GET', `/messages?channel=docs&mentions=${encodeURIComponent(mentions)}`)).body.messages.map((m: { text: string }) => m.text)
+    // A person is everyone they are: their handle and ID, and their agents'.
+    expect(await texts(ada, 'julian')).toEqual(['@Julian look', 'over to @julian/claude', 'cc @[vercel:user:u_julian]', 'cc @[vercel:user:u_julian+claude]'])
+    expect(await texts(ada, 'vercel:user:u_julian')).toEqual(await texts(ada, 'julian'))
+    expect(await texts(ada, 'julian/claude')).toEqual(['over to @julian/claude', 'cc @[vercel:user:u_julian+claude]'])
+    expect(await texts(ada, 'julian@vercel.com')).toEqual(['ask @[Julian@vercel.com]'])
+    // Me is my handle and my ID.
+    expect(await texts(julian, 'me')).toEqual(['@Julian look', 'cc @[vercel:user:u_julian]'])
+    expect(await texts(claude, 'me')).toEqual(['over to @julian/claude', 'cc @[vercel:user:u_julian+claude]'])
   })
 
   it('filters by source, text, a label key or any of its values, and a thread root\'s labels', async () => {

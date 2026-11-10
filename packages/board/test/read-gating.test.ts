@@ -115,33 +115,55 @@ describe('a write-only source', () => {
     await reader.cancel()
   })
 
-  it('doesn’t turn a write-only caller’s mentions into actor IDs it can’t list', async () => {
-    const { julian, front } = await setup()
+  it('answers a write-only caller’s mentions alike, whoever has the handle, and they still reach who they name', async () => {
+    const board = await granting([intake], { scheduler: fakeQueue().scheduler })
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    const front = caller(board.fetch, await deploymentToken())
     await julian('POST', '/messages', { channel: 'dev', text: 'hi' })
-    const posted = await front('POST', '/messages', { channel: 'feedback', text: 'thanks @julian' })
-    expect(posted).toMatchObject({ status: 201, body: { message: { text: 'thanks @julian', mentions: [] } } })
-    // The board keeps the mention, so it still notifies.
-    expect((await julian('GET', `/messages/${posted.body.message.id}`)).body.message.mentions).toEqual(['vercel:user:u_julian'])
-    // A retry of the same post shows the same.
-    const retried = await front('POST', '/messages', { channel: 'feedback', text: 'thanks @julian', id: posted.body.message.thread })
-    expect(retried.body.message).toMatchObject({ id: posted.body.message.id, mentions: [] })
-    // So does a retry that middleware answers from what landed.
-    const guarded = await granting([intake], { middleware: [async ({ next }) => next()] })
-    await caller(guarded.fetch, await personToken(), { 'x-board-handle': 'julian' })('POST', '/messages', { channel: 'dev', text: 'hi' })
-    const guardedFront = caller(guarded.fetch, await deploymentToken())
-    const first = await guardedFront('POST', '/messages', { channel: 'feedback', text: 'thanks @julian' })
-    const again = await guardedFront('POST', '/messages', { channel: 'feedback', text: 'thanks @julian', id: first.body.message.thread })
-    expect(again.body.message).toMatchObject({ id: first.body.message.id, text: 'thanks @julian', mentions: [] })
-    // A handle no one has posts as plain text, as for anyone, but without the warning
-    // that would tell it apart from one that exists.
-    const unknown = await front('POST', '/messages', { channel: 'feedback', text: 'thanks @nobody' })
-    expect(unknown).toMatchObject({ status: 201, body: { message: { text: 'thanks @nobody', mentions: [] } } })
-    expect(unknown.body).not.toHaveProperty('unknownMentions')
-    const edited = await front('POST', `/messages/${unknown.body.message.id}/edit`, { text: 'thanks @nobody2' })
-    expect(edited.body).toEqual({ ok: true })
-    // A caller that reads the channel is told.
-    const told = await julian('POST', '/messages', { channel: 'feedback', text: 'thanks @nobody' })
-    expect(told.body.unknownMentions).toEqual(['nobody'])
+    for (const user of ['u_sam1', 'u_sam2']) await caller(board.fetch, await personToken(user), { 'x-board-handle': 'sam' })('POST', '/messages', { channel: 'dev', text: 'hi' })
+    // One person has the handle, two share one, and no one has the last: nothing in the answers tells them apart.
+    const answers = []
+    for (const handle of ['julian', 'sam', 'nobody']) {
+      const text = `thanks @${handle}`
+      const posted = await front('POST', '/messages', { channel: 'feedback', text })
+      const scheduled = await front('POST', '/schedules', { channel: 'feedback', text, in: '1h' })
+      const edited = await front('POST', `/messages/${posted.body.message.id}/edit`, { text: `${text}!` })
+      expect([posted.status, posted.body.message.text, scheduled.status, scheduled.body.schedule.text, edited.status], handle).toEqual([201, text, 201, text, 200])
+      answers.push([Object.keys(posted.body).sort(), Object.keys(posted.body.message).sort(), Object.keys(scheduled.body).sort(), edited.body])
+    }
+    expect(answers[1]).toEqual(answers[0])
+    expect(answers[2]).toEqual(answers[0])
+    // Julian finds the one that names him.
+    expect((await julian('GET', '/messages?channel=feedback&mentions=me')).body.messages.map((m: { text: string }) => m.text)).toEqual(['thanks @julian!'])
+  })
+
+  it('never shows a write-only caller an actor ID in its own post or schedule read back', async () => {
+    const board = await granting([intake], { scheduler: fakeQueue().scheduler })
+    const front = caller(board.fetch, await deploymentToken())
+    const text = 'thanks @julian, cc @[vercel:user:u_ada] and @[ada@vercel.com]'
+    expect((await front('POST', '/messages', { channel: 'feedback', text, id: 'thanks-1' })).status).toBe(201)
+    const scheduled = (await front('POST', '/schedules', { channel: 'feedback', text, in: '1h' })).body.schedule
+    const masked = 'thanks @julian, cc @… and @…'
+    expect((await front('GET', '/posts/thanks-1')).body.message.text).toBe(masked)
+    expect(((await front('GET', '/schedules')).body.schedules as { text: string }[]).map((schedule) => schedule.text)).toEqual([masked])
+    expect((await front('POST', `/schedules/${scheduled.id}/cancel`, {})).body.schedule.text).toBe(masked)
+  })
+
+  it("finds a mention by someone's other name only for a caller that reads every channel", async () => {
+    const board = await granting([{ ...intake, can: { 'feedback/': ['read', 'post'] } }])
+    // Without g2's every project on the team: front may read only feedback.
+    await board.revokeGrant('g2')
+    const julian = caller(board.fetch, await personToken(), { 'x-board-handle': 'julian' })
+    const front = caller(board.fetch, await deploymentToken())
+    // Sam writes only in secret, which front can't read; feedback mentions @sam, and his agent.
+    await caller(board.fetch, await personToken('u_sam'), { 'x-board-handle': 'sam' })('POST', '/messages', { channel: 'secret', text: 'hi' })
+    for (const text of ['@sam can you look?', 'over to @sam/claude', 'cc @[vercel:user:u_sam]']) await julian('POST', '/messages', { channel: 'feedback', text })
+    const texts = async (as: typeof julian, mentions: string) =>
+      ((await as('GET', `/messages?channel=feedback&mentions=${encodeURIComponent(mentions)}`)).body.messages as { text: string }[]).map((m) => m.text)
+    expect(await texts(julian, 'vercel:user:u_sam')).toEqual(['@sam can you look?', 'over to @sam/claude', 'cc @[vercel:user:u_sam]'])
+    // Front gets what it names, as written: no saying that vercel:user:u_sam goes by sam.
+    expect(await texts(front, 'vercel:user:u_sam')).toEqual(['cc @[vercel:user:u_sam]'])
+    expect(await texts(front, 'sam')).toEqual(['@sam can you look?', 'over to @sam/claude'])
   })
 
   for (const middleware of [undefined, [async ({ next }) => next()] satisfies Middleware[]]) {
@@ -164,24 +186,6 @@ describe('a write-only source', () => {
       expect((await front('GET', `/messages/${id}`)).status).toBe(404)
     })
   }
-
-  it('doesn’t tell a write-only scheduler which handles match no one', async () => {
-    const board = await granting([intake], { scheduler: fakeQueue().scheduler })
-    const front = caller(board.fetch, await deploymentToken())
-    const scheduled = await front('POST', '/schedules', { channel: 'feedback', text: 'thanks @nobody', in: '1h' })
-    expect(scheduled.status).toBe(201)
-    expect(scheduled.body).not.toHaveProperty('unknownMentions')
-    const told = await caller(board.fetch, await personToken())('POST', '/schedules', { channel: 'feedback', text: 'thanks @nobody', in: '1h' })
-    expect(told.body.unknownMentions).toEqual(['nobody'])
-  })
-
-  it('doesn’t list who an ambiguous mention could be', async () => {
-    const { board, front } = await setup()
-    for (const user of ['u_sam1', 'u_sam2'])
-      await caller(board.fetch, await personToken(user), { 'x-board-handle': 'sam' })('POST', '/messages', { channel: 'dev', text: 'hi' })
-    const mention = await front('POST', '/messages', { channel: 'feedback', text: 'thanks @sam' })
-    expect(mention).toMatchObject({ status: 400, body: { error: { code: 'ambiguous_mention', message: 'ambiguous mention @sam: use @[actor-id]' } } })
-  })
 })
 
 describe('attachments', () => {
@@ -288,7 +292,7 @@ describe('links', () => {
     const sync = caller(board.fetch, await deploymentToken('sync', 'prj_sync'))
     expect((await sync('POST', '/watchers', { watch: {}, sync: [{ key: 'helpdesk', platform: 'slack' }] })).status).toBe(200)
     const snapshot = { author: 'Ada', text: 'the key is hunter2', createdAt: null, files: [] }
-    const author = { id: 'slack:user:U_JB', handle: 'jb', name: 'JB', avatar: null, isBot: false }
+    const author = { id: 'helpdesk:user:U_JB', handle: 'jb', name: 'JB', avatar: null, isBot: false }
     const imported = await sync('POST', '/sync/imports', { op: 'post', author, from: 'helpdesk', channel: 'open', text: `see ${permalink}`, links: [{ url: permalink, message: linked.id, snapshot, unavailable: null }] })
     expect(imported.status).toBe(200)
     expect((await julian('GET', '/messages?channel=open')).body.messages[0].links[0].snapshot.text).toBe('the key is hunter2')

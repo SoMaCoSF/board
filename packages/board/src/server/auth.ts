@@ -609,7 +609,10 @@ export type HostPrincipal = {
   /** `vercel:user:<id>`, `vercel:project:<id>:<env>`, …: records keep their shape. */
   id: string
   kind: PrincipalKind
-  /** Kept as it is: `x-board-handle` doesn't replace it. Return `request.claims.handle` to take the caller's. */
+  /**
+   * Kept as it is: `x-board-handle` doesn't replace it. Return `request.claims.handle` to take the caller's, which
+   * the board then takes as checked: a person posts to Slack under it as a plain sender.
+   */
   handle: string
   expiresAt?: Date | null
 }

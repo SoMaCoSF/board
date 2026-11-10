@@ -17,8 +17,8 @@ const describe = (error: unknown) => ((error instanceof Error ? error.message : 
 /** Only an https URL can be woken; anything else pulls on its own. */
 export const wakeable = (here: string | null) => (here?.startsWith('https://') ? here : null)
 
-/** Whether a registration is woken at all: one with neither a URL nor a path pulls on its own, off Vercel. */
-const pulls = (registration: RegistrationView) => registration.url === null && registration.path === undefined
+/** Whether a registration is woken at all: one with no path pulls on its own, off Vercel. */
+const pulls = (registration: RegistrationView) => registration.path === undefined
 
 /**
  * Whether this is a deployment on Vercel, whose function doesn't outlive its request: `VERCEL` is 1,
@@ -26,8 +26,8 @@ const pulls = (registration: RegistrationView) => registration.url === null && r
  */
 export const deployedOnVercel = () => typeof process !== 'undefined' && process.env.VERCEL === '1' && process.env.VERCEL_ENV !== 'development'
 
-/** Where the other board wakes this one: a URL (null to pull on its own), or a path on this Vercel project. */
-export type WakeAt = { url: string | null } | { path: string; branch?: string }
+/** Where Vercel's API wakes this board: a path on this Vercel project, or none to pull on its own. */
+export type WakeAt = { path?: undefined } | { path: string; branch?: string }
 
 /**
  * A path on this Vercel project for a board that wakes by path, from `here`, this board's URL: from
@@ -69,11 +69,10 @@ export type RegistrantOptions = {
 }
 
 /**
- * Runs a board's watchers on another board that matches them: it registers them there, is woken
- * when one matches, with nothing in the wake-up but a hash, and pulls what matched with its own
- * credentials, runs it, and acks it. When it can't be woken (no https URL of its own, a dev
- * server say, or no path on a board that wakes only paths), it pulls on its own. http() and a
- * deployment's vercel() run their watchers this way.
+ * Runs a deployment's watchers on Vercel's API, which matches them: it registers them there, is
+ * woken at its path when one matches, with nothing in the wake-up but a hash, and pulls what
+ * matched with its own credentials, runs it, and acks it. With no path to wake (a dev server, say),
+ * it pulls on its own. vercel() runs a deployment's watchers this way.
  */
 export function registrant(options: RegistrantOptions) {
   const { registry, rethrow } = options
@@ -81,10 +80,16 @@ export function registrant(options: RegistrantOptions) {
 
   let last: { url: string | null; at: number; result: RegistrationView } | null = null
   let registering: Promise<RegistrationView> | null = null
-  /** Registers this board's watchers with the other board, as itself, replacing its last registration. */
-  async function register(here: string | null): Promise<RegistrationView> {
+  /**
+   * Registers this board's watchers with the other board, as itself, replacing its last registration. `fresh`
+   * registers again even so soon after the same one: the other board said something changed since (another
+   * deployment took a sync key), and only a new answer says what.
+   */
+  async function register(here: string | null, fresh = false): Promise<RegistrationView> {
     const current = await options.hash()
-    if (last && last.url === here && last.result.hash === current && Date.now() - last.at < REGISTER_EVERY_MS) return last.result
+    if (!fresh && last && last.url === here && last.result.hash === current && Date.now() - last.at < REGISTER_EVERY_MS) return last.result
+    // One already on its way was sent before what changed.
+    if (fresh && registering) await registering.catch(() => {})
     registering ??= options
       .wakeAt(here)
       .then((where) => registry.register(where))
@@ -227,8 +232,8 @@ export function registrant(options: RegistrantOptions) {
   return {
     start,
     routes,
-    /** Registers this board's watchers with the other board now, as `POST /watchers` does. */
-    registerNow: () => register(wakeable(bound().url())),
+    /** Registers this board's watchers with the other board now, as `POST /watchers` does, and with `fresh`, even if it just did. */
+    registerNow: (fresh = false) => register(wakeable(bound().url()), fresh),
     /** Stops pulling, for a board that pulls on its own. */
     close: () => {
       polling?.abort()

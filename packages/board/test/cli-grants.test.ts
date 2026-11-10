@@ -48,7 +48,7 @@ describe('cli grants', () => {
     expect((await vb(['grants'])).stdout).toBe(
       [
         ['g1', '--all-users', 'everything'],
-        ['g2', '--all-projects --environment production,preview,development', 'read post react label'],
+        ['g2', '--all-projects --environment production,preview,development', 'read post react label sync'],
         ['g3', '--all-apps', 'read post react label'],
         [closed.id, '--everyone', 'security/=none'],
         [people.id, '--user u_alice --user u_bob', 'security/=all'],
@@ -154,7 +154,7 @@ describe('cli grants', () => {
     expect(await explain('--user', 'u_bob', 'security/incidents')).toBe(`security/ wins over *. Closest grant for u_bob: ${people.id} (--user): all.\n`)
     expect(await explain('--user', 'u_dan', 'security/incidents')).toBe(`security/ wins over *. Closest grant for u_dan: ${closed.id} (--everyone): none.\n`)
     expect(await explain('--user', 'u_dan', 'dev')).toBe('* wins. Closest grant for u_dan: g1 (--all-users): all.\n')
-    expect(await explain('--project', 'prj_web', '--environment', 'preview', 'dev')).toBe('* wins. Closest grant for prj_web in preview: g2 (--all-projects): read,post,react,label.\n')
+    expect(await explain('--project', 'prj_web', '--environment', 'preview', 'dev')).toBe('* wins. Closest grant for prj_web in preview: g2 (--all-projects): read,post,react,label,sync.\n')
     expect(await explain('--github', 'acme/other', 'dev')).toBe('Nothing lets acme/other into dev.\n')
     // A local board has no apps.
     expect(await explain('--app', 'cl_ship', 'dev')).toBe('Nothing lets cl_ship into dev.\n')

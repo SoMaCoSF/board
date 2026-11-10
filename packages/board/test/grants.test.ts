@@ -20,16 +20,16 @@ const everyone = { kind: 'everyone' } as const
 const user = (userId: string) => ({ kind: 'user', userId }) as const
 
 describe('grants', () => {
-  it('starts with every person doing everything, and every project and app on the team reading, posting, reacting, and labeling', async () => {
+  it('starts with every person doing everything, every project on the team reading, posting, reacting, labeling, and syncing, and every app all but syncing', async () => {
     const { person, as } = await setUp()
     expect((await person('GET', '/grants')).body.grants).toEqual([
       { id: 'g1', principals: [{ kind: 'all-users' }], can: { '*': 'all' }, capped: false, by: null, at: null },
-      { id: 'g2', principals: [{ kind: 'all-projects', environments: ['production', 'preview', 'development'] }], can: { '*': ['read', 'post', 'react', 'label'] }, capped: false, by: null, at: null },
+      { id: 'g2', principals: [{ kind: 'all-projects', environments: ['production', 'preview', 'development'] }], can: { '*': ['read', 'post', 'react', 'label', 'sync'] }, capped: false, by: null, at: null },
       { id: 'g3', principals: [{ kind: 'all-apps' }], can: { '*': ['read', 'post', 'react', 'label'] }, capped: false, by: null, at: null },
     ])
     expect((await (await as(personToken('u_ada')))('GET', '/me')).body.can).toEqual({ '*': ALL })
     // Any project on the board's team, its previews included; none on another team.
-    expect((await (await as(deploymentToken('web', 'prj_web', 'preview')))('GET', '/me')).body.can).toEqual({ '*': ['read', 'post', 'react', 'label'] })
+    expect((await (await as(deploymentToken('web', 'prj_web', 'preview')))('GET', '/me')).body.can).toEqual({ '*': ['read', 'post', 'react', 'label', 'sync'] })
     expect((await (await as(deploymentToken('web', 'prj_partner', 'production', { teamId: 'team_partner' })))('GET', '/me')).status).toBe(403)
   })
 
@@ -75,7 +75,7 @@ describe('grants', () => {
     await person('POST', '/grants', { principals: [everyone], can: { '*': 'all', 'ci/': [] } })
     expect((await (await as(workflowToken()))('GET', '/me')).status).toBe(403)
     // A project on the team is let in by g2, and everyone's ci/ is more specific than g2's *.
-    expect((await (await as(deploymentToken('web', 'prj_web', 'production')))('GET', '/me')).body.can).toEqual({ '*': ['read', 'post', 'react', 'label'], 'ci/': [] })
+    expect((await (await as(deploymentToken('web', 'prj_web', 'production')))('GET', '/me')).body.can).toEqual({ '*': ['read', 'post', 'react', 'label', 'sync'], 'ci/': [] })
   })
 
   it('lets a member grant on * once a channel is closed to everyone, which the grant then leaves closed', async () => {
@@ -453,7 +453,7 @@ describe('explain', () => {
     expect(await explain('channel=security/incidents&user=u_carol')).toEqual({ channel: 'security/incidents', pattern: 'security/', over: ['*'], level: 'everyone', grants: [lock], capped: null, can: [] })
     expect(await explain('channel=dev&user=u_carol')).toMatchObject({ pattern: '*', over: [], level: 'group', grants: [{ id: 'g1' }], can: ALL })
     // A project on the board's team, in the environment it names.
-    expect(await explain('channel=dev&project=prj_web&environment=preview')).toMatchObject({ pattern: '*', level: 'group', grants: [{ id: 'g2' }], can: ['read', 'post', 'react', 'label'] })
+    expect(await explain('channel=dev&project=prj_web&environment=preview')).toMatchObject({ pattern: '*', level: 'group', grants: [{ id: 'g2' }], can: ['read', 'post', 'react', 'label', 'sync'] })
   })
 
   it('explains the caller when it names no one, and nothing for whom nothing lets in', async () => {

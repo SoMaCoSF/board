@@ -1,7 +1,7 @@
 import { own } from '../contract/own.ts'
 import type { ActorsState, Actor } from '../contract/folds.ts'
 import { toStorable, type Author } from '../contract/schemas.ts'
-import { extractMentions } from '../contract/mentions.ts'
+import type { Via } from '../contract/profiles.ts'
 import { parseCan } from './access.ts'
 import type { Claims, Principal } from './auth.ts'
 import { badRequest } from './errors.ts'
@@ -11,8 +11,6 @@ export const KNOWN_AGENTS = ['fx', 'claude', 'codex', 'grok', 'pi'] as const
 
 const PROFILE = /^[A-Za-z][A-Za-z0-9-]{0,31}$/
 const HANDLE = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/
-/** An actor ID starts with where it's from: `vercel:user:u_abc123+claude`, `slack:user:U0456`, `board:client`. */
-const isActorId = (id: string) => id.length <= 256 && /^[^\s:]+:\S+$/.test(id)
 
 export type ResolvedActor = {
   author: Author
@@ -76,11 +74,23 @@ export function resolveActor(principal: Principal, claims: Claims, audience: str
     handle: profile === null ? baseHandle : `${baseHandle}/${profile}`,
     name: claims.profile ?? personName ?? baseHandle,
     avatar: claims.avatar ?? (known ? `${audience}/avatars/${profile}` : null),
+    ...(profile === null ? {} : { via: viaOf({ id: principal.id, handle: baseHandle }) }),
   }
   return {
     author: { actor: id, principal: principal.id, profile, session: claims.session },
     actor,
   }
+}
+
+/**
+ * Who a profile of `principal` acts through, as the board shows it: a deployment by its project's name
+ * and its environment (its handle is `www@preview`), anyone else by their handle.
+ */
+export function viaOf(principal: { id: string; handle: string }): Via {
+  const environment = /^vercel:project:[^:]+:([^:]+)$/.exec(principal.id)?.[1] ?? null
+  const suffix = `@${environment}`
+  const name = environment !== null && principal.handle.endsWith(suffix) && principal.handle.length > suffix.length ? principal.handle.slice(0, -suffix.length) : principal.handle
+  return { name, environment }
 }
 
 function isAvatarUrl(value: string): boolean {
@@ -97,19 +107,28 @@ function isAvatarUrl(value: string): boolean {
 
 /**
  * An `actor.seen` event, or null when the board already knows these details. `host`: the actor is
- * a host's principal or one of its profiles, which the board records once.
+ * a host's principal or one of its profiles, which the board records once. `seen.verified`: this
+ * write's credential named it as shown, which each write says anew.
  */
 export function actorSeen(seen: Actor, known: ActorsState, host = false) {
   const existing = own(known.byId, seen.id)
   // Platforms don't always send an avatar (GitHub comments via Chat SDK omit it,
-  // its webhooks include it): a missing one keeps the avatar the board knows.
-  const actor = seen.kind === 'external' && seen.avatar === null ? { ...seen, avatar: existing?.avatar ?? null } : seen
+  // its webhooks include it): a missing one keeps the avatar the board knows. A
+  // schedule kept from before profiles said who they act through keeps that too.
+  const avatar = seen.kind === 'external' && seen.avatar === null ? { avatar: existing?.avatar ?? null } : {}
+  const via = seen.via === undefined && existing?.via ? { via: existing.via } : {}
+  const platform = seen.platform === undefined && existing?.platform ? { platform: existing.platform } : {}
+  const actor: Actor = { ...seen, ...avatar, ...via, ...platform }
   if (
     existing &&
     existing.kind === actor.kind &&
     existing.handle === actor.handle &&
     existing.name === actor.name &&
     existing.avatar === actor.avatar &&
+    existing.via?.name === actor.via?.name &&
+    existing.via?.environment === actor.via?.environment &&
+    existing.platform === actor.platform &&
+    existing.verified === actor.verified &&
     (!host || existing.host)
   )
     return null
@@ -122,53 +141,10 @@ export function actorSeen(seen: Actor, known: ActorsState, host = false) {
       handle: toStorable(actor.handle),
       name: toStorable(actor.name),
       avatar: actor.avatar,
+      ...(actor.via ? { via: { name: toStorable(actor.via.name), environment: actor.via.environment } } : {}),
+      ...(actor.platform ? { platform: actor.platform } : {}),
       ...(host ? { host: true as const } : {}),
+      ...(actor.verified ? { verified: true as const } : {}),
     },
   }
-}
-
-/**
- * Resolves prose mentions to actor IDs. A `@handle` names the one actor the board
- * has seen with it; `@[actor-id]` names one directly. A handle nobody has stays
- * plain text and comes back in `unknown`, so the writer can be told. A handle
- * several actors share, or an `@[actor-id]` the board doesn't know, fails the
- * write. `lenient` is for platform text: no mention fails it, and one that
- * doesn't resolve stays plain text. Without `candidates`, an ambiguous mention
- * doesn't list who it could be: a caller that can't read every channel can't
- * list actors either.
- */
-export function resolveMentions(
-  text: string,
-  known: ActorsState,
-  pending?: Actor,
-  lenient = false,
-  candidates = true,
-): { mentions: string[]; unknown: string[] } {
-  const resolved: string[] = []
-  const unknown: string[] = []
-  const add = (id: string) => {
-    if (!resolved.includes(id)) resolved.push(id)
-  }
-  const fail = (error: Error) => {
-    if (!lenient) throw error
-  }
-  for (const token of extractMentions(text)) {
-    if (token.kind === 'actor') {
-      if ((isActorId(token.actor) && own(known.byId, token.actor)) || pending?.id === token.actor) add(token.actor)
-      else fail(badRequest(`unknown actor @[${token.actor}]`, 'unknown_mention'))
-      continue
-    }
-    const ids = new Set(own(known.byHandle, token.handle) ?? [])
-    if (pending && pending.handle.toLowerCase() === token.handle) ids.add(pending.id)
-    if (ids.size === 1) add([...ids][0]!)
-    else if (ids.size === 0) unknown.push(token.handle)
-    else if (!candidates) fail(badRequest(`ambiguous mention @${token.handle}: use @[actor-id]`, 'ambiguous_mention'))
-    else {
-      const options = [...ids]
-        .map((id) => `@[${id}] (${own(known.byId, id)?.name ?? pending?.name ?? id})`)
-        .join(' or ')
-      fail(badRequest(`ambiguous mention @${token.handle}: use ${options}`, 'ambiguous_mention'))
-    }
-  }
-  return { mentions: resolved, unknown: lenient ? [] : unknown }
 }

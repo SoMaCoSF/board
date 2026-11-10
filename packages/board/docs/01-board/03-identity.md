@@ -14,7 +14,7 @@ a host can recognize its own credentials too: see
 
 Only a few routes take no token: discovery, the built-in avatars, the OpenAPI
 document, and `/webhooks/:key`, which the platform's adapter authenticates instead. A
-route whose watchers another board runs (Vercel's board, say) also answers
+route whose watchers Vercel's board runs also answers
 `POST /wake` without one: a wake-up only says to pull.
 
 ## Where tokens come from
@@ -121,13 +121,14 @@ A **principal** is who holds the credential. It's a readable string:
 | `vercel:project:prj_x:production` | a deployment of a Vercel project |
 | `github:repo:123456` | a GitHub Actions workflow in that repo |
 | `oidc:gitlab.com:project_path:acme/api:ref_type:branch:ref:main` | another issuer's token, by its `sub` |
-| `slack:user:U0456`, `github:user:583231` | a platform user, arriving through [sync](../02-sync/01-overview.md) |
+| `slack:user:U0456`, `github:user:583231` | a platform user the board's own [sync](../02-sync/01-overview.md) checked, under the sync key they came through |
 | `board:watch:triage`, `board:client`, `board:client:deploys` | a [local board](./10-local.md)'s own [watchers](./06-watchers.md) and [handle](./01-mounting.md#the-handle), with `as()`'s profile |
 
 A **profile** is a named identity within a principal: an agent acting for a
-person. An **actor** is what a message is attributed to: the principal alone,
-or `principal+profile`, like `vercel:user:u_abc123+claude`. It shows as
-**claude via julian**.
+person, or a [platform user](#platform-users) a sync speaks for. An **actor**
+is what a message is attributed to: the principal alone, or
+`principal+profile`, like `vercel:user:u_abc123+claude`. One with a profile
+shows through its principal: **claude via julian**.
 
 ### Profiles
 
@@ -162,9 +163,32 @@ When you write as yourself, the CLI also sends your Vercel display name and
 avatar. Like your handle, they're details you assert; your identity is the
 verified principal.
 
+### Platform users
+
+A Slack, GitHub, or Linear user arrives through [sync](../02-sync/01-overview.md),
+named under the sync key they came through: `slack:user:U0456` through the key
+`slack`, `slack-eu:user:U0456` through a key `slack-eu` registered for Slack. The
+key is the connection, so renaming one changes its users' IDs; the platform shows
+as their logo. The board's own sync checks each platform webhook itself, so what
+it imports is by the user, shown by name. Any other sync, a project that
+registers one on the board or any sync on Vercel's board, only says who wrote a
+message, so what it imports is by a profile of that project, named
+`<sync key>:<user>`: `vercel:project:prj_support:preview+slack:user:U0456`.
+It shows through the project, with its environment outside production:
+
+```text
+#2  Malte via support (preview) · 2m
+      ship it, I checked
+```
+
+Each sync's profile of a user is an actor of its own: two syncs' Malte don't
+group, react, or match `--by` together, and only a sync's own imports change
+its profile's name and avatar.
+
 ## Machines outside the project
 
-g2 lets every project on the board's team read, post, react, and label.
+g2 lets every project on the board's team read, post, react, label, and
+[sync](../04-reference/03-http.md#what-sync-grants).
 Anything else outside the board's project needs a
 [grant](./09-access.md#grants), which says what it may do in each channel.
 Someone with `manage` where it reaches creates it on the board, and it holds
@@ -218,8 +242,19 @@ Handles are display hints, not reservations:
   that verifier returns, and the CLI's doesn't replace it.
 - **A profile's** is `<person>/<profile>`: `julian/claude`.
 - **A deployment's** is its project name, plus `@<env>` outside production.
+  On Vercel's board it's the project name in every environment, and one
+  outside production shows as `support (preview)`; where nothing names its
+  project, it goes by the project's ID (`prj_support@preview`).
 - **A workflow's** is `owner/repo`.
-- **A platform user's** is their login or display name there.
+- **A platform user's** is their login or display name there, for the
+  board's own sync. One a sync elsewhere imports is under that project's name,
+  in every environment: support's Malte is `support/malte`, and www's
+  `www/malte`. The part after `/` is made typable: accents taken off,
+  lowercased, every run of anything but letters, digits, `.`, `_`, and `-` as
+  one `-`, and the ends trimmed, so "Jürgen Ubl" is `support/jurgen-ubl`. When
+  nothing is left, it's their ID on the platform, without the sync key, the same
+  way (`T_EU:U0MALTE` is `t_eu-u0malte`). A handle holds 128 characters, so a
+  longer one is cut to fit, its ends trimmed again.
 
 `vb actors` lists them.
 
@@ -229,37 +264,34 @@ Handles are display hints, not reservations:
 vb reply 812 "@ada can you look? cc @julian/claude"
 ```
 
-- **`@handle` and `@person/profile`** name an actor the board has seen. One
-  becomes known when it writes, reacts, or is mentioned on its own platform.
-- **`@[actor-id]`** names an exact actor: `@[slack:user:U0456]`. It's the
-  way out of an ambiguous handle.
+- **A mention is text.** The board posts it as written and stores nothing
+  else: no handle or actor ID fails a write, whether no one has it, several
+  share it, or the board has never seen them. An edit is just new text.
+- **`@handle` and `@person/profile`** name whoever has that handle.
+- **`@[actor-id]`** names an exact actor: `@[slack:user:U0456]`. It's how to
+  name one of several who share a handle.
 - **`@[ada@vercel.com]`** names whoever has that email on a synced platform,
-  even someone the board hasn't seen. The board stores the exact actor, so it
-  renders natively. An email no platform knows stays plain text. A writer that
-  can't read the channel gets back what it wrote, and never sees who an email
-  turned out to be.
+  even someone the board hasn't seen.
 - **Mentions in inline code or code blocks don't count.**
-- **A handle no one has stays plain text.** The write goes through, notifying
-  no one for it, and `vb` warns: `warning: @x matches no one on the board, so
-  it stays plain text and notifies no one`. Synced copies carry it as written,
-  so a platform that links typed handles (GitHub) treats it as its own.
-- **A handle several actors share fails the write,** since a guess could
-  notify the wrong person:
+- **Each sync resolves them when it posts,** and only against its own users:
+  the platform users it brought in under the key it posts through. On Slack:
+  - `@ada` becomes `<@U0456>` when exactly one of its users goes by `ada`, or
+    by `<its project>/ada`: `@support/ada` reaches only support's Ada, and
+    `@ada` is the shorthand each sync reads as its own. Of several, it's the
+    one who wrote in the thread, if exactly one did. Otherwise it stays `@ada`.
+  - `@[actor-id]` becomes `<@U0456>` when it's one of its users, and their
+    name for anyone else, a board person included.
+  - `@[ada@vercel.com]` is looked up as it posts (it needs `users:read.email`):
+    `<@U0456>` when Slack finds her, and the plain email when it doesn't.
 
-```text
-$ vb post errors-www "@ada the rollback is live"
-error: Can't post to errors-www.
-  ambiguous mention @ada: use @[slack:user:U0456] (ada) or @[vercel:user:u_9f] (ada)
-```
-
-An `@[actor-id]` the board doesn't know fails too, the board saying `unknown actor`. For
-a caller that can't read every channel, an ambiguous mention lists no
-candidates: `use @[actor-id]`. A caller that can't read the channel it writes
-in gets no warning for a handle no one has, since it would say which handles
-exist ([Access](./09-access.md#what-a-caller-sees)). Mentions are stored as actor
-IDs, so a later handle change never reroutes an old one, and edits resolve them
-again. Platform text never fails a write: a mention there that doesn't resolve
-stays plain text. On their own platform, mentions render natively: `<@U0456>` in
-Slack, `@login` on GitHub. Anyone else, a board person included, reads as their
-name there: mention a Slack user in Slack by their actor
-(`@[slack:user:U0456]`) or their email (`@[ada@vercel.com]`).
+  So `@malte` reaches each sync's own Malte, and neither two syncs that each
+  bring in a Malte nor a sync allowed only one channel makes it fail anywhere.
+  GitHub mentions its users as `@login`.
+- **Filters read the text.** `--mentions @ada` finds `@ada`, and
+  `@[<actor id>]` for anyone who goes by `ada`. A name covers what's under it:
+  a person's agents (`@julian/claude`), and a project's imports
+  (`--mentions support` finds `@support/malte`). `--mentions` alone is your
+  handle and ID. A caller
+  that can't read every channel gets what it names as written, and its agents,
+  since who goes by what is for readers of every channel. See
+  [Reading](./05-reading.md#filters).
