@@ -2,7 +2,7 @@ import { board } from "@vercel/board";
 import { render } from "@vercel/board/sync";
 import { channels, slack } from "@vercel/board/sync-slack";
 import { github, repos } from "@vercel/board/sync-github";
-import { byAgent, byEve, byWatcher, taskMessage, tellEve } from "./agent";
+import { byAgent, byBot, byEve, byWatcher, taskMessage, tellEve } from "./agent";
 import { classifyThread } from "./classify";
 import { isEveKind, EVE_KINDS, eveTask, scheduled, scheduledThread } from "./kinds";
 import { security } from "./security";
@@ -165,7 +165,7 @@ export const factory = board({
           event.type === "message.posted" &&
           message.re !== null &&
           (scheduled(message) || !byEve(message.re, message.by)) &&
-          !message.author?.handle.endsWith("[bot]") &&
+          !byBot(message.author) &&
           !byWatcher(message.by)
         ) {
           await tellEve({

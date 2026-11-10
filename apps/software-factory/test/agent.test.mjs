@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { byAgent, byEve, byWatcher, eveAvatar, eveName, sourceLink, startOrSay, taskMessage } from "../app/api/board/[[...path]]/agent.ts";
+import { byAgent, byBot, byEve, byWatcher, eveAvatar, eveName, sourceLink, startOrSay, platformUser, taskMessage } from "../app/api/board/[[...path]]/agent.ts";
 
 // Eve posts as the factory's production deployment.
 process.env.VERCEL_PROJECT_ID = "prj_factory";
@@ -110,25 +110,51 @@ test("eveAvatar: a PNG generated from each Eve's name", () => {
 });
 
 test("byWatcher: the board's watchers' own notes, which wake neither Eve nor triage", () => {
-  const none = { principal: "board:watch", session: null };
+  const none = { principal: "board:watch", profile: null, session: null };
   assert.ok(byWatcher({ actor: "board:watch:crosspost", ...none }));
   assert.ok(byWatcher({ actor: "board:watch:security", ...none }));
   assert.ok(byWatcher({ actor: "board:watch:pi", ...none }));
-  assert.ok(!byWatcher({ actor: "slack:user:U123", principal: "slack:user:U123", session: null }));
-  assert.ok(!byWatcher({ actor: "board:schedule", principal: "board:schedule", session: null }));
+  assert.ok(!byWatcher({ actor: "slack:user:U123", principal: "slack:user:U123", profile: null, session: null }));
+  assert.ok(!byWatcher({ actor: "board:schedule", principal: "board:schedule", profile: null, session: null }));
   // On Vercel's board: the factory's project under a watcher's ID, with no session, which every Eve has.
   const factory = "vercel:project:prj_factory:production";
-  assert.ok(byWatcher({ actor: `${factory}+pi`, principal: factory, session: null }));
-  assert.ok(byWatcher({ actor: `${factory}+in-thread`, principal: factory, session: null }));
-  assert.ok(!byWatcher({ actor: `${factory}+${eveName("1956")}`, principal: factory, session: "thread-1956" }));
+  assert.ok(byWatcher({ actor: `${factory}+pi`, principal: factory, profile: "pi", session: null }));
+  assert.ok(byWatcher({ actor: `${factory}+in-thread`, principal: factory, profile: "in-thread", session: null }));
+  assert.ok(!byWatcher({ actor: `${factory}+${eveName("1956")}`, principal: factory, profile: eveName("1956"), session: "thread-1956" }));
   const other = "vercel:project:prj_other:production";
-  assert.ok(!byWatcher({ actor: `${other}+pi`, principal: other, session: null }));
+  assert.ok(!byWatcher({ actor: `${other}+pi`, principal: other, profile: "pi", session: null }));
+  // What the factory's own sync imports is by its project with no session too: a person's, which wakes Eve.
+  assert.ok(!byWatcher({ actor: `${factory}+slack:user:U123`, principal: factory, profile: "slack:user:U123", session: null }));
+  assert.ok(!byWatcher({ actor: `${factory}+github:user:40034115`, principal: factory, profile: "github:user:40034115", session: null }));
+});
+
+test("platformUser: who a sync imported, as the importing project's profile or as the principal", () => {
+  const factory = "vercel:project:prj_factory:production";
+  assert.deepEqual(platformUser({ principal: factory, profile: "slack:user:U123" }), { key: "slack", user: "user:U123" });
+  assert.deepEqual(platformUser({ principal: "slack:user:U123", profile: null }), { key: "slack", user: "user:U123" });
+  assert.deepEqual(platformUser({ principal: "slack:user:U123" }), { key: "slack", user: "user:U123" });
+  assert.equal(platformUser({ principal: factory, profile: "pi" }), null);
+  assert.equal(platformUser({ principal: factory, profile: null }), null);
+  assert.equal(platformUser({ principal: "vercel:user:u_1", profile: "claude" }), null);
+  assert.equal(platformUser({ principal: "board:schedule", profile: null }), null);
+});
+
+test("byBot: a platform's bot account, as GitHub names it or as Vercel's board handles an imported one", () => {
+  assert.ok(byBot({ handle: "vercel[bot]", name: "vercel[bot]" }));
+  assert.ok(byBot({ handle: "vboard-factory/vercel-bot", name: "vercel[bot]" }));
+  assert.ok(byBot({ handle: "vboard-factory/github-actions-bot", name: "github:user:41898282" }));
+  assert.ok(!byBot({ handle: "vboard-factory/malte", name: "Malte" }));
+  assert.ok(!byBot({ handle: "abbot", name: "Abbot" }));
+  assert.ok(!byBot(null));
 });
 
 test("byAgent: a coding agent's or Eve's message, which triage doesn't judge, and not a person's", () => {
-  assert.ok(byAgent({ profile: "claude" }));
-  assert.ok(byAgent({ profile: eveName("1956") }));
-  assert.ok(!byAgent({ profile: null }));
+  const factory = "vercel:project:prj_factory:production";
+  assert.ok(byAgent({ principal: "vercel:user:u_1", profile: "claude" }));
+  assert.ok(byAgent({ principal: factory, profile: eveName("1956") }));
+  assert.ok(!byAgent({ principal: "vercel:user:u_1", profile: null }));
+  // A platform user the factory's sync imported is its project's profile, and a person.
+  assert.ok(!byAgent({ principal: factory, profile: "slack:user:U123" }));
 });
 
 function thread() {

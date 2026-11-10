@@ -53,6 +53,25 @@ test(":security: on a PR root asks Eve for a deepsec review of the diff, for any
   }
 });
 
+test(":security: from Slack on Vercel's board, where the reactor is the factory's project under their Slack user", async () => {
+  const factory = "vercel:project:prj_factory:production";
+  const input = event();
+  input.actor = { id: `${factory}+slack:user:U123`, handle: "vboard-factory/sam" };
+  input.payload.by = { actor: `${factory}+slack:user:U123`, principal: factory, profile: "slack:user:U123", session: null };
+  const h = harness();
+  await h.run(input);
+  assert.equal(h.notifications.length, 1);
+  assert.ok(h.notifications[0].message.startsWith(`vboard-factory/sam (${factory}+slack:user:U123) reacted with :security:`));
+  // An agent's or a watcher's reaction through the same project isn't a person's on Slack.
+  for (const profile of ["pi", "clever-lemur-1956", "github:user:40034115"]) {
+    const other = event();
+    other.payload.by = { actor: `${factory}+${profile}`, principal: factory, profile, session: null };
+    const g = harness();
+    await g.run(other);
+    assert.deepEqual(g.notifications, []);
+  }
+});
+
 test("names the requester by handle, or by verified identity without one", async () => {
   const h = harness();
   await h.run();

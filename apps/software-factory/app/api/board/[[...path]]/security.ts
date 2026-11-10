@@ -1,5 +1,5 @@
 import type { Watcher } from "@vercel/board";
-import type { tellEve } from "./agent";
+import { platformUser, type tellEve } from "./agent.ts";
 import { prNumber, REPO } from "./github.ts";
 import { prThreadOf } from "./inthread.ts";
 import { DEV } from "./harness.ts";
@@ -22,7 +22,7 @@ export function security(options: { tellEve: typeof tellEve }): Watcher {
         event.type !== "reaction.added" ||
         event.payload.emoji !== "security" ||
         event.payload.from !== "slack" ||
-        !event.payload.by.principal.startsWith("slack:user:")
+        platformUser(event.payload.by)?.key !== "slack"
       ) return;
       // A root, or a factory PR's message in the thread it was built for; :secure: goes on the message reacted to.
       const thread = prThreadOf(root);
