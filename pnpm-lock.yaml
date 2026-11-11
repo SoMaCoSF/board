@@ -58,8 +58,8 @@ importers:
         specifier: ^4.41.1
         version: 4.41.1(ai@7.0.130(zod@4.6.5))(debug@4.4.3)(zod@4.6.5)
       '@vercel/board':
-        specifier: 0.38.0
-        version: 0.38.0(@chat-adapter/github@4.41.1(ai@7.0.130(zod@4.6.5))(zod@4.6.5))(@chat-adapter/linear@4.41.1(ai@7.0.130(zod@4.6.5))(graphql@17.0.2)(zod@4.6.5))(@chat-adapter/slack@4.41.1(ai@7.0.130(zod@4.6.5))(debug@4.4.3)(zod@4.6.5))(@vercel/connect@2.3.4)(chat@4.41.1(ai@7.0.130(zod@4.6.5))(zod@4.6.5))
+        specifier: 0.39.0
+        version: 0.39.0(@chat-adapter/github@4.41.1(ai@7.0.130(zod@4.6.5))(zod@4.6.5))(@chat-adapter/linear@4.41.1(ai@7.0.130(zod@4.6.5))(graphql@17.0.2)(zod@4.6.5))(@chat-adapter/slack@4.41.1(ai@7.0.130(zod@4.6.5))(debug@4.4.3)(zod@4.6.5))(@vercel/connect@2.3.4)(chat@4.41.1(ai@7.0.130(zod@4.6.5))(zod@4.6.5))
       '@vercel/connect':
         specifier: ^2.3.4
         version: 2.3.4(@chat-adapter/slack@4.41.1(ai@7.0.130(zod@4.6.5))(debug@4.4.3)(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))(ai@7.0.130(zod@4.6.5))(eve@0.84.1)
@@ -1349,8 +1349,8 @@ packages:
       pg:
         optional: true
 
-  '@vercel/board@0.38.0':
-    resolution: {integrity: sha512-ravhO/RGcraZmyaF50tOk5jbTDfA/3oC50JkCrga5Em8gyEw/ra73KIfYrci3orfp+U5HE4jNd0fp7ip534sFg==}
+  '@vercel/board@0.39.0':
+    resolution: {integrity: sha512-lED80x45IU4dbXiDVAvXXk0C9BtyCwFFpJwEW02Ls2enzyr8xhVG5Zh3HonJvufadBfPdcPu+X7TChOcecJyhQ==}
     engines: {node: '>=22.18'}
     hasBin: true
     peerDependencies:
@@ -4484,7 +4484,7 @@ snapshots:
       ioredis: 5.11.1
       pg: 8.23.1
 
-  '@vercel/board@0.38.0(@chat-adapter/github@4.41.1(ai@7.0.130(zod@4.6.5))(zod@4.6.5))(@chat-adapter/linear@4.41.1(ai@7.0.130(zod@4.6.5))(graphql@17.0.2)(zod@4.6.5))(@chat-adapter/slack@4.41.1(ai@7.0.130(zod@4.6.5))(debug@4.4.3)(zod@4.6.5))(@vercel/connect@2.3.4)(chat@4.41.1(ai@7.0.130(zod@4.6.5))(zod@4.6.5))':
+  '@vercel/board@0.39.0(@chat-adapter/github@4.41.1(ai@7.0.130(zod@4.6.5))(zod@4.6.5))(@chat-adapter/linear@4.41.1(ai@7.0.130(zod@4.6.5))(graphql@17.0.2)(zod@4.6.5))(@chat-adapter/slack@4.41.1(ai@7.0.130(zod@4.6.5))(debug@4.4.3)(zod@4.6.5))(@vercel/connect@2.3.4)(chat@4.41.1(ai@7.0.130(zod@4.6.5))(zod@4.6.5))':
     dependencies:
       '@vercel/oidc': 3.8.9
       jose: 6.2.12
