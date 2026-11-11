@@ -1,25 +1,25 @@
 import { describe, expect, it } from 'vitest'
-import { grepChannel } from '../src/cli/grep.ts'
+import { grep } from '../src/cli/grep.ts'
 
-const a = (text: string) => text === 'a'
+const channel = (texts: string[]) => texts.map((text, at) => ({ id: String(at), text }))
+const all = { max: Infinity, before: 0, after: 0, ref: (id: string) => id }
 
-describe('vb grep over one channel', () => {
-  it('prints each match once, with its neighbours, and a group for each run whose context touches', () => {
-    const channel = ['a', 'x', 'x', 'a', 'x', 'x', 'x', 'a']
-    expect(grepChannel(channel, a, { max: Infinity, before: 0, after: 0 })).toEqual({ hits: [0, 3, 7], groups: [[0], [3], [7]] })
-    expect(grepChannel(channel, a, { max: Infinity, before: 1, after: 1 }).groups).toEqual([[0, 1, 2, 3, 4], [6, 7]])
-    expect(grepChannel(channel, a, { max: Infinity, before: 0, after: 3 }).groups).toEqual([[0, 1, 2, 3, 4, 5, 6, 7]])
-    expect(grepChannel(channel, a, { max: 2, before: 2, after: 0 })).toEqual({ hits: [0, 3], groups: [[0, 1, 2, 3]] })
-    expect(grepChannel(channel, a, { max: 0, before: 0, after: 0 })).toEqual({ hits: [], groups: [] })
+describe('vb grep over messages already read', () => {
+  it('prints a row a match, its neighbours as context, and -- between groups and channels', () => {
+    const channels = new Map([['ci', channel(['a', 'x', 'x', 'a', 'x', 'x', 'x', 'a'])], ['web', channel(['a'])]])
+    expect(grep(channels, /a/, all).rows).toEqual(['ci:0:a', 'ci:3:a', 'ci:7:a', 'web:0:a'])
+    expect(grep(channels, /a/, { ...all, before: 1, after: 1 }).rows).toEqual(['ci:0:a', 'ci-1-x', 'ci-2-x', 'ci:3:a', 'ci-4-x', '--', 'ci-6-x', 'ci:7:a', '--', 'web:0:a'])
+    expect(grep(channels, /a/, { ...all, max: 2, before: 2 }).rows).toEqual(['ci:0:a', 'ci-1-x', 'ci-2-x', 'ci:3:a'])
+    expect(grep(channels, /a/, { ...all, only: 'count' }).rows).toEqual(['ci:3', 'web:1'])
+    expect(grep(channels, /x/, { ...all, only: 'channels' }).rows).toEqual(['ci'])
   })
 
   // Past about 150,000 matches, spreading them into one call overflows the stack, and checking
   // each message against every match takes minutes.
-  it('greps a channel where 300,000 messages match, with and without context', () => {
-    const channel = Array.from({ length: 300_000 }, (_, at) => (at % 3 ? 'a' : 'x'))
-    expect(grepChannel(channel, a, { max: Infinity, before: 0, after: 0 }).hits).toHaveLength(200_000)
-    const { groups } = grepChannel(channel, a, { max: Infinity, before: 1, after: 1 })
-    expect(groups).toHaveLength(1)
-    expect(groups[0]).toHaveLength(300_000)
+  it('greps a channel where 200,000 of 300,000 messages match, with and without context', () => {
+    const channels = new Map([['ci', channel(Array.from({ length: 300_000 }, (_, at) => (at % 3 ? 'a' : 'x')))]])
+    expect(grep(channels, /a/, all).matches).toHaveLength(200_000)
+    expect(grep(channels, /a/, { ...all, only: 'count' }).rows).toEqual(['ci:200000'])
+    expect(grep(channels, /a/, { ...all, before: 1, after: 1 }).rows).toHaveLength(300_000)
   })
 })

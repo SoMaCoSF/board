@@ -24,7 +24,7 @@ import { AGENTS, allowRules, cliOf, disallow, installedHook, tilde, uninstallHoo
 import { commands, filters as filterOptions, globalOptions, options, type CliCommand } from './commands.ts'
 import { commandHelp, commandPath, rootHelp } from './help.ts'
 import { closest, exitCode, failureDocument, formatFailure, type Failure, type Recovery, type Warning } from './failure.ts'
-import { grepChannel } from './grep.ts'
+import { grep } from './grep.ts'
 
 /** A failure this run says in its own words: what a command throws to stop with it. */
 export class Failed extends Error {
@@ -1131,32 +1131,10 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       for (const message of seen.values())
         if (!message.deleted && (since === undefined || Date.parse(message.createdAt) >= since))
           (byChannel.get(message.channel) ?? byChannel.set(message.channel, []).get(message.channel)!).push(message)
-      const line = (message: MessageView) => message.text.split(/\r?\n/).find((text) => regex.test(text))
-      const matches: MessageView[] = []
-      const shown: string[] = []
-      for (const [channel, messages] of byChannel) {
-        const { hits, groups } = grepChannel(messages, (message) => line(message) !== undefined, { max: max - matches.length, before, after })
-        for (const at of hits) matches.push(messages[at]!)
-        if (flags.count) {
-          shown.push(`${channel}:${hits.length}`)
-          continue
-        }
-        if (flags['files-with-matches']) {
-          if (hits.length) shown.push(channel)
-          continue
-        }
-        const hit = new Set(hits)
-        for (const group of groups) {
-          if ((before || after) && shown.length) shown.push('--')
-          for (const at of group) {
-            const message = messages[at]!
-            const mark = hit.has(at) ? ':' : '-'
-            shown.push(`${channel}${mark}${messageRef(message.id)}${mark}${(hit.has(at) ? line(message) : message.text.split(/\r?\n/)[0]) ?? ''}`)
-          }
-        }
-      }
+      const only = flags.count ? 'count' : flags['files-with-matches'] ? 'channels' : undefined
+      const { matches, rows } = grep(byChannel, regex, { max, before, after, only, ref: messageRef })
       if (flags.json) result({ matches })
-      else for (const row of shown) out(row)
+      else for (const row of rows) out(row)
       return matches.length ? 0 : 1
     }
 
