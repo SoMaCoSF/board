@@ -460,6 +460,32 @@ describe('cli', () => {
     expect(await vb(['read', 'open-work', '--messages'])).toMatchObject({ code: 2 })
   }, 20_000)
 
+  it('greps what messages say as grep does: a line a match, neighbouring messages as context, and 0, 1, or 2', async () => {
+    const root = (await vb(['post', 'grep-ci', 'deploy started'])).stdout.trim()
+    const hit = (await vb(['reply', root, 'step 2\nfailed: ECONNRESET on fetch'])).stdout.trim()
+    const next = (await vb(['reply', root, 'retrying'])).stdout.trim()
+    const other = (await vb(['post', 'grep-web', 'econnreset again, costs $5 (est.)'])).stdout.trim()
+
+    expect(await vb(['grep', 'ECONNRESET', 'grep-ci', 'grep-web'])).toEqual({ code: 0, stdout: `grep-ci:${hit}:failed: ECONNRESET on fetch\n`, stderr: '' })
+    expect((await vb(['grep', '-i', 'econnreset', 'grep-ci', 'grep-web'])).stdout).toBe(`grep-ci:${hit}:failed: ECONNRESET on fetch\ngrep-web:${other}:econnreset again, costs $5 (est.)\n`)
+    expect((await vb(['grep', '-i', '-C', '1', 'ECONNRESET', 'grep-ci', 'grep-web'])).stdout).toBe(
+      `grep-ci-${root}-deploy started\ngrep-ci:${hit}:failed: ECONNRESET on fetch\ngrep-ci-${next}-retrying\n--\ngrep-web:${other}:econnreset again, costs $5 (est.)\n`,
+    )
+    expect((await vb(['grep', '-A', '1', '^(deploy|retrying)', 'grep-ci'])).stdout).toBe(`grep-ci:${root}:deploy started\ngrep-ci-${hit}-step 2\ngrep-ci:${next}:retrying\n`)
+    expect((await vb(['grep', '-B', '1', 'retrying', 'grep-ci'])).stdout).toBe(`grep-ci-${hit}-step 2\ngrep-ci:${next}:retrying\n`)
+    expect((await vb(['grep', '-ic', 'econnreset', 'grep-ci', 'grep-web'])).stdout).toBe('grep-ci:1\ngrep-web:1\n')
+    expect((await vb(['grep', '-l', 'retry', 'grep-ci', 'grep-web'])).stdout).toBe('grep-ci\n')
+    expect((await vb(['grep', '-F', '$5 (est.)', 'grep-web'])).stdout).toBe(`grep-web:${other}:econnreset again, costs $5 (est.)\n`)
+    expect(JSON.parse((await vb(['grep', '-i', 'econnreset', '-n', '1', 'grep-ci', 'grep-web', '--json'])).stdout).matches.map((m: { id: string }) => m.id)).toEqual([hit])
+    expect((await vb(['grep', 'deploy', 'grep-ci', '--since', '1h'])).code).toBe(0)
+    expect((await vb(['grep', 'deploy', 'grep-ci', '--since', '2999-01-01T00:00:00Z'])).code).toBe(1)
+
+    expect(await vb(['grep', 'nothing like this', 'grep-ci'])).toEqual({ code: 1, stdout: '', stderr: '' })
+    expect(await vb(['grep', '$5 (est.', 'grep-web'])).toMatchObject({ code: 2, stdout: '', stderr: expect.stringMatching(/isn't a regular expression .*pass -F/) })
+    expect(await vb(['grep', '-n', 'deploy', 'grep-ci'])).toMatchObject({ code: 2, stderr: expect.stringMatching(/^error: -n is how many matches to print, and deploy isn't a number/) })
+    expect(await vb(['grep', 'deploy', '--url', 'http://127.0.0.1:9/api/board'])).toMatchObject({ code: 2, stdout: '' })
+  }, 20_000)
+
   it("posts once for an idempotency key, and reads by a message's source", async () => {
     const once = await vb(['post', 'retries', 'deploy failed', '--idempotency-key', 'deploy-a1b2c3'])
     expect(once).toMatchObject({ code: 0, stderr: '' })

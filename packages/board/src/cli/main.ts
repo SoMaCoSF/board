@@ -4,7 +4,7 @@ import { basename } from 'node:path'
 import { parseArgs } from 'node:util'
 import type { MessageView } from '../api/routes.ts'
 import { withMentions } from '../api/tail.ts'
-import { BoardError, type Filters, type ProfileOption } from '../client/client.ts'
+import { BoardError, duration, type Filters, type ProfileOption } from '../client/client.ts'
 import { boardUrl, connect, handFetch, handLogin, vercelProjectFile } from '../client/node.ts'
 import { http } from '../backend-http/index.ts'
 import { credentialed, credentialSource, handTeam, vercel } from '../backend-vercel/index.ts'
@@ -1094,6 +1094,71 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       return 0
     }
 
+    case 'grep': {
+      const [pattern, ...channels] = args
+      if (pattern === undefined) throw usage('Missing the pattern to search for.', { reason: 'missing_arguments' })
+      if (flags.limit !== undefined && !/^[1-9]\d*$/.test(flags.limit))
+        throw usage(`-n is how many matches to print, and ${flags.limit} isn't a number: every match shows its ID.`)
+      const max = flags.limit === undefined ? Number.POSITIVE_INFINITY : Number(flags.limit)
+      const around = (flag: 'after-context' | 'before-context') => {
+        const given = flags[flag] ?? flags.context ?? '0'
+        if (!/^\d+$/.test(given)) throw usage(`--${flags[flag] === undefined ? 'context' : flag} takes a number of messages, and ${given} isn't one.`)
+        return Number(given)
+      }
+      const [after, before] = [around('after-context'), around('before-context')]
+      let regex: RegExp
+      try {
+        regex = new RegExp(flags['fixed-strings'] ? pattern.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&') : pattern, flags['ignore-case'] ? 'i' : '')
+      } catch (error) {
+        throw usage(`${pattern} isn't a regular expression (${(error as Error).message}): pass -F to search for it as text.`)
+      }
+      const since = flags.since === undefined ? undefined : /^\d+(\.\d+)?(ms|s|m|h|d)$/.test(flags.since) ? Date.now() - duration(flags.since) : Date.parse(instant('since', flags.since))
+      const board = client()
+      const seen = new Map<string, MessageView>()
+      for (const channel of channels.length ? channels : [undefined]) {
+        const pages: MessageView[][] = []
+        for (let oldest: string | undefined; ; ) {
+          const { messages } = await board.messages({ ...(channel ? { channel } : {}), limit: 500, ...(oldest !== undefined ? { before: oldest } : {}) })
+          if (!messages.length) break
+          pages.unshift(messages)
+          if (since !== undefined && Date.parse(messages[0]!.createdAt) < since) break
+          oldest = messages[0]!.id
+        }
+        for (const message of pages.flat()) if (!seen.has(message.id)) seen.set(message.id, message)
+      }
+      const byChannel = new Map<string, MessageView[]>()
+      for (const message of seen.values())
+        if (!message.deleted && (since === undefined || Date.parse(message.createdAt) >= since))
+          (byChannel.get(message.channel) ?? byChannel.set(message.channel, []).get(message.channel)!).push(message)
+      const line = (message: MessageView) => message.text.split(/\r?\n/).find((text) => regex.test(text))
+      const matches: MessageView[] = []
+      const shown: string[] = []
+      for (const [channel, messages] of byChannel) {
+        const hits = messages.flatMap((message, at) => (line(message) === undefined ? [] : [at])).slice(0, max - matches.length)
+        matches.push(...hits.map((at) => messages[at]!))
+        if (flags.count) {
+          shown.push(`${channel}:${hits.length}`)
+          continue
+        }
+        if (flags['files-with-matches']) {
+          if (hits.length) shown.push(channel)
+          continue
+        }
+        let last: number | undefined
+        messages.forEach((message, at) => {
+          const hit = hits.includes(at)
+          if (!hit && !hits.some((h) => at >= h - before && at <= h + after)) return
+          if ((before || after) && shown.length && (last === undefined || at > last + 1)) shown.push('--')
+          const mark = hit ? ':' : '-'
+          shown.push(`${channel}${mark}${messageRef(message.id)}${mark}${(hit ? line(message) : message.text.split(/\r?\n/)[0]) ?? ''}`)
+          last = at
+        })
+      }
+      if (flags.json) result({ matches })
+      else for (const row of shown) out(row)
+      return matches.length ? 0 : 1
+    }
+
     case 'post': {
       const [target, body] = args
       if (!target) throw usage('Missing the channel or message to post to.', { reason: 'missing_arguments' })
@@ -1603,7 +1668,8 @@ async function runOnce(argv: string[], options: App): Promise<number> {
   } catch (error) {
     // Before the parser says, `--json` is whether it was typed before any `--`.
     const json = flags.json ?? argv.slice(0, argv.includes('--') ? argv.indexOf('--') : undefined).includes('--json')
-    return report(failureOf(error), json)
+    const code = report(failureOf(error), json)
+    return current.command === 'grep' && code === 1 ? 2 : code
   }
 }
 

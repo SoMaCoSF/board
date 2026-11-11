@@ -141,6 +141,15 @@ export const options = {
   port: { type: 'string', value: 'N', description: 'the port to listen on' },
   dir: { type: 'string', value: 'dir', description: 'where the board keeps its log (default: .board/)' },
   'no-inspect': { type: 'boolean', description: "don't start the inspector" },
+  'ignore-case': { type: 'boolean', short: 'i', description: 'in any case' },
+  'extended-regexp': { type: 'boolean', short: 'E', description: 'the same as without it: a pattern is a JavaScript regular expression' },
+  'fixed-strings': { type: 'boolean', short: 'F', description: 'the pattern is text, not a regular expression' },
+  count: { type: 'boolean', short: 'c', description: 'how many messages match in each channel, and no more' },
+  'files-with-matches': { type: 'boolean', short: 'l', description: 'the channels with a match, and no more' },
+  'after-context': { type: 'string', short: 'A', value: 'N', description: 'and the N messages after each match' },
+  'before-context': { type: 'string', short: 'B', value: 'N', description: 'and the N messages before each match' },
+  context: { type: 'string', short: 'C', value: 'N', description: 'and the N messages on each side of each match' },
+  since: { type: 'string', value: 'duration|time', description: 'only messages since then: 7d, or a time' },
   // What a turn-end hook an earlier board installed still passes to `hook`.
   agent: { type: 'string', value: 'name', description: "the agent whose turn ended", hidden: true },
 } as const satisfies Record<string, Spec>
@@ -379,6 +388,23 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
       { name: "list a channel's latest threads", value: 'read dev' },
       { name: 'read one thread, every message', value: 'read 812' },
       { name: 'list the open bugs', value: 'read dev --label kind=bug --label state=open' },
+    ],
+  },
+  {
+    group: 'messages',
+    name: 'grep',
+    description: "search what messages say, as grep does: a line for each match, its channel, ID, and the line that matched (1 if none does)",
+    arguments: [
+      { name: 'pattern', required: true, description: 'a regular expression, or with -F, text' },
+      { name: 'channel', required: false, multiple: true, description: 'a channel or a path prefix (dev/): every channel you can read without one' },
+    ],
+    options: [
+      ...(['ignore-case', 'extended-regexp', 'fixed-strings', 'count', 'files-with-matches', 'after-context', 'before-context', 'context', 'since'] as const).map((name) => option(name)),
+      option('limit', 'stop after N matches; every match shows its ID'),
+    ],
+    examples: [
+      { name: 'find a failure, with the message before and after it', value: 'grep -C 1 ECONNRESET dev' },
+      { name: "count this week's mentions of a flaky test, by channel", value: 'grep -ic "flaky test" --since 7d' },
     ],
   },
   {

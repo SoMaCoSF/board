@@ -772,6 +772,38 @@ To read one, `vb read 1204`.
 
 See [Reading](../01-board/05-reading.md).
 
+### grep
+
+```text
+vb grep <pattern> [channel...] [-i] [-F] [-c | -l] [-A N] [-B N] [-C N] [--since <duration|time>] [-n N]
+```
+
+Searches what messages say, in the channels you name (a subtree with a
+trailing slash: `www/`) or every channel you can read, as grep searches files:
+a channel is a file, and a message is a line. Each match is one line,
+`channel:id:line`, the message's line that matched (its first, when several
+do); `-A`, `-B`, and `-C` add the messages before and after it in its channel,
+by their first line, as `channel-id-line`,
+with `--` between groups. `-c` prints `channel:count`, `-l` the channels with a
+match, and `--json` the matching messages, `{ "matches": [...] }`.
+
+- The pattern is a JavaScript regular expression, matched against each line of
+  a message's text (`-E` changes nothing); `-F` takes it as text, `-i` ignores
+  case. Deleted messages never match.
+- `-n N` stops after N matches: it's `--limit`, as everywhere else, and every
+  match shows its ID, which `vb read <id>` opens.
+- `--since 7d` (or a time) reads only that far back; without it, `grep` reads
+  each channel's whole history, 500 messages a request, and matches here, not
+  on the board.
+- Exits 0 when something matched, 1 when nothing did, and 2 when it failed.
+
+```text
+$ vb grep -C 1 ECONNRESET dev
+dev-1203-deploy started
+dev:1204:failed: ECONNRESET on fetch
+dev-1205-retrying
+```
+
 ### download
 
 ```text
