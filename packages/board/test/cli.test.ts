@@ -477,13 +477,40 @@ describe('cli', () => {
     expect((await vb(['grep', '-l', 'retry', 'grep-ci', 'grep-web'])).stdout).toBe('grep-ci\n')
     expect((await vb(['grep', '-F', '$5 (est.)', 'grep-web'])).stdout).toBe(`grep-web:${other}:econnreset again, costs $5 (est.)\n`)
     expect(JSON.parse((await vb(['grep', '-i', 'econnreset', '-n', '1', 'grep-ci', 'grep-web', '--json'])).stdout).matches.map((m: { id: string }) => m.id)).toEqual([hit])
-    expect((await vb(['grep', 'deploy', 'grep-ci', '--since', '1h'])).code).toBe(0)
     expect((await vb(['grep', 'deploy', 'grep-ci', '--since', '2999-01-01T00:00:00Z'])).code).toBe(1)
 
     expect(await vb(['grep', 'nothing like this', 'grep-ci'])).toEqual({ code: 1, stdout: '', stderr: '' })
     expect(await vb(['grep', '$5 (est.', 'grep-web'])).toMatchObject({ code: 2, stdout: '', stderr: expect.stringMatching(/isn't a regular expression .*pass -F/) })
     expect(await vb(['grep', '-n', 'deploy', 'grep-ci'])).toMatchObject({ code: 2, stderr: expect.stringMatching(/^error: -n is how many matches to print, and deploy isn't a number/) })
     expect(await vb(['grep', 'deploy', '--url', 'http://127.0.0.1:9/api/board'])).toMatchObject({ code: 2, stdout: '' })
+  }, 20_000)
+
+  it("greps a channel's whole history, past the first page of 500", async () => {
+    const oldest = (await vb(['post', 'grep-pages', 'hay and a needle'])).stdout.trim()
+    // Straight to the board, in parallel: 520 `vb post` processes would take minutes.
+    const post = (text: string) =>
+      fetch(`${url}/messages`, { method: 'POST', headers: { authorization: `Bearer ${env.BOARD_TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify({ channel: 'grep-pages', text }) })
+    for (const response of await Promise.all(Array.from({ length: 520 }, (_, n) => post(`hay ${n}`)))) expect(response.ok).toBe(true)
+    expect(await vb(['grep', 'needle', 'grep-pages'])).toEqual({ code: 0, stdout: `grep-pages:${oldest}:hay and a needle\n`, stderr: '' })
+    expect((await vb(['grep', '-c', 'hay', 'grep-pages'])).stdout).toBe('grep-pages:521\n')
+  }, 30_000)
+
+  it('greps past a deleted message: it never matches', async () => {
+    const kept = (await vb(['post', 'grep-gone', 'kept'])).stdout.trim()
+    const id = (await vb(['post', 'grep-gone', 'the token is in here'])).stdout.trim()
+    expect(await vb(['delete', id])).toMatchObject({ code: 0 })
+    expect(await vb(['grep', 'token', 'grep-gone'])).toEqual({ code: 1, stdout: '', stderr: '' })
+    // A deleted message reads as empty text, which a pattern that matches anything would match.
+    expect(await vb(['grep', '^', 'grep-gone'])).toEqual({ code: 0, stdout: `grep-gone:${kept}:kept\n`, stderr: '' })
+  }, 20_000)
+
+  it('greps only what was posted --since a duration ago', async () => {
+    await vb(['post', 'grep-since', 'deploy one'])
+    // Wide margins: the cutoff is taken when `vb grep` starts, which a loaded machine can take seconds to do.
+    await new Promise((resolve) => setTimeout(resolve, 5_000))
+    const recent = (await vb(['post', 'grep-since', 'deploy two'])).stdout.trim()
+    expect((await vb(['grep', 'deploy', 'grep-since', '--since', '4s'])).stdout).toBe(`grep-since:${recent}:deploy two\n`)
+    expect((await vb(['grep', 'deploy', 'grep-since', '--since', '1h'])).stdout.split('\n')).toHaveLength(3)
   }, 20_000)
 
   it("posts once for an idempotency key, and reads by a message's source", async () => {

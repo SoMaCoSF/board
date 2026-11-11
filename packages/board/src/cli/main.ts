@@ -24,6 +24,7 @@ import { AGENTS, allowRules, cliOf, disallow, installedHook, tilde, uninstallHoo
 import { commands, filters as filterOptions, globalOptions, options, type CliCommand } from './commands.ts'
 import { commandHelp, commandPath, rootHelp } from './help.ts'
 import { closest, exitCode, failureDocument, formatFailure, type Failure, type Recovery, type Warning } from './failure.ts'
+import { grepChannel } from './grep.ts'
 
 /** A failure this run says in its own words: what a command throws to stop with it. */
 export class Failed extends Error {
@@ -1134,8 +1135,8 @@ async function run(command: string | undefined, args: string[]): Promise<number>
       const matches: MessageView[] = []
       const shown: string[] = []
       for (const [channel, messages] of byChannel) {
-        const hits = messages.flatMap((message, at) => (line(message) === undefined ? [] : [at])).slice(0, max - matches.length)
-        matches.push(...hits.map((at) => messages[at]!))
+        const { hits, groups } = grepChannel(messages, (message) => line(message) !== undefined, { max: max - matches.length, before, after })
+        for (const at of hits) matches.push(messages[at]!)
         if (flags.count) {
           shown.push(`${channel}:${hits.length}`)
           continue
@@ -1144,15 +1145,15 @@ async function run(command: string | undefined, args: string[]): Promise<number>
           if (hits.length) shown.push(channel)
           continue
         }
-        let last: number | undefined
-        messages.forEach((message, at) => {
-          const hit = hits.includes(at)
-          if (!hit && !hits.some((h) => at >= h - before && at <= h + after)) return
-          if ((before || after) && shown.length && (last === undefined || at > last + 1)) shown.push('--')
-          const mark = hit ? ':' : '-'
-          shown.push(`${channel}${mark}${messageRef(message.id)}${mark}${(hit ? line(message) : message.text.split(/\r?\n/)[0]) ?? ''}`)
-          last = at
-        })
+        const hit = new Set(hits)
+        for (const group of groups) {
+          if ((before || after) && shown.length) shown.push('--')
+          for (const at of group) {
+            const message = messages[at]!
+            const mark = hit.has(at) ? ':' : '-'
+            shown.push(`${channel}${mark}${messageRef(message.id)}${mark}${(hit.has(at) ? line(message) : message.text.split(/\r?\n/)[0]) ?? ''}`)
+          }
+        }
       }
       if (flags.json) result({ matches })
       else for (const row of shown) out(row)

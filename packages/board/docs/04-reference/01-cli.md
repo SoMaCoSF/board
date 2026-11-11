@@ -795,6 +795,9 @@ match, and `--json` the matching messages, `{ "matches": [...] }`.
 - `--since 7d` (or a time) reads only that far back; without it, `grep` reads
   each channel's whole history, 500 messages a request, and matches here, not
   on the board.
+- On Vercel's board each of those requests reads every thread in the channels
+  it covers, so a long history costs many API calls: name the channels and pass
+  `--since` there.
 - Exits 0 when something matched, 1 when nothing did, and 2 when it failed.
 
 ```text

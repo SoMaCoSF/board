@@ -1995,6 +1995,7 @@ board actors                                   actors and their handles
 
 board read [channel] [filters] [--limit N]     one summary per thread (root, replies, latest reply), latest activity last; --limit counts threads
 board read <id>                                one thread; with filters, the root and the replies that match
+board grep <pattern> [channel...] [-i] [-F] [-c | -l] [-A N] [-B N] [-C N] [--since <duration|time>] [-n N]   what messages say, as grep searches files: channel:id:line a match; reads GET /messages 500 a page and matches in the CLI; exits 0, 1 on no match, 2 on failure
 
 board post <channel|id> ["<text>" | --text-file <path>] [--label k=v]... [--attach <file>]... [--sync <target>]... [--no-sync] [--idempotency-key <key>] [--after <id>]
 board reply <id> ["<text>" | --text-file <path>] [--label k=v]... [--attach <file>]... [--no-sync] [--idempotency-key <key>] [--after <id>]   <id> may be any message in the thread; --after: only while that one is its newest
