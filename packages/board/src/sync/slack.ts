@@ -11,7 +11,7 @@ import { MESSAGE_TEXT_MAX } from '../contract/schemas.ts'
 import { createSlackAdapter } from '@chat-adapter/slack'
 import { connectSlackAdapter } from '@vercel/connect/chat'
 import type { SyncFn } from './fn.ts'
-import { slackViews, type SlackBlock, type SlackText } from './slack-views.ts'
+import { slackViews, viewsAsMarkdown, type SlackBlock, type SlackText } from './slack-views.ts'
 
 type SlackChannel = { id?: string; name?: string; is_member?: boolean; is_private?: boolean; is_im?: boolean; is_mpim?: boolean; is_ext_shared?: boolean }
 export type SlackClient = {
@@ -756,11 +756,13 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
    */
   override async post(target: string, kind: ResolvedTarget['kind'], body: ProviderPost): Promise<ProviderDelivery> {
     const { as, ...given } = body
-    const post = { ...given, markdown: withoutHtml(given.markdown) }
-    if (!post.files?.length) {
-      const viewed = await this.postViews(target, as, post.markdown)
+    const written = withoutHtml(given.markdown)
+    if (!given.files?.length) {
+      const viewed = await this.postViews(target, as, written)
       if (viewed) return viewed
     }
+    // Without its layout, a block Slack has a view of is that view in markdown.
+    const post = { ...given, markdown: viewsAsMarkdown(written) }
     if (kind === 'channel' && post.files?.length && post.markdown.trim()) {
       const sent = await this.postWithFiles(target, post.markdown, post.files)
       if (sent) return sent
@@ -828,14 +830,14 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
     const named = as && (await this.web().then((web) => !!web && this.canCustomize(web), () => false)) ? await this.sentAs(thread, message, as) : false
     const edited = named && as ? { ...post, markdown: withoutLabel(post.markdown, as.name) } : post
     if (!edited.files && (await this.editViews(thread, message, edited.markdown))) return
-    await super.edit(thread, message, edited)
+    await super.edit(thread, message, { ...edited, markdown: viewsAsMarkdown(edited.markdown) })
   }
 
   /**
    * A message with a block Slack has a view of (a commit, deployments) goes out with that block
    * as Slack's own layout and the text around it as markdown, under its author's name where the
    * app may set one. Null, with nothing sent, when it has no such block, board has no client to
-   * post with, or Slack won't take the layout: it goes out as markdown, the block a code block.
+   * post with, or Slack won't take the layout: it goes out as markdown, the view with it.
    */
   private async postViews(target: string, as: ProviderSender | undefined, markdown: string): Promise<ProviderDelivery | null> {
     if (!slackViews(markdown)) return null
