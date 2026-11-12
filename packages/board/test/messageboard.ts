@@ -1254,6 +1254,7 @@ const sortedJson = (value: unknown): string =>
   JSON.stringify(value, (_key, child) => (child && typeof child === 'object' && !Array.isArray(child) ? Object.fromEntries(Object.entries(child).sort(([a], [b]) => (a < b ? -1 : 1))) : child))
 
 const sha = { type: 'string', pattern: '^(?:[0-9a-f]{40}|[0-9a-f]{64})$', description: 'Full lowercase commit SHA' }
+const httpsUrl = { type: 'string', format: 'uri', pattern: '^https://', maxLength: 2048 }
 const BUILT_IN_SCHEMAS: SchemaRow[] = [
   {
     id: 'git-commit@1',
@@ -1269,7 +1270,28 @@ const BUILT_IN_SCHEMAS: SchemaRow[] = [
     name: 'vercel-deployment',
     version: 1,
     description: 'A Vercel deployment, by its URL and optionally the commit it was built from.',
-    schema: { type: 'object', additionalProperties: false, required: ['url'], properties: { url: { type: 'string', format: 'uri', pattern: '^https://', maxLength: 2048 }, gitSha: sha } },
+    schema: { type: 'object', additionalProperties: false, required: ['url'], properties: { url: httpsUrl, gitSha: sha } },
+    builtIn: true,
+    createdAt: 0,
+  },
+  {
+    id: 'vercel-deployment@2',
+    name: 'vercel-deployment',
+    version: 2,
+    description: 'A Vercel deployment and where it stands: its URL and state, and optionally its project, environment, commit, and inspector URL.',
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['url', 'state'],
+      properties: {
+        url: httpsUrl,
+        state: { type: 'string', enum: ['queued', 'building', 'ready', 'error', 'canceled'] },
+        project: { type: 'string', minLength: 1, maxLength: 100, description: "The project's name" },
+        environment: { type: 'string', minLength: 1, maxLength: 100, description: "production, preview, or a custom environment's name" },
+        gitSha: sha,
+        inspectorUrl: httpsUrl,
+      },
+    },
     builtIn: true,
     createdAt: 0,
   },

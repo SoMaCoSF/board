@@ -404,9 +404,15 @@ and its `description`) answers it with `created: false`. Another definition is
 409 `schema_immutable`, so a change is the next version, which you name. The
 body is strict: a key the board doesn't know is 400 `invalid_request`.
 
-Every board has `git-commit@1` and `vercel-deployment@1` built in. They list
-first, with `builtIn: true` and no `by` or `at`, and their names are reserved:
-a version of one is 409 `reserved_schema`.
+Every board has three schemas built in. They list first, with `builtIn: true`
+and no `by` or `at`, and their names are reserved: a version of one is 409
+`reserved_schema`.
+
+| Schema | Holds |
+| --- | --- |
+| `git-commit@1` | `sha`, `title` |
+| `vercel-deployment@1` | `url`, and `gitSha` when it has one |
+| `vercel-deployment@2` | `url` and `state` (`queued`, `building`, `ready`, `error`, or `canceled`), and optionally `project`, `environment`, `gitSha`, and `inspectorUrl` |
 
 A definition describes an object, so its root has `"type": "object"`, and uses
 structural keywords only:

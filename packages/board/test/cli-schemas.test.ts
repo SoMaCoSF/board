@@ -20,6 +20,7 @@ describe('cli schemas', () => {
       stdout: [
         'git-commit@1         built in  A Git commit, by its full SHA and the first line…',
         'vercel-deployment@1  built in  A Vercel deployment, by its URL and optionally t…',
+        'vercel-deployment@2  built in  A Vercel deployment and where it stands: its URL…',
         '',
       ].join('\n'),
     })

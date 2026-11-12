@@ -116,7 +116,7 @@ describe('a value against a schema', () => {
   })
 
   it("checks the built-ins, which use a pattern no registered schema can", () => {
-    const [commit, deployment] = BUILT_IN_SCHEMAS.map((schema) => schema.schema)
+    const [commit, deployment, standing] = BUILT_IN_SCHEMAS.map((schema) => schema.schema)
     const sha = 'a'.repeat(40)
     expect(ok(commit!, { sha, title: 'fix the build' })).toBe(true)
     expect(ok(commit!, { sha: 'abc123', title: 'fix the build' })).toBe(false)
@@ -126,5 +126,14 @@ describe('a value against a schema', () => {
     expect(ok(deployment!, { url: 'https://board-abc.vercel.app', gitSha: sha })).toBe(true)
     expect(ok(deployment!, { url: 'http://board-abc.vercel.app' })).toBe(false)
     expect(ok(deployment!, {})).toBe(false)
+    // The second version says where a deployment stands, and may say more of it.
+    const url = 'https://board-abc.vercel.app'
+    for (const state of ['queued', 'building', 'ready', 'error', 'canceled']) expect(ok(standing!, { url, state })).toBe(true)
+    expect(ok(standing!, { url, state: 'ready', project: 'board', environment: 'preview', gitSha: sha, inspectorUrl: 'https://vercel.com/acme/board/abc' })).toBe(true)
+    expect(checkValue(standing!, { url })).toBe('state is missing')
+    expect(checkValue(standing!, { url, state: 'READY' })).toMatch(/^state must be /)
+    expect(ok(standing!, { url, state: 'ready', project: '' })).toBe(false)
+    expect(ok(standing!, { url, state: 'ready', inspectorUrl: 'http://vercel.com/acme/board/abc' })).toBe(false)
+    expect(ok(standing!, { url, state: 'ready', target: 'production' })).toBe(false)
   })
 })

@@ -32,6 +32,7 @@ export function parseSchemaId(id: string): { name: string; version: number } | n
 }
 
 const commitSha = { type: 'string', pattern: '^(?:[0-9a-f]{40}|[0-9a-f]{64})$', description: 'Full lowercase commit SHA' }
+const httpsUrl = { type: 'string', format: 'uri', pattern: '^https://', maxLength: 2048 }
 
 /**
  * The schemas every board has, as Vercel's API has them: their names are reserved, so no one
@@ -58,7 +59,25 @@ export const BUILT_IN_SCHEMAS: readonly { name: string; version: number; descrip
       type: 'object',
       additionalProperties: false,
       required: ['url'],
-      properties: { url: { type: 'string', format: 'uri', pattern: '^https://', maxLength: 2048 }, gitSha: commitSha },
+      properties: { url: httpsUrl, gitSha: commitSha },
+    },
+  },
+  {
+    name: 'vercel-deployment',
+    version: 2,
+    description: 'A Vercel deployment and where it stands: its URL and state, and optionally its project, environment, commit, and inspector URL.',
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['url', 'state'],
+      properties: {
+        url: httpsUrl,
+        state: { type: 'string', enum: ['queued', 'building', 'ready', 'error', 'canceled'] },
+        project: { type: 'string', minLength: 1, maxLength: 100, description: "The project's name" },
+        environment: { type: 'string', minLength: 1, maxLength: 100, description: "production, preview, or a custom environment's name" },
+        gitSha: commitSha,
+        inspectorUrl: httpsUrl,
+      },
     },
   },
 ]
