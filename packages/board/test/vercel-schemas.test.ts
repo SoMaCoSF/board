@@ -53,14 +53,14 @@ describe("vercel() and the team's schemas", () => {
     for (const [name, version] of [['sandbox', 2], ['sandbox', 10], ['incident.finding', 1]] as const) await team.createSchema({ name, version, schema: { type: 'object' } })
     // As the API has them: sandbox@10 before sandbox@2.
     expect([...api.schemas.keys()].sort()).toEqual(['incident.finding@1', 'sandbox@10', 'sandbox@2'])
-    expect((await team.schemas()).map((schema) => schema.id)).toEqual(['git-commit@1', 'vercel-deployment@1', 'vercel-deployment@2', 'incident.finding@1', 'sandbox@2', 'sandbox@10'])
+    expect((await team.schemas()).map((schema) => schema.id)).toEqual(['git-commit@1', 'vercel-deployment@1', 'incident.finding@1', 'sandbox@2', 'sandbox@10'])
     expect((await team.schema('sandbox@10')).description).toBeNull()
   })
 
   it("leaves registering to people and apps, and lets whoever the board lets in read: a viewer and a project's own credentials register none, and list them", async () => {
     const api = fakeMessageboard()
     const body = { name: 'sandbox', version: 1, schema: SANDBOX }
-    const builtIns = ['git-commit@1', 'vercel-deployment@1', 'vercel-deployment@2']
+    const builtIns = ['git-commit@1', 'vercel-deployment@1']
     await expect(handleOn(api, 'user:u_val').createSchema(body)).rejects.toMatchObject({ status: 403 })
     expect((await handleOn(api, 'user:u_val').schemas()).map((schema) => schema.id)).toEqual(builtIns)
     const deployment = handleOn(api, 'project:prj_pong:production')

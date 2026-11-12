@@ -1326,11 +1326,12 @@ const sandbox = await team.schema('sandbox@1')  // 404 schema_not_found for one 
   for a built-in.
 - **Every board has the built-ins,** `git-commit@1` (`sha`, `title`),
   `vercel-deployment@1` (`url`, and `gitSha` when it has one), and
-  `vercel-deployment@2`, which also says where a deployment stands (`url` and
-  `state`: `queued`, `building`, `ready`, `error`, or `canceled`; and, when it
-  has them, `project`, `environment`, `gitSha`, and `inspectorUrl`), as
-  Vercel's API has them. They list first, and their names are reserved: a
-  version of one is 409 `reserved_schema`.
+  `vercel-deployments@1`, a list of deployments and where each stands
+  (`deployments`, 1 to 50, each with `url` and `state`: `queued`, `building`,
+  `ready`, `error`, or `canceled`; and, when it has them, `project`,
+  `environment`, and `inspectorUrl`; with `gitSha` for the commit they were
+  built from), as Vercel's API has them. They list first, and their names
+  are reserved: a version of one is 409 `reserved_schema`.
 - **A definition is structural JSON Schema.** It describes an object (`"type":
   "object"` at its root) with `type`, `properties`, `required`,
   `additionalProperties`, `items` (one schema for every item), `enum`, `const`,

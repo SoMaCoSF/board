@@ -18,9 +18,9 @@ describe('cli schemas', () => {
       code: 0,
       stderr: '',
       stdout: [
-        'git-commit@1         built in  A Git commit, by its full SHA and the first line…',
-        'vercel-deployment@1  built in  A Vercel deployment, by its URL and optionally t…',
-        'vercel-deployment@2  built in  A Vercel deployment and where it stands: its URL…',
+        'git-commit@1          built in  A Git commit, by its full SHA and the first lin…',
+        'vercel-deployment@1   built in  A Vercel deployment, by its URL and optionally…',
+        'vercel-deployments@1  built in  Vercel deployments and where each stands, such…',
         '',
       ].join('\n'),
     })
@@ -32,7 +32,7 @@ describe('cli schemas', () => {
     // The same file again registers nothing, and says so.
     expect((await vb(['schemas', 'create', 'sandbox@1', '--schema', '@sandbox.schema.json', '--description', 'What a sandbox did.'], {}, undefined, dir)).stdout).toBe('sandbox@1 is already registered\n')
 
-    expect((await vb(['schemas', 'list'])).stdout).toMatch(/\nsandbox@1 {12}\d{1,2}s {7,8}What a sandbox did\.\n$/)
+    expect((await vb(['schemas', 'list'])).stdout).toMatch(/\nsandbox@1 {13}\d{1,2}s {7,8}What a sandbox did\.\n$/)
     expect((await vb(['schemas', 'inspect', 'sandbox@1'])).stdout).toBe(
       [
         'sandbox@1  What a sandbox did.',

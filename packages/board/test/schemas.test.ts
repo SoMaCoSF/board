@@ -27,7 +27,7 @@ describe('schemas', () => {
     const { julian } = await setUp()
     const { status, body } = await julian('GET', '/schemas')
     expect(status).toBe(200)
-    expect(ids(body)).toEqual(['git-commit@1', 'vercel-deployment@1', 'vercel-deployment@2'])
+    expect(ids(body)).toEqual(['git-commit@1', 'vercel-deployment@1', 'vercel-deployments@1'])
     expect(body.schemas[0]).toMatchObject({ name: 'git-commit', version: 1, builtIn: true, by: null, at: null, schema: { type: 'object', required: ['sha', 'title'] } })
     expect((await julian('GET', '/schemas/vercel-deployment@1')).body.schema).toEqual(body.schemas[1])
   })
@@ -58,14 +58,14 @@ describe('schemas', () => {
 
     // A changed definition is the next version, beside the first.
     expect((await register({ name: 'sandbox', version: 2, schema: { type: 'object', required: ['id'] } })).body).toMatchObject({ created: true, schema: { id: 'sandbox@2', description: null } })
-    expect(ids((await julian('GET', '/schemas')).body)).toEqual(['git-commit@1', 'vercel-deployment@1', 'vercel-deployment@2', 'sandbox@1', 'sandbox@2'])
+    expect(ids((await julian('GET', '/schemas')).body)).toEqual(['git-commit@1', 'vercel-deployment@1', 'vercel-deployments@1', 'sandbox@1', 'sandbox@2'])
   })
 
   it("lists the board's own after the built-ins, by name, then by version as a number", async () => {
     const { julian, register } = await setUp()
     for (const [name, version] of [['sandbox', 10], ['sandbox', 2], ['incident.finding', 1]] as const)
       expect((await register({ name, version, schema: { type: 'object' } })).status).toBe(200)
-    expect(ids((await julian('GET', '/schemas')).body)).toEqual(['git-commit@1', 'vercel-deployment@1', 'vercel-deployment@2', 'incident.finding@1', 'sandbox@2', 'sandbox@10'])
+    expect(ids((await julian('GET', '/schemas')).body)).toEqual(['git-commit@1', 'vercel-deployment@1', 'vercel-deployments@1', 'incident.finding@1', 'sandbox@2', 'sandbox@10'])
   })
 
   it('registers a version once when two register it at the same time', async () => {
@@ -100,7 +100,7 @@ describe('schemas', () => {
     const refused = [as(await deploymentToken()), as(await workflowToken()), await narrowed('dev/=all'), await narrowed('*=read,post,react,label,sync')]
     for (const caller of refused) {
       expect(await caller('POST', '/schemas', body)).toMatchObject({ status: 403, body: { error: { code: 'forbidden' } } })
-      expect(ids((await caller('GET', '/schemas')).body)).toEqual(['git-commit@1', 'vercel-deployment@1', 'vercel-deployment@2'])
+      expect(ids((await caller('GET', '/schemas')).body)).toEqual(['git-commit@1', 'vercel-deployment@1', 'vercel-deployments@1'])
       expect((await caller('GET', '/schemas/git-commit@1')).status).toBe(200)
     }
 
@@ -113,7 +113,7 @@ describe('schemas', () => {
   it("keeps the built-ins' names for the board: no one registers a version of one", async () => {
     const { julian, register } = await setUp()
     expect(await register({ name: 'git-commit', version: 2, schema: { type: 'object' } })).toMatchObject({ status: 409, body: { error: { code: 'reserved_schema' } } })
-    expect(ids((await julian('GET', '/schemas')).body)).toEqual(['git-commit@1', 'vercel-deployment@1', 'vercel-deployment@2'])
+    expect(ids((await julian('GET', '/schemas')).body)).toEqual(['git-commit@1', 'vercel-deployment@1', 'vercel-deployments@1'])
   })
 
   it('takes a definition it can check a value against: unions, enums, nesting, and formats', async () => {
@@ -160,7 +160,7 @@ describe('schemas', () => {
     }
     for (const [what, schema] of Object.entries(refused))
       expect(await register({ name: 'refused', version: 1, schema }), what).toMatchObject({ status: 400, body: { error: { code: 'invalid_schema' } } })
-    expect(ids((await julian('GET', '/schemas')).body)).toEqual(['git-commit@1', 'vercel-deployment@1', 'vercel-deployment@2'])
+    expect(ids((await julian('GET', '/schemas')).body)).toEqual(['git-commit@1', 'vercel-deployment@1', 'vercel-deployments@1'])
     // As big as it gets is fine: 63 subschemas under the root, at the deepest level.
     expect((await register({ name: 'wide', version: 1, schema: { type: 'object', properties: Object.fromEntries(Array.from({ length: 63 }, (_, index) => [`p${index}`, { type: 'string' }])) } })).status).toBe(200)
     expect((await register({ name: 'deep', version: 1, schema: nested(7) })).status).toBe(200)
@@ -194,7 +194,7 @@ describe('schemas', () => {
     const team = testBoard()
     const { schema, created } = await team.createSchema({ name: 'sandbox', version: 1, description: 'What a sandbox did.', schema: SANDBOX })
     expect({ created, id: schema.id, by: schema.by }).toEqual({ created: true, id: 'sandbox@1', by: 'board:client' })
-    expect((await team.schemas()).map((found) => found.id)).toEqual(['git-commit@1', 'vercel-deployment@1', 'vercel-deployment@2', 'sandbox@1'])
+    expect((await team.schemas()).map((found) => found.id)).toEqual(['git-commit@1', 'vercel-deployment@1', 'vercel-deployments@1', 'sandbox@1'])
     expect(await team.schema('sandbox@1')).toEqual(schema)
   })
 })

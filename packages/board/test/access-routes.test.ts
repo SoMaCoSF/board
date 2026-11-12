@@ -114,7 +114,7 @@ const WALK: Record<RouteName, Walk> = {
   ],
   revokeGrant: () => [{ method: 'POST', path: '/grants/g1/revoke', status: 403 }],
   // Schemas are the whole board's and hold no channel's messages: anyone the board let in reads them, and only manage at * registers one.
-  schemas: () => [{ method: 'GET', path: '/schemas', status: 200, check: (body) => expect(body.schemas.map((schema: any) => schema.id)).toEqual(['git-commit@1', 'vercel-deployment@1', 'vercel-deployment@2']) }],
+  schemas: () => [{ method: 'GET', path: '/schemas', status: 200, check: (body) => expect(body.schemas.map((schema: any) => schema.id)).toEqual(['git-commit@1', 'vercel-deployment@1', 'vercel-deployments@1']) }],
   schema: () => [{ method: 'GET', path: '/schemas/git-commit@1', status: 200 }],
   createSchema: () => [{ method: 'POST', path: '/schemas', body: { name: 'walker', version: 1, schema: { type: 'object' } }, status: 403 }],
   attachment: ({ secret }) => [{ method: 'GET', path: `/attachments/${secret.file}`, status: 404 }],

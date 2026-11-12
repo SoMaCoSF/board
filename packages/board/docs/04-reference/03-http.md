@@ -412,7 +412,7 @@ and no `by` or `at`, and their names are reserved: a version of one is 409
 | --- | --- |
 | `git-commit@1` | `sha`, `title` |
 | `vercel-deployment@1` | `url`, and `gitSha` when it has one |
-| `vercel-deployment@2` | `url` and `state` (`queued`, `building`, `ready`, `error`, or `canceled`), and optionally `project`, `environment`, `gitSha`, and `inspectorUrl` |
+| `vercel-deployments@1` | `deployments`, 1 to 50 of them, each with `url` and `state` (`queued`, `building`, `ready`, `error`, or `canceled`) and optionally `project`, `environment`, and `inspectorUrl`; and `gitSha`, the commit they were built from, when there is one |
 
 A definition describes an object, so its root has `"type": "object"`, and uses
 structural keywords only:

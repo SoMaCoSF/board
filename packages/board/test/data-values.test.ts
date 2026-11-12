@@ -126,14 +126,25 @@ describe('a value against a schema', () => {
     expect(ok(deployment!, { url: 'https://board-abc.vercel.app', gitSha: sha })).toBe(true)
     expect(ok(deployment!, { url: 'http://board-abc.vercel.app' })).toBe(false)
     expect(ok(deployment!, {})).toBe(false)
-    // The second version says where a deployment stands, and may say more of it.
+    // Deployments, each with where it stands: a commit's, say.
     const url = 'https://board-abc.vercel.app'
-    for (const state of ['queued', 'building', 'ready', 'error', 'canceled']) expect(ok(standing!, { url, state })).toBe(true)
-    expect(ok(standing!, { url, state: 'ready', project: 'board', environment: 'preview', gitSha: sha, inspectorUrl: 'https://vercel.com/acme/board/abc' })).toBe(true)
-    expect(checkValue(standing!, { url })).toBe('state is missing')
-    expect(checkValue(standing!, { url, state: 'READY' })).toMatch(/^state must be /)
-    expect(ok(standing!, { url, state: 'ready', project: '' })).toBe(false)
-    expect(ok(standing!, { url, state: 'ready', inspectorUrl: 'http://vercel.com/acme/board/abc' })).toBe(false)
-    expect(ok(standing!, { url, state: 'ready', target: 'production' })).toBe(false)
+    for (const state of ['queued', 'building', 'ready', 'error', 'canceled']) expect(ok(standing!, { deployments: [{ url, state }] })).toBe(true)
+    expect(
+      ok(standing!, {
+        gitSha: sha,
+        deployments: [
+          { url, state: 'ready', project: 'board', environment: 'preview', inspectorUrl: 'https://vercel.com/acme/board/abc' },
+          { url: 'https://docs-abc.vercel.app', state: 'building', project: 'docs' },
+        ],
+      }),
+    ).toBe(true)
+    expect(checkValue(standing!, { deployments: [{ url }] })).toBe('deployments[0].state is missing')
+    expect(checkValue(standing!, { deployments: [{ url, state: 'ready' }, { url, state: 'READY' }] })).toMatch(/^deployments\[1\]\.state must be /)
+    expect(ok(standing!, { deployments: [] })).toBe(false)
+    expect(ok(standing!, {})).toBe(false)
+    expect(ok(standing!, { deployments: [{ url, state: 'ready', project: '' }] })).toBe(false)
+    expect(ok(standing!, { deployments: [{ url, state: 'ready', inspectorUrl: 'http://vercel.com/acme/board/abc' }] })).toBe(false)
+    expect(ok(standing!, { deployments: [{ url, state: 'ready', gitSha: sha }] })).toBe(false)
+    expect(ok(standing!, { deployments: Array.from({ length: 51 }, () => ({ url, state: 'ready' })) })).toBe(false)
   })
 })
