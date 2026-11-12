@@ -527,6 +527,11 @@ describe('vercel()', () => {
       ...refused,
       message: "this project can't make the team's board (prj_pong, production), and nobody on the team has opened it yet.",
     })
+    // Credentials, a timeout, or a rate limit say nothing of the board: they're the API's own.
+    for (const [status, code] of [[401, 'invalid_token'], [408, 'timeout'], [409, 'conflict']] as const) {
+      const failing = fakeMessageboard({ boardId: null, projectsCantMakeDefault: { status, code } })
+      await expect(handleOn(failing, 'project:prj_pong:production').post('dev', { text: 'hello' })).rejects.toMatchObject({ status, code })
+    }
     await expect(handleOn(fakeMessageboard({ boardId: null }), 'project:prj_pong:development').post('dev', { text: 'hello' })).rejects.toMatchObject({
       ...refused,
       message: "this project can't make the team's board (prj_pong, development), and nobody on the team has opened it yet.",
@@ -2294,6 +2299,14 @@ describe('a request the API puts off', () => {
     const { id } = await posting
     const { threads } = await julian.threads({ channel: 'dev' })
     expect(threads.map((thread) => thread.message.id)).toEqual([id])
+  })
+
+  it("gives a deployment the API's rate limit, not a missing board, when making the team's board is put off", async () => {
+    timers()
+    const api = fakeMessageboard({ boardId: null, projectsCantMakeDefault: { status: 429, code: 'rate_limited' } })
+    const posting = handleOn(api, 'project:prj_pong:production').post('dev', { text: 'hi' }).catch((error: unknown) => error)
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(await posting).toMatchObject({ status: 429, code: 'rate_limited' })
   })
 
   it("gives up with the API's own error after five tries", async () => {

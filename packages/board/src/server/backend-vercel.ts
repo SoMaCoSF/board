@@ -734,8 +734,9 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
               const { board: made } = await api<{ board: { id: string } }>(who, 'POST', '/boards/default', { body: { operationId: operationId() } })
               return made.id
             } catch (error) {
-              // Any refusal but a conflict: whatever an API from before deployments could make it says to one.
-              if (!(error instanceof HttpError && error.status >= 400 && error.status < 500 && error.status !== 409)) throw error
+              // Any refusal, whatever an API from before deployments could make it says to one: not a conflict,
+              // or credentials, a timeout, or a rate limit, which say nothing of the board.
+              if (!(error instanceof HttpError && error.status >= 400 && error.status < 500 && ![401, 408, 409, 429].includes(error.status))) throw error
               const { principal } = (await self(who)).actor
               if (principal.type !== 'project') throw error
               throw error.code === 'board_not_granted' ? notLetIn(null, principal) : await notMade(who, principal)
