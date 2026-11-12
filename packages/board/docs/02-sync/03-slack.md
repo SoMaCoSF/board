@@ -160,6 +160,10 @@ The table's columns are Vercel's:
 An edit replaces the view, so a row goes from `Building` to `Ready` in place.
 A notification shows the same in plain words (`web: ready, docs: building`).
 
+When [GitHub syncs too](./04-github.md#vercels-deployment-comment), Vercel's
+deployment comment on a pull request shows as this table, with no block
+written by anyone: one message in the thread that follows Vercel's edits.
+
 Where the layout can't go, the view is markdown: the commit's line, or a line
 per deployment with the same links. That's a second table in one message, a
 message that goes out with files, and one whose layout Slack won't take, so a

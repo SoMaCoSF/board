@@ -11,7 +11,7 @@ import { MESSAGE_TEXT_MAX } from '../contract/schemas.ts'
 import { createSlackAdapter } from '@chat-adapter/slack'
 import { connectSlackAdapter } from '@vercel/connect/chat'
 import type { SyncFn } from './fn.ts'
-import { slackViews, viewsAsMarkdown, type SlackBlock, type SlackText } from './slack-views.ts'
+import { hasView, slackViews, viewsAsMarkdown, type SlackBlock, type SlackText } from './slack-views.ts'
 
 type SlackChannel = { id?: string; name?: string; is_member?: boolean; is_private?: boolean; is_im?: boolean; is_mpim?: boolean; is_ext_shared?: boolean }
 export type SlackClient = {
@@ -746,6 +746,10 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
       },
     }, sync)
     this.web = client
+  }
+
+  override shows(schema: string): boolean {
+    return hasView(schema)
   }
 
   /**

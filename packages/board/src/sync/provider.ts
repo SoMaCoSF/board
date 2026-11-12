@@ -154,6 +154,15 @@ export abstract class SyncProvider<E extends ProviderEvent = ProviderEvent> {
   }
 
 
+  /**
+   * Whether the platform shows a block of this built-in schema as its own layout. Sync then
+   * hands it that block where it has one to give: Vercel's deployments comment, as
+   * `vercel-deployments@1`. No platform does by default.
+   */
+  shows(_schema: string): boolean {
+    return false
+  }
+
   /** The default rendering: `**${label}**: ${text}`. A `Renderer` passed to `deliver` replaces it. */
   render(input: RenderInput): string {
     return `**${input.label}**: ${input.message.text}`

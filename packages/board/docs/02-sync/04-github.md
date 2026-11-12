@@ -167,8 +167,12 @@ failed fetch retries the event. A [function](./02-functions.md) that doesn't cal
 `vercel[bot]`'s deployment comment, which it edits as builds move from Building to
 Ready, shows as one line per deployment: status, project, preview link, and when
 it was updated. That form appears in `vb read`, `vb tail`, and the copies sync
-posts to Slack. The board stores what the bot wrote; `--json` and the API return
-it unchanged.
+posts to other platforms. The board stores what the bot wrote; `--json` and the
+API return it unchanged.
+
+In Slack it's [Vercel's own table](./03-slack.md#blocks-show-as-a-line-or-a-table):
+one message, which follows the comment's edits, with the deployments Vercel
+skipped in a line under it.
 
 ## botUserId
 

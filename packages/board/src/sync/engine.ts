@@ -839,7 +839,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
     const attribution = `${environment}${after}`
     const platform = platformOf(key)
     const body = (renderer ?? ((input) => platform.render(input)))(immutable({
-      message: { ...structuredClone(message), text: displayText(message.text, message.by.actor) },
+      message: { ...structuredClone(message), text: displayText(message.text, message.by.actor, (schema) => platform.shows(schema)) },
       author: actor ? { ...actor } : null,
       mentionOf: (id: string) => nativeMention(key, id, actors),
       label: name,

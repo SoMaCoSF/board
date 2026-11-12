@@ -267,6 +267,13 @@ Each has a default that does nothing, or says the platform can't:
 `render(input)` builds the outgoing body when `deliver` gets no renderer;
 override it in a subclass.
 
+`shows(schema)` says whether your platform shows a built-in schema's block as
+its own layout. It's false unless you override it. Where it's true for
+`vercel-deployments@1`, the text your renderer gets for
+[Vercel's deployment comment](./04-github.md#vercels-deployment-comment) is
+that block, for `post` and `edit` to lay out, and a line per deployment
+otherwise.
+
 ## Links
 
 Two methods let the board go between its messages and the platform's links to

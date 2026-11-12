@@ -105,6 +105,9 @@ const VIEWS: Record<string, View> = {
   },
 }
 
+/** Whether Slack has a view of a schema's blocks. */
+export const hasView = (schema: string) => Object.hasOwn(VIEWS, schema)
+
 const DEFINITIONS = new Map(BUILT_IN_SCHEMAS.map((schema) => [`${schema.name}@${schema.version}`, schema.schema]))
 
 /** The blocks in a message that Slack has a view of, each with its view of its data. */

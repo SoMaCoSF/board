@@ -1000,9 +1000,53 @@ describe('sync', () => {
     await vi.waitFor(() => expect(s.posts).toHaveLength(1))
     expect((await read(julian, 'prs'))[1]!.text).toMatch(/^\[vc\]: #/) // the board keeps what Vercel wrote
     const posted = JSON.parse(s.posts[0]!.text).markdown as string
-    expect(posted).toContain('**▲ Vercel**\n- ⏳ **[vboard-factory](https://vercel.com/vercel-internal-playground/vboard-factory)** · [Building]')
+    // This Slack app has no client of board's own to lay a table out with, so its view is a line each.
+    expect(posted).toContain('**▲ Vercel**\n\n- 🟡 **[vboard-factory](https://vercel.com/vercel-internal-playground/vboard-factory)** · [Building]')
     expect(posted).not.toContain('[vc]:')
     expect(posted).not.toContain('| Project |')
+  })
+
+  it("shows Vercel's deployment comment in Slack as Vercel's own table, one message that follows Vercel's edits", async () => {
+    const posted: { text: string; blocks: { type: string; text?: string; rows?: unknown[][] }[] }[] = []
+    const updated: ({ ts: string } & (typeof posted)[number])[] = []
+    const slackClient = {
+      conversations: { list: async () => ({}), info: async () => ({}), replies: async () => ({ messages: [] }) },
+      chat: {
+        postMessage: async (args: (typeof posted)[number]) => (posted.push(args), { ts: '1700000000.000900' }),
+        update: async (args: (typeof updated)[number]) => void updated.push(args),
+      },
+      auth: { test: async () => ({ response_metadata: { scopes: ['chat:write'] } }) },
+    }
+    const { board, s, webhook } = setup({ slackClient, githubClient: { rest: { pulls: { get: vi.fn() } } } })
+    Object.assign(s.adapter, { decodeThreadId: (id: string) => ({ channel: id.split(':')[1], threadTs: id.split(':')[2] ?? '' }) })
+    const julian = caller(board.fetch, await personToken())
+    const pr = { number: 43, title: 'Deploy me', html_url: 'https://github.com/vercel-labs/board/pull/43' }
+    await webhook('github', { action: 'opened', repository: { full_name: 'vercel-labs/board' }, sender: { id: 42, login: 'julianbenegas' }, pull_request: pr }, { 'x-github-event': 'pull_request', 'x-github-delivery': 'table-opened' })
+    await vi.waitFor(async () => expect(await read(julian, 'prs')).toHaveLength(1))
+    const thread = 'github:vercel-labs/board:43'
+    await webhook('github', { type: 'message', threadId: thread, id: 'vc', text: VERCEL_BUILDING, user: '35613825', name: 'vercel[bot]' })
+    await vi.waitFor(() => expect(posted).toHaveLength(1))
+
+    const text = (value: string) => ({ type: 'raw_text', text: value })
+    const rich = (...elements: unknown[]) => ({ type: 'rich_text', elements: [{ type: 'rich_text_section', elements }] })
+    const link = (label: string, url: string) => ({ type: 'link', text: label, url })
+    const row = (emoji: string, state: string) => [
+      rich(link('vboard-factory', 'https://vercel.com/vercel-internal-playground/vboard-factory')),
+      rich({ type: 'emoji', name: emoji }, { type: 'text', text: ' ' }, link(state, 'https://vercel.com/vercel-internal-playground/vboard-factory/7ZEaNBTETQjaUF4Bd1VCxbM8rR3n')),
+      rich(link('Preview', 'https://vboard-factory-git-pi-224.playground-vercel.tools')),
+      // Vercel's `2026-10-06T20:30:32.400Z`, in seconds, which Slack shows as how long ago.
+      rich({ type: 'date', timestamp: Date.UTC(2026, 9, 6, 20, 30, 32) / 1000, format: '{ago}', fallback: '2026-10-06T20:30:32.400Z' }),
+    ]
+    const table = (emoji: string, state: string) => expect.objectContaining({ type: 'data_table', rows: [[text('Project'), text('Deployment'), text('Actions'), text('Updated')], row(emoji, state)] })
+    expect(posted[0]!.blocks).toEqual([{ type: 'markdown', text: '**vercel[bot] (github)**: **▲ Vercel**' }, table('large_yellow_circle', 'Building')])
+    expect(posted[0]!.text).toContain('vboard-factory: building')
+
+    // Vercel edits its one comment as the build ends: the same Slack message is replaced.
+    await webhook('github', { type: 'edit', threadId: thread, id: 'vc', text: VERCEL_BUILDING.replaceAll('Building', 'Ready').replaceAll('building', 'ready'), user: '35613825', name: 'vercel[bot]' })
+    await vi.waitFor(() => expect(updated).toHaveLength(1))
+    expect(updated[0]).toMatchObject({ ts: '1700000000.000900', blocks: [{ type: 'markdown', text: '**vercel[bot] (github)**: **▲ Vercel**' }, table('large_green_circle', 'Ready')] })
+    expect(posted).toHaveLength(1)
+    expect((await read(julian, 'prs'))[1]!.text).toMatch(/^\[vc\]: #/) // the board keeps what Vercel wrote
   })
 
   it("syncs an edit to a long comment, like Vercel's deployment comment going from Building to Ready", async () => {
