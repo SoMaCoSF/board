@@ -497,13 +497,15 @@ describe('vercel()', () => {
     expect(latest.messages.map((m) => m.text)).toEqual([...Array.from({ length: 100 }, (_, i) => `m${i + 31}`), 'quiet after'])
   }, 30_000)
 
-  it("makes the team's board the first time a person uses it, and tells a project it needs a grant", async () => {
+  it("makes the team's board the first time a person uses it, and tells a project there may be none yet", async () => {
+    // The API names no board to a project both where the team has none and where its grants keep the
+    // project out: the project is told both ways out, the first being a person using the board once.
     const pong = handleOn(fakeMessageboard({ boardId: null }), 'project:prj_pong:production')
     await expect(pong.post('dev', { text: 'hello' })).rejects.toMatchObject({
       status: 403,
       code: 'board_not_granted',
-      message: "this project has no access to the team's board (prj_pong, production).",
-      hint: "Grant it: vb grants create --project prj_pong --environment production --can '*=read,post,react,label'",
+      message: "this project can't use the team's board (prj_pong, production): nobody on the team has opened it yet, or its grants keep this project out.",
+      hint: "A team's board is made the first time someone on the team uses it: vb whoami, run by any of them, is enough. If it's there, someone who manages it can let this project in: vb grants create --project prj_pong --environment production --can '*=read,post,react,label,sync'",
     })
     const api = fakeMessageboard({ boardId: null })
     await handleOn(api).post('dev', { text: 'hello' })
@@ -612,7 +614,7 @@ describe('vercel()', () => {
         code: 'board_not_granted',
         origin: 'handle',
         message: 'this project has no access to board security (prj_pong, preview).',
-        hint: "Grant it: vb grants create --project prj_pong --environment preview --name security --can '*=read,post,react,label'",
+        hint: "Grant it: vb grants create --project prj_pong --environment preview --name security --can '*=read,post,react,label,sync'",
       })
     })
 

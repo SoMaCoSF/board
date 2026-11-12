@@ -693,24 +693,30 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
   /**
    * A project a board's grants don't let in, the one `name`s or the team's (null): they were narrowed,
    * since every project on the team gets in by default. Its way out is the grant that lets it back in,
-   * naming the project by ID, since `/me` carries no name.
+   * with what a new board's g2 gives every project, naming the project by ID, since `/me` carries no name.
+   *
+   * The API names the team's board to no project both where the team has none yet and where its grants
+   * keep the project out, so for the team's board it says both, the first way out first: a team has a
+   * board once a person uses it, and a project can't make it.
    */
   const notLetIn = (name: string | null, principal: ApiPrincipal) => {
     const board = name === null ? "the team's board" : `board ${name}`
     if (principal.type !== 'project') return new HttpError(403, 'board_not_granted', `this project has no access to ${board}.`, { hint: 'Someone who manages the board can grant it.', origin: 'handle' })
-    const grant = `vb grants create --project ${principal.projectId} --environment ${principal.environment}${name === null ? '' : ` --name ${name}`} --can '*=read,post,react,label'`
-    return new HttpError(403, 'board_not_granted', `this project has no access to ${board} (${principal.projectId}, ${principal.environment}).`, {
-      hint: `Grant it: ${grant}`,
-      origin: 'handle',
-    })
+    const grant = `vb grants create --project ${principal.projectId} --environment ${principal.environment}${name === null ? '' : ` --name ${name}`} --can '*=read,post,react,label,sync'`
+    const which = `${principal.projectId}, ${principal.environment}`
+    if (name === null)
+      return new HttpError(403, 'board_not_granted', `this project can't use the team's board (${which}): nobody on the team has opened it yet, or its grants keep this project out.`, {
+        hint: `A team's board is made the first time someone on the team uses it: vb whoami, run by any of them, is enough. If it's there, someone who manages it can let this project in: ${grant}`,
+        origin: 'handle',
+      })
+    return new HttpError(403, 'board_not_granted', `this project has no access to ${board} (${which}).`, { hint: `Grant it: ${grant}`, origin: 'handle' })
   }
 
   let board: Promise<string> | null = null
   /**
    * The board's ID: the one given, the one `board({ name })` names, or the team's, which the API
    * names only to those it lets in. A team with none gets one the first time a person uses it, as
-   * the API asks of its clients; a project can't make it, and needs a person to grant it the board
-   * anyway. Each is asked for once.
+   * the API asks of its clients; a project can't make it, and is told so. Each is asked for once.
    */
   const boardId = (who: Who) =>
     (board ??= options.board

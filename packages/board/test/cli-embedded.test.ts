@@ -683,11 +683,11 @@ describe('the embedded CLI', () => {
       })
       expect(await run('read', 'dev', '--name', 'security', '--ensure')).toMatchObject({
         code: 1,
-        stderr: "error: this project has no access to board security (prj_pong, preview).\n\n  Grant it: vb grants create --project prj_pong --environment preview --name security --can '*=read,post,react,label'\n",
+        stderr: "error: this project has no access to board security (prj_pong, preview).\n\n  Grant it: vb grants create --project prj_pong --environment preview --name security --can '*=read,post,react,label,sync'\n",
       })
       expect(await run('read', 'dev')).toMatchObject({
         code: 1,
-        stderr: "error: this project has no access to the team's board (prj_pong, preview).\n\n  Grant it: vb grants create --project prj_pong --environment preview --can '*=read,post,react,label'\n",
+        stderr: "error: this project can't use the team's board (prj_pong, preview): nobody on the team has opened it yet, or its grants keep this project out.\n\n  A team's board is made the first time someone on the team uses it: vb whoami, run by any of them, is enough. If it's there, someone who manages it can let this project in: vb grants create --project prj_pong --environment preview --can '*=read,post,react,label,sync'\n",
       })
     } finally {
       fetching.mockRestore()
