@@ -1354,6 +1354,8 @@ export function fakeMessageboard(
     repositories?: Record<string, string>
     me?: Record<string, MeSays> | false
     notDefault?: boolean
+    /** A project's token may make the team's board, as a person's may: the API refuses it unless this says. */
+    projectsMakeDefault?: boolean
     /** Credentials the API takes, by their bearer, whatever it looks like: the principal each is, as `as()` names it. */
     tokens?: Record<string, string>
     /** An import's author is the platform user alone (`principal: { type: 'external' }`), as Vercel's API named them before platform profiles. */
@@ -1463,7 +1465,7 @@ export function fakeMessageboard(
     if (actor.narrowed && method === 'POST' && (path === '/boards/default' || path === '/boards/ensure')) throw new Refused(403, 'forbidden', "A caller narrowed with x-board-can can't change the team's boards: that's its principal's job.")
     if (method === 'POST' && path === '/boards/default') {
       // Board creates record a person's event, so project tokens can't.
-      if (actor.principal.type === 'project') throw new Refused(403, 'forbidden')
+      if (actor.principal.type === 'project' && !options.projectsMakeDefault) throw new Refused(403, 'forbidden')
       if (!made && named(general.name)) throw new Refused(409, 'board_name_taken')
       made = true
       return { board: show(general) }

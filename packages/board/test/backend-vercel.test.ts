@@ -511,6 +511,11 @@ describe('vercel()', () => {
     await handleOn(api).post('dev', { text: 'hello' })
     expect(api.requests.filter((r) => r === 'POST /boards/default')).toHaveLength(1)
     expect((await handleOn(api).messages({ channel: 'dev' })).messages.map((m) => m.text)).toEqual(['hello'])
+    // Where the API lets a project make it, the project's first call does, as board({ name }) does its own.
+    const fresh = fakeMessageboard({ boardId: null, projectsMakeDefault: true })
+    await handleOn(fresh, 'project:prj_pong:production').post('dev', { text: 'from a deploy' })
+    expect(fresh.requests.filter((r) => r === 'POST /boards/default')).toHaveLength(1)
+    expect((await handleOn(fresh).messages({ channel: 'dev' })).messages.map((m) => m.text)).toEqual(['from a deploy'])
   })
 
   it('says what the API says its credentials may do, and until when, and what any it lets in may when it says neither', async () => {
