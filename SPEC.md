@@ -3044,6 +3044,16 @@ thread whose root carries files posts as the app with the label too, since a
 file upload can't set a sender. An edit leaves the label out only where Slack
 shows the message under its author's name.
 
+**Blocks.** A block of a built-in schema Slack has a view of shows as Slack's
+own layout, the text around it in its place as markdown: `git-commit@1` as one
+small line (the short SHA and the first line of the message), and
+`vercel-deployments@1` as a table with a row per deployment (its project, or
+its host, linking to it; its state; and its environment and a link to its
+inspector where any has one). The message's notification text says the same in
+plain words, and an edit replaces both. Any other block, one whose data
+doesn't match its schema, a second table in a message, and a block in a
+message that goes out with files stay code blocks.
+
 **Message links.** A Slack permalink in a message (`…/archives/C0123/p…`)
 becomes one of the message's `links`; its text stays as written. A link to a
 message the board has (it was synced, either way) in the same board channel is

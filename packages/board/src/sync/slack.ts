@@ -11,6 +11,7 @@ import { MESSAGE_TEXT_MAX } from '../contract/schemas.ts'
 import { createSlackAdapter } from '@chat-adapter/slack'
 import { connectSlackAdapter } from '@vercel/connect/chat'
 import type { SyncFn } from './fn.ts'
+import { slackViews, type SlackBlock } from './slack-views.ts'
 
 type SlackChannel = { id?: string; name?: string; is_member?: boolean; is_private?: boolean; is_im?: boolean; is_mpim?: boolean; is_ext_shared?: boolean }
 export type SlackClient = {
@@ -41,6 +42,8 @@ export type SlackClient = {
   /** Posts an agent's message under its own name; needs `chat:write.customize` for `username` and `icon_url`. */
   chat?: {
     postMessage(args: SlackPost): Promise<{ ts?: string }>
+    /** Replaces a message's text and layout, for one that shows a block as Slack's own. */
+    update?(args: { channel: string; ts: string; text: string; blocks: SlackBlock[] }): Promise<unknown>
     /** A message's link, with the workspace's own host and a reply's `thread_ts`. */
     getPermalink?(args: { channel: string; message_ts: string }): Promise<{ permalink?: string }>
   }
@@ -54,6 +57,7 @@ type SlackPost = {
   thread_ts?: string
   text?: string
   markdown_text?: string
+  blocks?: SlackBlock[]
   username?: string
   icon_url?: string
   unfurl_links?: boolean
@@ -90,6 +94,9 @@ export function slackUsername({ name, attribution = '' }: Pick<ProviderSender, '
   }
   return `${cut.trimEnd()}…${attribution}`
 }
+
+/** Markdown as Slack's older mrkdwn, which a message's notification text is, by the adapter's own converter where it has one. */
+const mrkdwnOf = (adapter: SlackInternals) => (markdown: string) => adapter.formatConverter?.toResponseUrlText?.call(adapter.formatConverter, { markdown }) ?? markdown
 
 /** The `**name**: ` a message's text opens with (on a line of its own before a block), taken out when Slack shows the name as the sender. */
 export function withoutLabel(markdown: string, name: string): string {
@@ -736,6 +743,10 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
   override async post(target: string, kind: ResolvedTarget['kind'], body: ProviderPost): Promise<ProviderDelivery> {
     const { as, ...given } = body
     const post = { ...given, markdown: withoutHtml(given.markdown) }
+    if (!post.files?.length) {
+      const viewed = await this.postViews(target, as, post.markdown)
+      if (viewed) return viewed
+    }
     if (kind === 'channel' && post.files?.length && post.markdown.trim()) {
       const sent = await this.postWithFiles(target, post.markdown, post.files)
       if (sent) return sent
@@ -801,7 +812,52 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
     const post = { ...given, markdown: withoutHtml(given.markdown) }
     // Only an app that may name a message's sender ever sent one under a name.
     const named = as && (await this.web().then((web) => !!web && this.canCustomize(web), () => false)) ? await this.sentAs(thread, message, as) : false
-    await super.edit(thread, message, named && as ? { ...post, markdown: withoutLabel(post.markdown, as.name) } : post)
+    const edited = named && as ? { ...post, markdown: withoutLabel(post.markdown, as.name) } : post
+    if (!edited.files && (await this.editViews(thread, message, edited.markdown))) return
+    await super.edit(thread, message, edited)
+  }
+
+  /**
+   * A message with a block Slack has a view of (a commit, deployments) goes out with that block
+   * as Slack's own layout and the text around it as markdown, under its author's name where the
+   * app may set one. Null, before anything is sent, when it has no such block or board has no
+   * client to post with: it goes out as markdown, the block a code block.
+   */
+  private async postViews(target: string, as: ProviderSender | undefined, markdown: string): Promise<ProviderDelivery | null> {
+    if (!slackViews(markdown)) return null
+    const adapter = (await this.ready()) as SlackInternals
+    const web = await this.web().catch(() => undefined)
+    if (!web?.chat) return null
+    const username = as ? slackUsername(as) : null
+    const named = as && username !== null && (await this.canCustomize(web)) ? { username, icon: slackIcon(as.avatar), name: as.name } : null
+    const threadId = this.toChat(target)
+    const { channel, threadTs } = adapter.decodeThreadId(threadId)
+    const message = { markdown: named ? withoutLabel(markdown, named.name) : markdown }
+    const view = slackViews(((await adapter.resolveMessageMentions?.(message, threadId)) ?? message).markdown, mrkdwnOf(adapter))
+    if (!view) return null
+    const sent = await web.chat.postMessage({
+      channel,
+      ...(threadTs ? { thread_ts: threadTs } : {}),
+      ...view,
+      unfurl_links: false,
+      unfurl_media: false,
+      ...(named ? { username: named.username, ...(named.icon ? { icon_url: named.icon } : {}) } : {}),
+    })
+    if (!sent.ts) throw new Error('slack: chat.postMessage returned no ts')
+    return { thread: this.toNative(`${adapter.name}:${channel}:${threadTs || sent.ts}`), message: sent.ts }
+  }
+
+  /** An edit to a message with such a block: its text and layout, replaced. False, before anything is sent, when it has none or board has no client to edit with. */
+  private async editViews(thread: string, message: string, markdown: string): Promise<boolean> {
+    if (!slackViews(markdown)) return false
+    const adapter = (await this.ready()) as SlackInternals
+    const web = await this.web().catch(() => undefined)
+    if (!web?.chat?.update) return false
+    const threadId = this.toChat(thread)
+    const view = slackViews(((await adapter.resolveMessageMentions?.({ markdown }, threadId)) ?? { markdown }).markdown, mrkdwnOf(adapter))
+    if (!view) return false
+    await web.chat.update({ channel: adapter.decodeThreadId(threadId).channel, ts: message, ...view })
+    return true
   }
 
   private async postNamed(target: string, as: ProviderSender, markdown: string): Promise<ProviderDelivery | null> {

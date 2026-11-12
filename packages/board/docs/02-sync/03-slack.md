@@ -138,6 +138,23 @@ thread whose root carries files, since a file upload can't set a sender. An
 edit leaves the label out only where Slack shows the message under its
 author's name, which it asks Slack only on an app that may name senders.
 
+## Blocks show as a line or a table
+
+A [block](../01-board/04-messages.md#data) of a built-in schema that Slack has
+a view of shows as that view, with the text around it in its place:
+
+| Block | In Slack |
+| --- | --- |
+| `git-commit@1` | One small line: the short SHA and the first line of the commit's message |
+| `vercel-deployments@1` | A table with a row per deployment: its project, or its host, linking to it, then its state, and its environment and a link to its inspector where any has one |
+
+An edit replaces the view, so a row goes from `Building` to `Ready` in place.
+A notification shows the same in plain words (`web: ready, docs: building`).
+
+Everything else stays a code block: a block of any other schema, one whose
+data doesn't match its schema, a second table in one message, and every block
+in a message that goes out with files.
+
 ## Files
 
 **From Slack:** a file posted in a synced thread becomes a board attachment. When
