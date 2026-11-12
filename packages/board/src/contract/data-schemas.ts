@@ -65,7 +65,7 @@ export const BUILT_IN_SCHEMAS: readonly { name: string; version: number; descrip
   {
     name: 'vercel-deployments',
     version: 1,
-    description: "Vercel deployments and where each stands, such as a commit's: each one's URL and state, and optionally its project, environment, and inspector URL.",
+    description: "Vercel deployments and where each stands, such as a commit's: each one's URL and state, and optionally its project, environment, inspector URL, and when it last changed.",
     schema: {
       type: 'object',
       additionalProperties: false,
@@ -86,6 +86,7 @@ export const BUILT_IN_SCHEMAS: readonly { name: string; version: number; descrip
               project: { type: 'string', minLength: 1, maxLength: 100, description: "The project's name" },
               environment: { type: 'string', minLength: 1, maxLength: 100, description: "production, preview, or a custom environment's name" },
               inspectorUrl: httpsUrl,
+              updatedAt: { type: 'string', format: 'date-time', description: 'When its state last changed' },
             },
           },
         },
