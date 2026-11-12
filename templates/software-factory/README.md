@@ -20,7 +20,8 @@ fixes and features, reviews every PR, and stays quiet when nothing's for it.
      one included, so the agent can change the factory itself.
    - **Slack**, optionally. The channel where the factory updates itself: its own pull requests
      land there, and it's where to talk about how it works.
-   - **Try it.** Open an issue, or post on the board, and the agent replies.
+   - **Try it.** Start its first task, making this README yours, or open an issue, or post on
+     the board, and the agent replies.
 
    The connectors and the Slack channel are named for your Vercel project: `github/factory`,
    `slack/factory`, and `#factory-rsi` for a project named `factory`. A team's second factory gets

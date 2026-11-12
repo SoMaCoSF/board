@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Check, Circle } from "lucide-react";
 import { isDone, type Step, type Task } from "@/lib/setup";
+import { Action } from "./action";
 import { Copy } from "./copy";
 
 const icon = { size: 14, strokeWidth: 2.5, role: "img" } as const;
@@ -23,6 +24,7 @@ function TaskItem({ task }: { task: Task }): ReactNode {
             ) : null}
           </p>
         ) : null}
+        {task.action ? <Action {...task.action} /> : null}
         {task.commands?.map((command) => (
           <div key={command} className="command">
             <pre>

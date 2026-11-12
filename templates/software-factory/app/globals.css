@@ -438,6 +438,24 @@ pre {
   font-size: 0.9rem;
 }
 
+/* Right under a heading, it's the section's first line. */
+h2 + .note {
+  margin-top: 0;
+}
+
+.task .button,
+.panel .button {
+  margin-top: 0.5rem;
+}
+
+.task:not(:last-child) .button:last-child {
+  margin-bottom: 0.75rem;
+}
+
+.button:disabled {
+  opacity: 0.6;
+}
+
 /* The setup's steps, folded away once the factory runs. */
 .setup summary {
   display: flex;

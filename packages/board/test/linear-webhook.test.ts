@@ -252,6 +252,13 @@ it("opens an issue for a board root, titled with its first line without the auth
   expect(created.variables.input).toEqual({ teamId: 'team-eng', title: 'Flaky snake_case_name test', description: '**ada**: Flaky snake_case_name test\n\nIt fails one run in ten.' })
 })
 
+it("titles an issue with a root's first line when that opens a block, under the author's label", async () => {
+  const { provider } = setup()
+  await provider.post('ENG', 'channel', { markdown: '**ada**:\n\n# Checkout is down\n\nSince 10:00.' })
+  const created = calls.find((call) => /issueCreate\(/.test(call.query))!
+  expect(created.variables.input).toMatchObject({ title: 'Checkout is down', description: '**ada**:\n\n# Checkout is down\n\nSince 10:00.' })
+})
+
 it("edits only the description of an issue the board opened, and leaves the issue alone for its root's reactions and deletes", async () => {
   const { provider } = setup()
   await provider.edit(`ENG:${OPENED}`, 'issue', { markdown: 'Flaky checkout test, now with logs' })

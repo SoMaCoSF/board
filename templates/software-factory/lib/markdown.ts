@@ -1,3 +1,4 @@
+import { FIRST_TASK_PATH } from "./first-task.ts";
 import type { Running } from "./launcher.ts";
 import { duration } from "./overview.ts";
 import { headline, isDone, progress, type Setup, type Step, type Task } from "./setup.ts";
@@ -9,7 +10,9 @@ import { headline, isDone, progress, type Setup, type Step, type Task } from "./
 function item(task: Task): string[] {
   const help = [task.hint, task.link ? `[${task.link.label}](${task.link.href})` : ""].filter(Boolean).join(" ");
   const commands = (task.commands ?? []).flatMap((command) => ["", "  ```", `  ${command}`, "  ```"]);
-  return [`- [${task.done ? "x" : " "}] ${task.label}`, ...(help ? [`  ${help}`] : []), ...commands, ...(commands.length ? [""] : [])];
+  // What the page does with a button, said as the request it makes.
+  const action = task.action ? [`  ${task.action.label}: POST ${task.action.path}`] : [];
+  return [`- [${task.done ? "x" : " "}] ${task.label}`, ...(help ? [`  ${help}`] : []), ...action, ...commands, ...(commands.length ? [""] : [])];
 }
 
 /**
@@ -26,10 +29,15 @@ export function onboarding({ channel, slack, waiting }: Running["ask"]): string 
   return `${waiting ? `${waiting} more ${waiting === 1 ? "has" : "have"} the GitHub app. ` : ""}To onboard one, ask in ${slack ?? channel}:`;
 }
 
-/** What the factory has been doing, once it runs: the week, its pull requests, its repos. */
-function activity({ overview: { week, lastReplyAt, pulls }, repos, ask }: Running, now: Date): string[] {
+/** The first task, in a line: what it is while it's on offer, and where it is once it started. */
+export const firstTaskLine = (first: NonNullable<Running["first"]>, { channel, slack }: Running["ask"]): string =>
+  first === "offer" ? "Make the README yours: the factory opens a pull request." : `The factory is making the README yours, in ${slack ?? channel}.`;
+
+/** What the factory has been doing, once it runs: its first task while that's open, the week, its pull requests, its repos. */
+function activity({ overview: { week, lastReplyAt, pulls }, repos, ask, first }: Running, now: Date): string[] {
   const plus = week.more ? "+" : "";
   return [
+    ...(first ? ["", "## First task", "", `- ${firstTaskLine(first, ask)}${first === "offer" ? ` Start: POST ${FIRST_TASK_PATH}` : ""}`] : []),
     "",
     "## This week",
     "",

@@ -145,6 +145,28 @@ describe('sync', () => {
     expect(landed[0]).toEqual({ id: pr.id, external: { thread: `slack:C2:${copy.id}`, message: copy.id }, pr: 'acme/www#12' })
   })
 
+  it("gives a text that opens a block a line of its own under its author's label, so the block is still one", async () => {
+    const { board, s } = setup()
+    const julian = caller(board.fetch, await personToken(), {})
+    const texts = ['```sh\npnpm check\n```', '- one\n- two', '1. one\n2. two', '# Checkout is down', '> as you said', '| a | b |\n| - | - |\n| 1 | 2 |', 'ran `pnpm check`']
+    for (const text of texts) await julian('POST', '/messages', { channel: 'prs', text })
+    await vi.waitFor(() => expect(s.channelPosts).toHaveLength(texts.length))
+    // Each thread delivers on its own lane, so the roots reach Slack in any order.
+    const sent = s.channelPosts.map((post) => (JSON.parse(post.text) as { markdown: string }).markdown)
+    const label = /^\*\*[^*\n]+\*\*:/.exec(sent[0]!)![0]
+    expect(sent.sort()).toEqual([...texts.slice(0, -1).map((text) => `${label}\n\n${text}`), `${label} ran \`pnpm check\``].sort())
+  })
+
+  it("does the same under the label a renderer of your own opens with, and leaves what else it writes alone", async () => {
+    const { board, s } = setup({ slackRender: ({ message, label }) => (message.labels.plain ? `${label} said:\n${message.text}` : `**${label}**: ${message.text}`) })
+    const julian = caller(board.fetch, await personToken(), {})
+    await julian('POST', '/messages', { channel: 'prs', text: '```sh\npnpm check\n```' })
+    await julian('POST', '/messages', { channel: 'prs', text: '- one\n- two', labels: { plain: 'yes' } })
+    await vi.waitFor(() => expect(s.channelPosts).toHaveLength(2))
+    const sent = s.channelPosts.map((post) => (JSON.parse(post.text) as { markdown: string }).markdown).sort()
+    expect(sent).toEqual([expect.stringMatching(/^\*\*[^*\n]+\*\*:\n\n```sh\npnpm check\n```$/), expect.stringMatching(/^[^*\n]+ said:\n- one\n- two$/)])
+  })
+
   it('mirrors a Slack thread into the board, and board replies back into Slack', async () => {
     const { board, s, webhook } = setup()
     const julian = caller(board.fetch, await personToken(), {})

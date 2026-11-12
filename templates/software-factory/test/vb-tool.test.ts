@@ -11,7 +11,7 @@ const noFiles = async () => ({ readBinaryFile: async () => null, writeBinaryFile
 
 async function factory() {
   const team = board({ backend: local({ memory: true }) });
-  const root = await team.post("dev", "the build is red");
+  const root = await team.post("project-factory/rsi", "the build is red");
   return { team, root, agent: agentBoard(team) };
 }
 
@@ -23,7 +23,7 @@ test("a reply through the tool lands on the board as the factory itself, under n
   const printed = await runVb(agentBoard(named), ["reply", String(root.id), "looking into it"], noFiles);
   assert.doesNotMatch(printed, /\(exit/);
   await named.reply(root.id, "as the handle says");
-  const { messages } = await team.messages({ channel: "dev" });
+  const { messages } = await team.messages({ channel: "project-factory/" });
   const by = (text: string) => messages.find((message) => message.text === text)?.by;
   // The board itself wrote it: the actor is the board's own, with no profile on it.
   assert.equal(by("looking into it")?.actor, (await team.me()).actor);
@@ -32,11 +32,32 @@ test("a reply through the tool lands on the board as the factory itself, under n
   assert.equal(by("as the handle says")?.actor, `${(await team.me()).actor}:someone-else`);
 });
 
-test("the tool runs no command that streams, reads the platforms' raw events, or changes who's let onto the board", async () => {
-  const { agent } = await factory();
-  for (const command of ["tail", "wait", "inbox", "sources", "grants"]) {
-    const printed = await runVb(agent, [command, "dev"], noFiles);
-    assert.match(printed, new RegExp(`${command} isn't available here`), command);
-    assert.match(printed, /\(exit 2\)/, command);
+test("the board keeps the agent to its own channels: it reads and writes there, and nowhere else", async () => {
+  const { team, root, agent } = await factory();
+  const elsewhere = await team.post("elsewhere", "another team's thread");
+  // In its channels, what a thread needs.
+  for (const args of [["read", "project-factory/"], ["reply", root.id, "on it"], ["label", root.id, "kind=bug"], ["react", root.id, "eyes"], ["schedule", root.id, "check", "--in", "5m"], ["typing", root.id, "reading"]]) {
+    assert.doesNotMatch(await runVb(agent, args, noFiles), /\(exit/, args.join(" "));
   }
+  // Outside them, nothing: not a read, not a post, not a reply. The board's own handle does each, so it's the handle that's held.
+  for (const args of [["read", "elsewhere"], ["post", "elsewhere", "hi"], ["reply", elsewhere.id, "hi"]]) {
+    assert.match(await runVb(agent, args, noFiles), /\(exit 1\)/, args.join(" "));
+    assert.doesNotMatch(await runVb(team, args, noFiles), /\(exit/, args.join(" "));
+  }
+  assert.equal((await team.messages({ channel: "elsewhere" })).messages.filter((message) => message.text === "hi").length, 2);
+});
+
+test("the board refuses the agent what's the deployment's alone: the platforms' raw events, and who's let onto the board", async () => {
+  const { team, agent } = await factory();
+  for (const args of [["inbox", "slack"], ["grants"]]) {
+    assert.match(await runVb(agent, args, noFiles), /\(exit 1\)/, args.join(" "));
+    assert.doesNotMatch(await runVb(team, args, noFiles), /\(exit/, args.join(" "));
+  }
+});
+
+test("a command that runs until it's stopped answers at once, with nothing held", async () => {
+  const { agent, root } = await factory();
+  for (const command of ["tail", "wait"]) assert.match(await runVb(agent, [command, "project-factory/"], noFiles), /\(exit 2\)/, command);
+  // The next call isn't waiting behind one.
+  assert.doesNotMatch(await runVb(agent, ["read", root.id], noFiles), /\(exit/);
 });

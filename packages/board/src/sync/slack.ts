@@ -3,7 +3,7 @@ import type { Adapter, Message as ChatMessage } from 'chat'
 import { markdownOf } from './chat.ts'
 import { z } from 'zod'
 import { envelope, eventSchema } from './events.ts'
-import { UnreadableError, type ResolvedTarget, type ProviderPost, type ProviderDelivery, type ProviderFile, type ProviderSender, type SyncContext, type ReceivedEvent, type FetchedLink } from './provider.ts'
+import { opensBlock, UnreadableError, type ResolvedTarget, type ProviderPost, type ProviderDelivery, type ProviderFile, type ProviderSender, type SyncContext, type ReceivedEvent, type FetchedLink } from './provider.ts'
 import type { SourceJoin, SourceMessage, SourceRead } from '../api/routes.ts'
 import { stringifyMarkdown } from 'chat'
 import { LINKS_PER_MESSAGE_MAX, type ExternalLink } from '../contract/external.ts'
@@ -91,9 +91,9 @@ export function slackUsername({ name, attribution = '' }: Pick<ProviderSender, '
   return `${cut.trimEnd()}…${attribution}`
 }
 
-/** The `**name**: ` a message's text opens with, taken out when Slack shows the name as the sender. */
+/** The `**name**: ` a message's text opens with (on a line of its own before a block), taken out when Slack shows the name as the sender. */
 export function withoutLabel(markdown: string, name: string): string {
-  const label = new RegExp(`^\\*\\*${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\*\\*: `)
+  const label = new RegExp(`^\\*\\*${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\*\\*:(?: |\n\n)`)
   return markdown.replace(label, '')
 }
 
@@ -255,8 +255,8 @@ export function forwardText(links: ExternalLink[]): string {
   return links.filter((link) => link.snapshot).map((link) => {
     const { author, text } = link.snapshot!
     const lines = text.trim() ? text.trim().split('\n') : ['']
-    // A first line that opens a block (a fence, a list, a heading, a quote) only works at a line's start.
-    const head = /^(```|~~~|[-*+] |\d+[.)] |#{1,6} |>)/.test(lines[0]!) ? [`> **${author}**:`, `> ${lines[0]}`] : [`> **${author}**: ${lines[0]}`]
+    // A first line that opens a block (a fence, a list, a heading, a quote, a table) only works at a line's start.
+    const head = opensBlock(lines[0]!) ? [`> **${author}**:`, `> ${lines[0]}`] : [`> **${author}**: ${lines[0]}`]
     return [...head, ...lines.slice(1).map((line) => `> ${line}`)].map((line) => line.trimEnd()).concat('', link.url).join('\n')
   }).join('\n\n')
 }

@@ -149,9 +149,9 @@ function parseThread(thread: string) {
 
 /** A board message's first line, as an issue title: Linear titles are plain text. */
 function titleOf(markdown: string) {
-  const line = markdown.split('\n').map((text) => text.trim()).find(Boolean) ?? ''
-  // Without the label `render` opens a message with (`**ada**: `): the description keeps it.
-  return line.replace(/^\*\*[^*\n]+\*\*:\s*/, '').replace(/\*\*|__|`/g, '').replace(/^[#>\s]+/, '').replace(/\s+/g, ' ').trim().slice(0, 255) || 'Untitled'
+  // Without the label `render` opens a message with (`**ada**: `, on a line of its own before a block): the description keeps it.
+  const line = markdown.replace(/^\*\*[^*\n]+\*\*:\s*/, '').split('\n').map((text) => text.trim()).find(Boolean) ?? ''
+  return line.replace(/\*\*|__|`/g, '').replace(/^[#>\s]+/, '').replace(/\s+/g, ' ').trim().slice(0, 255) || 'Untitled'
 }
 
 function stateOf(state: { name?: string; type?: string } | undefined) {

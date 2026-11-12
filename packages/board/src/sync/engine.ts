@@ -18,7 +18,7 @@ import { waitUntil } from '../server/wait-until.ts'
 import type { SyncProvider } from './provider.ts'
 import { extractMentions, isEmail, replaceMentions } from '../contract/mentions.ts'
 import { SyncOverrides, immutable, type SyncRoot, type ProviderEvent, type SyncResult } from './events.ts'
-import { channelMissing, routesFor, ReceivedEvent, ResolvedTarget, UnreadableError, type ProviderSender, type Renderer } from './provider.ts'
+import { channelMissing, opensBlock, routesFor, ReceivedEvent, ResolvedTarget, UnreadableError, type ProviderSender, type Renderer } from './provider.ts'
 import type { SyncIn, SyncOut } from './fn.ts'
 import { ChannelPath } from '../contract/schemas.ts'
 import { displayText } from '../contract/bots.ts'
@@ -846,7 +846,9 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
       target,
     }))
     if (typeof body !== 'string') throw badRequest('a provider renderer must return markdown')
-    const markdown = await textFor(key, message, actors, body)
+    // A text that opens a block is one only at a line's start: under its label, whichever renderer wrote it, not beside it.
+    const labeled = `**${name}**: `
+    const markdown = await textFor(key, message, actors, body.startsWith(labeled) && opensBlock(body.slice(labeled.length)) ? `**${name}**:\n\n${body.slice(labeled.length)}` : body)
     // Where the platform shows a sender per message, it shows one the board checked: anyone else's
     // name is what they sent, so it stays a label in the text, under the app.
     return actor?.verified ? { markdown, as: { name, avatar: senderAvatar(message, actor), attribution } } : { markdown }

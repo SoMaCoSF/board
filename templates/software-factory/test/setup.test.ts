@@ -41,7 +41,7 @@ const me = (can: Record<string, string[]>) => ({ principal: DEPLOYMENT, can });
 
 /** A message by a person, or by the agent. */
 const message = (id: string, from: "ada" | "agent", re: string | null = null) =>
-  ({ id, re, by: { principal: from === "agent" ? DEPLOYMENT : "vercel:user:u_ada", profile: null, actor: "a" }, createdAt: "2026-11-03T00:00:00.000Z" }) as never;
+  ({ id, re, labels: {}, by: { principal: from === "agent" ? DEPLOYMENT : "vercel:user:u_ada", profile: null, actor: "a" }, createdAt: "2026-11-03T00:00:00.000Z" }) as never;
 
 function fake(options: { env?: Record<string, string | undefined>; routes?: Routes; deps?: Partial<Deps> } = {}) {
   const requests: string[] = [];
@@ -98,10 +98,14 @@ const links = (step: Step) => todo(step).flatMap((task) => (task.link ? [task.li
 /** The files the launcher links to, as this checkout has them: what a fresh factory deploys. */
 const CHANNELS = readFileSync(new URL("../app/api/board/[[...path]]/channels.ts", import.meta.url), "utf8");
 const FACTORY = readFileSync(new URL("../app/api/board/[[...path]]/factory.ts", import.meta.url), "utf8");
+/** The template's README, Deploy button and all, and one a team has made its own. */
+const TEMPLATE_README = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+const OWN_README = "# Acme's factory\n\nIt works on acme/web.\n";
 const REPO_URL = "https://github.com/acme/factory/blob/main/app/api/board/%5B%5B...path%5D%5D";
 const CHANNELS_URL = `${REPO_URL}/channels.ts`;
 /** What the launcher reads when it's given another channels.ts. */
-const sources = (channels: () => string | undefined): Deps["source"] => (file) => (file.endsWith("/channels.ts") ? channels() : file.endsWith("/factory.ts") ? FACTORY : undefined);
+const sources = (channels: () => string | undefined, readme: string | undefined = OWN_README): Deps["source"] =>
+  (file) => (file.endsWith("/channels.ts") ? channels() : file.endsWith("/factory.ts") ? FACTORY : file === "README.md" ? readme : undefined);
 
 /** The line of `source` a link opens on, in `url`'s file in the factory's repo: what the person lands on. */
 function linked(href: string, source = CHANNELS, url = CHANNELS_URL): string {
@@ -206,7 +210,7 @@ test("a team whose board nobody has opened yet is told to open it once, with the
   assert.deepEqual(commands(vercel!), ["npx @vercel/board inspect --scope acme"]);
   // Try it waits on the board: its tasks are still to do, with nothing of the board's error under them.
   assert.deepEqual(tryIt!.tasks, [
-    { label: "Post on the board, or open an issue", done: false },
+    { label: "Give it its first task", done: false },
     { label: "Get a reply from the agent", done: false },
   ]);
 });
@@ -392,7 +396,7 @@ test("Slack's app in its channel, by name, is done", async () => {
 });
 
 /** A reply by this deployment under a profile. */
-const under = (profile: string) => ({ id: "13", re: "12", by: { principal: DEPLOYMENT, profile, actor: "a" } }) as never;
+const under = (profile: string) => ({ id: "13", re: "12", labels: {}, by: { principal: DEPLOYMENT, profile, actor: "a" } }) as never;
 
 test("what the deployment's watcher wrote, or its sync brought in, isn't the agent's reply", async () => {
   const steps = await shown(fake({ deps: { messages: async () => [message("12", "ada"), under("wake"), under("github:user:583231")] } }).deps);
@@ -413,7 +417,7 @@ test("try reads this factory's channels, and no one else's: its own and the ones
 
 test("try isn't done until someone has posted and the agent has replied", async () => {
   const nothing = await shown(fake({ deps: { messages: async () => [] } }).deps);
-  assert.deepEqual(labels(todo(nothing.try!)), ["Post on the board, or open an issue", "Get a reply from the agent"]);
+  assert.deepEqual(labels(todo(nothing.try!)), ["Give it its first task", "Get a reply from the agent"]);
   const unanswered = await shown(fake({ deps: { messages: async () => [message("12", "ada")] } }).deps);
   assert.deepEqual(labels(todo(unanswered.try!)), ["Get a reply from the agent"]);
 });
@@ -426,36 +430,57 @@ test("try says how to open the board in its own step, on this team and by the bo
   assert.deepEqual(commands((await shown(named.deps)).try!), ["npx @vercel/board inspect --scope acme --name factory-dev"]);
 });
 
-test("try suggests a first ask, where the factory changes itself: in Slack once its channel is mirrored there", async () => {
-  // Slack isn't connected: the ask is for the board.
-  const board = await shown(fake({ deps: { messages: async () => [] } }).deps);
-  assert.equal(todo(board.try!)[0]!.hint, "A good first ask, in project-factory/rsi: make the README ours.");
+/** A factory whose README is still the template's, and nothing in its channels yet. */
+const untouched = (more: Partial<Deps> = {}, routes: Routes = {}) => fake({ deps: { messages: async () => [], source: sources(() => CHANNELS, TEMPLATE_README), ...more }, routes });
+const SLACK_ROUTES = (channel: { id: string; name: string }): Routes => ({
+  "https://slack.com/api/auth.test": () => json({ ok: true, team: "Acme", user: "factory" }),
+  "https://slack.com/api/users.conversations": conversations(channel),
+});
+const START = { label: "Start", path: "/api/launcher/first-task" };
+
+test("try offers the factory's first task while its README is still the template's: a button, and where to ask it anything else", async () => {
+  // Slack isn't connected: people ask it things on the board.
+  const [first] = todo((await shown(untouched().deps)).try!);
+  assert.deepEqual(first, { label: "Give it its first task", done: false, hint: "It makes the README yours. Or ask it anything in project-factory/rsi.", action: START });
   // Slack is, with its app in the channel.
-  const slack = await shown(
-    fake({
-      deps: { messages: async () => [], connect: async () => "app-token" },
-      routes: {
-        "https://slack.com/api/auth.test": () => json({ ok: true, team: "Acme", user: "factory" }),
-        "https://slack.com/api/users.conversations": conversations({ id: "C2", name: "factory-rsi" }),
-      },
-    }).deps,
-  );
-  assert.equal(todo(slack.try!)[0]!.hint, "A good first ask, in #factory-rsi: make the README ours.");
-  // A Slack channel mapped by its ID has no name to say: the ask is for the board.
-  const byId = fake({
-    deps: { messages: async () => [], connect: async () => "app-token" },
-    routes: {
-      "https://slack.com/api/auth.test": () => json({ ok: true, team: "Acme", user: "factory" }),
-      "https://slack.com/api/users.conversations": conversations({ id: "C0123ABC", name: "factory-rsi" }),
-    },
-  });
+  const slack = await shown(untouched({ connect: async () => "app-token" }, SLACK_ROUTES({ id: "C2", name: "factory-rsi" })).deps);
+  assert.equal(todo(slack.try!)[0]!.hint, "It makes the README yours. Or ask it anything in #factory-rsi.");
+  // A Slack channel mapped by its ID has no name to say.
+  const byId = untouched({ connect: async () => "app-token" }, SLACK_ROUTES({ id: "C0123ABC", name: "factory-rsi" }));
   byId.deps.synced.slackChannels = { C0123ABC: "project-factory/rsi" };
   const mapped = await shown(byId.deps);
   assert.equal(isDone(mapped.slack!), true);
-  assert.equal(todo(mapped.try!)[0]!.hint, "A good first ask, in project-factory/rsi: make the README ours.");
-  // Once someone has posted, there's nothing to suggest.
-  const posted = await shown(fake({ deps: { messages: async () => [message("12", "ada")] } }).deps);
-  assert.deepEqual(posted.try!.tasks.filter((task) => task.hint), []);
+  assert.equal(todo(mapped.try!)[0]!.hint, "It makes the README yours. Or ask it anything in project-factory/rsi.");
+});
+
+test("the first task isn't offered before the factory can write to its own repo, or once its README is the team's own", async () => {
+  // It's a pull request in the factory's repo: without the connector there's nothing it could open.
+  const unconnected = await shown(untouched({ connect: async () => Promise.reject(new Error("connector not found")) }).deps);
+  assert.equal(todo(unconnected.try!)[0]!.action, undefined);
+  // A README the team already made its own: the step says where to ask, and how to open the board.
+  const [own] = todo((await shown(fake({ deps: { messages: async () => [] } }).deps)).try!);
+  assert.deepEqual(own, { label: "Give it its first task", done: false, hint: "Ask it anything in project-factory/rsi.", commands: ["npx @vercel/board inspect --scope acme"] });
+});
+
+test("a first task started long ago, past what one read brings, isn't offered again", async () => {
+  // Its channels are busy with other things: the page asks for the first task's thread by its label.
+  const opened = { id: "20", re: null, labels: { "first-task": "readme" }, by: { principal: DEPLOYMENT, profile: null, actor: "a" } } as never;
+  const asked: unknown[] = [];
+  const busy = await setup(untouched({ messages: async () => [message("90", "ada")], threads: async (query) => (asked.push(query), [opened]) }).deps);
+  assert.equal(busy.open ? null : busy.found.first, "started");
+  assert.deepEqual(asked, [{ channel: "project-factory/", label: ["first-task"], limit: 1 }]);
+  // With no such thread, it's on offer.
+  const none = await setup(untouched({ messages: async () => [message("90", "ada")] }).deps);
+  assert.equal(none.open ? null : none.found.first, "offer");
+});
+
+test("once the first task started, it's the factory's to finish: the thread it opened isn't its reply", async () => {
+  const opened = { id: "20", re: null, labels: { "first-task": "readme" }, by: { principal: DEPLOYMENT, profile: null, actor: "a" } } as never;
+  const started = await shown(untouched({ messages: async () => [opened] }).deps);
+  assert.deepEqual(labels(todo(started.try!)), ["Get a reply from the agent"]);
+  // What it says in that thread is.
+  const answered = await shown(untouched({ messages: async () => [opened, message("21", "agent", "20")] }).deps);
+  assert.equal(isDone(answered.try!), true);
 });
 
 test("locally, nothing asks whether the deployment is protected, and signing in is one link and one pull, said once", async () => {
@@ -539,7 +564,7 @@ Bring it issues, threads, and questions. 3 of 3 steps done, checked on this requ
 
 ## 4. Try it (done)
 
-- [x] Post on the board, or open an issue
+- [x] Give it its first task
 - [x] Get a reply from the agent
 
 ## Watch the board
@@ -584,10 +609,15 @@ test("as markdown, a factory that isn't set up says so first, and gives each com
 
 test("the command that opens the board is on the launcher once, always: in the task that asks for it, or under the steps", async () => {
   const count = (text: string) => text.split(INSPECT).length - 1;
-  // Nobody has posted: the task that says to post carries it.
+  // Nobody has posted, and there's no first task to offer: the task that says to ask carries it.
   const fresh = markdown(await setup(fake({ deps: { messages: async () => [] } }).deps), INSPECT);
   assert.equal(count(fresh), 1);
   assert.ok(!fresh.includes("## Watch the board"));
+  // With the first task on offer, the task carries the button's request, and the command is under the steps.
+  const offered = markdown(await setup(untouched().deps), INSPECT);
+  assert.ok(offered.includes("- [ ] Give it its first task\n  It makes the README yours. Or ask it anything in project-factory/rsi.\n  Start: POST /api/launcher/first-task\n"), offered);
+  assert.equal(count(offered), 1);
+  assert.ok(offered.includes("## Watch the board"));
   // Someone has, and the agent hasn't replied yet: no task carries it, so it's under the steps.
   const waiting = markdown(await setup(fake({ deps: { messages: async () => [message("12", "ada")] } }).deps), INSPECT);
   assert.equal(count(waiting), 1);
@@ -627,6 +657,7 @@ test("once it runs, the markdown opens with what the factory has been doing, and
     repos: [{ repo: "acme/factory", channel: "project-factory/rsi" }],
     ask: { channel: "project-factory/rsi", slack: "#factory-rsi", waiting: 3 },
     join: "",
+    first: null,
   };
   const text = markdown(await setup(fake().deps), INSPECT, running, new Date("2026-11-12T12:00:00.000Z"));
   assert.ok(
@@ -657,6 +688,12 @@ Bring it issues, threads, and questions. 3 of 3 steps done, checked on this requ
   const busy = markdown(await setup(fake().deps), INSPECT, { ...running, overview: { ...running.overview, week: { ...running.overview.week, more: true, firstReplyMs: null } }, ask: { channel: "project-factory/rsi", slack: null, waiting: null } });
   assert.ok(busy.includes("- 6+ threads, 22+ messages\n- 5 answered\n"), busy);
   assert.ok(busy.includes("- To onboard one, ask in project-factory/rsi: onboard <owner>/<repo>"), busy);
+  // While its README is still the template's, the first task comes before the week: on offer, then where it is.
+  const offer = markdown(await setup(fake().deps), INSPECT, { ...running, first: "offer" });
+  assert.ok(offer.includes("checked on this request.\n\n## First task\n\n- Make the README yours: the factory opens a pull request. Start: POST /api/launcher/first-task\n\n## This week\n"), offer);
+  const started = markdown(await setup(fake().deps), INSPECT, { ...running, first: "started" });
+  assert.ok(started.includes("## First task\n\n- The factory is making the README yours, in #factory-rsi.\n"), started);
+  assert.ok(!markdown(await setup(fake().deps), INSPECT, running).includes("First task"));
 });
 
 test("the prompt for an agent to join names the team's board, the factory's channels, and where its ways are written", () => {

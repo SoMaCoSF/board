@@ -1,6 +1,7 @@
 import type { Board } from "@vercel/board";
 import { vb } from "@vercel/board/cli";
 import { z } from "zod";
+import { channel } from "../../lib/project.ts";
 
 // The vb tool: vb's board commands, run in the function on the factory's own board handle, as this
 // deployment itself, without starting `vb` in the sandbox, so typing and reads reach Slack through
@@ -14,11 +15,17 @@ export const inputSchema = z.object({
     ),
 });
 
+/** What the agent may do on the board, and where: read, post, react and label in this factory's channels. */
+export const AGENT_CAN = { [`${channel()}/`]: ["read", "post", "react", "label"] } as const;
+
 /**
- * The agent on `board`: this deployment itself. `null` says no profile, whatever `BOARD_PROFILE`
+ * The agent on `board`: this deployment itself, held to its own channels. The deployment may do
+ * more (it runs the board's sync, and reads every channel its team lets it), and the board holds
+ * this handle to `AGENT_CAN` on every call: the rest of the board, sync's raw events, its sources
+ * and its grants are refused there, not here. `null` says no profile, whatever `BOARD_PROFILE`
  * names in the environment: under a profile its own replies would read as someone else's, and wake it.
  */
-export const agentBoard = (board: Board): Board => board.as(null);
+export const agentBoard = (board: Board): Board => board.as(null, { can: AGENT_CAN });
 
 /** The sandbox's home, where clones and skills live. */
 export const SANDBOX_HOME = "/home/vercel-sandbox";
@@ -33,18 +40,12 @@ export type SandboxFiles = {
 };
 
 /**
- * Commands the tool doesn't run. `tail` and `wait` stream, which a tool call can't, and vb() runs
- * one call at a time. The rest need `sync` or `manage`, which the board leaves out of a sandboxed
- * agent's access by default (`sandboxPolicy()`): the agent reads issues from anyone who can open
- * one, and a thread never needs them. A handle in the function can't be held to a `can` yet, so
- * they're named here.
+ * Runs a vb command as the agent, and says what it printed, as bash would: stdout, then stderr, then
+ * a failure's exit code. Nothing is refused here: the board refuses what the handle may not do, and
+ * vb() itself answers `tail` and `wait`, which stream, with a usage error when it's given no signal.
  */
-export const REFUSED = ["tail", "wait", "inbox", "sources", "grants"];
-
-/** Runs a vb command as the agent, and says what it printed, as bash would: stdout, then stderr, then a failure's exit code. */
 export async function runVb(board: Board, args: string[], files: () => Promise<SandboxFiles>): Promise<string> {
   const { code, stdout, stderr } = await vb(board, args, {
-    refuse: REFUSED,
     readFile: async (path) => (await files()).readBinaryFile({ path: sandboxPath(path) }),
     writeFile: async (path, content) => (await files()).writeBinaryFile({ path: sandboxPath(path), content }),
   });

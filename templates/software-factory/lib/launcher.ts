@@ -1,4 +1,5 @@
 import { boardName, connectors, factory, repoChannels, slackChannels } from "@/app/api/board/[[...path]]/factory";
+import type { FirstTask } from "./first-task.ts";
 import { ownRepo } from "./github.ts";
 import { joinPrompt } from "./markdown.ts";
 import { overview, type Overview } from "./overview.ts";
@@ -17,6 +18,8 @@ export type Running = {
   ask: { channel: string; slack: string | null; waiting: number | null };
   /** What to paste to a coding agent on your machine to have it join. */
   join: string;
+  /** Where its first task stands, while the README is still the template's. */
+  first: FirstTask;
 };
 
 export type Launcher = {
@@ -50,6 +53,7 @@ export async function check(host: string | null): Promise<Launcher> {
       repos: Object.entries(repoChannels).map(([repo, to]) => ({ repo, channel: to })),
       ask: { channel: rsi, slack: mirrorOf(slackChannels, rsi), waiting: result.found.waiting },
       join: joinPrompt({ origin, team, board: boardName, home, repo: ownRepo(deps.env) }),
+      first: result.found.first,
     };
   }
   return { result, inspect: inspectCommand(team, boardName), origin, local, running };

@@ -159,3 +159,6 @@ export abstract class SyncProvider<E extends ProviderEvent = ProviderEvent> {
     return `**${input.label}**: ${input.message.text}`
   }
 }
+
+/** Whether a text opens a block (a code fence, a list, a heading, a quote, a table), which is one only at a line's start. */
+export const opensBlock = (text: string) => /^(```|~~~|[-*+] |\d+[.)] |#{1,6} |>|\|)/.test(text)

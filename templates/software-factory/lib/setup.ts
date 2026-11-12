@@ -1,5 +1,6 @@
 import type { Board, MessageView } from "@vercel/board";
 import { byAgent } from "../agent/lib/identity.ts";
+import { FIRST_TASK_LABEL, FIRST_TASK_PATH, firstTask, type FirstTask } from "./first-task.ts";
 import { githubScope, ownRepo } from "./github.ts";
 import { projectOf, type Project } from "./project.ts";
 
@@ -10,7 +11,10 @@ import { projectOf, type Project } from "./project.ts";
 export type Link = { href: string; label: string };
 
 /** What helps do a task: one short line, a link that reads on after it, and the commands to run. */
-export type Help = { hint?: string; link?: Link; commands?: string[] };
+export type Help = { hint?: string; link?: Link; commands?: string[]; action?: Action };
+
+/** Something the page does when asked, with a POST to one of its own routes. */
+export type Action = { label: string; path: string };
 
 /**
  * One task of a step, named for what to do ("Create a GitHub connector") whether it's done or not. A
@@ -36,10 +40,11 @@ export type Me = { principal: string; can: Record<string, readonly string[]> };
 
 /**
  * What the checks came across on the way, for the page to show once the factory runs: this
- * deployment on its board (null when it can't use it), the latest messages in its channels, and how
- * many repos its GitHub app is on that come into no channel (null when that couldn't be told).
+ * deployment on its board (null when it can't use it), the latest messages in its channels, how
+ * many repos its GitHub app is on that come into no channel (null when that couldn't be told), and
+ * where its first task stands (null when there's none to offer).
  */
-export type Found = { me: Me | null; recent: MessageView[]; waiting: number | null };
+export type Found = { me: Me | null; recent: MessageView[]; waiting: number | null; first: FirstTask };
 
 /** How many messages one read of the factory's channels asks for. */
 export const READ = 200;
@@ -190,9 +195,9 @@ export async function setup(deps: Deps): Promise<Setup> {
     }
   }
   const vercel = await vercelStep(deps, local, project);
-  const found: Found = { me: vercel.me, recent: [], waiting: null };
-  const mirrored = slackStep(deps, project);
-  const [github, slack, tryIt] = await Promise.all([githubStep(deps, project, found), mirrored, tryStep(deps, project, found, mirrored)]);
+  const found: Found = { me: vercel.me, recent: [], waiting: null, first: null };
+  const [connected, mirrored] = [githubStep(deps, project, found), slackStep(deps, project)];
+  const [github, slack, tryIt] = await Promise.all([connected, mirrored, tryStep(deps, project, found, connected, mirrored)]);
   return { open: false, steps: [vercel.step, github, slack, tryIt], found };
 }
 
@@ -353,26 +358,40 @@ async function slackStep(deps: Deps, project: Project): Promise<Step> {
 export const mirrorOf = (slackChannels: Record<string, string>, channel: string): string | null =>
   Object.keys(slackChannels).find((name) => name.startsWith("#") && slackChannels[name] === channel) ?? null;
 
-/** `slack` is the Slack step: once it's done, the first ask is made there. */
-async function tryStep(deps: Deps, project: Project, found: Found, slack: Promise<Step>): Promise<Step> {
+/**
+ * `github` and `slack` are those steps: the first task needs the first one done, since it's a pull
+ * request in the factory's own repo, and once the second is, the factory is asked things there.
+ */
+async function tryStep(deps: Deps, project: Project, found: Found, github: Promise<Step>, slack: Promise<Step>): Promise<Step> {
   const { me } = found;
-  const POST = "Post on the board, or open an issue";
+  const FIRST = "Give it its first task";
   const REPLY = "Get a reply from the agent";
   // The Vercel step says how to open the board: nothing to try until then.
-  if (!me) return step("try", [todo(POST), todo(REPLY)]);
+  if (!me) return step("try", [todo(FIRST), todo(REPLY)]);
   // The factory's channels, in one read: its own and the ones under it.
   const recent: MessageView[] | Error = await deps.messages({ channel: `${deps.synced.home}/`, limit: READ }).catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
   if (recent instanceof Error) return step("try", [todo("Couldn't read the board", { hint: message(recent) }), todo(REPLY)]);
   found.recent = recent;
-  const heard = recent.some((m) => !byAgent(m.by, me.principal));
-  const replied = recent.some((m) => byAgent(m.by, me.principal));
-  // Something to ask for that shows it works, and makes this copy of the template the team's own:
-  // where the factory changes itself, in Slack once its channel is mirrored there.
+  // Something was asked of it once anything is in its channels: a person's message, an issue, or its
+  // first task's thread, which it opens itself. Its reply is what it says in a thread, not that opening.
+  const asked = recent.length > 0;
+  const replied = recent.some((m) => m.re !== null && byAgent(m.by, me.principal));
+  // The first task is a pull request in the factory's own repo, so it's offered once the app can write there.
+  found.first = isDone(await github) ? firstTask(deps.source("README.md"), recent) : null;
+  // Its thread may be older than what one read brings: before offering it again, ask for it by its label.
+  if (found.first === "offer") {
+    const started = await deps.threads({ channel: `${deps.synced.home}/`, label: [FIRST_TASK_LABEL], limit: 1 }).catch(() => []);
+    found.first = firstTask(deps.source("README.md"), started) ?? "offer";
+  }
+  // Where people ask it things: where the factory changes itself, in Slack once its channel is mirrored there.
   const rsi = `${deps.synced.home}/rsi`;
   const mirror = mirrorOf(deps.synced.slackChannels, rsi);
   const where = mirror && isDone(await slack) ? mirror : rsi;
-  const first = { hint: `A good first ask, in ${where}: make the README ours.`, commands: [inspectCommand(project?.team, deps.synced.board)] };
-  return step("try", [heard ? done(POST) : todo(POST, first), replied ? done(REPLY) : todo(REPLY)]);
+  const start: Help =
+    found.first === "offer"
+      ? { hint: `It makes the README yours. Or ask it anything in ${where}.`, action: { label: "Start", path: FIRST_TASK_PATH } }
+      : { hint: `Ask it anything in ${where}.`, commands: [inspectCommand(project?.team, deps.synced.board)] };
+  return step("try", [asked ? done(FIRST) : todo(FIRST, start), replied ? done(REPLY) : todo(REPLY)]);
 }
 
 /** What the checks ask the board, as this deployment. */
