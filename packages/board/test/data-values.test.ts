@@ -133,7 +133,7 @@ describe('a value against a schema', () => {
       ok(standing!, {
         gitSha: sha,
         deployments: [
-          { url, state: 'ready', project: 'board', environment: 'preview', inspectorUrl: 'https://vercel.com/acme/board/abc' },
+          { url, state: 'ready', project: 'board', environment: 'preview', inspectorUrl: 'https://vercel.com/acme/board/abc', updatedAt: '2026-11-12T21:30:00Z' },
           { url: 'https://docs-abc.vercel.app', state: 'building', project: 'docs' },
         ],
       }),
@@ -144,6 +144,7 @@ describe('a value against a schema', () => {
     expect(ok(standing!, {})).toBe(false)
     expect(ok(standing!, { deployments: [{ url, state: 'ready', project: '' }] })).toBe(false)
     expect(ok(standing!, { deployments: [{ url, state: 'ready', inspectorUrl: 'http://vercel.com/acme/board/abc' }] })).toBe(false)
+    expect(ok(standing!, { deployments: [{ url, state: 'ready', updatedAt: 'two hours ago' }] })).toBe(false)
     expect(ok(standing!, { deployments: [{ url, state: 'ready', gitSha: sha }] })).toBe(false)
     expect(ok(standing!, { deployments: Array.from({ length: 51 }, () => ({ url, state: 'ready' })) })).toBe(false)
   })

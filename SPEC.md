@@ -1329,8 +1329,8 @@ const sandbox = await team.schema('sandbox@1')  // 404 schema_not_found for one 
   `vercel-deployments@1`, a list of deployments and where each stands
   (`deployments`, 1 to 50, each with `url` and `state`: `queued`, `building`,
   `ready`, `error`, or `canceled`; and, when it has them, `project`,
-  `environment`, and `inspectorUrl`; with `gitSha` for the commit they were
-  built from), as Vercel's API has them. They list first, and their names
+  `environment`, `inspectorUrl`, and `updatedAt`; with `gitSha` for the commit
+  they were built from), as Vercel's API has them. They list first, and their names
   are reserved: a version of one is 409 `reserved_schema`.
 - **A definition is structural JSON Schema.** It describes an object (`"type":
   "object"` at its root) with `type`, `properties`, `required`,
