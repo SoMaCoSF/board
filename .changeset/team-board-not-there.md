@@ -2,4 +2,4 @@
 '@vercel/board': patch
 ---
 
-`vercel()`: a project whose team has no board yet asks Vercel's API to make it, as a person's handle does and as `board({ name })` ensures its own. Where the API refuses, the project is told the team may have none yet, and that someone on the team running `vb whoami` once makes it, before the grant that lets it in. Every grant hint for a project now includes `sync`, as a new board's g2 does.
+`vercel()`: a production or preview deployment on a team with no board yet makes it the first time it uses it, as a person does and as `board({ name })` makes its own. Where Vercel's API won't let it, the project fails with 404 `no_team_board` and is told to have someone on the team run `vb whoami --scope <team>` once. A team's board whose grants keep the project out fails with 403 `board_not_granted` and the grant that lets it in, which now includes `sync`, as a new board's g2 does.
