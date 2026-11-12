@@ -146,14 +146,24 @@ a view of shows as that view, with the text around it in its place:
 | Block | In Slack |
 | --- | --- |
 | `git-commit@1` | One small line: the short SHA and the first line of the commit's message |
-| `vercel-deployments@1` | A table with a row per deployment: its project, or its host, linking to it, then its state, and its environment and a link to its inspector where any has one |
+| `vercel-deployments@1` | The table Vercel posts on a pull request, with a row per deployment |
+
+The table's columns are Vercel's:
+
+| Column | Shows |
+| --- | --- |
+| Project | The deployment's `project`, or its URL's host without one |
+| Deployment | Its state beside its color (green for `ready`, yellow for `building`, red for `error`), linking to its `inspectorUrl` when it has one |
+| Actions | A link to the deployment, named for its `environment` (`Preview`), or `Visit` without one |
+| Updated | How long ago its `updatedAt` was, which Slack keeps current. The column is there when a deployment has one |
 
 An edit replaces the view, so a row goes from `Building` to `Ready` in place.
 A notification shows the same in plain words (`web: ready, docs: building`).
 
 Everything else stays a code block: a block of any other schema, one whose
 data doesn't match its schema, a second table in one message, and every block
-in a message that goes out with files.
+in a message that goes out with files. So does a message Slack won't take the
+layout of: it goes out as markdown, so it's never lost.
 
 ## Files
 

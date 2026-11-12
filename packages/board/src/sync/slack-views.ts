@@ -12,20 +12,32 @@ type View = (data: Record<string, unknown>) => { blocks: SlackBlock[]; text: str
 const MARKDOWN_MAX = 12_000
 /** The most layout blocks Slack takes in a message. */
 const BLOCKS_MAX = 50
+/** The most notification text Slack takes: an edit over 4,000 characters is refused. */
+const TEXT_MAX = 3900
+
+/** How Slack is given text: the text around a block as the markdown it posts, and the notification's as its older mrkdwn. Each as written without one. */
+export type SlackText = { markdown?: (markdown: string) => string; mrkdwn?: (markdown: string) => string }
 
 const raw = (text: string) => ({ type: 'raw_text', text: text || ' ' })
-const linked = (text: string, url: string) => ({ type: 'rich_text', elements: [{ type: 'rich_text_section', elements: [{ type: 'link', text, url }] }] })
+/** A cell of formatted text: an emoji, a link, a date. */
+const rich = (...elements: Record<string, unknown>[]) => ({ type: 'rich_text', elements: [{ type: 'rich_text_section', elements }] })
+const link = (text: string, url: string) => ({ type: 'link', text, url })
 const short = (sha: string) => sha.slice(0, 7)
 const firstLine = (text: string) => text.trim().split('\n')[0]!.trim()
 /** A URL's host, or the URL as written when it has none. */
 const hostOf = (url: string) => (URL.canParse(url) && new URL(url).host) || url
 const capitalized = (word: string) => word.slice(0, 1).toUpperCase() + word.slice(1)
+/** A time as Slack takes one, in seconds, or null when it isn't one a clock reads. */
+const secondsOf = (time: string | undefined) => (time === undefined || Number.isNaN(Date.parse(time)) ? null : Math.floor(Date.parse(time) / 1000))
 
-type Deployment = { url: string; state: string; project?: string; environment?: string; inspectorUrl?: string }
+type Deployment = { url: string; state: string; project?: string; environment?: string; inspectorUrl?: string; updatedAt?: string }
+
+/** The dot Vercel shows beside a deployment's state, as the emoji Slack has for it. */
+const DOT: Record<string, string> = { queued: 'white_circle', building: 'large_yellow_circle', ready: 'large_green_circle', error: 'red_circle', canceled: 'black_circle' }
 
 /**
- * The built-in schemas Slack has a view of: a commit is one small line, and deployments are a
- * table with a row each, its name linking to it. Any other block stays the code block it is.
+ * The built-in schemas Slack has a view of: a commit is one small line, and deployments are the
+ * table Vercel posts on a pull request. Any other block stays the code block it is.
  */
 const VIEWS: Record<string, View> = {
   'git-commit@1': (data) => {
@@ -41,17 +53,23 @@ const VIEWS: Record<string, View> = {
     const deployments = data.deployments as Deployment[]
     const sha = typeof data.gitSha === 'string' ? short(data.gitSha) : null
     const name = (deployment: Deployment) => deployment.project ?? hostOf(deployment.url)
-    // A column only where a deployment has something to put in it.
-    const environments = deployments.some((deployment) => deployment.environment)
-    const inspectors = deployments.some((deployment) => deployment.inspectorUrl)
+    // Vercel's columns. Updated only where a deployment says when: the others always have something to show.
+    const dated = deployments.some((deployment) => secondsOf(deployment.updatedAt) !== null)
     const rows = [
-      [raw('Deployment'), raw('State'), ...(environments ? [raw('Environment')] : []), ...(inspectors ? [raw('Inspector')] : [])],
-      ...deployments.map((deployment) => [
-        linked(name(deployment), deployment.url),
-        raw(capitalized(deployment.state)),
-        ...(environments ? [raw(deployment.environment ?? '')] : []),
-        ...(inspectors ? [deployment.inspectorUrl ? linked('Open', deployment.inspectorUrl) : raw('')] : []),
-      ]),
+      [raw('Project'), raw('Deployment'), raw('Actions'), ...(dated ? [raw('Updated')] : [])],
+      ...deployments.map((deployment) => {
+        const state = capitalized(deployment.state)
+        const at = secondsOf(deployment.updatedAt)
+        return [
+          raw(name(deployment)),
+          // Its state beside its color, linking to its page on Vercel when it names one.
+          rich({ type: 'emoji', name: DOT[deployment.state]! }, { type: 'text', text: ' ' }, deployment.inspectorUrl ? link(state, deployment.inspectorUrl) : { type: 'text', text: state }),
+          // The way to it, named for its environment as Vercel names a preview's: Preview.
+          rich(link(deployment.environment ? capitalized(deployment.environment) : 'Visit', deployment.url)),
+          // How long ago, which Slack keeps current.
+          ...(dated ? [at === null ? raw('') : rich({ type: 'date', timestamp: at, format: '{ago}', fallback: deployment.updatedAt })] : []),
+        ]
+      }),
     ]
     return {
       // Every row on one page: Slack shows five and pages the rest otherwise.
@@ -66,10 +84,10 @@ const DEFINITIONS = new Map(BUILT_IN_SCHEMAS.map((schema) => [`${schema.name}@${
 /**
  * A message for Slack with the blocks it has a view of shown as Slack's own layout: the text
  * around them stays markdown, in their place, and `text` says it all in plain words, which is
- * what a notification shows (the text around them through `mrkdwn`, Slack's format for it). Null
- * when it has no such block, or more than Slack takes in one message, so it goes out as markdown.
+ * what a notification shows, cut to what Slack takes. Null when it has no such block, or more
+ * than Slack takes in one message, so it goes out as markdown.
  */
-export function slackViews(markdown: string, mrkdwn: (markdown: string) => string = (as) => as): { text: string; blocks: SlackBlock[] } | null {
+export function slackViews(markdown: string, as: SlackText = {}): { text: string; blocks: SlackBlock[] } | null {
   const blocks: SlackBlock[] = []
   const text: string[] = []
   let from = 0
@@ -79,8 +97,8 @@ export function slackViews(markdown: string, mrkdwn: (markdown: string) => strin
     const trimmed = segment.trim()
     if (!trimmed) return
     prose += trimmed.length
-    blocks.push({ type: 'markdown', text: trimmed })
-    text.push(mrkdwn(trimmed))
+    blocks.push({ type: 'markdown', text: as.markdown?.(trimmed) ?? trimmed })
+    text.push(as.mrkdwn?.(trimmed) ?? trimmed)
   }
   for (const found of findBlocks(markdown)) {
     const view = VIEWS[found.id]
@@ -99,5 +117,6 @@ export function slackViews(markdown: string, mrkdwn: (markdown: string) => strin
   if (from === 0 && blocks.length === 0) return null
   write(markdown.slice(from))
   if (prose > MARKDOWN_MAX || blocks.length > BLOCKS_MAX) return null
-  return { text: text.join('\n'), blocks }
+  const said = Array.from(text.join('\n'))
+  return { text: said.length > TEXT_MAX ? `${said.slice(0, TEXT_MAX - 1).join('')}…` : said.join(''), blocks }
 }

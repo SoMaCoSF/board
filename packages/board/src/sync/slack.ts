@@ -11,7 +11,7 @@ import { MESSAGE_TEXT_MAX } from '../contract/schemas.ts'
 import { createSlackAdapter } from '@chat-adapter/slack'
 import { connectSlackAdapter } from '@vercel/connect/chat'
 import type { SyncFn } from './fn.ts'
-import { slackViews, type SlackBlock } from './slack-views.ts'
+import { slackViews, type SlackBlock, type SlackText } from './slack-views.ts'
 
 type SlackChannel = { id?: string; name?: string; is_member?: boolean; is_private?: boolean; is_im?: boolean; is_mpim?: boolean; is_ext_shared?: boolean }
 export type SlackClient = {
@@ -95,8 +95,22 @@ export function slackUsername({ name, attribution = '' }: Pick<ProviderSender, '
   return `${cut.trimEnd()}…${attribution}`
 }
 
-/** Markdown as Slack's older mrkdwn, which a message's notification text is, by the adapter's own converter where it has one. */
-const mrkdwnOf = (adapter: SlackInternals) => (markdown: string) => adapter.formatConverter?.toResponseUrlText?.call(adapter.formatConverter, { markdown }) ?? markdown
+/**
+ * Text as the adapter gives it to Slack, so the text around a block reads as it does in a message
+ * without one (a bare `@name` a mention, an emoji by its Slack name): markdown as the adapter
+ * posts it, and its older mrkdwn, which a message's notification text is.
+ */
+const textOf = (adapter: SlackInternals): SlackText => ({
+  markdown: (markdown) => {
+    const payload = adapter.formatConverter?.toSlackPayload?.call(adapter.formatConverter, { markdown })
+    return payload && 'markdown_text' in payload ? payload.markdown_text : markdown
+  },
+  mrkdwn: (markdown) => adapter.formatConverter?.toResponseUrlText?.call(adapter.formatConverter, { markdown }) ?? markdown,
+})
+
+/** Slack's answers that mean "not this layout", before anything is sent or changed: the message goes out as markdown instead. */
+const LAYOUT_REFUSED = new Set(['invalid_blocks', 'invalid_blocks_format', 'msg_blocks_too_long', 'block_mismatch'])
+const layoutRefused = (error: unknown) => LAYOUT_REFUSED.has((error as { data?: { error?: string } } | null)?.data?.error ?? '')
 
 /** The `**name**: ` a message's text opens with (on a line of its own before a block), taken out when Slack shows the name as the sender. */
 export function withoutLabel(markdown: string, name: string): string {
@@ -820,8 +834,8 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
   /**
    * A message with a block Slack has a view of (a commit, deployments) goes out with that block
    * as Slack's own layout and the text around it as markdown, under its author's name where the
-   * app may set one. Null, before anything is sent, when it has no such block or board has no
-   * client to post with: it goes out as markdown, the block a code block.
+   * app may set one. Null, with nothing sent, when it has no such block, board has no client to
+   * post with, or Slack won't take the layout: it goes out as markdown, the block a code block.
    */
   private async postViews(target: string, as: ProviderSender | undefined, markdown: string): Promise<ProviderDelivery | null> {
     if (!slackViews(markdown)) return null
@@ -833,30 +847,41 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
     const threadId = this.toChat(target)
     const { channel, threadTs } = adapter.decodeThreadId(threadId)
     const message = { markdown: named ? withoutLabel(markdown, named.name) : markdown }
-    const view = slackViews(((await adapter.resolveMessageMentions?.(message, threadId)) ?? message).markdown, mrkdwnOf(adapter))
+    const view = slackViews(((await adapter.resolveMessageMentions?.(message, threadId)) ?? message).markdown, textOf(adapter))
     if (!view) return null
-    const sent = await web.chat.postMessage({
-      channel,
-      ...(threadTs ? { thread_ts: threadTs } : {}),
-      ...view,
-      unfurl_links: false,
-      unfurl_media: false,
-      ...(named ? { username: named.username, ...(named.icon ? { icon_url: named.icon } : {}) } : {}),
-    })
+    const sent = await web.chat
+      .postMessage({
+        channel,
+        ...(threadTs ? { thread_ts: threadTs } : {}),
+        ...view,
+        unfurl_links: false,
+        unfurl_media: false,
+        ...(named ? { username: named.username, ...(named.icon ? { icon_url: named.icon } : {}) } : {}),
+      })
+      .catch((error: unknown) => {
+        if (layoutRefused(error)) return null
+        throw error
+      })
+    if (!sent) return null
     if (!sent.ts) throw new Error('slack: chat.postMessage returned no ts')
     return { thread: this.toNative(`${adapter.name}:${channel}:${threadTs || sent.ts}`), message: sent.ts }
   }
 
-  /** An edit to a message with such a block: its text and layout, replaced. False, before anything is sent, when it has none or board has no client to edit with. */
+  /** An edit to a message with such a block: its text and layout, replaced. False, with nothing changed, when it has none, board has no client to edit with, or Slack won't take the layout there. */
   private async editViews(thread: string, message: string, markdown: string): Promise<boolean> {
     if (!slackViews(markdown)) return false
     const adapter = (await this.ready()) as SlackInternals
     const web = await this.web().catch(() => undefined)
     if (!web?.chat?.update) return false
     const threadId = this.toChat(thread)
-    const view = slackViews(((await adapter.resolveMessageMentions?.({ markdown }, threadId)) ?? { markdown }).markdown, mrkdwnOf(adapter))
+    const view = slackViews(((await adapter.resolveMessageMentions?.({ markdown }, threadId)) ?? { markdown }).markdown, textOf(adapter))
     if (!view) return false
-    await web.chat.update({ channel: adapter.decodeThreadId(threadId).channel, ts: message, ...view })
+    try {
+      await web.chat.update({ channel: adapter.decodeThreadId(threadId).channel, ts: message, ...view })
+    } catch (error) {
+      if (layoutRefused(error)) return false
+      throw error
+    }
     return true
   }
 

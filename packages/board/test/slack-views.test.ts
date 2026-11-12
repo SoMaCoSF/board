@@ -10,7 +10,7 @@ const thread = 'C1:1700000000.000100'
 const as = { name: 'clever-lemur via vboard-factory', avatar: 'https://cdn.example.com/lemur.png' }
 const SHA = '0b29124a0b29124a0b29124a0b29124a0b29124a'
 const commit = block('git-commit@1', { sha: SHA, title: 'Fix the *checkout* total\n\nIt rounded twice.' })
-const web = { url: 'https://web-abc.vercel.app', state: 'ready', project: 'web', environment: 'preview', inspectorUrl: 'https://vercel.com/acme/web/abc' }
+const web = { url: 'https://web-abc.vercel.app', state: 'ready', project: 'web', environment: 'preview', inspectorUrl: 'https://vercel.com/acme/web/abc', updatedAt: '2026-11-12T21:30:00Z' }
 const docs = { url: 'https://docs-abc.vercel.app', state: 'building' }
 
 /** What Slack shows a commit as: its short SHA and the first line of its message, small. */
@@ -22,10 +22,17 @@ const commitLine = {
   ],
 }
 const cell = (text: string) => ({ type: 'raw_text', text })
-const link = (text: string, url: string) => ({ type: 'rich_text', elements: [{ type: 'rich_text_section', elements: [{ type: 'link', text, url }] }] })
+/** A cell of formatted text. */
+const rich = (...elements: unknown[]) => ({ type: 'rich_text', elements: [{ type: 'rich_text_section', elements }] })
+const link = (text: string, url: string) => ({ type: 'link', text, url })
+/** A state beside its color: its emoji, a space, and its name, plain or linking to the deployment's page on Vercel. */
+const state = (emoji: string, name: string | { type: string }) => rich({ type: 'emoji', name: emoji }, { type: 'text', text: ' ' }, typeof name === 'string' ? { type: 'text', text: name } : name)
+/** The docs deployment's row: named by its host, with no page on Vercel to link and no environment to name its link. */
+const docsRow = (emoji: string, name: string) => [cell('docs-abc.vercel.app'), state(emoji, name), rich(link('Visit', docs.url))]
+const HEADERS = [cell('Project'), cell('Deployment'), cell('Actions')]
 
 /** The real Slack adapter, kept off the network: board's own client is a fake, and so are the adapter's post and edit. */
-function slackWith(scopes: string[], chat: 'all' | 'no update' | 'none' = 'all') {
+function slackWith(scopes: string[], chat: 'all' | 'no update' | 'none' = 'all', refuses: { post?: string; update?: string } = {}) {
   const adapter = createSlackAdapter({ signingSecret: 'secret', botToken: 'xoxb-test' })
   const internals = adapter as unknown as { initialize(chat: unknown): Promise<void>; chat: unknown }
   internals.initialize = async function (chat) {
@@ -50,10 +57,19 @@ function slackWith(scopes: string[], chat: 'all' | 'no update' | 'none' = 'all')
       : {
           chat: {
             postMessage: async (args) => {
+              // Slack's Web API client throws what Slack answered, under `data`.
+              if (refuses.post) throw Object.assign(new Error(refuses.post), { data: { error: refuses.post } })
               posted.push(args)
               return { ts: '1700000000.000200' }
             },
-            ...(chat === 'all' ? { update: async (args) => void updated.push(args) } : {}),
+            ...(chat === 'all'
+              ? {
+                  update: async (args) => {
+                    if (refuses.update) throw Object.assign(new Error(refuses.update), { data: { error: refuses.update } })
+                    updated.push(args)
+                  },
+                }
+              : {}),
           },
         }),
     auth: { test: async () => ({ response_metadata: { scopes } }) },
@@ -81,7 +97,7 @@ describe('a block Slack has a view of', () => {
     expect(sent).toEqual({ thread, message: '1700000000.000200' })
   })
 
-  it('shows deployments as a table: a row each, its name linking to it, and a column only where one has something to say', async () => {
+  it("shows deployments as the table Vercel posts on a pull request: a project's state in its color, linking to its page, a link to it named for its environment, and how long ago", async () => {
     const { provider, posted } = slackWith(['chat:write'])
     await provider.post('C1', 'channel', { markdown: block('vercel-deployments@1', { gitSha: SHA, deployments: [web, docs] }) })
     await provider.post('C1', 'channel', { markdown: block('vercel-deployments@1', { deployments: [docs] }) })
@@ -95,20 +111,39 @@ describe('a block Slack has a view of', () => {
             // Slack shows five rows a page unless told: every deployment is on the first.
             page_size: 2,
             rows: [
-              [cell('Deployment'), cell('State'), cell('Environment'), cell('Inspector')],
-              [link('web', web.url), cell('Ready'), cell('preview'), link('Open', web.inspectorUrl)],
-              [link('docs-abc.vercel.app', docs.url), cell('Building'), cell(' '), cell(' ')],
+              [...HEADERS, cell('Updated')],
+              [
+                cell('web'),
+                state('large_green_circle', link('Ready', web.inspectorUrl)),
+                rich(link('Preview', web.url)),
+                // 2026-11-12T21:30:00Z in seconds, which Slack shows as how long ago.
+                rich({ type: 'date', timestamp: Date.UTC(2026, 10, 12, 21, 30) / 1000, format: '{ago}', fallback: web.updatedAt }),
+              ],
+              [...docsRow('large_yellow_circle', 'Building'), cell(' ')],
             ],
           },
         ],
       ],
-      [
-        'docs-abc.vercel.app: building',
-        [{ type: 'data_table', caption: 'Deployments', page_size: 1, rows: [[cell('Deployment'), cell('State')], [link('docs-abc.vercel.app', docs.url), cell('Building')]] }],
-      ],
+      // No deployment says when: no Updated column.
+      ['docs-abc.vercel.app: building', [{ type: 'data_table', caption: 'Deployments', page_size: 1, rows: [HEADERS, docsRow('large_yellow_circle', 'Building')] }]],
     ])
     // A new thread: its own message is its thread.
     expect(posted[0]).not.toHaveProperty('thread_ts')
+  })
+
+  it('gives each state its color', async () => {
+    const { provider, posted } = slackWith(['chat:write'])
+    const states = ['queued', 'building', 'ready', 'error', 'canceled']
+    await provider.post(thread, 'thread', { markdown: block('vercel-deployments@1', { deployments: states.map((state) => ({ ...docs, state })) }) })
+    const [table] = posted[0]!.blocks as { page_size: number; rows: unknown[][] }[]
+    expect(table!.page_size).toBe(5)
+    expect(table!.rows.slice(1).map((row) => row[1])).toEqual([
+      state('white_circle', 'Queued'),
+      state('large_yellow_circle', 'Building'),
+      state('large_green_circle', 'Ready'),
+      state('red_circle', 'Error'),
+      state('black_circle', 'Canceled'),
+    ])
   })
 
   it("goes out under its author's name, the label dropped, where the app may name a sender; and as the app, label and all, where it may not", async () => {
@@ -120,6 +155,19 @@ describe('a block Slack has a view of', () => {
     await unnamed.provider.post(thread, 'thread', { markdown, as })
     expect(unnamed.posted).toEqual([expect.objectContaining({ blocks: [{ type: 'markdown', text: `**${as.name}**: pushed` }, commitLine] })])
     expect(unnamed.posted[0]).not.toHaveProperty('username')
+  })
+
+  it('gives Slack the text around it as the adapter would, and a notification text no longer than Slack takes', async () => {
+    const { provider, posted } = slackWith(['chat:write'])
+    // The Chat SDK's placeholder for an emoji, which the adapter writes as Slack's name for it.
+    await provider.post(thread, 'thread', { markdown: `done {{emoji:thumbs_up}}\n\n${commit}` })
+    expect(posted[0]).toMatchObject({ text: 'done :+1:\n0b29124 Fix the *checkout* total', blocks: [{ type: 'markdown', text: 'done :+1:' }, commitLine] })
+    const long = 'word '.repeat(1200).trim()
+    await provider.post(thread, 'thread', { markdown: `${long}\n\n${commit}` })
+    const { text, blocks } = posted[1] as { text: string; blocks: unknown[] }
+    // An edit's text over 4,000 characters is refused: the notification is cut, the message isn't.
+    expect([text.length, text.endsWith('…'), text.startsWith('word word')]).toEqual([3900, true, true])
+    expect(blocks).toEqual([{ type: 'markdown', text: long }, commitLine])
   })
 
   it('keeps a second table the code block it is: Slack takes one in a message', async () => {
@@ -137,7 +185,7 @@ describe('a block Slack has a view of', () => {
         channel: 'C1',
         ts: '1700000000.000200',
         text: 'docs-abc.vercel.app: error',
-        blocks: [{ type: 'data_table', caption: 'Deployments', page_size: 1, rows: [[cell('Deployment'), cell('State')], [link('docs-abc.vercel.app', docs.url), cell('Error')]] }],
+        blocks: [{ type: 'data_table', caption: 'Deployments', page_size: 1, rows: [HEADERS, docsRow('red_circle', 'Error')] }],
       },
     ])
     expect(editsViaAdapter).toEqual([])
@@ -168,6 +216,35 @@ describe('a message that goes out as markdown, as before', () => {
     await provider.post(thread, 'thread', { markdown: commit, files })
     expect(posted).toEqual([])
     expect(viaAdapter).toEqual([{ markdown: commit, files }])
+  })
+
+  it('when it has more blocks than Slack takes in a message', async () => {
+    const { provider, posted, viaAdapter } = slackWith(['chat:write'])
+    const fifty = Array.from({ length: 50 }, () => commit).join('\n\n')
+    await provider.post(thread, 'thread', { markdown: fifty })
+    expect((posted[0]!.blocks as unknown[]).length).toBe(50)
+    const markdown = `${fifty}\n\n${commit}`
+    await provider.post(thread, 'thread', { markdown })
+    expect(posted).toHaveLength(1)
+    expect(viaAdapter).toEqual([{ markdown }])
+  })
+
+  it("when Slack won't take the layout, on a post or an edit: nothing was sent, so it isn't lost", async () => {
+    for (const refusal of ['invalid_blocks', 'invalid_blocks_format', 'msg_blocks_too_long', 'block_mismatch']) {
+      const { provider, viaAdapter, editsViaAdapter } = slackWith(['chat:write'], 'all', { post: refusal, update: refusal })
+      const sent = await provider.post(thread, 'thread', { markdown: commit })
+      await provider.edit(thread, '1700000000.000200', { markdown: commit })
+      expect([refusal, viaAdapter, editsViaAdapter]).toEqual([refusal, [{ markdown: commit }], [{ markdown: commit }]])
+      // The adapter's message is the one that went out.
+      expect(sent).toEqual({ thread, message: '1700000000.000300' })
+    }
+  })
+
+  it('but not when Slack refuses for another reason, which is the delivery failing', async () => {
+    const { provider, viaAdapter, editsViaAdapter } = slackWith(['chat:write'], 'all', { post: 'channel_not_found', update: 'message_not_found' })
+    await expect(provider.post(thread, 'thread', { markdown: commit })).rejects.toThrow('channel_not_found')
+    await expect(provider.edit(thread, '1700000000.000200', { markdown: commit })).rejects.toThrow('message_not_found')
+    expect([viaAdapter, editsViaAdapter]).toEqual([[], []])
   })
 
   it("when board has no client to post with, or one that can't edit", async () => {
@@ -202,13 +279,13 @@ describe('a board that syncs with Slack', () => {
     const first = await julian('POST', '/messages', { channel: 'deploys', text: block('vercel-deployments@1', { deployments: [docs] }) })
     expect(first.status).toBe(201)
     await vi.waitFor(() => expect(posted).toHaveLength(1))
-    const table = (state: string) => expect.objectContaining({ type: 'data_table', rows: [[cell('Deployment'), cell('State')], [link('docs-abc.vercel.app', docs.url), cell(state)]] })
-    expect(posted[0]).toMatchObject({ channel: 'C1', blocks: [expect.objectContaining({ type: 'markdown' }), table('Building')] })
+    const table = (emoji: string, name: string) => expect.objectContaining({ type: 'data_table', rows: [HEADERS, docsRow(emoji, name)] })
+    expect(posted[0]).toMatchObject({ channel: 'C1', blocks: [expect.objectContaining({ type: 'markdown' }), table('large_yellow_circle', 'Building')] })
     expect(s.channelPosts).toEqual([])
 
     await julian('POST', `/messages/${first.body.message.id}/edit`, { text: block('vercel-deployments@1', { deployments: [{ ...docs, state: 'ready' }] }) })
     await vi.waitFor(() => expect(updated).toHaveLength(1))
-    expect(updated[0]).toMatchObject({ channel: 'C1', ts: '1700000000.000101', blocks: [expect.objectContaining({ type: 'markdown' }), table('Ready')] })
+    expect(updated[0]).toMatchObject({ channel: 'C1', ts: '1700000000.000101', blocks: [expect.objectContaining({ type: 'markdown' }), table('large_green_circle', 'Ready')] })
     expect(s.edits).toEqual([])
   })
 })

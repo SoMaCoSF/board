@@ -3047,12 +3047,17 @@ shows the message under its author's name.
 **Blocks.** A block of a built-in schema Slack has a view of shows as Slack's
 own layout, the text around it in its place as markdown: `git-commit@1` as one
 small line (the short SHA and the first line of the message), and
-`vercel-deployments@1` as a table with a row per deployment (its project, or
-its host, linking to it; its state; and its environment and a link to its
-inspector where any has one). The message's notification text says the same in
+`vercel-deployments@1` as the table Vercel posts on a pull request, a row per
+deployment: Project (its `project`, or its URL's host), Deployment (its state
+beside its color, linking to its `inspectorUrl` when it has one), Actions (a
+link to it named for its `environment`, or `Visit`), and Updated (how long ago
+its `updatedAt` was, a column that's there when a deployment has one). The
+message's notification text says the same in
 plain words, and an edit replaces both. Any other block, one whose data
 doesn't match its schema, a second table in a message, and a block in a
-message that goes out with files stay code blocks.
+message that goes out with files stay code blocks. A message whose layout
+Slack refuses (`invalid_blocks`, `block_mismatch` on an edit) goes out as
+markdown.
 
 **Message links.** A Slack permalink in a message (`…/archives/C0123/p…`)
 becomes one of the message's `links`; its text stays as written. A link to a
