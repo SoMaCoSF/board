@@ -36,20 +36,16 @@ export function LauncherView({ result, inspect, origin, local, running }: Launch
     </section>
   );
 
-  // It runs: what it's been doing comes first, and its setup folds away under it.
+  // It runs: what it's been doing comes first, as wide as the window, and its setup folds away under it.
   if (running) {
     return (
-      <main className="launcher">
+      <main className="launcher wide">
         <section className="hero">
           <h1>{title}</h1>
           <p className="lede">{lede}</p>
-          <div className="hero-links">
-            <Copy text={running.join} label="Copy join prompt" />
-          </div>
         </section>
-        <Overview running={running} now={new Date()} />
-        {board}
-        <details className="panel setup">
+        <Overview running={running} inspect={inspect} now={new Date()} />
+        <details className="card setup">
           <summary>
             Setup
             <span>

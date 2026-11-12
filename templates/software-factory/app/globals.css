@@ -375,19 +375,53 @@ pre {
   margin-top: 3rem;
 }
 
-.panel h2,
-.setup summary {
+.panel h2 {
   margin: 0 0 0.75rem;
   color: var(--bright);
   font-size: 1rem;
   font-weight: 600;
 }
 
-/* Numbers first, what they count under them. */
+/* ── once it runs: as wide as the window, in cards ───────────────── */
+
+.launcher.wide {
+  max-width: 140rem;
+  padding-inline: clamp(1.25rem, 4vw, 5rem);
+}
+
+.dash {
+  display: grid;
+  gap: 1.5rem;
+  margin-top: 2.5rem;
+}
+
+/* A card's name, and a row of cards', is quiet: what's in them is what's read. */
+.dash h2,
+.setup summary {
+  margin: 0 0 0.75rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.card {
+  min-width: 0;
+  padding: 1.25rem;
+  border: 1px solid var(--line);
+}
+
+/* The week beside the pull requests, each one row of small cards, however many it holds. */
+.groups {
+  display: grid;
+  grid-template-columns: 5fr 3fr;
+  gap: 1.5rem;
+}
+
 .stats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1rem 2.5rem;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 0.75rem;
   margin: 0;
 }
 
@@ -395,12 +429,14 @@ pre {
 .stat {
   display: flex;
   flex-direction: column-reverse;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--line);
 }
 
 .stat dd {
   margin: 0;
   color: var(--bright);
-  font-size: 1.5rem;
+  font-size: 1.75rem;
   font-weight: 600;
   line-height: 1.2;
 }
@@ -410,9 +446,71 @@ pre {
   font-size: 0.85rem;
 }
 
+.pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(30rem, 100%), 1fr));
+  gap: 1.5rem;
+}
+
+/* What to do next, with its button at the end of the line. */
+.first {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem 2rem;
+}
+
+.first h2 {
+  margin-bottom: 0.25rem;
+}
+
+.first p {
+  margin: 0;
+  color: var(--ink);
+}
+
+.first .button {
+  margin: 0;
+}
+
+/* A few words to press, in a sentence. */
+.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: default;
+}
+
+.link:hover {
+  color: var(--bright);
+}
+
+/* Too narrow for eight cards in a row: the week over the pull requests. */
+@media (max-width: 90rem) {
+  .groups {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Narrower still, the week wraps: three cards a row, two on a phone, the last row as wide as the rest. */
+@media (max-width: 64rem) {
+  .week {
+    display: flex;
+    flex-wrap: wrap;
+  }
+
+  .week .stat {
+    flex: 1 1 max(9rem, 30%);
+  }
+}
+
 /* A thing per row, and what it belongs to at the end of it. */
 .rows {
-  margin: 1rem 0 0;
+  margin: 0;
   padding: 0;
   list-style: none;
   border-top: 1px dashed var(--line);
@@ -488,8 +586,24 @@ h2 + .note {
   content: "−";
 }
 
+.setup {
+  margin-top: 1.5rem;
+}
+
+/* Opened, its steps sit side by side, as many as fit. */
 .setup .stepper {
-  margin-top: 1rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(22rem, 100%), 1fr));
+  gap: 0 2rem;
+  margin-top: 1.25rem;
+}
+
+.setup .step {
+  padding-bottom: 0.75rem;
+}
+
+.setup .step:last-child {
+  border-bottom: 0;
 }
 
 @media (max-width: 40rem) {
