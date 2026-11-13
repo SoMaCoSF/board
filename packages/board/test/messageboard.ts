@@ -95,6 +95,20 @@ const EMOJI = /^[a-z0-9_+-]{1,64}$/
 const CHANNEL = /^[a-z0-9_-]+(\/[a-z0-9_-]+)*$/
 const MESSAGE_ID = /^msg_([0-9a-f-]{36})_(\d+)$/
 
+/**
+ * How Vercel's API refuses a message's text: its request schema counts characters (code points) and
+ * answers first, with `bad_request`; a later check counts UTF-16 units, and refuses empty text, with
+ * `invalid_message`. So text long in plain characters is `bad_request`, and text long only because of
+ * characters outside the BMP is `invalid_message`.
+ */
+function textSchema(text: unknown): asserts text is string {
+  if (typeof text !== 'string') throw new Refused(400, 'bad_request', 'Invalid request: `text` should be string.')
+  if ([...text].length > 10_000) throw new Refused(400, 'bad_request', 'Invalid request: `text` should NOT be longer than 10000 characters.')
+}
+function refuseText(text: string, empty = false): void {
+  if ((!text.trim() && !(empty && text === '')) || text.length > 10_000) throw new Refused(400, 'invalid_message', 'A message is 1 to 10000 characters.')
+}
+
 class Refused extends Error {
   readonly status: number
   readonly code: string
@@ -440,6 +454,7 @@ function fakeBoard(shared: Shared, boardId: string) {
 
   /** `uploader` is who must have uploaded its files: the caller, which for an import is the sync's project, not the platform user it posts as. */
   function post(actor: Actor, thread: Thread, body: { text: string; replyTo?: number; clientId?: string; labels?: Record<string, string>; attachments?: string[]; schedule?: { id: string; n: number }; after?: number; noSync?: boolean }, uploader: Actor = actor) {
+    textSchema(body.text)
     tokenMay(actor, 'post', thread.channelId)
     // A reply's precondition, checked with the post: the thread's newest is still the one it names.
     if (body.after !== undefined && (!Number.isInteger(body.after) || body.after < 1 || body.after > thread.messageCount)) throw new Refused(400, 'invalid_after')
@@ -452,7 +467,7 @@ function fakeBoard(shared: Shared, boardId: string) {
       return attachment
     })
     // A post with attachments may have no text.
-    if (typeof body.text !== 'string' || (!body.text.trim() && !(files.length && body.text === '')) || body.text.length > 10_000) throw new Refused(400, 'invalid_message')
+    refuseText(body.text, files.length > 0)
     if (body.replyTo !== undefined && (body.replyTo < 1 || body.replyTo > thread.messageCount)) throw new Refused(400, 'invalid_reply')
     const sequence = thread.messageCount + 1
     const createdAt = now()
@@ -608,10 +623,11 @@ function fakeBoard(shared: Shared, boardId: string) {
   /** Times are whole milliseconds, a year out at most, and a repeat is at least a minute apart, with one stop. */
   function schedule(actor: Actor, body: Record<string, any>): Schedule {
     const invalid = () => new Refused(400, 'invalid_schedule')
+    textSchema(body.text)
     if (actor.principal.type === 'app') throw new Refused(403, 'principal_cannot_schedule')
     if ((body.channelId === undefined) === (body.threadId === undefined)) throw invalid()
     if (body.labels !== undefined && body.threadId !== undefined) throw invalid()
-    if (typeof body.text !== 'string' || !body.text.trim() || body.text.length > 10_000) throw new Refused(400, 'invalid_message')
+    refuseText(body.text)
     const at = Date.now()
     const time = (value: unknown) => Number.isInteger(value) && (value as number) > 0 && (value as number) <= at + 365 * 86_400_000
     if (!time(body.firstAt) || body.firstAt < at - 60_000) throw invalid()
@@ -1032,6 +1048,7 @@ function fakeBoard(shared: Shared, boardId: string) {
       return { threads: items.map(showThread), cursor }
     }
     if (method === 'POST' && rest === '/threads') {
+      textSchema(body.text)
       const again = repeat(actor, body.clientId)
       if (again) return again
       return once(actor, body.operationId, () => {
@@ -1143,8 +1160,9 @@ function fakeBoard(shared: Shared, boardId: string) {
       const action = found[3] ?? ''
       if (method !== 'GET') tokenMay(actor, action === '/reactions' ? 'react' : action === '/labels' ? 'label' : 'post', thread.channelId)
       if (method === 'PATCH' && action === '') {
+        textSchema(body.text)
         if (!owns(actor, message.createdBy)) throw new Refused(403, 'message_not_owned')
-        if (typeof body.text !== 'string' || !body.text.trim() || body.text.length > 10_000) throw new Refused(400, 'invalid_message')
+        refuseText(body.text)
         if (body.revision !== undefined && body.revision !== message.revision) throw new Refused(409, 'revision_conflict', `The message changed since revision ${body.revision}; it is at revision ${message.revision}.`)
         if (message.deletedAt !== undefined) throw new Refused(409, 'message_deleted')
         if (message.text !== body.text) {

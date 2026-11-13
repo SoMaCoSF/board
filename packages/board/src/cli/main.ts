@@ -762,8 +762,10 @@ function failureOf(error: unknown): Failure {
   if (status === 400 && code === 'schema_not_found' && current.command !== 'schemas')
     return theirs('usage', code, `Can't ${doing()}.`, [{ instruction: 'See the schemas this board has', argv: [...cli(), 'schemas'] }])
   // Too much text: what it can't hold goes in a file, on a message that can take one (an edit can't).
-  // Vercel's API says it as `invalid_message`, which also means empty text: only text over the limit is too long.
-  if (status === 400 && (code === 'text_too_long' || (code === 'invalid_message' && sentLength > MESSAGE_TEXT_MAX)))
+  // Vercel's API says it as `bad_request` when the text is long in characters (its request schema), and as
+  // `invalid_message` when it's long only in UTF-16 units; either means something else too (empty text, another
+  // field), so only text sent over the limit is too long.
+  if (status === 400 && (code === 'text_too_long' || ((code === 'invalid_message' || code === 'bad_request') && sentLength > MESSAGE_TEXT_MAX)))
     return {
       ...theirs('limit', 'payload_too_large', `Can't ${doing()}. A message's text is at most ${MESSAGE_TEXT_MAX.toLocaleString('en-US')} characters.`, [
         { instruction: current.command === 'edit' ? 'Keep the edit short, and reply with the long part in a file with --attach' : 'Put the long part in a file and --attach it, with a short summary as the text' },

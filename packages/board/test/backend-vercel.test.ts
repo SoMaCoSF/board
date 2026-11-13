@@ -208,11 +208,20 @@ describe('vercel()', () => {
   it("leaves a message's length to Vercel's API: text over its limit fails with the API's error, on a post, a reply, and an edit", async () => {
     const api = fakeMessageboard()
     const julian = handleOn(api)
-    const tooLong = { status: 400, code: 'invalid_message' }
-    await expect(julian.post('dev', 'x'.repeat(10_001))).rejects.toMatchObject(tooLong)
+    // The API's request schema counts characters, and answers first; a later check counts UTF-16 units, and refuses empty text.
+    const long = { status: 400, code: 'bad_request', message: 'Invalid request: `text` should NOT be longer than 10000 characters.' }
+    const invalid = { status: 400, code: 'invalid_message', message: 'A message is 1 to 10000 characters.' }
+    const emoji = '😀'.repeat(5_001)
+    await expect(julian.post('dev', 'x'.repeat(10_001))).rejects.toMatchObject(long)
+    await expect(julian.post('dev', emoji)).rejects.toMatchObject(invalid)
+    // Empty text, which the board refuses before sending it, the API refuses with the later check.
+    const empty = await as(api, 'user:u_jb')(`${API}/v1/messageboard/boards/brd_test/threads?teamId=team_test`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ channel: 'dev', text: '   ', operationId: 'empty-1' }) })
+    expect([empty.status, (await empty.json()).error]).toMatchObject([400, { code: 'invalid_message' }])
     const { id: root } = await julian.post('dev', 'hi')
-    await expect(julian.reply(root, 'x'.repeat(10_001))).rejects.toMatchObject(tooLong)
-    await expect(julian.edit(root, 'x'.repeat(10_001))).rejects.toMatchObject(tooLong)
+    await expect(julian.reply(root, 'x'.repeat(10_001))).rejects.toMatchObject(long)
+    await expect(julian.reply(root, emoji)).rejects.toMatchObject(invalid)
+    await expect(julian.edit(root, 'x'.repeat(10_001))).rejects.toMatchObject(long)
+    await expect(julian.edit(root, emoji)).rejects.toMatchObject(invalid)
     const thread = await julian.thread(root)
     expect([thread.message.text, thread.replies]).toEqual(['hi', []])
   })

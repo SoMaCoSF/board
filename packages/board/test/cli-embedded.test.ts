@@ -305,16 +305,18 @@ describe('the embedded CLI', () => {
     process.chdir(home)
     try {
       const app = createApp({ appName: 'vercel board' })
-      const long = 'x'.repeat(10_001)
-      expect(await capture(() => app.run(['post', 'dev', long, '--scope', 'acme']))).toMatchObject({
-        code: 1,
-        stderr: expect.stringMatching(/^error: Can't post to dev\. A message's text is at most 10,000 characters\.\n\n {2}Put the long part in a file and --attach it, with a short summary as the text\n/),
-      })
-      const id = (await capture(() => app.run(['post', 'dev', 'short', '--scope', 'acme']))).stdout.trim()
-      expect(await capture(() => app.run(['edit', id, long, '--scope', 'acme']))).toMatchObject({
-        code: 1,
-        stderr: expect.stringMatching(/A message's text is at most 10,000 characters\.\n\n {2}Keep the edit short, and reply with the long part in a file with --attach\n/),
-      })
+      // Long in characters, which the API refuses as bad_request, and long only in UTF-16 units, which it refuses as invalid_message.
+      for (const long of ['x'.repeat(10_001), '😀'.repeat(5_001)]) {
+        expect(await capture(() => app.run(['post', 'dev', long, '--scope', 'acme']))).toMatchObject({
+          code: 1,
+          stderr: expect.stringMatching(/^error: Can't post to dev\. A message's text is at most 10,000 characters\.\n\n {2}Put the long part in a file and --attach it, with a short summary as the text\n/),
+        })
+        const id = (await capture(() => app.run(['post', 'dev', 'short', '--scope', 'acme']))).stdout.trim()
+        expect(await capture(() => app.run(['edit', id, long, '--scope', 'acme']))).toMatchObject({
+          code: 1,
+          stderr: expect.stringMatching(/A message's text is at most 10,000 characters\.\n\n {2}Keep the edit short, and reply with the long part in a file with --attach\n/),
+        })
+      }
     } finally {
       fetching.mockRestore()
       process.chdir(cwd)
