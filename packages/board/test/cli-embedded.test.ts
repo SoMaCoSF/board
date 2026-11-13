@@ -317,6 +317,16 @@ describe('the embedded CLI', () => {
           stderr: expect.stringMatching(/A message's text is at most 10,000 characters\.\n\n {2}Keep the edit short, and reply with the long part in a file with --attach\n/),
         })
       }
+      // A short post the API refuses as bad_request is about something else: its words, and no advice to attach.
+      fetching.mockImplementation(async (input, init) =>
+        init?.method === 'POST' && new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith('/threads')
+          ? Response.json({ error: { code: 'bad_request', message: 'Invalid request: `labels` should be object.' } }, { status: 400 })
+          : api.fetch(input, init),
+      )
+      const other = await capture(() => app.run(['post', 'dev', 'short', '--scope', 'acme']))
+      expect(other.code).not.toBe(0)
+      expect(other.stderr).toContain('Invalid request: `labels` should be object.')
+      expect(other.stderr).not.toMatch(/at most 10,000 characters|--attach/)
     } finally {
       fetching.mockRestore()
       process.chdir(cwd)
