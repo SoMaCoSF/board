@@ -197,6 +197,9 @@ async function stream(after: string) {
     const events = queue
     queue = []
     set((s) => events.reduce(store.applyEvent, s))
+    // A reply in an open channel to a thread not loaded brings its root, so the thread shows.
+    const roots = events.flatMap(({ message: m }) => (m?.re && !state.messages[m.re] && loaded.has(`channel:${m.channel}`) ? [m.re] : []))
+    if (roots.length > 0) void store.fetchRoots(roots, client, triedRoots).then((views) => set((s) => store.merge(s, views)))
   }
   try {
     for await (const event of client.events({ all: true, after })) {
@@ -218,12 +221,16 @@ const PAGE = 200
 /** Whether older messages exist past what's loaded, per channel. */
 const exhausted = new Set<string>()
 
-export const loadChannel = (channel: string) =>
-  once(`channel:${channel}`, async () => {
-    const page = await client.messages({ channel, limit: PAGE })
-    if (page.messages.length < PAGE) exhausted.add(channel)
-    set((s) => store.merge(s, page.messages))
-  })
+/** Thread roots asked for already, so each is fetched once. */
+const triedRoots = new Set<string>()
+
+async function loadHistory(channel: string, before?: string) {
+  const page = await store.loadHistory(state, channel, client, { limit: PAGE, before, tried: triedRoots })
+  if (page.exhausted) exhausted.add(channel)
+  set((s) => store.merge(s, page.messages))
+}
+
+export const loadChannel = (channel: string) => once(`channel:${channel}`, () => loadHistory(channel))
 
 export async function loadOlder(channel: string): Promise<boolean> {
   const oldest = Object.values(state.messages)
@@ -231,9 +238,7 @@ export async function loadOlder(channel: string): Promise<boolean> {
     .sort(store.byWritten)[0]
   if (exhausted.has(channel) || !oldest) return false
   try {
-    const page = await client.messages({ channel, before: oldest.id, limit: PAGE })
-    if (page.messages.length < PAGE) exhausted.add(channel)
-    set((s) => store.merge(s, page.messages))
+    await loadHistory(channel, oldest.id)
     return !exhausted.has(channel)
   } catch (error) {
     toast(message(error))

@@ -181,3 +181,86 @@ describe('the inspector store', () => {
     expect(store.recent(state, 2).map((m) => m.id)).toEqual(['3', '4'])
   })
 })
+
+describe("loading a channel's history", () => {
+  /** A board holding these messages, oldest first, whose `thread` 404s for `gone` roots. */
+  function fakeBoard(messages: MessageView[], gone: string[] = []) {
+    const threadCalls: string[] = []
+    const history: store.History = {
+      async messages({ channel, before, limit }) {
+        const inChannel = messages.filter((m) => m.channel === channel && !gone.includes(m.id))
+        const end = before === undefined ? inChannel.length : inChannel.findIndex((m) => m.id === before)
+        return { messages: inChannel.slice(Math.max(0, end - limit), end) }
+      },
+      async thread(id) {
+        threadCalls.push(id)
+        const root = messages.find((m) => m.id === id)
+        if (!root || gone.includes(id)) throw new Error(`no message ${id}`)
+        return { message: root, replies: messages.filter((m) => m.re === id) }
+      },
+    }
+    return { history, threadCalls }
+  }
+
+  const at = (id: number, overrides: Partial<MessageView> = {}) =>
+    message(id, { createdAt: new Date(Date.UTC(2026, 9, 1, 0, id)).toISOString(), ...overrides })
+
+  async function load(history: store.History, limit = 4) {
+    const page = await store.loadHistory(start, 'ops', history, { limit, tried: new Set() })
+    const { threads } = store.channelThreads(store.merge(start, page.messages), 'ops')
+    return { exhausted: page.exhausted, threads: threads.map((t) => [t.root.id, t.replies.map((r) => r.id)]) }
+  }
+
+  it('shows the threads of a newest page that holds only replies', async () => {
+    const replies = Array.from({ length: 4 * 7 }, (_, i) => at(i + 3, { re: i % 2 ? '2' : '1' }))
+    const { history } = fakeBoard([at(1), at(2), ...replies])
+    expect(await load(history)).toEqual({
+      exhausted: false,
+      threads: [
+        ['1', replies.filter((r) => r.re === '1').map((r) => r.id)],
+        ['2', replies.filter((r) => r.re === '2').map((r) => r.id)],
+      ],
+    })
+  })
+
+  it("skips a root the board won't give and shows the rest", async () => {
+    const { history } = fakeBoard([at(1), at(2), at(3, { re: '1' }), at(4, { re: '2' }), at(5, { re: '1' }), at(6, { re: '2' })], ['2'])
+    expect((await load(history)).threads).toEqual([['1', ['3', '5']]])
+  })
+
+  it('loads older pages until a thread shows, at most 5 more', async () => {
+    const orphans = (from: number, count: number) => Array.from({ length: count }, (_, i) => at(from + i, { re: '6' }))
+    const near = fakeBoard([at(1), at(2), at(3), at(4), at(5), at(6), ...orphans(7, 8)], ['6'])
+    expect(await load(near.history)).toEqual({ exhausted: false, threads: [['2', []], ['3', []], ['4', []], ['5', []]] })
+    expect(near.threadCalls).toEqual(['6'])
+
+    const far = fakeBoard([at(1), at(6), ...orphans(7, 4 * 7)], ['6'])
+    expect(await load(far.history)).toEqual({ exhausted: false, threads: [] })
+  })
+
+  it('leaves an empty channel empty', async () => {
+    const { history, threadCalls } = fakeBoard([at(1, { channel: 'elsewhere' })])
+    expect(await load(history)).toEqual({ exhausted: true, threads: [] })
+    expect(threadCalls).toEqual([])
+  })
+
+  it('fetches no thread whose root the page already has', async () => {
+    const { history, threadCalls } = fakeBoard([at(1), at(2, { re: '1' }), at(3), at(4, { re: '3' })])
+    expect(await load(history)).toEqual({
+      exhausted: false,
+      threads: [
+        ['1', ['2']],
+        ['3', ['4']],
+      ],
+    })
+    expect(threadCalls).toEqual([])
+  })
+
+  it('fetches each root once', async () => {
+    const { history, threadCalls } = fakeBoard([at(1), at(2, { re: '1' })])
+    const tried = new Set<string>()
+    expect((await store.fetchRoots(['1', '1'], history, tried)).map((m) => m.id)).toEqual(['1', '2'])
+    expect(await store.fetchRoots(['1'], history, tried)).toEqual([])
+    expect(threadCalls).toEqual(['1'])
+  })
+})

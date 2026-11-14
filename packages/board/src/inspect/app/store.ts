@@ -225,6 +225,64 @@ export function channelThreads(state: State, channel: string): { threads: Thread
   }
 }
 
+/** What loading a channel's history reads from the board. */
+export type History = {
+  messages(query: { channel: string; before?: string; limit: number }): Promise<{ messages: MessageView[] }>
+  thread(id: string): Promise<{ message: MessageView; replies: MessageView[] }>
+}
+
+const ROOTS_AT_ONCE = 4
+const EXTRA_PAGES = 5
+
+/**
+ * The threads of these roots, each fetched once ever (`tried`), a few at a time. A root the board
+ * won't give (deleted, or not yours to read) is left out: its replies stay hidden, the rest show.
+ */
+export async function fetchRoots(ids: string[], history: Pick<History, 'thread'>, tried: Set<string>): Promise<MessageView[]> {
+  const queue = [...new Set(ids)].filter((id) => !tried.has(id))
+  for (const id of queue) tried.add(id)
+  const views: MessageView[] = []
+  const worker = async () => {
+    for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
+      try {
+        const { message, replies } = await history.thread(id)
+        views.push(message, ...replies)
+      } catch {}
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(ROOTS_AT_ONCE, queue.length) }, worker))
+  return views
+}
+
+const missingRoots = (state: State, channel: string) =>
+  Object.values(state.messages).flatMap((m) => (m.channel === channel && m.re !== null && !state.messages[m.re] ? [m.re] : []))
+
+/**
+ * A page of a channel's history (before `before`, else its newest) with the roots of its replies,
+ * so their threads show. While the channel still shows no thread, older pages follow, up to 5 more.
+ */
+export async function loadHistory(
+  state: State,
+  channel: string,
+  history: History,
+  options: { limit: number; before?: string; tried: Set<string> },
+): Promise<{ messages: MessageView[]; exhausted: boolean }> {
+  let known = state
+  let before = options.before
+  const messages: MessageView[] = []
+  for (let extra = 0; ; extra++) {
+    const page = await history.messages({ channel, limit: options.limit, ...(before ? { before } : {}) })
+    known = merge(known, page.messages)
+    const roots = await fetchRoots(missingRoots(known, channel), history, options.tried)
+    known = merge(known, roots)
+    messages.push(...page.messages, ...roots)
+    const exhausted = page.messages.length < options.limit
+    const inChannel = Object.values(known.messages).filter((m) => m.channel === channel)
+    if (exhausted || extra === EXTRA_PAGES || inChannel.some((m) => m.re === null)) return { messages, exhausted }
+    before = inChannel.sort(byWritten)[0]!.id
+  }
+}
+
 export function thread(state: State, root: string): Thread | null {
   const view = shown(state, root)
   if (!view) return null
