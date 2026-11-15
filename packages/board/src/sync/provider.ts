@@ -108,6 +108,11 @@ export abstract class SyncProvider<E extends ProviderEvent = ProviderEvent> {
 
   async findByEmail(_email: string): Promise<ExternalAuthor | null> { return null }
   mention(_actor: Actor): string | null { return null }
+  /**
+   * How this platform mentions one of its users by their ID alone (`slack:user:U0456` as `<@U0456>`),
+   * for one the board has never met: null where a mention needs more, as GitHub's needs a login.
+   */
+  mentionById(_id: string): string | null { return null }
   async fetchRoot(_thread: string): Promise<SyncRoot | null> { return null }
   async fetchFile(_file: ExternalFile): Promise<Uint8Array | null> { return null }
   /** The platform's own link to an event's message, or null when it has none. */

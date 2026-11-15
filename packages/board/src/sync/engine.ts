@@ -816,13 +816,13 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
   /**
    * How entry `key`'s platform mentions one of its users the board has no actor for, by the ID it
    * would have (`@[slack:user:U0456]`, or this sync's `<principal>+slack:user:U0456`): the ID is
-   * all the platform needs. Null for anyone else's.
+   * all Slack needs. Null for anyone else's, and on a platform whose mention needs more (GitHub's, a login).
    */
   function unmetMention(key: string, id: string, actors: Actors): string | null {
     const user = userOf(key, id, actors)
     if (user === null) return null
     const platform = platformOf(key)
-    return platform.mention({ id: `${platform.platform}:${user}`, kind: 'external', handle: user, name: user, avatar: null })
+    return platform.mentionById(`${platform.platform}:${user}`)
   }
 
   /**

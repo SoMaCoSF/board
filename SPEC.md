@@ -1148,9 +1148,10 @@ through the sync that speaks for them, under the key it imported them through.
     message's thread, if exactly one did. Otherwise it goes out as written.
   - **`@[actor-id]`:** natively when it's one of its users, and as the actor's
     name otherwise. One the board doesn't know is natively too when it's an ID
-    of this key's users (`@[<key>:<user>]`, or `@[<principal>+<key>:<user>]`):
-    the platform needs only the ID, so someone a message mentioned who has
-    never written can be mentioned back. Slack takes only a user ID there.
+    of this key's users (`@[<key>:<user>]`, or `@[<principal>+<key>:<user>]`)
+    on a platform that mentions by ID alone, so someone a message mentioned who
+    has never written can be mentioned back. Slack does, and takes only a user
+    ID there; GitHub mentions by login, so it leaves them as written.
     Anyone else's goes as written. A sync
     elsewhere's `@[<key>:<user>]` is short for its own profile of them,
     `@[<principal>+<key>:<user>]`, when the board has no actor by the shorter ID.

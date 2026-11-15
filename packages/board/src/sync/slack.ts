@@ -82,6 +82,12 @@ type SlackInternals = Omit<Adapter, 'decodeThreadId'> & {
 /** A Slack user's ID, as `<@U0456>` names one. */
 const SLACK_USER_ID = /^[A-Z0-9_]+$/
 
+/** A Slack user as Slack mentions them, by their ID alone: only a user ID, as anything else in `<@…>` could be Slack's own markup (`<!channel>`). */
+function slackMention(id: string): string | null {
+  const user = id.startsWith('slack:user:') ? id.slice('slack:user:'.length) : null
+  return user !== null && SLACK_USER_ID.test(user) ? `<@${user}>` : null
+}
+
 /** A user's mention in Slack's mrkdwn, with the name Slack may give it: `<@U0456>`, `<@U0456|malte>`. */
 const SLACK_MENTION = /<@([A-Z0-9_]+)(?:\|[^<>]*)?>/g
 
@@ -633,11 +639,8 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
           isBot: user.is_bot === true,
         }
       },
-      // Only a Slack user ID: anything else in `<@…>` could be Slack's own markup, as `<!channel>` is.
-      mention: (actor) => {
-        const user = actor.id.startsWith('slack:user:') ? actor.id.slice('slack:user:'.length) : null
-        return user !== null && SLACK_USER_ID.test(user) ? `<@${user}>` : null
-      },
+      mention: (actor) => slackMention(actor.id),
+      mentionById: slackMention,
       // `#name` is looked up by name; anything else is a channel ID.
       async resolveChannel(key) {
         if (!key.startsWith('#')) return key

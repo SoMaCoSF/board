@@ -1477,6 +1477,31 @@ describe('sync', () => {
     )
   })
 
+  it("mentions by ID alone only where an ID is enough: Slack's user the board never met, never a GitHub user", async () => {
+    const { board, s, g, webhook } = setup()
+    const julian = caller(board.fetch, await personToken(), {})
+    await webhook(
+      'github',
+      {
+        action: 'opened',
+        repository: { full_name: 'vercel-labs/board' },
+        sender: { login: 'julianbenegas', id: 42 },
+        pull_request: { number: 7, title: 'Fix login', html_url: 'https://github.com/vercel-labs/board/pull/7', draft: false, merged: false },
+      },
+      { 'x-github-event': 'pull_request', 'x-github-delivery': 'mention1' },
+    )
+    await vi.waitFor(async () => expect(await read(julian, 'prs')).toHaveLength(1))
+    const [pr] = await read(julian, 'prs')
+    const text = 'cc @[github:user:999] and @[slack:user:U_MALTE]'
+    await julian('POST', '/messages', { re: pr!.id, text })
+    await julian('POST', '/messages', { channel: 'firehose', text })
+    await vi.waitFor(() => expect(g.posts).toHaveLength(1))
+    // GitHub mentions by login, which the board doesn't have for someone it never met.
+    expect(g.posts[0]!.text).toContain(text)
+    await vi.waitFor(() => expect(s.channelPosts.some((p) => p.channelId === 'slack:C1')).toBe(true))
+    expect(s.channelPosts.find((p) => p.channelId === 'slack:C1')!.text).toBe(JSON.stringify({ markdown: '**u_julian**: cc @[github:user:999] and <@U_MALTE>' }))
+  })
+
   it('looks @[email] up on Slack when it posts there, and posts one Slack has no one for as the email', async () => {
     const lookupByEmail = vi.fn(async ({ email }: { email: string }) => {
       if (email === 'missing-id@vercel.com') return { user: { name: 'missing-id' } }

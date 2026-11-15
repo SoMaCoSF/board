@@ -26,6 +26,7 @@ export type ChatTransport = Omit<ProviderOptions, 'uploadsFiles'> & {
   state?: StateAdapter
   findByEmail?(email: string): Promise<ExternalAuthor | null>
   mention?(actor: Actor): string | null
+  mentionById?(id: string): string | null
   author?(author: ChatAuthor, raw: unknown): ExternalAuthor
   /** A channel's name as its native ID. Without it, a name is the ID. */
   resolveChannel?(key: string): Promise<string>
@@ -276,6 +277,7 @@ export abstract class ChatSyncProvider<E extends ProviderEvent = ProviderEvent> 
   }
   override async findByEmail(email: string) { return this.transport.findByEmail?.(email) ?? null }
   override mention(actor: Actor) { return this.transport.mention?.(actor) ?? null }
+  override mentionById(id: string) { return this.transport.mentionById?.(id) ?? null }
   override async fetchRoot(thread: string): Promise<SyncRoot | null> {
     const root = await this.transport.fetchRoot?.(thread)
     return root ? { ...root, raw: root.raw ?? null } : null
