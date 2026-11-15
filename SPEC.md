@@ -1147,7 +1147,11 @@ through the sync that speaks for them, under the key it imported them through.
     or the board's own sync's `malte`. Of several, the one who wrote in the
     message's thread, if exactly one did. Otherwise it goes out as written.
   - **`@[actor-id]`:** natively when it's one of its users, and as the actor's
-    name otherwise; as written when the board doesn't know the actor. A sync
+    name otherwise. One the board doesn't know is natively too when it's an ID
+    of this key's users (`@[<key>:<user>]`, or `@[<principal>+<key>:<user>]`):
+    the platform needs only the ID, so someone a message mentioned who has
+    never written can be mentioned back. Slack takes only a user ID there.
+    Anyone else's goes as written. A sync
     elsewhere's `@[<key>:<user>]` is short for its own profile of them,
     `@[<principal>+<key>:<user>]`, when the board has no actor by the shorter ID.
   - **`@[email]`:** looked up when it posts (Slack's `users.lookupByEmail`, which
@@ -1158,9 +1162,10 @@ through the sync that speaks for them, under the key it imported them through.
     each resolve it for their own users, so the board's own Slack leaves
     `@malte` as written while each sync elsewhere mentions its own Malte.
 - **Platform round-trips:**
-  - **Inbound mentions are the platform's text.** A Slack `<@U0456>` comes in
-    as `@<their display name>`, which Chat SDK's Slack adapter writes; a GitHub
-    `@login` stays as written. A sync elsewhere's import that mentions one of
+  - **Inbound mentions keep the platform user's ID.** A Slack `<@U0456>` comes
+    in as `@[<key>:user:U0456]` under the key it came through, not as the
+    display name Chat SDK's Slack adapter would write, which no one on the
+    board has as a handle; a GitHub `@login` stays as written. A sync elsewhere's import that mentions one of
     its keys' users, `@[<key>:<user>]`, mentions its own profile of them,
     `@[<principal>+<key>:<user>]`.
   - **Outbound, a platform user renders natively only through their own

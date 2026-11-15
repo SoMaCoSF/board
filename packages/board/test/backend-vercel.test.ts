@@ -1,3 +1,5 @@
+import { createHmac } from 'node:crypto'
+import { createSlackAdapter } from '@chat-adapter/slack'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import { board } from '../src/server/index.ts'
 import { ATTACHMENT_BYTES_MAX } from '../src/contract/files.ts'
@@ -1925,6 +1927,70 @@ describe('vercel()', () => {
       ['**Julián Benegas**: <@U_M1> have a look, <@U_M1> and @web/malte, cc <@U_ADA> and <@U_M1>'],
       ['**Julián Benegas**: <@U_M2> have a look, @pong/malte and <@U_M2>, cc ada@vercel.com and @[slack:user:U_M1]'],
     ]))
+  })
+
+  it("mentions a Slack user by their ID where the board has never met them, and only by a Slack user's ID", async () => {
+    const api = fakeMessageboard()
+    const pongSlack = fakePlatform('slack')
+    const webSlack = fakePlatform('slack')
+    const project = (principal: string, url: string, sync: NonNullable<Parameters<typeof board>[0]>['sync']) =>
+      board({ backend: vercel({ team: 'team_test', api: API, fetch: as(api, principal), files: api.files }), url, basePath: '/api/board', sync })
+    const pong = project('project:prj_pong:production', PONG_URL, { slack: slack({ adapter: pongSlack.adapter }, channels({ C1: 'general' })) })
+    const web = project('project:prj_web:production', WEB_URL, { webchat: slack({ adapter: webSlack.adapter }, channels({ C9: 'general' })) })
+    // Each one's Slack brings in its sync, by someone else.
+    const webhook = (deployment: typeof pong, url: string, key: string, body: object) =>
+      deployment.fetch(new Request(`${url}/webhooks/${key}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'message', ...body }) }))
+    await webhook(pong, PONG_URL, 'slack', { threadId: 'slack:C1:300', id: '300', text: 'hi', user: 'U_ADA', name: 'ada' })
+    await webhook(web, WEB_URL, 'webchat', { threadId: 'slack:C9:400', id: '400', text: 'hej', user: 'U_ADA', name: 'ada' })
+    const julian = handleOn(api)
+    await vi.waitFor(async () => expect((await julian.messages({ channel: 'general' })).messages).toHaveLength(2))
+    await julian.post('general', { text: 'cc @[slack:user:U_MALTE], @[vercel:project:prj_pong:production+slack:user:U_KAI] and @[slack:user:U1><!channel]: have a look' })
+    await pong.fetch(new Request(`${PONG_URL}/wake`, { method: 'POST' }))
+    await web.fetch(new Request(`${WEB_URL}/wake`, { method: 'POST' }))
+    const posted = (platform: typeof pongSlack) => platform.channelPosts.map((post) => JSON.parse(post.text).markdown).filter((text: string) => text.includes('have a look'))
+    await vi.waitFor(() => expect([posted(pongSlack), posted(webSlack)]).toEqual([
+      ['**Julián Benegas**: cc <@U_MALTE>, <@U_KAI> and @[slack:user:U1><!channel]: have a look'],
+      ['**Julián Benegas**: cc @[slack:user:U_MALTE], @[vercel:project:prj_pong:production+slack:user:U_KAI] and @[slack:user:U1><!channel]: have a look'],
+    ]))
+  })
+
+  it("imports a Slack user someone cc'd by their ID under the sync key, and a reply by that ID mentions them on Slack", async () => {
+    const api = fakeMessageboard()
+    const config = { botToken: 'xoxb-test', botUserId: 'U_BOT', signingSecret: 'test-secret' }
+    const sent: unknown[] = []
+    // Slack's Web API, under the real adapter: Malte has a display name, and has never written.
+    vi.spyOn(Object.getPrototypeOf(createSlackAdapter(config).webClient), 'apiCall').mockImplementation(async (method: unknown, options: unknown) => {
+      const { user, markdown_text, text } = (options ?? {}) as { user?: string; markdown_text?: string; text?: string }
+      if (method === 'users.info') return { ok: true, user: user === 'U_MALTE' ? { id: 'U_MALTE', name: 'malte', profile: { display_name: 'Malte U' } } : { id: 'U_ADA', name: 'ada', profile: { display_name: 'ada', real_name: 'Ada Lovelace' } } }
+      if (method === 'chat.postMessage') {
+        sent.push(markdown_text ?? text)
+        return { ok: true, ts: '1700000000.000900', channel: 'C1' }
+      }
+      if (method === 'auth.test') return { ok: true, user_id: 'U_BOT', bot_id: 'B_BOT', team_id: 'T1' }
+      return { ok: true }
+    })
+    onTestFinished(() => void vi.restoreAllMocks())
+    const pong = board({
+      backend: vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:production'), files: api.files }),
+      url: PONG_URL,
+      basePath: '/api/board',
+      sync: { webchat: slack({ adapter: createSlackAdapter(config) }, channels({ C1: 'general' })) },
+    })
+    const timestamp = String(Math.floor(Date.now() / 1000))
+    const body = JSON.stringify({
+      type: 'event_callback', team_id: 'T1', event_id: 'Ev1',
+      event: { type: 'message', channel: 'C1', channel_type: 'channel', user: 'U_ADA', text: 'cc <@U_MALTE> can you look?', ts: '1700000000.000300', event_ts: '1700000000.000300' },
+    })
+    const signature = createHmac('sha256', 'test-secret').update(`v0:${timestamp}:${body}`).digest('hex')
+    expect((await pong.fetch(new Request(`${PONG_URL}/webhooks/webchat`, {
+      method: 'POST', body, headers: { 'content-type': 'application/json', 'x-slack-request-timestamp': timestamp, 'x-slack-signature': `v0=${signature}` },
+    }))).status).toBe(200)
+    const julian = handleOn(api)
+    await vi.waitFor(async () => expect((await julian.messages({ channel: 'general' })).messages.map((message) => message.text)).toEqual(['cc @[webchat:user:U_MALTE] can you look?']))
+    const [root] = (await julian.messages({ channel: 'general' })).messages
+    await julian.reply(root!.id, { text: 'on it, @[webchat:user:U_MALTE]' })
+    await pong.fetch(new Request(`${PONG_URL}/wake`, { method: 'POST' }))
+    await vi.waitFor(() => expect(sent).toEqual([expect.stringContaining('on it, <@U_MALTE>')]))
   })
 
   it("syncs Slack through the engine from its first webhook, a file as an attachment on the board, and a board reply back to Slack", async () => {

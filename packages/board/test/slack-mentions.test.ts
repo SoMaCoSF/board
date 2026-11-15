@@ -1,7 +1,9 @@
+import { createHmac } from 'node:crypto'
 import { afterEach, expect, it, vi } from 'vitest'
 import { createSlackAdapter } from '@chat-adapter/slack'
 import { slack, type SlackClient } from '../src/sync/slack.ts'
 import { channels } from '../src/sync/fn.ts'
+import type { ReceivedEvent } from '../src/sync/provider.ts'
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -18,7 +20,7 @@ function slackApi(client?: SlackClient) {
       return { ok: true, ts: '1700000000.000200', channel: 'C1' }
     }
     // Slack's own Malte, whom the adapter comes to know by his display name.
-    if (method === 'users.info') return { ok: true, user: { id: 'U_MALTE', name: 'malte', profile: { display_name: 'malte' } } }
+    if (method === 'users.info') return { ok: true, user: { id: 'U_MALTE', name: 'malte', profile: { display_name: 'Malte U' } } }
     if (method === 'auth.test') return { ok: true, user_id: 'U_BOT', bot_id: 'B_BOT', team_id: 'T1' }
     throw new Error(`Unexpected Slack API call: ${method}`)
   })
@@ -85,4 +87,40 @@ it('keeps them in the comment of a new thread that carries files, which Slack ta
   const text = 'see @vercel/board, cc @nobody and <@U0456>'
   await provider.post('C1', 'channel', { markdown: text, files: [{ data: new Uint8Array([1]), filename: 'shot.png', mimeType: 'image/png' }] })
   expect(comments).toEqual([text])
+})
+
+/** What the provider hands the board for a message Slack delivers, signed as Slack signs it. */
+async function received(provider: ReturnType<typeof slackApi>['provider'], text: string): Promise<ReceivedEvent[]> {
+  const timestamp = String(Math.floor(Date.now() / 1000))
+  const body = JSON.stringify({
+    type: 'event_callback', team_id: 'T1', event_id: 'Ev1',
+    event: { type: 'message', channel: 'C1', channel_type: 'channel', user: 'U_ADA', text, ts: '1700000000.000300', event_ts: '1700000000.000300' },
+  })
+  const signature = createHmac('sha256', 'test-secret').update(`v0:${timestamp}:${body}`).digest('hex')
+  const request = new Request('https://board.test/webhooks/slack', {
+    method: 'POST', body, headers: { 'content-type': 'application/json', 'x-slack-request-timestamp': timestamp, 'x-slack-signature': `v0=${signature}` },
+  })
+  const events: ReceivedEvent[] = []
+  const response = await provider.receive('slack', request, async (event) => void events.push(event))
+  expect(response.status).toBe(200)
+  return events
+}
+
+it('imports each Slack user a message mentions by their ID, not by a display name no one on the board has', async () => {
+  const { provider } = slackApi()
+  const [message] = await received(provider, 'cc <@U_MALTE> can you look? <@U_ADA|ada> wrote it')
+  expect(message?.event).toMatchObject({ kind: 'message', text: 'cc @[slack:user:U_MALTE] can you look? @[slack:user:U_ADA] wrote it' })
+})
+
+it('reads a Slack message on demand with its mentions by ID too', async () => {
+  const { provider } = slackApi({
+    conversations: {
+      list: async () => ({}),
+      info: async () => ({ channel: { id: 'C1', name: 'dev', is_member: true } }),
+      history: async () => ({ messages: [{ ts: '1700000000.000300', user: 'U_ADA', text: 'cc <@U_MALTE|malte>, *now*' }] }),
+    },
+    users: { info: async () => ({ user: { real_name: 'Ada' } }) },
+  } as unknown as SlackClient)
+  const read = await provider.read('C1', { limit: 10, after: null })
+  expect(read.messages.map((message) => message.text)).toEqual(['cc @[slack:user:U_MALTE], **now**'])
 })

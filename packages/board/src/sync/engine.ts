@@ -149,9 +149,16 @@ export function keyedId(key: string, platform: string, id: string): string {
   return `${key}:${id.startsWith(`${platform}:`) ? id.slice(platform.length + 1) : id}`
 }
 
-/** A platform event with its author named under `key`. */
+/**
+ * A platform event with its author named under `key`, and each platform user its text mentions by
+ * ID (`@[slack:user:U0456]`, as a provider writes one) too.
+ */
 function keyedEvent(key: string, platform: string, event: ExternalEvent): ExternalEvent {
-  return 'author' in event ? ({ ...event, author: { ...event.author, id: keyedId(key, platform, event.author.id) } } as ExternalEvent) : event
+  if (!('author' in event)) return event
+  const keyed = { ...event, author: { ...event.author, id: keyedId(key, platform, event.author.id) } }
+  if ('text' in keyed && typeof keyed.text === 'string' && key !== platform)
+    keyed.text = replaceMentions(keyed.text, (token) => (token.kind === 'actor' && token.actor.startsWith(`${platform}:`) ? `@[${keyedId(key, platform, token.actor)}]` : null))
+  return keyed as ExternalEvent
 }
 
 /**
@@ -765,6 +772,7 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
    * against that entry's own users. An `@handle` reads natively when one of them has it, or of
    * several, the one who wrote in the thread: `@support/malte` names one of support's users, and
    * `@malte` is short for whichever of this sync's users that is, under its principal's name. An `@[actor-id]` reads natively when it's one of them (`@[slack:user:U0456]` also naming this sync's own profile of them),
+   * or a user of this entry's by their ID whom the board hasn't met (someone a Slack message cc'd),
    * and as the actor's name otherwise; an `@[email]`, as whoever the platform finds with it, or as
    * the email. The rest go as written.
    */
@@ -800,8 +808,21 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
       }
       if (found.has(token.actor)) return found.get(token.actor) ?? token.actor
       const actor = actorNamed(token.actor, actors)
-      return actor ? (nativeMention(key, actor.id, actors) ?? actor.name) : null
+      if (actor) return nativeMention(key, actor.id, actors) ?? actor.name
+      return unmetMention(key, token.actor, actors)
     })
+  }
+
+  /**
+   * How entry `key`'s platform mentions one of its users the board has no actor for, by the ID it
+   * would have (`@[slack:user:U0456]`, or this sync's `<principal>+slack:user:U0456`): the ID is
+   * all the platform needs. Null for anyone else's.
+   */
+  function unmetMention(key: string, id: string, actors: Actors): string | null {
+    const user = userOf(key, id, actors)
+    if (user === null) return null
+    const platform = platformOf(key)
+    return platform.mention({ id: `${platform.platform}:${user}`, kind: 'external', handle: user, name: user, avatar: null })
   }
 
   /**

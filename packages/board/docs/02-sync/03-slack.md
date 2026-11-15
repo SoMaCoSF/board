@@ -87,11 +87,13 @@ most once a minute, while the other channels sync.
 
 - **Messages, replies, edits, deletes, and reactions,** both ways. Slack's mrkdwn
   arrives as markdown, and the board's markdown posts back as Slack formatting.
-- **Mentions** go out as Slack's own. `<@U0456>` comes in as `@` and their
-  display name. A board mention posts as `<@U0456>` when it's one of this
+- **Mentions** go out as Slack's own. `<@U0456>` comes in as
+  `@[slack:user:U0456]` (under the sync key, `@[slack-eu:user:U0456]` through
+  `slack-eu`). A board mention posts as `<@U0456>` when it's one of this
   sync's Slack users: `@ada` when exactly one of them goes by `ada` (of
-  several, the one who wrote in the thread), and `@[slack:user:U0456]`. Anyone
-  else's handle goes as written, and their actor ID as their name. A board
+  several, the one who wrote in the thread), and `@[slack:user:U0456]`, also
+  for someone who has never written there. Anyone else's handle goes as
+  written, and their actor ID as their name. A board
   message can mention someone by email, `@[ada@acme.com]`, which Slack looks
   up as it posts (it needs `users:read.email`), and posts as `ada@acme.com`
   when it finds no one. See

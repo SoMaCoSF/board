@@ -75,6 +75,38 @@ type SlackInternals = Omit<Adapter, 'decodeThreadId'> & {
   }
   /** The adapter's own lookup of a bare `@name` by display name, before it posts: off here, see `literalMentions`. */
   resolveMessageMentions?(message: { markdown: string }, threadId: string): Promise<{ markdown: string }>
+  /** The names the adapter shows a message's `<@U0456>` and `<#C0123>` by, as it reads one: see `mentionsById`. */
+  lookupMentionNames?(users: Set<string>, channels: Set<string>): Promise<{ users: Map<string, string>; channels: Map<string, string> }>
+}
+
+/** A Slack user's ID, as `<@U0456>` names one. */
+const SLACK_USER_ID = /^[A-Z0-9_]+$/
+
+/** A user's mention in Slack's mrkdwn, with the name Slack may give it: `<@U0456>`, `<@U0456|malte>`. */
+const SLACK_MENTION = /<@([A-Z0-9_]+)(?:\|[^<>]*)?>/g
+
+/** A character Slack text never has, around a user's ID where the adapter would show their name. */
+const STAND = '\u2063'
+const STOOD = new RegExp(`@${STAND}([A-Z0-9_]+)${STAND}`, 'g')
+
+/** Text the adapter converted, each user it mentions as board names them: `@[slack:user:U0456]`. */
+const byId = (text: string) => text.replace(STOOD, '@[slack:user:$1]')
+
+const identified = new WeakSet<object>()
+/**
+ * Has the adapter read each Slack user a message mentions by their ID, once. It would show them
+ * as `@` and their display name, which no one on the board has as a handle, so nobody there could
+ * mention back someone who has never written. It shows the ID between two `STAND`s instead,
+ * which `byId` turns into `@[slack:user:U0456]`.
+ */
+function mentionsById(adapter: SlackInternals): void {
+  const names = adapter.lookupMentionNames
+  if (!names || identified.has(adapter)) return
+  identified.add(adapter)
+  adapter.lookupMentionNames = async function (users, channels) {
+    const found = await names.call(this, new Set(), channels)
+    return { ...found, users: new Map([...users].map((user) => [user, `${STAND}${user}${STAND}`])) }
+  }
 }
 
 /** Each `@` the adapter reads as a mention: one that opens a word, and isn't Slack's own `<@U0456>` or inside a word, as an email's is. */
@@ -532,11 +564,14 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
 
     // Slack's own mrkdwn → markdown, the way Chat SDK reads every Slack message.
     const converter = (options.adapter as { formatConverter?: { toAst(text: string): Parameters<typeof stringifyMarkdown>[0] } }).formatConverter
+    // Each user it mentions by ID, as the adapter reads a message's: see `mentionsById`.
     const mrkdwn = (text: string) => {
+      const asIs = () => text.replace(SLACK_MENTION, '@[slack:user:$1]')
+      if (!converter) return asIs()
       try {
-        return converter ? stringifyMarkdown(converter.toAst(text)).trim() : text
+        return byId(stringifyMarkdown(converter.toAst(text.replace(SLACK_MENTION, `<@$1|${STAND}$1${STAND}>`))).trim())
       } catch {
-        return text
+        return asIs()
       }
     }
     const names = new Map<string, Promise<string>>()
@@ -598,7 +633,11 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
           isBot: user.is_bot === true,
         }
       },
-      mention: (actor) => actor.id.startsWith('slack:user:') ? `<@${actor.id.slice('slack:user:'.length)}>` : null,
+      // Only a Slack user ID: anything else in `<@…>` could be Slack's own markup, as `<!channel>` is.
+      mention: (actor) => {
+        const user = actor.id.startsWith('slack:user:') ? actor.id.slice('slack:user:'.length) : null
+        return user !== null && SLACK_USER_ID.test(user) ? `<@${user}>` : null
+      },
       // `#name` is looked up by name; anything else is a channel ID.
       async resolveChannel(key) {
         if (!key.startsWith('#')) return key
@@ -610,7 +649,7 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
       },
       // A forward has no text of its own: it says what it shares.
       markdown(message) {
-        const text = markdownOf(message)
+        const text = byId(markdownOf(message))
         if (text.trim()) return text
         const raw = message.raw as { attachments?: SlackAttachment[] } | null
         const shared = Array.isArray(raw?.attachments) ? raw.attachments.filter((att) => att.is_share) : []
@@ -802,6 +841,7 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
       },
     }, sync)
     this.web = client
+    mentionsById(options.adapter as SlackInternals)
   }
 
   /** The adapter, which leaves a message's mentions to board: see `literalMentions`. */
