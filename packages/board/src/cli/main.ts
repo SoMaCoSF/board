@@ -839,6 +839,8 @@ function failureOf(error: unknown): Failure {
       // A token you passed is yours to replace: logging in changes nothing while BOARD_TOKEN is set. Vercel's board never reads it.
       process.env.BOARD_TOKEN && reached && !vercelBoard(reached) ? [{ instruction: 'Pass a token it accepts in BOARD_TOKEN, or unset it' }] : [{ instruction: 'Log in again', argv: ['vercel', 'login'] }],
     )
+  // What was refused is the board's actors, which a handle is found in, and not what this run read.
+  if (status === 403 && code === 'actors_forbidden' && flags.by !== undefined) return theirs('permission', code, `Can't ${doing()} by a handle.`)
   if (status === 403) return theirs('permission', 'permission_denied', `You can't ${doing()}.`)
   if (status === 404) {
     const thing = missing()

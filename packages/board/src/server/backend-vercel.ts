@@ -1293,7 +1293,16 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     const named = new Set([by])
     if (!by.startsWith('vercel:')) {
       const handle = by.toLowerCase()
-      const find = async (read: { views: Promise<Map<string, ApiActorView>> }) => goingBy(await read.views, await namesIn(read), handle)
+      // A handle is found in the board's actors, which the API refuses a caller held to some channels: that's
+      // what's refused, and not the read, which by an actor's ID or as `me` it makes.
+      const find = async (read: { views: Promise<Map<string, ApiActorView>> }) => {
+        const views = await read.views.catch((error: unknown) => {
+          if (refusal(error) && error.status === 403)
+            throw new HttpError(403, 'actors_forbidden', `Vercel's API won't show you this board's actors, which --by ${by} needs to find who goes by that handle. Name them by their actor ID, or --by me for yourself.`)
+          throw error
+        })
+        return goingBy(views, await namesIn(read), handle)
+      }
       const { list, unhandled } = namesOf(who)
       const kept = list && Date.now() - list.at <= NAMES_FRESH_MS ? list : null
       let ids = await find(kept ?? readNames(who))

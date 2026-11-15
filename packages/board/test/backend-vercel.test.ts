@@ -13,6 +13,7 @@ import type { Middleware } from '../src/server/middleware.ts'
 import type { Watcher } from '../src/server/watcher.ts'
 import { slack } from '../src/sync/slack.ts'
 import { channels, render } from '../src/sync/fn.ts'
+import { vb } from '../src/cli/embedded.ts'
 import { as, fakeMessageboard } from './messageboard.ts'
 import { fakePlatform, withSlackClient } from './sync-fixtures.ts'
 
@@ -1550,6 +1551,23 @@ describe('vercel()', () => {
     expect(await author(agent)).toMatchObject({ id: malte, handle: malte })
     // And the deployment still by name.
     expect(await author(pong)).toMatchObject({ handle: 'pong/malte', name: 'Malte Ubl' })
+  })
+
+  it("tells a caller the API names no one that --by needs a handle's actors, and reads them by ID or as me", async () => {
+    const api = fakeMessageboard({ namesNarrowed: false })
+    const pong = handleOn(api, 'project:prj_pong:production')
+    await pong.register({ url: null, watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })
+    await pong.syncImport({ op: 'post', author: { id: 'slack:user:U_MALTE', handle: 'malte', name: 'Malte Ubl', avatar: null, isBot: false }, from: 'slack', channel: 'general', text: 'hi' })
+    const agent = pong.as(null, { can: { 'general/': ['read', 'post'] } })
+    // It reads general, by ID and as itself: only a handle needs the board's actors.
+    expect(await vb(agent, ['read', 'general', '--by', 'vercel:project:prj_pong:production+slack:user:U_MALTE'])).toMatchObject({ code: 0, stdout: expect.stringContaining('hi') })
+    expect((await vb(agent, ['read', 'general', '--by', 'me'])).code).toBe(0)
+    // By handle, it's told what was refused, the board's actors, and what reads instead.
+    expect(await vb(agent, ['read', 'general', '--by', 'pong/malte'])).toEqual({
+      code: 1,
+      stdout: '',
+      stderr: "error: Can't read general by a handle.\n  Vercel's API won't show you this board's actors, which --by pong/malte needs to find who goes by that handle. Name them by their actor ID, or --by me for yourself.\n",
+    })
   })
 
   it("asks an API that names a caller no one once, by ID and for its list, and not again on every page it reads", async () => {
