@@ -149,15 +149,17 @@ export function keyedId(key: string, platform: string, id: string): string {
   return `${key}:${id.startsWith(`${platform}:`) ? id.slice(platform.length + 1) : id}`
 }
 
-/**
- * A platform event with its author named under `key`, and each platform user its text mentions by
- * ID (`@[slack:user:U0456]`, as a provider writes one) too.
- */
+/** A platform's text, each of its users it mentions by ID (`@[slack:user:U0456]`, as a provider writes one) named under `key`. */
+function keyedText(key: string, platform: string, text: string): string {
+  if (key === platform) return text
+  return replaceMentions(text, (token) => (token.kind === 'actor' && token.actor.startsWith(`${platform}:`) ? `@[${keyedId(key, platform, token.actor)}]` : null))
+}
+
+/** A platform event with its author, and the users its text mentions, named under `key`. */
 function keyedEvent(key: string, platform: string, event: ExternalEvent): ExternalEvent {
   if (!('author' in event)) return event
   const keyed = { ...event, author: { ...event.author, id: keyedId(key, platform, event.author.id) } }
-  if ('text' in keyed && typeof keyed.text === 'string' && key !== platform)
-    keyed.text = replaceMentions(keyed.text, (token) => (token.kind === 'actor' && token.actor.startsWith(`${platform}:`) ? `@[${keyedId(key, platform, token.actor)}]` : null))
+  if ('text' in keyed && typeof keyed.text === 'string') keyed.text = keyedText(key, platform, keyed.text)
   return keyed as ExternalEvent
 }
 
@@ -1321,7 +1323,8 @@ export function createSyncEngine(entries: Record<string, SyncProvider>) {
   async function readSource(key: string, target: string, limit: number, after: string | null) {
     const platform = platformOf(key)
     try {
-      return await platform.read(target, { limit, after })
+      const read = await platform.read(target, { limit, after })
+      return { ...read, messages: read.messages.map((message) => ({ ...message, text: keyedText(key, platform.platform, message.text) })) }
     } catch (error) {
       if (error instanceof UnreadableError) throw new HttpError(unreadableStatus(error.code), error.code, error.message)
       throw badRequest(`can't read ${target} from ${key}: ${describe(error)}`, 'platform_error')

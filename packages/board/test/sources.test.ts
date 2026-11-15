@@ -90,6 +90,22 @@ describe('reading a platform on demand (vb sources <key> read)', () => {
     expect(join).not.toHaveBeenCalled()
   })
 
+  it('names a user a message mentions under the sync key it reads through, as its imports do', async () => {
+    const web = {
+      conversations: {
+        list: async () => ({ channels: Object.values(CHANNELS) }),
+        info: async ({ channel }: { channel: string }) => ({ channel: CHANNELS[channel] }),
+        history: async () => ({ messages: [{ ts: ROOT, user: 'U_ADA', text: 'cc <@U_MALTE>' }], has_more: false }),
+      },
+      users: { info: async () => ({ user: { real_name: 'Ada Lovelace' } }) },
+    }
+    const s = fakePlatform('slack', withSlackClient(web, false))
+    const board = testBoard({ sync: { webchat: slack({ adapter: s.adapter, client: async () => web as unknown as SlackClient }, channels({ C1: 'firehose' })) } })
+    const julian = caller(board.fetch, await personToken())
+    const { body } = await julian('GET', '/sources/webchat/read?target=CKIT')
+    expect(body.messages.map((m: { text: string }) => m.text)).toEqual(['cc @[webchat:user:U_MALTE]'])
+  })
+
   it('reads the thread a permalink points into, or a channel:ts thread', async () => {
     const { board, replies } = await setup()
     const julian = caller(board.fetch, await personToken())
