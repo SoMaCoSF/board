@@ -284,6 +284,20 @@ function fromConnector(connector: string, botUserId: number | undefined): Adapte
   return adapter as unknown as Adapter
 }
 
+/** What GitHub calls a login: letters, digits, and `-`, and an app's `[bot]` after them. */
+const LOGIN = /^[a-z0-9-]+(?:\[bot\])?$/i
+
+/**
+ * A GitHub user's login, as GitHub's mentions take it. A local board's handle is the login; Vercel's
+ * names an import under its project and typable (`pong/ada`, `acme/acme-bot-bot` for `acme-bot[bot]`),
+ * and keeps the login as its name.
+ */
+function loginOf(actor: { handle: string; name: string }): string {
+  if (!actor.handle.includes('/')) return actor.handle
+  if (LOGIN.test(actor.name)) return actor.name
+  return actor.handle.slice(actor.handle.lastIndexOf('/') + 1)
+}
+
 export class GitHubProvider extends ChatSyncProvider<GitHubEvent> {
 
   constructor(given: GitHubOptions, sync: SyncFn<GitHubEvent>) {
@@ -297,7 +311,7 @@ export class GitHubProvider extends ChatSyncProvider<GitHubEvent> {
       platform: 'github',
       adapter: options.adapter,
       canStartThreads: false,
-      mention: (actor) => actor.id.startsWith('github:user:') ? `@${actor.handle}` : null,
+      mention: (actor) => actor.id.startsWith('github:user:') ? `@${loginOf(actor)}` : null,
       resolveChannel: (key) => Promise.resolve(key),
       // Inline review threads (`owner/repo:12:rc:345`) belong to their PR (`owner/repo:12`).
       groupThread: (thread) => thread.replace(/:rc:[^:]+$/, ''),

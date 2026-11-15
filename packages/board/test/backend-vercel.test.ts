@@ -13,6 +13,7 @@ import type { Middleware } from '../src/server/middleware.ts'
 import type { Watcher } from '../src/server/watcher.ts'
 import { slack } from '../src/sync/slack.ts'
 import { channels, render } from '../src/sync/fn.ts'
+import { github, repos } from '../src/sync/github.ts'
 import { as, fakeMessageboard } from './messageboard.ts'
 import { fakePlatform, withSlackClient } from './sync-fixtures.ts'
 
@@ -1866,6 +1867,37 @@ describe('vercel()', () => {
     await vi.waitFor(() =>
       expect(s.channelPosts.map((post) => JSON.parse(post.text).markdown).sort()).toEqual(['**Julián Benegas**: not yours', 'yours · <@U_ADA>']),
     )
+  })
+
+  it("mentions its own GitHub users on GitHub by their login, though the board names them under the project", async () => {
+    const api = fakeMessageboard()
+    const g = fakePlatform('github')
+    const pong = board({
+      backend: vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:production'), files: api.files }),
+      url: PONG_URL,
+      basePath: '/api/board',
+      // A function that delivers, as the issue's sync does: repos() alone sends nothing back.
+      sync: { github: github({ adapter: g.adapter }, async (sync) => {
+        await repos({ 'acme/web': 'prs' })(sync)
+        if (sync.direction === 'out') await sync.deliver()
+      }) },
+    })
+    const opened = (login: string, id: number, number: number) => pong.fetch(new Request(`${PONG_URL}/webhooks/github`, {
+      method: 'POST', headers: { 'x-github-event': 'pull_request', 'x-github-delivery': `opened-${number}` },
+      body: JSON.stringify({
+        action: 'opened', repository: { full_name: 'acme/web' }, sender: { id, login },
+        pull_request: { number, title: 'Export page', html_url: `https://github.com/acme/web/pull/${number}`, labels: [], user: { id, login } },
+      }),
+    }))
+    await opened('ada', 42, 7)
+    await opened('acme-bot[bot]', 43, 8)
+    const julian = handleOn(api)
+    await vi.waitFor(async () => expect((await julian.messages({ channel: 'prs' })).messages).toHaveLength(2))
+    expect((await julian.actors()).filter((actor) => actor.id.includes('+github:user:')).map((actor) => actor.handle).sort()).toEqual(['pong/acme-bot-bot', 'pong/ada'])
+    const root = (await julian.messages({ channel: 'prs' })).messages.find((message) => message.text.startsWith('PR #7'))!
+    await julian.reply(root.id, { text: 'handle @pong/ada, short @ada, id @[vercel:project:prj_pong:production+github:user:42], bot @pong/acme-bot-bot' })
+    await pong.fetch(new Request(`${PONG_URL}/wake`, { method: 'POST' }))
+    await vi.waitFor(() => expect(g.posts.map((post) => JSON.parse(post.text).markdown)).toEqual([expect.stringContaining('handle @ada, short @ada, id @ada, bot @acme-bot[bot]')]))
   })
 
   it("posts to Slack under the names the API gives, which it checked: a person as themselves", async () => {
