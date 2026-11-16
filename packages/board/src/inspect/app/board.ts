@@ -101,7 +101,16 @@ export async function setProfile(next: Profile | null | undefined) {
 /** What you may do where: `me.can` is each channel pattern's permissions, and `compileAccess` answers for a channel. */
 export function viewerOf(me: Me): store.Viewer {
   const access = compileAccess(me.can)
-  return { actor: me.actor, principal: me.principal, profile: me.profile, may: (permission, channel) => access.can(permission, channel), manages: access.at('manage', '*') }
+  const yours = Object.keys(me.can)
+  const under = (spot: string, pattern: string) => spot !== pattern && (pattern === '*' || (pattern.endsWith('/') && (spot === pattern.slice(0, -1) || spot.startsWith(pattern))))
+  return {
+    actor: me.actor,
+    principal: me.principal,
+    profile: me.profile,
+    may: (permission, channel) => access.can(permission, channel),
+    manages: access.at('manage', '*'),
+    revokes: (can) => Object.keys(can).every((pattern) => access.at('manage', pattern) && yours.every((spot) => !under(spot, pattern) || access.at('manage', spot))),
+  }
 }
 
 // --- the page's state: what the board said, folded by store.ts --------------------------------
@@ -534,15 +543,28 @@ export async function registerSchema(input: SchemaInput): Promise<string | null>
 
 // --- access: who is let in, and what each may do ---------------------------------------------
 
-/** The board's grants. Listing them needs `manage` at `*`: for anyone else the board says so, and the page shows that. */
+/**
+ * The board's grants, and what you may do under them: a grant can change that, so the page asks
+ * `me()` again with them. Listing grants needs `manage` at `*`: for anyone else the board says so,
+ * and the page shows that.
+ */
 export async function loadGrants() {
   set((s) => (s.grants.is === 'here' ? s : { ...s, grants: { is: 'loading' } }))
+  const handle = team
+  // A profile switched meanwhile learned its own `me`: this one is no longer who's looking.
+  const you = handle.me().then(
+    (me) => {
+      if (team === handle) set((s) => ({ ...s, me }))
+    },
+    () => {},
+  )
   try {
-    const grants = await team.grants()
+    const grants = await handle.grants()
     set((s) => ({ ...s, grants: { is: 'here', items: grants } }))
   } catch (error) {
     set((s) => ({ ...s, grants: { is: 'failed', why: said(error) } }))
   }
+  await you
 }
 
 /** A new grant. Answers what the board refused it for, in its words, or null once it's made. */

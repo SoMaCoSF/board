@@ -228,7 +228,7 @@ describe('the inspector store', () => {
   const claimedBy = (actor: string, until: string, epoch = 1): Partial<TaskView> => ({ state: 'claimed', epoch, claim: { actor, until } })
 
   /** A viewer with what `can` lists in every channel. */
-  const viewer = (can: string[], who: Partial<store.Viewer> = {}): store.Viewer => ({ actor: ME, principal: PRINCIPAL, profile: null, may: (permission) => can.includes(permission), manages: false, ...who })
+  const viewer = (can: string[], who: Partial<store.Viewer> = {}): store.Viewer => ({ actor: ME, principal: PRINCIPAL, profile: null, may: (permission) => can.includes(permission), manages: false, revokes: () => false, ...who })
 
   it('reads a claim past its lease as over: the task is ready, whatever the board last wrote', () => {
     const held = task(1, claimedBy('vercel:user:u_ada', at(5)))
