@@ -12,17 +12,18 @@ const HOUR = 3600 * SECOND;
 const DAY = 24 * HOUR;
 
 let next = 0;
-type By = "ada" | "agent" | "sync" | "watcher";
+type By = "ada" | "agent" | "sync" | "watcher" | "page";
 const BY: Record<By, { principal: string; profile: string | null }> = {
   ada: { principal: "vercel:user:u_ada", profile: null },
   agent: { principal: DEPLOYMENT, profile: null },
   sync: { principal: DEPLOYMENT, profile: "github:user:583231" },
   watcher: { principal: DEPLOYMENT, profile: "wake" },
+  page: { principal: DEPLOYMENT, profile: "launcher" },
 };
 const message = (re: string | null, by: By, at: number, more: { id?: string; text?: string; labels?: Record<string, string> } = {}) =>
   ({ id: more.id ?? `m${++next}`, re, text: more.text ?? "", labels: more.labels ?? {}, createdAt: ago(at), by: { ...BY[by], actor: "a" } }) as never;
 
-const week = (recent: never[], limit = 200) => overview(recent, [], DEPLOYMENT, NOW, limit).week;
+const week = (recent: never[], limit = 200) => overview(recent, null, DEPLOYMENT, NOW, limit).week;
 
 test("the week is the threads with a message in the last 7 days, their messages in it, and the ones the agent answered", () => {
   const recent = [
@@ -58,6 +59,13 @@ test("the wait for a first reply is from a thread's first message that isn't the
   assert.equal(week([message(null, "ada", DAY)]).firstReplyMs, null);
 });
 
+test("a thread someone asked for through the page waits on the agent like any other, and isn't answered until the agent replies", () => {
+  const asked = [message(null, "page", DAY, { id: "a" })];
+  assert.deepEqual([week(asked).answered, week(asked).firstReplyMs], [0, null]);
+  const answered = [...asked, message("a", "agent", DAY - 30 * SECOND)];
+  assert.deepEqual([week(answered).answered, week(answered).firstReplyMs], [1, 30 * SECOND]);
+});
+
 test("a read that came back full says the week may hold more", () => {
   const recent = [message(null, "ada", DAY), message(null, "ada", 2 * DAY)];
   assert.equal(week(recent, 2).more, true);
@@ -66,25 +74,20 @@ test("a read that came back full says the week may hold more", () => {
 
 test("the last reply is the agent's latest message, whenever it was", () => {
   const recent = [message(null, "ada", HOUR, { id: "a" }), message("a", "agent", 30 * DAY), message("a", "agent", 9 * DAY), message("a", "sync", HOUR)];
-  assert.equal(overview(recent, [], DEPLOYMENT, NOW, 200).lastReplyAt, ago(9 * DAY));
-  assert.equal(overview([message(null, "ada", HOUR)], [], DEPLOYMENT, NOW, 200).lastReplyAt, null);
+  assert.equal(overview(recent, null, DEPLOYMENT, NOW, 200).lastReplyAt, ago(9 * DAY));
+  assert.equal(overview([message(null, "ada", HOUR)], null, DEPLOYMENT, NOW, 200).lastReplyAt, null);
 });
 
-test("pull requests are counted by the state their thread is labeled with, a draft as open, and nothing of what they say is kept", () => {
-  const pull = (repo: string, number: number, state: string, title = "a title") =>
-    message(null, "sync", DAY, { id: `pr${number}`, text: `PR #${number}: ${title}\nhttps://github.com/${repo}/pull/${number}`, labels: { pr: `${repo}#${number}`, state } });
-  const pulls = [
-    pull("acme/web", 12, "open", "Fix the build"),
-    pull("acme/factory", 3, "draft", "Remove the Deploy button"),
-    pull("acme/web", 11, "merged"),
-    pull("acme/web", 10, "merged"),
-    pull("acme/web", 9, "closed"),
+test("a pull request someone else opened is a thread in the week, and what the board holds is shown as numbers only", () => {
+  const recent = [
+    message(null, "sync", DAY, { id: "pr12", text: "PR #12: Fix the build\nhttps://github.com/acme/web/pull/12", labels: { pr: "acme/web#12", state: "open" } }),
+    message(null, "ada", DAY, { text: "the launch date is the 3rd" }),
   ];
-  const seen = overview([message(null, "ada", DAY, { text: "the launch date is the 3rd" })], pulls, DEPLOYMENT, NOW, 200);
-  assert.deepEqual(seen.pulls, { open: 2, merged: 2, closed: 1 });
+  const seen = overview(recent, { open: 2, merged: 1, closed: 0 }, DEPLOYMENT, NOW, 200);
+  assert.equal(seen.week.threads, 2);
   // Whoever can open the deployment sees this, whatever they may read on the board: numbers and times only.
   const shown = JSON.stringify(seen);
-  for (const said of ["Fix the build", "Remove the Deploy button", "acme/web", "launch date", "github.com"]) assert.ok(!shown.includes(said), said);
+  for (const said of ["Fix the build", "acme/web", "launch date", "github.com"]) assert.ok(!shown.includes(said), said);
 });
 
 test("a length of time reads as people say it", () => {

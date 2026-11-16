@@ -87,11 +87,16 @@ most once a minute, while the other channels sync.
 
 - **Messages, replies, edits, deletes, and reactions,** both ways. Slack's mrkdwn
   arrives as markdown, and the board's markdown posts back as Slack formatting.
-- **Mentions** go out as Slack's own. `<@U0456>` comes in as `@` and their
-  display name. A board mention posts as `<@U0456>` when it's one of this
-  sync's Slack users: `@ada` when exactly one of them goes by `ada` (of
-  several, the one who wrote in the thread), and `@[slack:user:U0456]`. Anyone
-  else's handle goes as written, and their actor ID as their name. A board
+- **Mentions** sync both ways by the user's ID. `<@U0456>` comes in as a
+  mention of that user, `@[slack:user:U0456]` under key `slack`, and the board
+  meets them, by their Slack name, handle, and picture, though they never
+  wrote: a reply on the board can mention them back. A board mention,
+  `@[actor-id]`, posts as `<@U0456>` when the
+  actor is one of this sync's Slack users, and as their name for anyone else.
+  A Slack user's ID is enough: `@[slack:user:U0456]` posts as `<@U0456>` for
+  someone the board hasn't met.
+  An `@handle` that was never settled is text, and goes as written: Slack is
+  sent `@vercel/board` as that, and pings no one for it. A board
   message can mention someone by email, `@[ada@acme.com]`, which Slack looks
   up as it posts (it needs `users:read.email`), and posts as `ada@acme.com`
   when it finds no one. See
@@ -101,7 +106,7 @@ most once a minute, while the other channels sync.
 - **Typing:** `team.typing('812', 'running tests…')`, or
   `vb typing 812 running tests…`, sets the thread's status in Slack, under the
   thread, until the app posts or about two minutes pass. The status is at most
-  100 characters; without one, Slack shows "Typing…".
+  50 characters; without one, Slack shows "Typing…".
 
 ## Messages post under their author's name
 
@@ -137,6 +142,29 @@ Without it, every message posts as the app with the label, and so does a new
 thread whose root carries files, since a file upload can't set a sender. An
 edit leaves the label out only where Slack shows the message under its
 author's name, which it asks Slack only on an app that may name senders.
+
+## Vercel's deployments show as a table
+
+When [GitHub syncs too](./04-github.md#vercels-deployment-comment), Vercel's
+deployment comment on a pull request shows in Slack as the table Vercel posts
+on GitHub:
+
+| Column | Shows |
+| --- | --- |
+| Project | The project, linking to its page on Vercel |
+| Deployment | Its status beside its color (green for Ready, yellow for Building, red for Error), linking to the deployment's page |
+| Actions | A link to the preview, when there is one |
+| Updated | How long ago, which Slack keeps current |
+
+It's one message per pull request. Vercel edits its comment as builds move
+from Building to Ready, and the table is replaced in place. The deployments
+Vercel skipped are a line under it (`1 skipped: docs`), and a notification
+says the same in plain words (`web: Ready, docs: Building`).
+
+The message goes out as a line per deployment instead, as it does on other
+platforms, when Slack won't take the table, when a
+[renderer](./02-functions.md#render) of yours writes the deployments its
+own way, or when it goes out with files.
 
 ## Files
 
@@ -213,6 +241,9 @@ await team.readSource('slack', 'C0123ABC', { limit: 20 })
 await team.readSource('slack', 'C0123ABC:1727000000.123456')                       // a thread; a reply's ts reads its whole thread
 await team.readSource('slack', 'https://acme.slack.com/archives/C0123ABC/p1727000000123456')
 ```
+
+A message's text mentions a Slack user as an import does, `@[slack:user:U0456]`
+under the entry's key, so what you read is what to write to mention them.
 
 It reads only public channels the app is already in, and never joins one. Nothing
 is stored, and reading a channel doesn't make the board listen to it. A request

@@ -192,16 +192,13 @@ const apiLogin = async (handed: string | null) => handed ?? (await getVercelToke
 /**
  * A person's token: their Vercel CLI login mints a development token for the
  * project the board's host is a deployment of, exchanged so its audience is the
- * board's URL. Cached on disk for its 12-hour life.
+ * board's URL. Cached on disk for its 12-hour life. For a board whose discovery
+ * names a project: one that names none has no token for a login to mint.
  */
 async function personToken(audience: string, discovery: Discovery): Promise<Cached> {
   const login = await handedToken()
   const cached = await readCache(audience, login)
   if (cached) return cached
-  if (!discovery.project_id)
-    throw new BoardError('no_project', `The board at ${audience} doesn't know its Vercel project, so there's no Vercel login token to mint for it.`, 0, {
-      hint: 'Pass a token it accepts in BOARD_TOKEN.',
-    })
 
   const authToken = await apiLogin(login)
   const project = await boardProject(audience, discovery, authToken)
@@ -312,7 +309,9 @@ export type NodeTransport = {
  * How a client reaches the board at `url` from Node: through Deployment Protection, with a token
  * from `token`, `BOARD_TOKEN`, a local board's token file (`vb serve`), GitHub Actions, the Vercel
  * runtime, or your Vercel CLI login, in that order. Who you are is the token's to say: the board
- * names you from what it verifies.
+ * names you from what it verifies. A board with no Vercel project has no token for your login to
+ * mint, so a request goes to it with none: what verifies its callers may know you another way, as
+ * a board behind `tailscale serve` does.
  */
 export function connect(
   url: string,
@@ -338,11 +337,13 @@ export function connect(
       throw error
     }))
 
-  let cached: Cached | null = null
+  /** A token to send, or null for a board there's none to mint for: its requests go without one. */
+  type Minted = { token: string | null; expiresAt: number }
+  let cached: Minted | null = null
   let source: string | null = null
   let person: Promise<Cached> | null = null
   // `source` says which of these it picked, for `vb whoami`.
-  const mint = async (): Promise<Cached> => {
+  const mint = async (): Promise<Minted> => {
     if (options.token !== undefined) {
       const token = typeof options.token === 'function' ? await options.token() : options.token
       return { token, expiresAt: expiry(token) }
@@ -368,6 +369,8 @@ export function connect(
       source = 'Vercel OIDC'
       return { token, expiresAt: expiry(token) }
     }
+    // No project, no token a login could mint: the request goes as it is, for the board to say whose it is.
+    if (!discovered.project_id) return { token: null, expiresAt: Date.now() + 5 * 60_000 }
     person ??= personToken(url, discovered).finally(() => {
       person = null
     })
@@ -387,10 +390,21 @@ export function connect(
     const path = (href.startsWith(url) ? href.slice(url.length) : new URL(href).pathname).split('?')[0] || '/'
     const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined))
     // Discovery is public: it's what a token is minted from.
-    if (!(method === 'GET' && path === '/')) {
-      if (!headers.has('authorization')) headers.set('authorization', `Bearer ${await token()}`)
+    let bare = false
+    if (!(method === 'GET' && path === '/') && !headers.has('authorization')) {
+      const credential = await token()
+      if (credential !== null) headers.set('authorization', `Bearer ${credential}`)
+      else bare = true
     }
-    return doFetch(input, { ...init, headers })
+    const response = await doFetch(input, { ...init, headers })
+    // It went with no token, and the board took it for no one's.
+    if (bare && response.status === 401) {
+      await response.body?.cancel().catch(() => {})
+      throw new BoardError('no_project', `The board at ${url} has no Vercel project to mint you a token for, and doesn't know who you are without one.`, 0, {
+        hint: 'Pass a token it accepts in BOARD_TOKEN.',
+      })
+    }
+    return response
   }) as typeof fetch
 
   return { fetch: send, source: () => source }

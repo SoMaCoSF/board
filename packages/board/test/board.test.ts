@@ -288,19 +288,18 @@ describe('messages', () => {
     expect(body.messages).toHaveLength(1)
   })
 
-  it('posts mentions as written: no handle or actor ID fails a write, whoever has it', async () => {
+  it('never fails a write over a mention: a handle no one has, an actor ID the board has never seen, an email', async () => {
     const { fetch } = testBoard()
     const julian = caller(fetch, await personToken('u_julian'), {})
     for (const id of ['u_ada', 'u_ada2']) await caller(fetch, await personToken(id), {})('POST', '/messages', { channel: 'x', text: 'hi' })
 
-    // Two people go by ada, no one by nobody, and the board knows no u_nobody.
+    // No one goes by ada or nobody, and the board knows no u_nobody: each is kept as typed.
     for (const text of ['thanks @ada', 'thanks @nobody', 'cc @[vercel:user:u_nobody]', 'cc @[ada@vercel.com]']) {
       const posted = await julian('POST', '/messages', { channel: 'x', text })
       expect([posted.status, posted.body.message.text], text).toEqual([201, text])
-      expect(posted.body).toEqual({ message: expect.not.objectContaining({ mentions: expect.anything() }) })
     }
     const { id } = (await julian('POST', '/messages', { channel: 'x', text: 'draft' })).body.message
-    expect((await julian('POST', `/messages/${id}/edit`, { text: 'thanks @ada and @nobody' })).body).toEqual({ ok: true })
+    expect((await julian('POST', `/messages/${id}/edit`, { text: 'thanks @ada and @nobody' })).status).toBe(200)
     expect((await julian('GET', `/messages/${id}`)).body.message.text).toBe('thanks @ada and @nobody')
   })
 
@@ -346,8 +345,9 @@ describe('messages', () => {
       (await julian('GET', `/messages?${query}`)).body.messages.map((m: { text: string }) => m.text)
     expect(await texts('channel=www/')).toEqual(['one', 'two'])
     expect(await texts('label=status=open')).toEqual(['one'])
-    expect(await texts('by=ada')).toEqual(['hey @julian'])
-    expect(await texts('mentions=me')).toEqual(['hey @julian'])
+    // Julian has written, so Ada's handle for him is stored as the mention of him it is.
+    expect(await texts('by=ada')).toEqual(['hey @[vercel:user:julian]'])
+    expect(await texts('mentions=me')).toEqual(['hey @[vercel:user:julian]'])
   })
 
   it('finds mentions by what the text says: a handle, an actor ID, or an email, never in code', async () => {
@@ -362,14 +362,16 @@ describe('messages', () => {
 
     const texts = async (as: typeof julian, mentions: string) =>
       (await as('GET', `/messages?channel=docs&mentions=${encodeURIComponent(mentions)}`)).body.messages.map((m: { text: string }) => m.text)
+    // A handle that names one actor was stored as a mention of them, the same as their ID written out.
+    const [byHandle, agentByHandle] = ['@[vercel:user:julian] look', 'over to @[vercel:user:julian+claude]']
     // A person is everyone they are: their handle and ID, and their agents'.
-    expect(await texts(ada, 'julian')).toEqual(['@Julian look', 'over to @julian/claude', 'cc @[vercel:user:julian]', 'cc @[vercel:user:julian+claude]'])
+    expect(await texts(ada, 'julian')).toEqual([byHandle, agentByHandle, 'cc @[vercel:user:julian]', 'cc @[vercel:user:julian+claude]'])
     expect(await texts(ada, 'vercel:user:julian')).toEqual(await texts(ada, 'julian'))
-    expect(await texts(ada, 'julian/claude')).toEqual(['over to @julian/claude', 'cc @[vercel:user:julian+claude]'])
+    expect(await texts(ada, 'julian/claude')).toEqual([agentByHandle, 'cc @[vercel:user:julian+claude]'])
     expect(await texts(ada, 'julian@vercel.com')).toEqual(['ask @[Julian@vercel.com]'])
     // Me is my handle and my ID.
-    expect(await texts(julian, 'me')).toEqual(['@Julian look', 'cc @[vercel:user:julian]'])
-    expect(await texts(claude, 'me')).toEqual(['over to @julian/claude', 'cc @[vercel:user:julian+claude]'])
+    expect(await texts(julian, 'me')).toEqual([byHandle, 'cc @[vercel:user:julian]'])
+    expect(await texts(claude, 'me')).toEqual([agentByHandle, 'cc @[vercel:user:julian+claude]'])
   })
 
   it('filters by source, text, a label key or any of its values, and a thread root\'s labels', async () => {

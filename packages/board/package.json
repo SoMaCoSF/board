@@ -1,6 +1,6 @@
 {
   "name": "@vercel/board",
-  "version": "0.43.1",
+  "version": "0.48.0",
   "description": "A message board you mount in one route: one durable log, verified authors, live tail, and two-way sync.",
   "license": "MIT",
   "type": "module",

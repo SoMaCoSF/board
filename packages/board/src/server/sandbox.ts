@@ -57,9 +57,16 @@ export type SandboxRoute = { method: string; path: string }
 /**
  * How a sandbox reaches a board, from a backend: its URL, the headers its requests carry, the routes
  * under the board's path that carry them, every one by method and shape (the protocol's, or another
- * API's), and what else they ask (`GET`s outside the board's path).
+ * API's), and what else they ask: `GET`s outside the board's path (`reads`), and routes the same
+ * board has under another path of its host (`under`), as an API that versions some of its routes does.
  */
-export type SandboxReach = { url: string; headers: Record<string, string>; routes: readonly SandboxRoute[]; reads?: readonly string[] }
+export type SandboxReach = {
+  url: string
+  headers: Record<string, string>
+  routes: readonly SandboxRoute[]
+  reads?: readonly string[]
+  under?: readonly { path: string; routes: readonly SandboxRoute[] }[]
+}
 
 /** What a backend gets to say how a sandbox reaches its board. */
 export type SandboxInput = { profile: { name: string; avatar?: string }; can: string; token: string | undefined }
@@ -145,6 +152,7 @@ export function boardPolicy(reach: SandboxReach): SandboxPolicy {
         { match: { queryString: [{ key: { regex: `^${caseless('x-vercel-set-bypass-cookie')}$` } }] }, ...refused('not a board route') },
         { match: { headers: [{ key: { exact: 'x-vercel-set-bypass-cookie' } }] }, ...refused('not a board route') },
         ...routeRules(prefix, reach.routes, scoped, transform),
+        ...(reach.under ?? []).flatMap(({ path, routes }) => routeRules(escaped(path.replace(/\/+$/, '')), routes, scoped, transform)),
         ...(reach.reads ?? []).map((path) => ({ match: scoped({ path: { exact: path }, method: ['GET'] }), transform })),
         // Named apart for its answer, in any case, as a router that ignores case would read one.
         { match: { path: { regex: `^${prefix}/(?:${WITHHELD.map(caseless).join('|')})(?:/|$)` } }, ...refused("not a route this sandbox's policy hands it") },

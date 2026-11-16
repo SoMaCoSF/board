@@ -157,7 +157,9 @@ more specific pattern decides first.
   `{ userId, email }`, `{ projectId, name }`, and `{ repositoryId,
   repository }`. A board that verifies tokens itself, such as `vb serve`'s,
   has nothing to look names up with, so it takes a user's ID and a project's
-  `prj_…`, and matches a repository by the token's `repository`.
+  `prj_…`, and matches a repository by the token's `repository`. On a board
+  [behind Tailscale](../03-guides/08-tailnet.md), a person's login is their
+  ID, so `--user ada@example.com` names them there.
 - **A project names its environments,** and `all-projects` only production,
   preview, or development, since a custom environment's ID is one project's.
 - **A project is its team's.** A grant keeps the board's team on each project
@@ -287,6 +289,14 @@ through the binding's `handle(caller)`, so the middleware sees it.
   too: neither can say a message came from, or landed in, a platform thread or
   message another board thread or message has.
 
+The names are a value too, for a form that offers them:
+
+```ts
+import { PERMISSIONS, type Permission } from '@vercel/board/access'
+
+const names: readonly Permission[] = PERMISSIONS // read, post, react, label, sync, manage
+```
+
 ## Channels
 
 `can` takes `'all'`, a list, or a map from pattern to permissions:
@@ -316,9 +326,9 @@ Reads show only what the caller can read, everywhere:
   (`@[actor-id]`), and the reactors of what they can read, and themselves. A
   post in a channel you can't read comes back with the text you sent, and
   read back later (`GET /posts/:id`, your schedules), each actor it mentions
-  but you shows as `@…`. A mention is text no write checks, so a handle that's
-  shared, one no one has, and an actor ID the board doesn't know all post
-  alike: no write says which ones exist. Nor does `--mentions`: it finds
+  but you shows as `@…`. A write settles a handle only among the actors its
+  caller can see, and says who it could have meant only from them, so it tells
+  no caller of anyone `vb actors` wouldn't. Nor does `--mentions`: it finds
   someone through their other name (their handle for their ID, or the other
   way round) only for a caller that reads every channel.
 - **Events about no message** (who's who, a thread's sync targets) reach only

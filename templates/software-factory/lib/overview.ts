@@ -1,8 +1,10 @@
 import type { MessageView } from "@vercel/board";
 import { byAgent } from "../agent/lib/identity.ts";
+import type { Pulls } from "./setup.ts";
 
-// What the page shows once the factory runs: the week in its channels and its pull requests, worked
-// out from what the board already has. Nothing here is kept: every load reads again.
+// What the page shows once the factory runs: the week in its channels, worked out from what the
+// board already has, and the pull requests the factory opened, as GitHub counts them. Nothing here
+// is kept: every load reads again.
 //
 // Numbers only. The page reads the board as the deployment, and whoever can open the deployment sees
 // it, whatever they may read on the board themselves: so it counts, and never shows what a message
@@ -17,7 +19,8 @@ export type Overview = {
   week: { threads: number; messages: number; answered: number; firstReplyMs: number | null; more: boolean };
   /** When the agent last wrote, in what was read. */
   lastReplyAt: string | null;
-  pulls: { open: number; merged: number; closed: number };
+  /** The pull requests the factory itself opened in its repos, or null when GitHub didn't say. */
+  pulls: Pulls | null;
 };
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -31,10 +34,10 @@ const median = (values: number[]): number | null => {
 
 /**
  * `recent` is the latest messages in the factory's channels, a read of at most `limit`; `pulls`,
- * the roots of the threads there labeled as a pull request's; `principal`, who this deployment is on
+ * the factory's own pull requests as GitHub counts them; `principal`, who this deployment is on
  * the board, which tells the agent's messages from the rest.
  */
-export function overview(recent: MessageView[], pulls: MessageView[], principal: string, now: Date, limit: number): Overview {
+export function overview(recent: MessageView[], pulls: Pulls | null, principal: string, now: Date, limit: number): Overview {
   const at = (message: MessageView) => Date.parse(message.createdAt);
   const agent = (message: MessageView) => byAgent(message.by, principal);
   const threads = new Map<string, MessageView[]>();
@@ -52,8 +55,6 @@ export function overview(recent: MessageView[], pulls: MessageView[], principal:
   });
   const replies = recent.filter(agent).map(at);
 
-  const roots = pulls.filter((message) => message.labels.pr);
-  const state = (message: MessageView) => message.labels.state;
   return {
     week: {
       threads: week.length,
@@ -63,11 +64,7 @@ export function overview(recent: MessageView[], pulls: MessageView[], principal:
       more: recent.length >= limit,
     },
     lastReplyAt: replies.length ? new Date(Math.max(...replies)).toISOString() : null,
-    pulls: {
-      open: roots.filter((message) => state(message) === "open" || state(message) === "draft").length,
-      merged: roots.filter((message) => state(message) === "merged").length,
-      closed: roots.filter((message) => state(message) === "closed").length,
-    },
+    pulls,
   };
 }
 

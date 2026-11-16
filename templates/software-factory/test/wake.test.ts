@@ -48,6 +48,13 @@ test("what the deployment's sync brought in, and its watcher's own word, aren't 
   assert.equal((await woken(posted({ by: by("vercel:user:u_ada", "factory") }))).got.length, 1);
 });
 
+test("what someone asked through the factory's page, under the launcher's profile, wakes the agent as anyone's thread does", async () => {
+  const { got } = await woken(posted({ id: "30", re: null, by: by(DEPLOYMENT, "launcher") }));
+  assert.deepEqual(got, [{ thread: "30", key: "c-30", text: "New board thread #30." }]);
+  // And a reaction the page never makes, on a message that isn't the agent's, wakes nobody.
+  assert.deepEqual((await woken(reacted(by(DEPLOYMENT, "launcher"), ada))).got, []);
+});
+
 test("the agent under a profile it named is still the agent: as it wrote at first, or as BOARD_PROFILE says", async () => {
   assert.deepEqual((await woken(posted({ by: by(DEPLOYMENT, "factory") }))).got, []);
   assert.deepEqual((await woken(posted({ by: by(DEPLOYMENT, "night-shift") }))).got, []);

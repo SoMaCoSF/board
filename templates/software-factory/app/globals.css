@@ -383,31 +383,42 @@ pre {
   font-weight: 600;
 }
 
-/* Numbers first, what they count under them. */
+/* Numbers as a short list of lines, as the CLI prints one: what's counted, then the count, in two columns. */
 .stats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1rem 2.5rem;
+  display: grid;
+  grid-template-columns: 10rem 1fr;
+  gap: 0.3rem 1rem;
   margin: 0;
 }
 
-/* What a number counts comes first for a reader, and under it for the eye. */
+/* A line's two halves sit in the list's columns, so the counts line up, from one list to the next too. */
 .stat {
-  display: flex;
-  flex-direction: column-reverse;
+  display: contents;
+}
+
+.stat dt {
+  color: var(--muted);
 }
 
 .stat dd {
   margin: 0;
   color: var(--bright);
-  font-size: 1.5rem;
-  font-weight: 600;
-  line-height: 1.2;
 }
 
-.stat dt {
-  color: var(--faint);
-  font-size: 0.85rem;
+/* A few words to press, in a sentence. */
+.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: default;
+}
+
+.link:hover {
+  color: var(--bright);
 }
 
 /* A thing per row, and what it belongs to at the end of it. */
@@ -430,6 +441,52 @@ pre {
 
 .rows span {
   color: var(--faint);
+}
+
+/* Something to type, and the button that sends it, on one line: a field as wide as a command's box. */
+.onboard {
+  margin-top: 1rem;
+}
+
+.field {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.field input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--code-bg);
+  color: var(--bright);
+  font: inherit;
+}
+
+.field input::placeholder {
+  color: var(--faint);
+}
+
+.field input:focus-visible {
+  border-color: var(--muted);
+  outline: none;
+}
+
+/* As tall as the field beside it. */
+.onboard .field .button {
+  margin: 0;
+}
+
+/* A link in a note reads as the note does, underlined. */
+.note a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.note a:hover {
+  color: var(--bright);
 }
 
 .note {

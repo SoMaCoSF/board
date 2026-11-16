@@ -19,6 +19,6 @@ unexpected, before you change anything.
    - **Not reproduced, or not a bug:** say why, and what would help: steps, a version, a log.
    - **A judgment call** (the behavior might be on purpose): ask, and wait until someone on the
      team agrees it's a bug.
-4. **Fix it**, once it's reproduced and confirmed: on a `factory/<thread id>` branch, with the
-   failing test now passing and the rest of the suite green, in a PR whose body names the test
-   that reproduces it. Then follow the pr-lifecycle skill.
+4. **Fix it**, once it's reproduced and confirmed: on a branch of its own, with the failing
+   test now passing and the rest of the suite green, in a PR whose body names the test that
+   reproduces it (the open-pr skill). Then follow the pr-lifecycle skill.

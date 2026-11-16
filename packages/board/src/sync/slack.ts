@@ -3,14 +3,17 @@ import type { Adapter, Message as ChatMessage } from 'chat'
 import { markdownOf } from './chat.ts'
 import { z } from 'zod'
 import { envelope, eventSchema } from './events.ts'
-import { UnreadableError, type ResolvedTarget, type ProviderPost, type ProviderDelivery, type ProviderFile, type ProviderSender, type SyncContext, type ReceivedEvent, type FetchedLink } from './provider.ts'
+import { opensBlock, UnreadableError, type ResolvedTarget, type ProviderPost, type ProviderDelivery, type ProviderFile, type ProviderSender, type SyncContext, type ReceivedEvent, type FetchedLink } from './provider.ts'
 import type { SourceJoin, SourceMessage, SourceRead } from '../api/routes.ts'
 import { stringifyMarkdown } from 'chat'
-import { LINKS_PER_MESSAGE_MAX, type ExternalLink } from '../contract/external.ts'
+import { LINKS_PER_MESSAGE_MAX, MENTIONED_PER_MESSAGE_MAX, type ExternalLink } from '../contract/external.ts'
+import { extractMentions } from '../contract/mentions.ts'
 import { MESSAGE_TEXT_MAX } from '../contract/schemas.ts'
 import { createSlackAdapter } from '@chat-adapter/slack'
 import { connectSlackAdapter } from '@vercel/connect/chat'
 import type { SyncFn } from './fn.ts'
+import { deploymentsLayout, type SlackBlock, type SlackText } from './slack-deployments.ts'
+import type { VercelDeployment } from '../contract/bots.ts'
 
 type SlackChannel = { id?: string; name?: string; is_member?: boolean; is_private?: boolean; is_im?: boolean; is_mpim?: boolean; is_ext_shared?: boolean }
 export type SlackClient = {
@@ -41,6 +44,8 @@ export type SlackClient = {
   /** Posts an agent's message under its own name; needs `chat:write.customize` for `username` and `icon_url`. */
   chat?: {
     postMessage(args: SlackPost): Promise<{ ts?: string }>
+    /** Replaces a message's text and layout, for one board laid out itself. */
+    update?(args: { channel: string; ts: string; text: string; blocks: SlackBlock[] }): Promise<unknown>
     /** A message's link, with the workspace's own host and a reply's `thread_ts`. */
     getPermalink?(args: { channel: string; message_ts: string }): Promise<{ permalink?: string }>
   }
@@ -54,6 +59,7 @@ type SlackPost = {
   thread_ts?: string
   text?: string
   markdown_text?: string
+  blocks?: SlackBlock[]
   username?: string
   icon_url?: string
   unfurl_links?: boolean
@@ -68,7 +74,97 @@ type SlackInternals = Omit<Adapter, 'decodeThreadId'> & {
     /** Markdown as Slack's older mrkdwn, the only text a file upload's comment takes. */
     toResponseUrlText?(message: { markdown: string }): string
   }
+  /** The adapter's own lookup of a bare `@name` by display name, before it posts: off here, see `literalMentions`. */
   resolveMessageMentions?(message: { markdown: string }, threadId: string): Promise<{ markdown: string }>
+  /** What the adapter writes in place of each user and channel a message it reads mentions: a user's is their ID here, see `literalMentions`. */
+  lookupMentionNames?(users: Set<string>, channels: Set<string>): Promise<{ users: Map<string, string>; channels: Map<string, string> }>
+  /** A Slack user as the adapter knows them, which it asks Slack for once and keeps: how it names a message's author too. */
+  lookupUser?(user: string): Promise<{ displayName?: string; realName?: string; isBot?: boolean } | null>
+}
+
+/**
+ * How a user a Slack message mentions stands in what the adapter reads of it: their ID between two
+ * characters from Unicode's private use area, which nothing along the way escapes or rewrites.
+ */
+const MENTIONED = /@\uF8F0([A-Z0-9_]+)\uF8F1/g
+const mentionedAs = (user: string) => `\uF8F0${user}\uF8F1`
+/** A user's mention in Slack's own mrkdwn, with the name Slack may give it: `<@U0456>`, `<@U0456|ada>`. */
+const SLACK_MENTION = /<@([A-Z0-9_]+)(?:\|[^<>]*)?>/g
+/** A Slack user's ID, as `<@U0456>` names one. */
+const SLACK_USER_ID = /^[A-Z0-9_]+$/
+/**
+ * A Slack user as Slack mentions them, from their ID alone. Only a user's ID: anything else between
+ * `<@` and `>` could close the mention and open Slack's own markup (`<!channel>`).
+ */
+function slackMention(id: string): string | null {
+  const user = id.startsWith('slack:user:') ? id.slice('slack:user:'.length) : null
+  return user !== null && SLACK_USER_ID.test(user) ? `<@${user}>` : null
+}
+/** What the adapter read of a Slack message, each user it mentions as board writes a mention: `@[slack:user:U0456]`. */
+const mentionsById = (text: string): string => text.replace(MENTIONED, '@[slack:user:$1]')
+
+/** Each `@` the adapter reads as a mention: one that opens a word, and isn't Slack's own `<@U0456>` or inside a word, as an email's is. */
+const BARE_MENTION = /(?<![<A-Za-z0-9_])@(?=[A-Za-z0-9_])/g
+
+/** A character `text` doesn't have, from Unicode's private use area, or null if it has them all. */
+function unusedIn(text: string): string | null {
+  for (let code = 0xe000; code <= 0xf8ff; code++) if (!text.includes(String.fromCharCode(code))) return String.fromCharCode(code)
+  return null
+}
+
+/**
+ * A message as the adapter converts it, each bare `@` standing as a character its text doesn't have,
+ * and `back`, which puts them in what the adapter made of it. Only a string, or a message's
+ * `markdown` or `raw`, is text: anything else goes as it is.
+ */
+function withoutBareMentions<M>(message: M): { given: M; back: (text: string) => string } {
+  const asIs = { given: message, back: (text: string) => text }
+  const fields = message as Record<string, unknown> | null
+  const field = typeof message === 'string' ? null : (['markdown', 'raw'] as const).find((name) => typeof fields?.[name] === 'string')
+  const text = typeof message === 'string' ? message : field ? (fields![field] as string) : null
+  const stand = text?.includes('@') ? unusedIn(text) : null
+  if (text === null || stand === null) return asIs
+  const hidden = text.replace(BARE_MENTION, stand)
+  return { given: (field ? { ...fields, [field]: hidden } : hidden) as M, back: (made) => made.replaceAll(stand, '@') }
+}
+
+const literal = new WeakSet<object>()
+/**
+ * Turns off the adapter's own reading of mentions, once. Board resolves a message's mentions against
+ * its own users before a provider posts it (the engine's `textFor`), each one it finds as Slack's
+ * `<@U0456>`, and what it leaves is text: a handle no one here has, a package's name. The adapter
+ * would look a bare `@name` up by display name, and write whatever is left as `<@name>`, which Slack
+ * shows as is. So its lookup answers the message it was given, and its converter never sees a bare
+ * `@`: it converts the text without them, and they go back in what it made.
+ *
+ * Coming in, the adapter writes each user a message mentions by display name, and their ID is gone
+ * from what it read. Here it writes the ID, in a form `mentionsById` reads back, so a mention on
+ * Slack is a mention of that user on the board.
+ */
+function literalMentions(adapter: SlackInternals): void {
+  if (literal.has(adapter)) return
+  literal.add(adapter)
+  if (adapter.resolveMessageMentions) adapter.resolveMessageMentions = async (message) => message
+  const names = adapter.lookupMentionNames
+  if (names)
+    adapter.lookupMentionNames = async (users, channels) => ({
+      channels: (await names.call(adapter, new Set(), channels)).channels,
+      users: new Map([...users].map((user) => [user, mentionedAs(user)])),
+    })
+  const converter = adapter.formatConverter
+  if (!converter) return
+  const { toSlackPayload, toResponseUrlText } = converter
+  if (toSlackPayload)
+    converter.toSlackPayload = (message) => {
+      const { given, back } = withoutBareMentions(message)
+      const payload = toSlackPayload.call(converter, given)
+      return 'markdown_text' in payload ? { ...payload, markdown_text: back(payload.markdown_text) } : { ...payload, text: back(payload.text) }
+    }
+  if (toResponseUrlText)
+    converter.toResponseUrlText = (message) => {
+      const { given, back } = withoutBareMentions(message)
+      return back(toResponseUrlText.call(converter, given))
+    }
 }
 
 /** The most characters Slack shows of a message's username. */
@@ -91,9 +187,26 @@ export function slackUsername({ name, attribution = '' }: Pick<ProviderSender, '
   return `${cut.trimEnd()}…${attribution}`
 }
 
-/** The `**name**: ` a message's text opens with, taken out when Slack shows the name as the sender. */
+/**
+ * Text as the adapter gives it to Slack, so the text around a table reads as it does in any
+ * message (an emoji by its Slack name): markdown as the adapter posts
+ * it, and its older mrkdwn, which a message's notification text is.
+ */
+const textOf = (adapter: SlackInternals): SlackText => ({
+  markdown: (markdown) => {
+    const payload = adapter.formatConverter?.toSlackPayload?.call(adapter.formatConverter, { markdown })
+    return payload && 'markdown_text' in payload ? payload.markdown_text : markdown
+  },
+  mrkdwn: (markdown) => adapter.formatConverter?.toResponseUrlText?.call(adapter.formatConverter, { markdown }) ?? markdown,
+})
+
+/** Slack's answers that mean "not this layout", before anything is sent or changed: the message goes out as markdown instead. */
+const LAYOUT_REFUSED = new Set(['invalid_blocks', 'invalid_blocks_format', 'msg_blocks_too_long', 'block_mismatch'])
+const layoutRefused = (error: unknown) => LAYOUT_REFUSED.has((error as { data?: { error?: string } } | null)?.data?.error ?? '')
+
+/** The `**name**: ` a message's text opens with (on a line of its own before a block), taken out when Slack shows the name as the sender. */
 export function withoutLabel(markdown: string, name: string): string {
-  const label = new RegExp(`^\\*\\*${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\*\\*: `)
+  const label = new RegExp(`^\\*\\*${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\*\\*:(?: |\n\n)`)
   return markdown.replace(label, '')
 }
 
@@ -255,8 +368,8 @@ export function forwardText(links: ExternalLink[]): string {
   return links.filter((link) => link.snapshot).map((link) => {
     const { author, text } = link.snapshot!
     const lines = text.trim() ? text.trim().split('\n') : ['']
-    // A first line that opens a block (a fence, a list, a heading, a quote) only works at a line's start.
-    const head = /^(```|~~~|[-*+] |\d+[.)] |#{1,6} |>)/.test(lines[0]!) ? [`> **${author}**:`, `> ${lines[0]}`] : [`> **${author}**: ${lines[0]}`]
+    // A first line that opens a block (a fence, a list, a heading, a quote, a table) only works at a line's start.
+    const head = opensBlock(lines[0]!) ? [`> **${author}**:`, `> ${lines[0]}`] : [`> **${author}**: ${lines[0]}`]
     return [...head, ...lines.slice(1).map((line) => `> ${line}`)].map((line) => line.trimEnd()).concat('', link.url).join('\n')
   }).join('\n\n')
 }
@@ -462,6 +575,16 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
         return text
       }
     }
+    // What a source read shows: each user a message mentions by their ID, as an import brings one in.
+    const mrkdwnById = (text: string) => {
+      const asIs = () => text.replace(SLACK_MENTION, '@[slack:user:$1]')
+      if (!converter) return asIs()
+      try {
+        return mentionsById(stringifyMarkdown(converter.toAst(text.replace(SLACK_MENTION, (_, user: string) => `<@${user}|${mentionedAs(user)}>`))).trim())
+      } catch {
+        return asIs()
+      }
+    }
     const names = new Map<string, Promise<string>>()
     function nameOf(user: string): Promise<string> {
       let promise = names.get(user)
@@ -521,7 +644,8 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
           isBot: user.is_bot === true,
         }
       },
-      mention: (actor) => actor.id.startsWith('slack:user:') ? `<@${actor.id.slice('slack:user:'.length)}>` : null,
+      mention: (actor) => slackMention(actor.id),
+      mentionById: slackMention,
       // `#name` is looked up by name; anything else is a channel ID.
       async resolveChannel(key) {
         if (!key.startsWith('#')) return key
@@ -533,11 +657,23 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
       },
       // A forward has no text of its own: it says what it shares.
       markdown(message) {
-        const text = markdownOf(message)
+        const text = mentionsById(markdownOf(message))
         if (text.trim()) return text
         const raw = message.raw as { attachments?: SlackAttachment[] } | null
         const shared = Array.isArray(raw?.attachments) ? raw.attachments.filter((att) => att.is_share) : []
         return shared.length ? forwardText(slackLinks('', '', shared, mrkdwn)) : text
+      },
+      // Who the text mentions, as each would be named had they written: the adapter's own record of them.
+      async mentioned(text) {
+        const users = [...new Set(extractMentions(text).flatMap((token) => (token.kind === 'actor' && token.actor.startsWith('slack:user:') ? [token.actor.slice('slack:user:'.length)] : [])))]
+        return Promise.all(
+          users.slice(0, MENTIONED_PER_MESSAGE_MAX).map(async (user) => {
+            const adapter = options.adapter as SlackInternals
+            const [known, avatar] = await Promise.all([adapter.lookupUser ? adapter.lookupUser(user).catch(() => null) : null, avatarOf(user)])
+            const handle = known?.displayName || user
+            return { id: `slack:user:${user}`, handle, name: known?.realName || handle, avatar, isBot: known?.isBot === true }
+          }),
+        )
       },
       links(key, message) {
         const raw = message.raw as { text?: unknown; attachments?: SlackAttachment[] } | null
@@ -650,7 +786,7 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
           id: m.ts!,
           thread: `${channel}:${m.thread_ts ?? m.ts}`,
           author: (m.user ? await nameOf(m.user) : m.username || m.bot_profile?.name || 'someone').slice(0, 256),
-          text: mrkdwn(m.text ?? '').slice(0, MESSAGE_TEXT_MAX),
+          text: mrkdwnById(m.text ?? '').slice(0, MESSAGE_TEXT_MAX),
           createdAt: tsTime(m.ts),
           replies: m.reply_count ?? 0,
           files: filesOf(m.files),
@@ -725,6 +861,8 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
       },
     }, sync)
     this.web = client
+    // The adapter leaves a message's mentions to board, going out and coming in: a webhook reaches it without `ready()`.
+    literalMentions(options.adapter as SlackInternals)
   }
 
   /**
@@ -734,8 +872,12 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
    * the app, label and all.
    */
   override async post(target: string, kind: ResolvedTarget['kind'], body: ProviderPost): Promise<ProviderDelivery> {
-    const { as, ...given } = body
+    const { as, deployments, ...given } = body
     const post = { ...given, markdown: withoutHtml(given.markdown) }
+    if (deployments && !post.files?.length) {
+      const laidOut = await this.postDeployments(target, as, post.markdown, deployments)
+      if (laidOut) return laidOut
+    }
     if (kind === 'channel' && post.files?.length && post.markdown.trim()) {
       const sent = await this.postWithFiles(target, post.markdown, post.files)
       if (sent) return sent
@@ -760,11 +902,9 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
     if (!web?.files?.uploadV2 || !web.files.info || !toMrkdwn || !(await this.hasScope(web, 'files:read'))) return null
     const threadId = this.toChat(target)
     const { channel } = adapter.decodeThreadId(threadId)
-    const message = { markdown }
-    const resolved = (await adapter.resolveMessageMentions?.(message, threadId)) ?? message
     const uploaded = await web.files.uploadV2({
       channel_id: channel,
-      initial_comment: toMrkdwn.call(adapter.formatConverter, resolved),
+      initial_comment: toMrkdwn.call(adapter.formatConverter, { markdown }),
       file_uploads: files.map((file) => ({ file: Buffer.from(file.data), filename: slackFileName(file.filename, file.mimeType) })),
     })
     const ids = (uploaded.files?.[0]?.files ?? []).map((file) => file.id).filter((id): id is string => !!id)
@@ -797,11 +937,67 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
 
   /** An edit keeps the label out only where the message went out under its author's name. */
   override async edit(thread: string, message: string, body: ProviderPost) {
-    const { as, ...given } = body
+    const { as, deployments, ...given } = body
     const post = { ...given, markdown: withoutHtml(given.markdown) }
     // Only an app that may name a message's sender ever sent one under a name.
     const named = as && (await this.web().then((web) => !!web && this.canCustomize(web), () => false)) ? await this.sentAs(thread, message, as) : false
-    await super.edit(thread, message, named && as ? { ...post, markdown: withoutLabel(post.markdown, as.name) } : post)
+    const edited = named && as ? { ...post, markdown: withoutLabel(post.markdown, as.name) } : post
+    if (deployments && !edited.files && (await this.editDeployments(thread, message, edited.markdown, deployments))) return
+    await super.edit(thread, message, edited)
+  }
+
+  /**
+   * Vercel's deployment comment goes out with its deployments as the table Vercel posts on a
+   * pull request, the text around them as markdown, under its author's name where the app may
+   * set one. Null, with nothing sent, when board has no client to post with, the markdown isn't
+   * one board can lay out, or Slack won't take the layout: it goes out as markdown, a line each.
+   */
+  private async postDeployments(target: string, as: ProviderSender | undefined, markdown: string, deployments: VercelDeployment[]): Promise<ProviderDelivery | null> {
+    if (!deploymentsLayout(markdown, deployments)) return null
+    const adapter = (await this.ready()) as SlackInternals
+    const web = await this.web().catch(() => undefined)
+    if (!web?.chat) return null
+    const username = as ? slackUsername(as) : null
+    const named = as && username !== null && (await this.canCustomize(web)) ? { username, icon: slackIcon(as.avatar), name: as.name } : null
+    const threadId = this.toChat(target)
+    const { channel, threadTs } = adapter.decodeThreadId(threadId)
+    const message = { markdown: named ? withoutLabel(markdown, named.name) : markdown }
+    const layout = deploymentsLayout(message.markdown, deployments, textOf(adapter))
+    if (!layout) return null
+    const sent = await web.chat
+      .postMessage({
+        channel,
+        ...(threadTs ? { thread_ts: threadTs } : {}),
+        ...layout,
+        unfurl_links: false,
+        unfurl_media: false,
+        ...(named ? { username: named.username, ...(named.icon ? { icon_url: named.icon } : {}) } : {}),
+      })
+      .catch((error: unknown) => {
+        if (layoutRefused(error)) return null
+        throw error
+      })
+    if (!sent) return null
+    if (!sent.ts) throw new Error('slack: chat.postMessage returned no ts')
+    return { thread: this.toNative(`${adapter.name}:${channel}:${threadTs || sent.ts}`), message: sent.ts }
+  }
+
+  /** An edit to that comment: its text and table, replaced. False, with nothing changed, where a post would be null, or board's client can't edit. */
+  private async editDeployments(thread: string, message: string, markdown: string, deployments: VercelDeployment[]): Promise<boolean> {
+    if (!deploymentsLayout(markdown, deployments)) return false
+    const adapter = (await this.ready()) as SlackInternals
+    const web = await this.web().catch(() => undefined)
+    if (!web?.chat?.update) return false
+    const threadId = this.toChat(thread)
+    const layout = deploymentsLayout(markdown, deployments, textOf(adapter))
+    if (!layout) return false
+    try {
+      await web.chat.update({ channel: adapter.decodeThreadId(threadId).channel, ts: message, ...layout })
+    } catch (error) {
+      if (layoutRefused(error)) return false
+      throw error
+    }
+    return true
   }
 
   private async postNamed(target: string, as: ProviderSender, markdown: string): Promise<ProviderDelivery | null> {
@@ -811,13 +1007,11 @@ export class SlackProvider extends ChatSyncProvider<SlackEvent> {
     if (!web?.chat || !adapter.formatConverter?.toSlackPayload || username === null || !(await this.canCustomize(web))) return null
     const threadId = this.toChat(target)
     const { channel, threadTs } = adapter.decodeThreadId(threadId)
-    const message = { markdown: withoutLabel(markdown, as.name) }
-    const resolved = (await adapter.resolveMessageMentions?.(message, threadId)) ?? message
     const icon = slackIcon(as.avatar)
     const sent = await web.chat.postMessage({
       channel,
       ...(threadTs ? { thread_ts: threadTs } : {}),
-      ...adapter.formatConverter.toSlackPayload(resolved),
+      ...adapter.formatConverter.toSlackPayload({ markdown: withoutLabel(markdown, as.name) }),
       unfurl_links: false,
       unfurl_media: false,
       username,

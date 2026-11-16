@@ -3,11 +3,11 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { board } from "@vercel/board";
 import { local } from "@vercel/board/backend-local";
-import type { AgentMessage } from "../agent/lib/wake.ts";
 import { firstTask, ownRequest, startFirstTask, templateReadme } from "../lib/first-task.ts";
+import { pageBoard } from "../lib/page-board.ts";
 
 // The factory's first task, started as the page starts it, on a real board kept in memory: what
-// lands on the board is what people see, and what reaches the agent is what `wake` gets.
+// lands on the board is what people see, and what the agent's watcher hears.
 
 const TEMPLATE_README = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 
@@ -18,37 +18,51 @@ test("the template's own README is the template's, and one without its Deploy bu
   assert.equal(templateReadme(undefined), false);
 });
 
-test("starting it opens one thread where the factory changes itself, and hands it to the agent", async () => {
+test("starting it opens one thread where the factory changes itself, written by the launcher and not by the agent", async () => {
   const team = board({ backend: local({ memory: true }) });
-  const woken: AgentMessage[] = [];
-  const root = await startFirstTask(team, "project-factory/rsi", async (message) => void woken.push(message));
+  const page = pageBoard(team);
+  const root = await startFirstTask(page, "project-factory/rsi");
   const { messages } = await team.messages({ channel: "project-factory/" });
   assert.deepEqual(messages.map((message) => [message.id, message.channel, message.re]), [[root.id, "project-factory/rsi", null]]);
   // It says what to do, so the agent that reads it needs nothing else.
   assert.match(messages[0]!.text, /README/);
-  assert.deepEqual(woken.map(({ thread, text }) => [thread, text]), [[root.id, `New board thread #${root.id}.`]]);
+  // Whoever reads the thread sees the page asked, not the agent asking itself: the board's own
+  // writes are the agent's.
+  assert.equal(messages[0]!.by.actor, (await page.me()).actor);
+  assert.notEqual(messages[0]!.by.actor, (await team.me()).actor);
+  assert.equal((await page.me()).name, "launcher");
   // And the page can tell it started.
   assert.equal(firstTask(TEMPLATE_README, messages), "started");
 });
 
-test("asked twice, it starts once: one thread, and the same wake-up key, which the agent's channel takes once", async () => {
+test("asked twice, it starts once: one thread", async () => {
   const team = board({ backend: local({ memory: true }) });
-  const woken: AgentMessage[] = [];
-  const wake = async (message: AgentMessage) => void woken.push(message);
-  const first = await startFirstTask(team, "project-factory/rsi", wake);
-  const again = await startFirstTask(team, "project-factory/rsi", wake);
+  const first = await startFirstTask(pageBoard(team), "project-factory/rsi");
+  const again = await startFirstTask(pageBoard(team), "project-factory/rsi");
   assert.equal(again.id, first.id);
   assert.equal((await team.messages({ channel: "project-factory/" })).messages.length, 1);
-  assert.equal(new Set(woken.map((message) => message.key)).size, 1);
 });
 
 test("a team's factories share a board, and each starts its own first task there", async () => {
   const team = board({ backend: local({ memory: true }) });
-  const wake = async () => {};
-  const a = await startFirstTask(team, "project-web/rsi", wake);
-  const b = await startFirstTask(team, "project-api/rsi", wake);
+  const a = await startFirstTask(team, "project-web/rsi");
+  const b = await startFirstTask(team, "project-api/rsi");
   assert.notEqual(a.id, b.id);
   assert.deepEqual((await team.messages({ channel: "project-api/" })).messages.map((message) => message.id), [b.id]);
+});
+
+test("the page's handle opens threads where the factory changes itself, and writes nowhere else", async () => {
+  const team = board({ backend: local({ memory: true }) });
+  const page = pageBoard(team);
+  const elsewhere = await team.post("project-factory/web", "a thread about a repo");
+  await assert.rejects(page.post("project-factory/web", "onboard something"), { code: "forbidden" });
+  await assert.rejects(page.post("project-factory", "hello"), { code: "forbidden" });
+  await assert.rejects(page.post("another-team", "hello"), { code: "forbidden" });
+  // A thread it can't read isn't there for it at all.
+  await assert.rejects(page.reply(elsewhere.id, "and this"));
+  await assert.rejects(page.react(elsewhere.id, "eyes"));
+  const { messages } = await team.messages({ channel: "project-factory/" });
+  assert.deepEqual(messages.map((message) => [message.text, Object.keys(message.reactions ?? {})]), [["a thread about a repo", []]]);
 });
 
 test("the first task is on offer while the README is the template's and nothing started it, and gone once the README is the team's", async () => {

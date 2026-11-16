@@ -3,7 +3,7 @@ import { createServer } from 'experimental-a2/server'
 import type { Protocol } from '../api/protocol.ts'
 import type { SchemaView } from '../api/routes.ts'
 import { SCHEMAS_SESSION, schemasContract, type SchemasEvent } from '../contract/contract.ts'
-import { BUILT_IN_SCHEMAS, canonical, checkDefinition, isBuiltInName, parseSchemaId, schemaId, SCHEMAS_MAX, type SchemaDefinition } from '../contract/data-schemas.ts'
+import { BUILT_IN_SCHEMAS, canonical, checkDefinition, isBuiltInName, parseSchemaId, SCHEMA_DESCRIPTION_MAX, SCHEMA_NAME, SCHEMA_VERSION_MAX, schemaId, SCHEMAS_MAX, type SchemaDefinition } from '../contract/data-schemas.ts'
 import type { Identity } from './backend.ts'
 import { badRequest, forbidden, HttpError, notFound } from './errors.ts'
 import { whileHeadMoves } from './writes.ts'
@@ -61,6 +61,9 @@ export function createSchemas(options: { store: Parameters<typeof createServer>[
     },
     async createSchema({ principal, actor }: Identity, body: Protocol['createSchema']['input']): Promise<Protocol['createSchema']['output']> {
       if (!principal.access.at('manage', '*')) throw forbidden("this token can't register schemas: it needs manage at *")
+      if (!SCHEMA_NAME.test(body.name)) throw badRequest('name: a schema name is up to 80 lowercase letters, numbers, and ._-, starting with a letter')
+      if (body.version > SCHEMA_VERSION_MAX) throw badRequest(`version: a schema version is at most ${SCHEMA_VERSION_MAX.toLocaleString('en-US')}`)
+      if (body.description !== undefined && body.description.length > SCHEMA_DESCRIPTION_MAX) throw badRequest(`description: a schema description is at most ${SCHEMA_DESCRIPTION_MAX.toLocaleString('en-US')} characters`)
       const id = schemaId(body.name, body.version)
       if (isBuiltInName(body.name)) throw new HttpError(409, 'reserved_schema', `${body.name} is a built-in schema: register yours under another name`)
       const problem = checkDefinition(body.schema)

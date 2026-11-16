@@ -45,9 +45,11 @@ Until the deployment turns strangers away, the launcher shows only how to protec
   a project named `factory`, so a team's second factory never hears the first.
 - **This repo's own PRs and issues come into `project-<name>/rsi`,** where people talk with the
   agent about the factory itself, and Slack's `#<project>-rsi` mirrors it.
-- **Each repo you onboard gets a channel of its own,** `project-<name>/<repo>`. Ask the agent,
-  "onboard acme/web", and it opens the pull request that adds the line to
-  `app/api/board/[[...path]]/channels.ts`. What's about no one repo goes in `project-<name>`.
+- **Each repo you onboard gets a channel of its own,** `project-<name>/<repo>`, and a Slack
+  channel that mirrors it: the one you name, or `#<project>-<repo>`. Ask the agent, "onboard
+  acme/web", and it opens the pull request that adds both lines to
+  `app/api/board/[[...path]]/channels.ts`, and says where the repo will show and what's left to
+  do. What's about no one repo goes in `project-<name>`.
 - **The agent hears every message in those channels,** and decides what each needs: an answer, a
   reproduction, a PR, a review, or nothing.
 - **Each thread gets its own session and its own sandbox.** Its GitHub token covers only the
@@ -61,7 +63,7 @@ Until the deployment turns strangers away, the launcher shows only how to protec
 | To change | Edit |
 | --- | --- |
 | How it works on every turn: what it answers, how it triages, how it writes | `agent/lib/instructions.ts` |
-| What it does sometimes: reviewing, reproducing a bug, seeing a PR through, demos | `agent/skills/` |
+| What it does sometimes: reviewing, reproducing a bug, opening a PR and seeing it through, demos, onboarding a repo | `agent/skills/` |
 | Which repos and Slack channels come into the board, and where | `app/api/board/[[...path]]/channels.ts` |
 | Its model, and its sandbox | `agent/agent.ts`, `agent/sandbox.ts` |
 

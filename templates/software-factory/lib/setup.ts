@@ -41,10 +41,16 @@ export type Me = { principal: string; can: Record<string, readonly string[]> };
 /**
  * What the checks came across on the way, for the page to show once the factory runs: this
  * deployment on its board (null when it can't use it), the latest messages in its channels, how
- * many repos its GitHub app is on that come into no channel (null when that couldn't be told), and
- * where its first task stands (null when there's none to offer).
+ * many repos its GitHub app is on that come into no channel (null when that couldn't be told) and
+ * which, by name, for the page to suggest, where on GitHub that app is added to more repos (null
+ * when its name couldn't be told), the pull requests the factory itself opened in its repos, by
+ * where they stand (null when GitHub didn't say), and where its first task stands (null when
+ * there's none to offer).
  */
-export type Found = { me: Me | null; recent: MessageView[]; waiting: number | null; first: FirstTask };
+export type Found = { me: Me | null; recent: MessageView[]; waiting: number | null; unmapped: string[]; install: string | null; pulls: Pulls | null; first: FirstTask };
+
+/** Pull requests, counted by where they stand: a draft is open, and closed means closed without merging. */
+export type Pulls = { open: number; merged: number; closed: number };
 
 /** How many messages one read of the factory's channels asks for. */
 export const READ = 200;
@@ -198,7 +204,7 @@ export async function setup(deps: Deps): Promise<Setup> {
     }
   }
   const vercel = await vercelStep(deps, local, project);
-  const found: Found = { me: vercel.me, recent: [], waiting: null, first: null };
+  const found: Found = { me: vercel.me, recent: [], waiting: null, unmapped: [], install: null, pulls: null, first: null };
   const [connected, mirrored] = [githubStep(deps, project, found), slackStep(deps, project)];
   const [github, slack, tryIt] = await Promise.all([connected, mirrored, tryStep(deps, project, found, connected, mirrored)]);
   return { open: false, steps: [vercel.step, github, slack, tryIt], found };
@@ -249,6 +255,57 @@ async function vercelStep(deps: Deps, local: boolean, project: Project): Promise
 
 type Repo = { full_name: string };
 
+/**
+ * The pull requests an app opened in `repos`, counted by GitHub in one request. The factory's own
+ * never come into the board (it would review itself), so the board can't count them. Only in
+ * `repos`: a team may use the same app elsewhere.
+ */
+async function pullsBy(api: (path: string, init?: RequestInit) => Promise<Response>, app: string, repos: string[]): Promise<Pulls | null> {
+  if (!repos.length) return null;
+  const theirs = `is:pr author:app/${app} ${repos.map((repo) => `repo:${repo}`).join(" ")}`;
+  const response = await api("/graphql", {
+    method: "POST",
+    body: JSON.stringify({
+      query:
+        "query($open: String!, $merged: String!, $closed: String!) { open: search(query: $open, type: ISSUE) { issueCount } merged: search(query: $merged, type: ISSUE) { issueCount } closed: search(query: $closed, type: ISSUE) { issueCount } }",
+      variables: { open: `${theirs} is:open`, merged: `${theirs} is:merged`, closed: `${theirs} is:closed is:unmerged` },
+    }),
+  });
+  const data = ((await response.json()) as { data?: Partial<Record<keyof Pulls, { issueCount?: unknown } | null>> }).data;
+  const [open, merged, closed] = (["open", "merged", "closed"] as const).map((state) => data?.[state]?.issueCount);
+  return typeof open === "number" && typeof merged === "number" && typeof closed === "number" ? { open, merged, closed } : null;
+}
+
+/** What GitHub answers for the repos an app is on: how many in all, and one page of them. */
+type Installed = { total_count: number; repositories: Repo[] };
+
+/** How many pages of an app's repos one check reads, 100 to a page. Past that, it knows the first thousand. */
+const REPO_PAGES = 10;
+
+/**
+ * The repos an app is on. The first page says how many there are, and the rest are read together.
+ * A later page that fails costs only what came after it: the first page is all a small factory
+ * needs, and with fewer repos than GitHub counted, the checks know they didn't read them all.
+ */
+async function installed(api: (path: string) => Promise<Response>): Promise<Installed> {
+  const page = async (number: number) => {
+    const response = await api(`/installation/repositories?per_page=100&page=${number}`);
+    if (!response.ok) throw new Error(`GitHub answered ${response.status}`);
+    return (await response.json()) as Installed;
+  };
+  const first = await page(1);
+  const pages = Math.min(Math.ceil(first.total_count / 100), REPO_PAGES);
+  const rest = await Promise.allSettled(Array.from({ length: Math.max(pages - 1, 0) }, (_, i) => page(i + 2)));
+  const repositories = [...first.repositories];
+  for (const read of rest) {
+    if (read.status === "rejected") break;
+    repositories.push(...read.value.repositories);
+  }
+  // A repo added between two reads can show on two pages: it's one repo, for the names and for the count.
+  const once = [...new Map(repositories.map((repo) => [repo.full_name, repo])).values()];
+  return { total_count: first.total_count, repositories: once };
+}
+
 /** The connector, the repos its app is on, and among them this factory's own, which the agent changes to improve itself. */
 async function githubStep(deps: Deps, project: Project, found: Found): Promise<Step> {
   const connector = deps.synced.connectors.github;
@@ -261,7 +318,11 @@ async function githubStep(deps: Deps, project: Project, found: Found): Promise<S
     // Signed out on your machine: the Vercel step says how to sign in.
     if (isLocal(deps.env) && !deps.env.VERCEL_OIDC_TOKEN) return step("github", [todo(CONNECT), todo(INSTALL)]);
     // The connector is there, and its app is on nothing yet.
-    if (token instanceof Error && token.name === "ConnectorInstallationRequiredError") return step("github", [done(CONNECT), todo(INSTALL)]);
+    if (token instanceof Error && token.name === "ConnectorInstallationRequiredError") {
+      // On no repo at all, which is known, not a read that fell short.
+      found.waiting = 0;
+      return step("github", [done(CONNECT), todo(INSTALL)]);
+    }
     if (taken(token)) return step("github", [attach(deps, "github", connector, project), todo(INSTALL)]);
     return step("github", [todo(CONNECT, { commands: [createConnector("github", connector, project)] }), todo(INSTALL)]);
   }
@@ -273,12 +334,8 @@ async function githubStep(deps: Deps, project: Project, found: Found): Promise<S
       headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", ...init.headers },
       signal: AbortSignal.timeout(10_000),
     });
-  type Listed = { total_count: number; repositories: Repo[] };
-  const read: [Listed, string | null] | Error = await Promise.all([
-    api("/installation/repositories?per_page=100").then(async (response) => {
-      if (!response.ok) throw new Error(`GitHub answered ${response.status}`);
-      return (await response.json()) as Listed;
-    }),
+  const read: [Installed, string | null] | Error = await Promise.all([
+    installed(api),
     api("/graphql", { method: "POST", body: JSON.stringify({ query: "query { viewer { login } }" }) })
       .then(async (response) => ((await response.json()) as { data?: { viewer?: { login?: string } } }).data?.viewer?.login ?? null)
       .catch(() => null),
@@ -287,32 +344,46 @@ async function githubStep(deps: Deps, project: Project, found: Found): Promise<S
 
   const [{ total_count, repositories }, viewer] = read;
   const app = viewer?.replace(/\[bot\]$/, "") ?? null;
-  const install = app ? { link: { href: `https://github.com/apps/${app}/installations/new`, label: "Configure the app" } } : {};
-  if (total_count === 0) return step("github", [...tasks, todo(INSTALL, install)]);
+  // Where GitHub asks which repos the app is on.
+  found.install = app ? `https://github.com/apps/${app}/installations/new` : null;
+  const install = found.install ? { link: { href: found.install, label: "Configure the app" } } : {};
+  if (total_count === 0) {
+    found.waiting = 0;
+    return step("github", [...tasks, todo(INSTALL, install)]);
+  }
+  // What the factory itself opened, in the repos the board brings in: asked now, beside the rest of
+  // the step, and waited for with whatever the step returns.
+  const counting = app ? pullsBy(api, app, Object.keys(deps.synced.repoChannels)).catch(() => null) : Promise.resolve(null);
+  const counted = async (result: Step): Promise<Step> => {
+    found.pulls = await counting;
+    return result;
+  };
   // Installed but in no channel: the board drops their PRs and issues (matched as GitHub writes them).
-  // How many, and not which: the app's repos are read as the app, and whoever can open the deployment
-  // sees this page, whatever they can see on GitHub.
+  // The step says how many. Which ones is for the page to suggest when someone onboards one: it
+  // shows them to whoever can open the deployment, and the checks get here only once that's the team.
   const mapped = deps.synced.repoChannels;
-  const off = total_count > repositories.length ? [] : repositories.filter((repo) => !(repo.full_name in mapped));
+  const unlisted = repositories.filter((repo) => !(repo.full_name in mapped));
+  found.unmapped = unlisted.map((repo) => repo.full_name).sort((a, b) => a.localeCompare(b));
+  const off = total_count > repositories.length ? [] : unlisted;
   found.waiting = total_count > repositories.length ? null : off.length;
   const several = off.length > 1;
   const unmapped = `${off.length} ${several ? "repos" : "repo"} with the app ${several ? "aren't" : "isn't"} on the board yet.`;
   // The link opens where the map of repos starts.
   const map = sourceLink(deps, CHANNELS_FILE, several ? "Add them" : "Add it", (lines) => lines.findIndex((line) => line.startsWith("export const repoChannels")));
   tasks.push(done(INSTALL, off.length ? { hint: unmapped, ...map } : {}));
-  if (!own) return step("github", tasks);
+  if (!own) return counted(step("github", tasks));
 
   const WHY = "So the agent can change its own code.";
   const repo = repositories.find((candidate) => candidate.full_name.toLowerCase() === own.toLowerCase());
   // GitHub listed a first page only, and this repo isn't on it.
-  if (!repo && total_count > repositories.length) return step("github", [...tasks, todo(`Check that the app is on ${named(own)}`, { hint: WHY, ...install })]);
-  if (!repo) return step("github", [...tasks, todo(`Install the app on ${named(own)}`, { hint: WHY, ...install })]);
+  if (!repo && total_count > repositories.length) return counted(step("github", [...tasks, todo(`Check that the app is on ${named(own)}`, { hint: WHY, ...install })]));
+  if (!repo) return counted(step("github", [...tasks, todo(`Install the app on ${named(own)}`, { hint: WHY, ...install })]));
   // GitHub lists an app's repos with every permission false, so ask for what the agent's turns ask
   // for (agent/lib/credentials.ts): a token for this repo alone, here one that can write to it, which
   // GitHub only issues when the app may.
   const writable = await deps.connect(connector, githubScope([repo.full_name], ["contents:write"])!).catch((error: unknown) => error);
-  if (typeof writable !== "string") return step("github", [...tasks, todo(write(own), { hint: WHY, ...install })]);
-  return step("github", [...tasks, done(write(own))]);
+  if (typeof writable !== "string") return counted(step("github", [...tasks, todo(write(own), { hint: WHY, ...install })]));
+  return counted(step("github", [...tasks, done(write(own))]));
 }
 
 async function slackStep(deps: Deps, project: Project): Promise<Step> {
@@ -329,8 +400,14 @@ async function slackStep(deps: Deps, project: Project): Promise<Step> {
     return first !== -1 && !lines[first]!.startsWith("}") ? first : -1;
   };
   const INVITE = (channels: string[]) => `Invite the app to ${named(...channels)}`;
+  // What the channels are for, in a line: the factory's own, or the ones a repo it works on shows in.
+  const why = (channels: string[]) => {
+    const mirrored = [...new Set(channels.map((name) => deps.synced.slackChannels[name]))];
+    if (mirrored.every((to) => to === `${deps.synced.home}/rsi`)) return "Where the factory updates itself.";
+    return mirrored.length === 1 ? `Where ${mirrored[0]} shows in Slack.` : "Where the factory's channels show in Slack.";
+  };
   const invite = (channels: string[], command?: string): Task =>
-    todo(INVITE(channels), { hint: "Where the factory updates itself.", ...sourceLink(deps, CHANNELS_FILE, "Change the channel", names), ...(command ? { commands: [command] } : {}) });
+    todo(INVITE(channels), { hint: why(channels), ...sourceLink(deps, CHANNELS_FILE, "Change the channel", names), ...(command ? { commands: [command] } : {}) });
   const token = await deps.connect(connector).catch((error: unknown) => error);
   if (typeof token !== "string") {
     if (isLocal(deps.env) && !deps.env.VERCEL_OIDC_TOKEN) return step("slack", [todo(CONNECT), invite(wanted)], true);
@@ -360,6 +437,49 @@ async function slackStep(deps: Deps, project: Project): Promise<Step> {
 /** The Slack channel that mirrors a board channel, by its name. One mapped by its ID has no name to say, so it's none. */
 export const mirrorOf = (slackChannels: Record<string, string>, channel: string): string | null =>
   Object.keys(slackChannels).find((name) => name.startsWith("#") && slackChannels[name] === channel) ?? null;
+
+/** A repo the factory works on, and where it shows: its board channel, and the Slack channel that mirrors it, when one does by name. */
+export type Listed = { repo: string; channel: string; slack: string | null };
+
+/** The repos the board brings in, in the map's order, each with where it shows. */
+export const reposOf = ({ repoChannels, slackChannels }: Pick<Synced, "repoChannels" | "slackChannels">): Listed[] =>
+  Object.entries(repoChannels).map(([repo, channel]) => ({ repo, channel, slack: mirrorOf(slackChannels, channel) }));
+
+/**
+ * Whether the GitHub app is on a repo no channel brings in yet, as far as the checks read: its name
+ * as GitHub writes it, `false` when they read every repo the app is on and it isn't one, and `null`
+ * when they couldn't tell (no connector, GitHub didn't answer, or more repos than one check reads).
+ */
+export function hasApp(repo: string, { unmapped, waiting }: Pick<Found, "unmapped" | "waiting">): string | false | null {
+  const name = unmapped.find((candidate) => candidate.toLowerCase() === repo.toLowerCase());
+  return name ?? (waiting === null ? null : false);
+}
+
+/** What the agent is told about one repo it asked about: where it shows when it's onboarded, or whether the GitHub app is on it, as far as the checks could tell. */
+export type Asked = ({ onboarded: true } & Listed) | { repo: string; onboarded: false; app: boolean | null };
+
+/**
+ * What the agent's setup_steps tool reads: the page's steps with their tasks, and how many repos
+ * the factory works on and how many more its GitHub app is on. With `repo`, also where that one
+ * shows, or whether the app is on it, which the agent can't tell from a thread, where its GitHub
+ * access covers only what's onboarded. One repo at a time and never a list of names: the agent
+ * answers people who aren't on the team, from GitHub and Slack, and a thread about one repo has no
+ * business with the others' names.
+ */
+export function stepsView({ steps, found }: Extract<Setup, { open: false }>, synced: Pick<Synced, "repoChannels" | "slackChannels">, repo: string | null = null) {
+  const onboarded = reposOf(synced);
+  const about = (name: string): Asked => {
+    const listed = onboarded.find((entry) => entry.repo.toLowerCase() === name.toLowerCase());
+    if (listed) return { onboarded: true, ...listed };
+    const app = hasApp(name, found);
+    return { repo: typeof app === "string" ? app : name, onboarded: false, app: app === null ? null : app !== false };
+  };
+  return {
+    steps: steps.map((step) => ({ title: step.title, optional: step.optional ?? false, done: isDone(step), tasks: step.tasks })),
+    repos: { onboarded: onboarded.length, waiting: found.waiting },
+    ...(repo ? { asked: about(repo) } : {}),
+  };
+}
 
 /**
  * `github` and `slack` are those steps: the first task needs the first one done, since it's a pull

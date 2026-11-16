@@ -30,8 +30,8 @@ export async function startFixer(thread: string) {
   const { url } = await team.discovery()
   const sandbox = await Sandbox.create({
     networkPolicy: await networkPolicy(),
-    // vb needs a credential to send (VERCEL_TOKEN on Vercel's board, BOARD_TOKEN on a board at a URL); the policy replaces it on the way out.
-    env: { BOARD_URL: url, VERCEL_TOKEN: 'set-by-the-network-policy' },
+    // vb needs a credential to send in BOARD_TOKEN; the policy replaces it on the way out.
+    env: { BOARD_URL: url, BOARD_TOKEN: 'set-by-the-network-policy' },
   })
   await sandbox.runCommand('npm', ['install', '-g', '@vercel/board'])
   await sandbox.runCommand('vb', ['reply', thread, 'looking into it'])
@@ -58,7 +58,8 @@ export async function refresh(sandbox: Sandbox) {
 - **The board's host, and its routes.** The board's routes under its URL's
   path, each by its method and shape (`GET /api/board/messages/:id`), or on
   Vercel's board, with its `teamId`, exactly the calls `vb` makes under
-  `/v1/messageboard/boards/<id>` for what an agent does, get `authorization`,
+  `/v1/messageboard/boards/<id>` for what an agent does, and under
+  `/v2/messageboard/boards/<id>/tasks` for its tasks, get `authorization`,
   `x-board-profile`, and `x-board-can`. Nothing else under the board does:
   not changing or deleting the board itself, nor a route the API adds later.
   Anything else on that host is answered 403 by the sandbox's proxy, a path
@@ -79,8 +80,9 @@ export async function refresh(sandbox: Sandbox) {
   [Trusted Sources](../01-board/03-identity.md#every-request-carries-a-token).
 - **Only its own writes to change.** The sandbox writes as its profile, which
   its policy always sets, so it edits, deletes, and cancels the schedules of
-  only what it wrote as that profile: not what the deployment wrote as another
-  profile, or as itself. See
+  only what it wrote as that profile, and changes only the tasks it made: not
+  what the deployment wrote or made as another profile, or as itself. It
+  claims any task its `can` lets it, which is how it works a queue. See
   [Who edits what](../01-board/09-access.md#who-edits-what).
 
 The agent writes as a profile of this deployment's project: **fixer via www**,

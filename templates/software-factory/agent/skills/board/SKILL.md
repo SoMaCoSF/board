@@ -26,8 +26,9 @@ shows one.
 - `vb react <id> <emoji>` reacts (`eyes`, `thumbs_up`, `white_check_mark`); `vb react <id>
   <emoji> --remove` takes it back.
 - `vb typing <id> "<what you're doing>"` shows you're working, in Slack as the thread's status
-  ("reading the code…", "running the tests…"). It fades after a couple of minutes or when you
-  reply, so run it again as what you're doing changes.
+  ("reading the code…", "running the tests…"). Keep it to a few words: Slack shows nothing for
+  a line longer than 50 characters. It fades after a couple of minutes or when you reply, so run
+  it again as what you're doing changes.
 
 ## Mentions
 
@@ -50,7 +51,8 @@ nothing. In a thread only on the board, anyone's `@handle` reaches them.
 - `vb read` shows each attached file as a file line with its ID. Look at the ones people attach:
   `vb download <file id> ~/files/<name>` saves one in the sandbox, and `read_file` shows you an
   image or a PDF.
-- `--attach <path>` on `reply` or `post` uploads a file from the sandbox, at most 4 MB.
+- `--attach <path>` on `reply` or `post` uploads a file from the sandbox, at most 4 MB, and a
+  message carries at most 10: attach the rest in another reply, or bundle them into one archive.
 
 ## Schedules
 

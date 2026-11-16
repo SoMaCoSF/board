@@ -1,5 +1,6 @@
 import { FIRST_TASK_PATH } from "./first-task.ts";
-import type { Running } from "./launcher.ts";
+import { ONBOARD_PATH } from "./onboard.ts";
+import type { Running } from "./running.ts";
 import { duration } from "./overview.ts";
 import { headline, isDone, progress, type Setup, type Step, type Task } from "./setup.ts";
 
@@ -24,10 +25,11 @@ export const asksFor = (steps: Step[], command: string): boolean => steps.some((
 /** How long ago `at` was, as people say it: `4m ago`. */
 export const ago = (at: string, now: Date): string => `${duration(now.getTime() - Date.parse(at))} ago`;
 
-/** How to onboard a repo, in a line: how many are waiting, and where to ask, in Slack when the factory's channel is mirrored there. */
-export function onboarding({ channel, slack, waiting }: Running["ask"]): string {
-  return `${waiting ? `${waiting} more ${waiting === 1 ? "has" : "have"} the GitHub app. ` : ""}To onboard one, ask in ${slack ?? channel}:`;
-}
+/** How many repos have the GitHub app and come into no channel, in a line. Nothing when there's none, or it couldn't be told. */
+export const waitingLine = ({ waiting }: Pick<Running["ask"], "waiting">): string => (waiting ? `${waiting} more ${waiting === 1 ? "has" : "have"} the GitHub app.` : "");
+
+/** Where a repo shows: its board channel, and the Slack channel that mirrors it, when one does. */
+export const shows = ({ channel, slack }: { channel: string; slack: string | null }): string => (slack ? `${channel} · ${slack}` : channel);
 
 /** The first task, in a line: what it is while it's on offer, and where it is once it started. */
 export const firstTaskLine = (first: NonNullable<Running["first"]>, { channel, slack }: Running["ask"]): string =>
@@ -44,15 +46,16 @@ function activity({ overview: { week, lastReplyAt, pulls }, repos, ask, first }:
     `- ${week.threads}${plus} threads, ${week.messages}${plus} messages`,
     `- ${week.answered} answered${week.firstReplyMs === null ? "" : `, the first reply after ${duration(week.firstReplyMs)} (median)`}`,
     ...(lastReplyAt ? [`- Last reply ${ago(lastReplyAt, now)}`] : []),
-    "",
-    "## Pull requests",
-    "",
-    `- ${pulls.open} open, ${pulls.merged} merged, ${pulls.closed} closed`,
+    // The ones the factory opened: GitHub counts them, and when it didn't answer there's nothing to say.
+    ...(pulls ? ["", "## Pull requests", "", `- ${pulls.open} open, ${pulls.merged} merged, ${pulls.closed} closed, opened by the factory`] : []),
     "",
     "## Repos",
     "",
-    ...repos.map(({ repo, channel }) => `- ${repo} in \`${channel}\``),
-    `- ${onboarding(ask)} onboard <owner>/<repo>`,
+    ...repos.map(({ repo, channel, slack }) => `- ${repo} in \`${channel}\`${slack ? `, ${slack} in Slack` : ""}`),
+    // What the page does with a field and a button, said as the request it makes.
+    `- ${[waitingLine(ask), `Onboard one: POST ${ONBOARD_PATH} with {"repo": "<owner>/<repo>"}, or ask in ${ask.slack ?? ask.channel}: onboard <owner>/<repo>`].filter(Boolean).join(" ")}`,
+    ...(ask.suggest.length ? [`- With the app, not onboarded: ${ask.suggest.join(", ")}`] : []),
+    ...(ask.install ? [`- [Add the GitHub app to more repos](${ask.install})`] : []),
   ];
 }
 

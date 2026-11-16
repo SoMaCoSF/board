@@ -41,6 +41,9 @@ export const textTooLong = () =>
   })
 export const duplicateId = () =>
   new HttpError(409, 'duplicate_id', 'that id was already used for a different write')
+/** More tasks than a board makes in one batch: `most` is how many it does. Nothing was made, and its sender splits it. */
+export const batchTooLarge = (tasks: number, most: number) =>
+  new HttpError(400, 'batch_too_large', `a batch makes ${most} tasks at most, and this one has ${tasks}: send it in parts`)
 
 export const json = (body: unknown, status = 200, headers?: HeadersInit) =>
   new Response(JSON.stringify(body), {

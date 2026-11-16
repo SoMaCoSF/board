@@ -2,7 +2,7 @@ import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import { board } from '../src/server/index.ts'
 import { ATTACHMENT_BYTES_MAX } from '../src/contract/files.ts'
 import { vercel } from '../src/backend-vercel/index.default.ts'
-import { vercel as nodeVercel } from '../src/backend-vercel/index.ts'
+import { credentialSource, vercel as nodeVercel } from '../src/backend-vercel/index.ts'
 import { conformance } from '../src/conformance/index.ts'
 import { boardEvents } from '../src/contract/events.ts'
 import { watchersHash } from '../src/server/registry.ts'
@@ -12,6 +12,7 @@ import type { Caller } from '../src/server/backend.ts'
 import type { Middleware } from '../src/server/middleware.ts'
 import type { Watcher } from '../src/server/watcher.ts'
 import { slack } from '../src/sync/slack.ts'
+import { github, repos } from '../src/sync/github.ts'
 import { channels, render } from '../src/sync/fn.ts'
 import { as, fakeMessageboard } from './messageboard.ts'
 import { fakePlatform, withSlackClient } from './sync-fixtures.ts'
@@ -108,9 +109,35 @@ describe('vercel()', () => {
       "sync: refuses a caller narrowed with x-board-can sync's records: imports, receipts, and the inbox": 'skipped',
       'core: creates a channel only once: one a post made is there already': 'passed',
       'core: answers 404 for an ID that names nothing': 'passed',
+      'core: stores a handle one actor has as a mention of them, and keeps one no one has as typed': 'passed',
       'core: answers 400 for a request that does not validate': 'passed',
       'schedules: schedules a reply, lists it, and cancels it': 'passed',
       'schedules: keeps noSync on a schedule, so its sends stay off every platform': 'passed',
+      // Tasks are the API's threads': vercel() maps each task method onto their routes.
+      'tasks: starts a thread as a task, or makes one of a thread that was there: it reads as its thread, and board.task finds it': 'passed',
+      'tasks: makes a task once for a client ID, and none under an ID a reply or a plain thread landed with': 'passed',
+      'tasks: gives a task to one of the claims that race for it, and takes its result': 'passed',
+      'tasks: gives a claim the lease it asks for, up to 5 minutes, and says when it ends': 'passed',
+      "tasks: fences what a claim does: once it's over, its writes are lost and change nothing": 'passed',
+      'tasks: holds a task until the tasks it needs complete, which a failed or canceled one never does': 'passed',
+      'tasks: refuses a prerequisite that was canceled, which can never complete, and takes one that failed': 'passed',
+      'tasks: lists the tasks that wait for one in the channel a list names, or its subtree, and no other': 'passed',
+      'tasks: says task.ready each time a task that needs others becomes ready: right after it is made or unblocked, once they have completed': 'passed',
+      'tasks: changes what a task needs: it waits for the new ones, is ready once they have completed, and at once with none': 'passed',
+      'tasks: refuses a change of needs that would make a task wait for itself, straight back or through others': 'passed',
+      'tasks: changes what a task needs only while no one holds it and it has not finished': 'passed',
+      'tasks: makes several tasks in one write, in the order given: each waits for the ones it names, of the batch or there already, and an id makes them once': 'passed',
+      'tasks: makes none of a batch when one of its tasks can not be made, wherever it comes in it': 'passed',
+      'tasks: holds a task for a person, by its owner or its claim, and gives it back when unblocked': 'passed',
+      'tasks: keeps a task assigned to a profile for that actor alone': 'passed',
+      'tasks: lets a profile change only the tasks it made, and its principal all of them': 'passed',
+      'tasks: takes label in its channel to claim a task: a caller narrowed to reading and posting claims none': 'passed',
+      "tasks: takes read in a prerequisite's channel to wait for it: a caller narrowed out of it makes no task that needs it": 'passed',
+      'tasks: claims the oldest ready task in a channel or its subtree that has the labels asked for, and waits for one': 'passed',
+      'tasks: shows a feed that filters on board.task=ready a task becoming ready and being claimed, and never a token': 'passed',
+      'tasks: keeps labels under board. its own: a label write or a post that sets one is refused': 'passed',
+      // Its other author is a platform's, imported by a sync, which only a deployment runs.
+      'tasks: holds a task when anyone but its owner edits its root, which ends its claim': 'skipped',
       'grants: grants a principal, lists it, and revokes it': 'passed',
       'grants: makes another grant for the same principals, and changes one by its ID': 'passed',
       "grants: keeps a grant's can as written, a pattern with no permissions included": 'passed',
@@ -119,6 +146,8 @@ describe('vercel()', () => {
       'grants: caps a person by their team role, so a viewer reads but neither posts nor manages': 'passed',
       'grants: names an app by its slug or client ID, keeps it by client ID, and every app as a group': 'passed',
       'grants: takes manage at each pattern a grant names to change it, and at * to list them': 'passed',
+      "paging: pages back through a channel's threads by their `older`, each thread once": 'passed',
+      'paging: refuses to page threads back and forward at once': 'passed',
       "grants: lets no caller narrowed with x-board-can grant past its can, even where everyone's grant closes it": 'passed',
       'grants: lets no caller narrowed with x-board-can let anyone in where everyone gets more than it has': 'passed',
       'grants: lets a member grant on a pattern after a lock under it': 'skipped',
@@ -129,9 +158,11 @@ describe('vercel()', () => {
       'schemas: carries a block in a message, checked against the schema its fence names': 'passed',
       'schemas: refuses a caller narrowed with x-board-can a schema, and lets it read them': 'passed',
       'attachments: takes a file, posts it, and gives it back': 'passed',
+      'attachments: starts a task with a file, which its root carries': 'passed',
       'watchers: matches a registered tail, hands the match to a pull, and takes its ack': 'skipped',
       'watchers: wakes by path only where its discovery says so, and only a Vercel project': 'skipped',
       "sync: keeps sync's records: an import as a profile of its importer, its lookups by platform ID, a receipt, and where it's synced": 'skipped',
+      "sync: meets a platform user an import's text mentions: an actor as one who wrote would be, whom the text names by that actor's ID": 'skipped',
       "sync: queues a platform thread's events in its sync's inbox once, and leases each after the one before is acked": 'skipped',
       "sync: takes an edit of a long message in its sync's inbox, under the longest event ID the protocol allows, and refuses a longer one": 'skipped',
       'sync: hands a sync each message change as a match of its @sync watcher': 'skipped',
@@ -140,6 +171,20 @@ describe('vercel()', () => {
     // It leaves the grants as it found them.
     expect([...api.grants.keys()]).toEqual(['g1', 'g2', 'g3'])
   }, 30_000)
+
+  it("refuses a label under board. before it reaches Vercel's API, as on any backend", async () => {
+    const api = fakeMessageboard()
+    const handle = handleOn(api)
+    const root = await handle.post('dev', 'fix CVE-123')
+    api.requests.length = 0
+    // The board's own labels are board()'s to keep, on every backend.
+    await expect(handle.label(root.id, { set: { 'board.task': 'ready' } })).rejects.toMatchObject({ status: 400, code: 'reserved_label' })
+    await expect(handle.post('dev', { text: 'looks ready', labels: { 'board.task': 'ready' } })).rejects.toMatchObject({ status: 400, code: 'reserved_label' })
+    expect(api.requests).toEqual([])
+    // Any other label still goes through.
+    await handle.label(root.id, { set: { step: 'fix' } })
+    expect((await handle.thread(root.id)).message.labels).toEqual({ step: 'fix' })
+  })
 
   it("passes the conformance kit's checks of who writes against an API that reads them as board's protocol has it, and says how today's fails", async () => {
     const statuses = (report: Awaited<ReturnType<typeof conformance>>) =>
@@ -199,10 +244,17 @@ describe('vercel()', () => {
     expect((await julian.thread(root)).replies.map((m) => m.id)).toEqual([landed.id])
   })
 
-  it('refuses text over the limit as text_too_long before it reaches the API, on a post, a reply, and an edit', async () => {
+  it("leaves a channel path's length to Vercel's API: a path the board takes but the API doesn't fails with the API's error", async () => {
     const api = fakeMessageboard()
     const julian = handleOn(api)
-    const tooLong = { status: 400, code: 'text_too_long', hint: expect.stringMatching(/attach it to a message/) }
+    await julian.post(`ops/${'a'.repeat(76)}`, 'fits')
+    await expect(julian.post(`ops/${'a'.repeat(77)}`, 'too long for the API')).rejects.toMatchObject({ status: 400, code: 'invalid_channel_name' })
+  })
+
+  it("leaves a message's length to Vercel's API: text over its limit fails with the API's error, on a post, a reply, and an edit", async () => {
+    const api = fakeMessageboard()
+    const julian = handleOn(api)
+    const tooLong = { status: 400, code: 'invalid_message' }
     await expect(julian.post('dev', 'x'.repeat(10_001))).rejects.toMatchObject(tooLong)
     const { id: root } = await julian.post('dev', 'hi')
     await expect(julian.reply(root, 'x'.repeat(10_001))).rejects.toMatchObject(tooLong)
@@ -390,12 +442,155 @@ describe('vercel()', () => {
     expect((await team.channels()).map((c) => c.path).sort()).toEqual(['dev/alerts', 'general', 'ops'])
   })
 
+  it("shows a channel's threads from the thread list alone where the API lists them with their messages, and reads each by ID where it doesn't, asking it once", async () => {
+    const shown = async (inlineThreadMessages: boolean) => {
+      const api = fakeMessageboard({ inlineThreadMessages })
+      const team = handleOn(api)
+      const roots = []
+      for (let i = 0; i < 20; i++) roots.push(await team.post('busy', { text: `thread ${i}` }))
+      for (const root of roots.slice(0, 10)) await team.reply(root.id, { text: `reply to ${root.text}` })
+      const count = async () => {
+        api.requests.length = 0
+        const { threads } = await team.threads({ channel: 'busy' })
+        return { threads, listed: api.requests.filter((r) => /\/threads$/.test(r)).length, byId: api.requests.filter((r) => /\/messages\/msg_/.test(r)).length }
+      }
+      const first = await count()
+      // An edit since the first listing: the next one shows the root as it is now.
+      await team.edit(roots[0]!.id, 'thread 0, edited')
+      return { first, again: await count() }
+    }
+    const inline = await shown(true)
+    const today = await shown(false)
+    // The same summaries either way: a root for each, and a latest reply for the ten with one.
+    const summaries = (threads: { message: { text: string }; last: { text: string } | null }[]) => threads.map((t) => [t.message.text, t.last?.text ?? null])
+    expect(summaries(inline.first.threads)).toEqual(summaries(today.first.threads))
+    expect(inline.first.threads.filter((t) => t.last)).toHaveLength(10)
+    // With them, the list is the only request, and an edit since shows: they come as they are now.
+    expect(inline.first).toMatchObject({ listed: 1, byId: 0 })
+    expect(inline.again).toMatchObject({ listed: 1, byId: 0 })
+    expect(summaries(inline.again.threads)).toContainEqual(['thread 0, edited', 'reply to thread 0'])
+    expect(summaries(inline.again.threads)).toEqual(summaries(today.again.threads))
+    // Vercel's API today refuses the parameter: the list is read again without it, each message by ID as before,
+    expect(today.first).toMatchObject({ listed: 2, byId: 30 })
+    // and it isn't asked again.
+    expect(today.again).toMatchObject({ listed: 1, byId: 30 })
+  })
+
+  it('finds who a message mentions from its text: you by your handle or ID, and anyone else by name with what is under it', async () => {
+    const api = fakeMessageboard()
+    const julian = handleOn(api)
+    const val = handleOn(api, 'user:u_val')
+    const claude = julian.as('claude')
+    const me = await claude.me()
+    const mine = await julian.me()
+    await val.post('dev', { text: `@${me.handle}: can you look?` })
+    await val.post('dev', { text: `cc @[${me.actor}]` })
+    await val.post('dev', { text: `@${mine.handle} and nobody else` })
+    await val.post('dev', { text: 'no one is named here, and `@' + me.handle + '` in code is not a mention' })
+    const texts = async (as: typeof julian, mentions: string) => (await as.messages({ channel: 'dev', mentions })).messages.map((message) => message.text.slice(0, 12)).sort()
+    // The agent is found by its own handle and by its ID, and not where only its person is named.
+    expect(await texts(claude, 'me')).toEqual([`@${me.handle}`.slice(0, 12), 'cc @[vercel:'].sort())
+    // The person's name finds them and their agents', as on any board; a thread listing agrees.
+    expect(await texts(val, mine.handle)).toHaveLength(2)
+    expect((await val.threads({ channel: 'dev', mentions: me.handle })).threads).toHaveLength(1)
+    // A wait for a mention of you wakes on one.
+    const waiting = claude.poll({ channel: 'dev', mentions: 'me', wait: 5 })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    await val.post('dev', { text: 'not this one' })
+    await val.post('dev', { text: `@${me.handle} this one` })
+    expect((await waiting).events.map((event) => event.message?.text)).toEqual([`@${me.handle} this one`])
+  }, 15_000)
+
+  it('filters a channel by what its messages say without reading the threads its list brought whole', async () => {
+    const found = async (inlineThreadMessages: boolean) => {
+      const api = fakeMessageboard({ inlineThreadMessages })
+      const team = handleOn(api)
+      // 30 posts, 5 with a reply, and 2 with two: only those two are longer than their list shows.
+      const roots = []
+      for (let i = 0; i < 30; i++) roots.push(await team.post('archive', { text: i % 3 === 0 ? `note ${i} about osprey` : `note ${i}` }))
+      for (const root of roots.slice(0, 5)) await team.reply(root.id, { text: `osprey, re ${root.text}` })
+      for (const root of roots.slice(5, 7)) for (const text of ['first', 'osprey at last']) await team.reply(root.id, { text })
+      await team.threads({ channel: 'archive', limit: 1 })
+      api.requests.length = 0
+      const { threads } = await team.threads({ channel: 'archive', text: 'osprey' })
+      const { messages } = await team.messages({ channel: 'archive', text: 'osprey', after: roots[0]!.id })
+      return {
+        threads: threads.map((thread) => thread.message.text).sort(),
+        messages: messages.map((message) => message.text).sort(),
+        read: api.requests.filter((r) => /\/threads\/[^/]+\/messages$/.test(r)).length,
+      }
+    }
+    const inline = await found(true)
+    const today = await found(false)
+    // The same threads and messages either way: every one that says it, replies included.
+    expect(inline.threads).toEqual(today.threads)
+    expect(inline.messages).toEqual(today.messages)
+    expect(inline.threads).toHaveLength(14)
+    // A thread's messages are read only for the two that have more than their list brings, once per read.
+    expect(inline.read).toBe(4)
+    // Vercel's API before `include=messages` lists none, so each thread is read, as before.
+    expect(today.read).toBe(60)
+  })
+
+  it('misses nothing posted while a filtered read lists threads: its cursor is from before the list', async () => {
+    const api = fakeMessageboard({ inlineThreadMessages: true })
+    const val = handleOn(api, 'user:u_val')
+    const fetching = as(api, 'user:u_jb')
+    // A reply lands as the read takes where the feed is: on either side of its thread list, never between the two.
+    let landing: (() => Promise<unknown>) | null = null
+    const racing = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input instanceof Request ? input.url : input))
+      if (landing && url.pathname.endsWith('/changes') && url.searchParams.get('from') === 'latest') {
+        const post = landing
+        landing = null
+        await post()
+      }
+      return fetching(input, init)
+    }) as typeof fetch
+    const team = board({ backend: vercel({ team: 'team_test', api: API, fetch: racing, files: api.files }) })
+    const root = await team.post('archive', { text: 'osprey nests here' })
+    landing = () => val.reply(root.id, { text: 'osprey, seen today' })
+    const read = await team.messages({ channel: 'archive', text: 'osprey', after: root.id })
+    const later = await team.poll({ channel: 'archive', after: read.cursor })
+    // In the read, or in the feed after its cursor: a watcher that reads on from it sees the reply.
+    const seen = [...read.messages.map((message) => message.text), ...later.events.map((event) => event.message?.text)]
+    expect(seen).toContain('osprey, seen today')
+
+  })
+
+  it("names a message's channel by its ID, without listing the board's channels", async () => {
+    const api = fakeMessageboard()
+    const team = handleOn(api)
+    for (const channel of ['dev', 'ops', 'web']) await team.post(channel, { text: `hi ${channel}` })
+    const root = await team.post('questions', { text: 'anyone?' })
+    // A process that has listed nothing, as each `vb` run is: a reply, then the thread.
+    const fresh = handleOn(api)
+    api.requests.length = 0
+    expect(await fresh.reply(root.id, { text: 'me!' })).toMatchObject({ channel: 'questions', re: root.id })
+    expect((await fresh.thread(root.id)).message.channel).toBe('questions')
+    // One request for the one channel, asked once: the list is a page of the API's at a time, however many the board has.
+    expect(api.requests.filter((r) => /^GET .*\/channels$/.test(r))).toEqual([])
+    expect(api.requests.filter((r) => /^GET .*\/channels\/[^/]+$/.test(r))).toHaveLength(1)
+    // Where the API won't show a channel by its ID, it's looked for in the list, as before, and still named.
+    const fetching = as(api, 'user:u_jb')
+    const refused = (async (input: RequestInfo | URL, init?: RequestInit) =>
+      /\/channels\/[^/]+$/.test(new URL(String(input instanceof Request ? input.url : input)).pathname)
+        ? Response.json({ error: { code: 'not_found', message: 'Channel not found.' } }, { status: 404 })
+        : fetching(input, init)) as typeof fetch
+    const older = board({ backend: vercel({ team: 'team_test', api: API, fetch: refused, files: api.files }) })
+    api.requests.length = 0
+    expect((await older.thread(root.id)).message.channel).toBe('questions')
+    expect(api.requests.filter((r) => /^GET .*\/channels$/.test(r))).toHaveLength(1)
+  })
+
   it("lists a busy channel's threads from the API's thread list, reading only the roots and latest replies it shows", async () => {
     const api = fakeMessageboard()
     const team = handleOn(api)
     const roots = []
     for (let i = 0; i < 60; i++) roots.push(await team.post('busy', { text: `thread ${i}` }))
     await team.reply(roots[59]!.id, { text: 'latest' })
+    // A first listing finds this API lists threads without their messages (below), and no later one asks.
+    await team.threads({ channel: 'busy', limit: 1 })
     api.requests.length = 0
     const { threads, cursor } = await team.threads({ channel: 'busy', limit: 5 })
     expect(threads.map((t) => t.message.text)).toEqual(['thread 55', 'thread 56', 'thread 57', 'thread 58', 'thread 59'])
@@ -409,6 +604,93 @@ describe('vercel()', () => {
     api.requests.length = 0
     expect((await team.threads({ channel: 'busy', after: cursor })).threads.map((t) => t.message.id)).toEqual([later.id])
     expect(api.requests.filter((r) => /\/threads$/.test(r))).toHaveLength(1)
+  })
+
+  /** A handle on the fake through vercel(), with every request it sends to the API, in order: `METHOD /path?query`. */
+  const recording = (api: ReturnType<typeof fakeMessageboard>, before?: (url: URL) => Promise<void>) => {
+    const sent: URL[] = []
+    const fetch = as(api, 'user:u_jb')
+    const team = board({
+      backend: vercel({
+        team: 'team_test',
+        api: API,
+        files: api.files,
+        fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = new URL(String(input instanceof Request ? input.url : input))
+          if ((init?.method ?? 'GET') === 'GET') {
+            sent.push(url)
+            await before?.(url)
+          }
+          return fetch(input, init)
+        }) as typeof globalThis.fetch,
+      }),
+    })
+    return { team, sent }
+  }
+
+  it("pages a channel's threads back with the API's own cursor, each of its pages in one read", async () => {
+    const api = fakeMessageboard({ inlineThreadMessages: true })
+    const { team, sent } = recording(api)
+    for (let i = 0; i < 60; i++) await team.post('busy', { text: `thread ${i}` })
+    const listed = () => sent.filter((url) => url.pathname.endsWith('/threads'))
+    const read = async (query: { before?: string; limit?: number }) => {
+      sent.length = 0
+      const page = await team.threads({ channel: 'busy', ...query })
+      return { texts: page.threads.map((t) => t.message.text), older: page.older, sent: listed().map((url) => url.searchParams.get('cursor')) }
+    }
+    const texts = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => `thread ${from + i}`)
+    // The API's cursor goes out as it came: 25 threads a page, the newest first.
+    const first = await read({ limit: 25 })
+    expect(first).toEqual({ texts: texts(35, 60), older: expect.any(String), sent: [null] })
+    const second = await read({ before: first.older!, limit: 25 })
+    expect(second).toEqual({ texts: texts(10, 35), older: expect.any(String), sent: [first.older] })
+    // One of its pages with `before`, whatever the limit.
+    expect(await read({ before: second.older!, limit: 100 })).toEqual({ texts: texts(0, 10), older: null, sent: [second.older] })
+    // A page cut short at `limit` says how far into the API's it got, and the next starts there.
+    expect(await read({ limit: 4 })).toEqual({ texts: texts(56, 60), older: '~4', sent: [null] })
+    expect(await read({ before: '~4', limit: 25 })).toEqual({ texts: texts(35, 56), older: first.older, sent: [null] })
+    expect(listed().every((url) => url.searchParams.get('include') === 'messages')).toBe(true)
+    // Only one channel's threads, unfiltered, page this way.
+    await expect(team.threads({ channel: 'busy', label: ['kind'], before: first.older! })).rejects.toMatchObject({ status: 400, code: 'invalid_request' })
+    expect(await team.threads({ channel: 'busy/' })).not.toHaveProperty('older')
+  })
+
+  it("refuses a before that was never one of the channel's pages, as invalid_cursor, without asking the API with it", async () => {
+    const api = fakeMessageboard({ inlineThreadMessages: true })
+    const { team, sent } = recording(api)
+    for (let i = 0; i < 30; i++) for (const channel of ['busy', 'quiet']) await team.post(channel, { text: `thread ${i}` })
+    const busy = (await team.threads({ channel: 'busy', limit: 25 })).older!
+    const quiet = (await team.threads({ channel: 'quiet', limit: 25 })).older!
+    // The busy channel's own cursor, at a place the API never gave.
+    const { scope } = JSON.parse(Buffer.from(busy, 'base64url').toString()) as { scope: string }
+    const stale = Buffer.from(JSON.stringify({ scope, value: 'x' })).toString('base64url')
+    sent.length = 0
+    for (const before of ['not-a-page', '~', 'abc~', `${busy}~x`, quiet])
+      await expect(team.threads({ channel: 'busy', before }), before).rejects.toMatchObject({ status: 400, code: 'invalid_cursor' })
+    expect(sent.filter((url) => url.pathname.endsWith('/threads'))).toEqual([])
+    // One the API refuses itself is refused the same way.
+    await expect(team.threads({ channel: 'busy', before: stale })).rejects.toMatchObject({ status: 400, code: 'invalid_cursor' })
+  })
+
+  it("answers a page's cursor at or behind what its threads saw, so a poll after it gets a post that landed while it read", async () => {
+    const api = fakeMessageboard({ inlineThreadMessages: true })
+    const other = handleOn(api)
+    let landing = false
+    const { team, sent } = recording(api, async (url) => {
+      if (landing && url.pathname.endsWith('/threads')) {
+        landing = false
+        await other.post('busy', { text: 'landed in between' })
+      }
+    })
+    await team.post('busy', { text: 'before' })
+    sent.length = 0
+    landing = true
+    const page = await team.threads({ channel: 'busy', limit: 25 })
+    const order = sent.map((url) => url.pathname.split('/').at(-1)).filter((last) => last === 'changes' || last === 'threads')
+    expect(order).toEqual(['changes', 'threads'])
+    // The page may show it too: a cursor behind the page reads it again rather than past it.
+    const { events } = await team.poll({ channel: 'busy', after: page.cursor })
+    expect(events.filter((event) => event.type === 'message.posted').map((event) => event.message?.text)).toEqual(['landed in between'])
   })
 
   it("uploads its own code's files, one bigger than a request straight to Vercel's storage, and posts them through board()'s middleware", async () => {
@@ -564,20 +846,32 @@ describe('vercel()', () => {
     await expect(handleOn(fakeMessageboard({ boardId: null }), 'project:prj_pong:production').me()).rejects.toMatchObject({ status: 403, code: 'board_not_granted' })
   })
 
-  it('sends VERCEL_TOKEN in Node, and never BOARD_TOKEN, which is for a board at a URL', async () => {
+  it("never sends VERCEL_TOKEN: a deployment sends its own OIDC token, so its watchers register as its project, and anyone else BOARD_TOKEN or their login", async () => {
     for (const key of Object.keys(process.env)) if (/^(BOARD|VERCEL|CLAUDE|CODEX|GROK|CURSOR|PI_|AI_AGENT)/.test(key)) vi.stubEnv(key, '')
-    const api = fakeMessageboard({ tokens: { k7Qe2mXa9vLp: 'user:u_ada' } })
-    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => api.fetch(input, init))
-    vi.stubEnv('VERCEL_ORG_ID', 'team_test')
-    const who = async () => (await board({ backend: nodeVercel() }).me()).principal
-    try {
-      vi.stubEnv('BOARD_TOKEN', 'k7Qe2mXa9vLp')
-      vi.stubEnv('VERCEL_TOKEN', 'project:prj_pong:production')
-      expect(await who()).toBe('vercel:project:prj_pong:production')
-    } finally {
+    onTestFinished(() => {
       vi.unstubAllEnvs()
       vi.unstubAllGlobals()
-    }
+    })
+    // The deployment's OIDC token, a JWT that names its own team, as Vercel's does.
+    const part = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url')
+    const oidc = `${part({ alg: 'none' })}.${part({ owner_id: 'team_test', exp: Math.floor(Date.now() / 1000) + 3600 })}.`
+    const api = fakeMessageboard({ tokens: { [oidc]: 'project:prj_pong:production', k7Qe2mXa9vLp: 'user:u_bo' } })
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => api.fetch(input, init))
+    // Someone set VERCEL_TOKEN so the app could call Vercel's API: a person's. BOARD_TOKEN is for a board at a URL.
+    for (const [key, set] of Object.entries({ VERCEL: '1', VERCEL_ENV: 'production', VERCEL_OIDC_TOKEN: oidc, VERCEL_TOKEN: 'user:u_jb', BOARD_TOKEN: 'k7Qe2mXa9vLp' })) vi.stubEnv(key, set)
+    const backend = nodeVercel()
+    onTestFinished(() => backend.close())
+    const pong = board({ backend, url: 'https://pong.vercel.app/api/board', watch: { pings: { tail: 'pings', run: async () => {} } } })
+    expect((await pong.me()).principal).toBe('vercel:project:prj_pong:production')
+    await vi.waitFor(() => expect(api.registrations.get('vercel:project:prj_pong:production')).toMatchObject({ path: '/api/board' }))
+    expect(credentialSource()).toBe('Vercel OIDC')
+    // Off a deployment, in a terminal, CI or a sandbox: BOARD_TOKEN, then the login a CLI hands it, and never VERCEL_TOKEN.
+    for (const [key, set] of Object.entries({ VERCEL: '', VERCEL_OIDC_TOKEN: '', VERCEL_ORG_ID: 'team_test', VERCEL_AUTH_TOKEN: 'user:u_ada' })) vi.stubEnv(key, set)
+    expect((await board({ backend: nodeVercel() }).me()).principal).toBe('vercel:user:u_bo')
+    expect(credentialSource()).toBe('BOARD_TOKEN')
+    vi.stubEnv('BOARD_TOKEN', '')
+    expect((await board({ backend: nodeVercel() }).me()).principal).toBe('vercel:user:u_ada')
+    expect(credentialSource()).toBe('the Vercel CLI')
   })
 
   describe('a board by its name', () => {
@@ -695,6 +989,35 @@ describe('vercel()', () => {
     expect(await team.discovery()).toMatchObject({ team_id: 'team_test' })
   })
 
+  it("says the board's name in its discovery, and none to a caller who may not read the board", async () => {
+    const api = fakeMessageboard({ boards: [{ name: 'Security', id: 'brd_sec' }] })
+    expect(await handleOn(api).discovery()).toMatchObject({ name: 'General' })
+    const security = board({ name: 'security', backend: vercel({ team: 'team_test', api: API, fetch: as(api, 'user:u_jb') }) })
+    expect(await security.discovery()).toMatchObject({ name: 'Security' })
+    // Found as the team's default, by a caller who only posts: where it is, and no name.
+    const poster = await withHeadersOn(api)({ 'x-board-can': 'dev/=post' }).discovery()
+    expect(poster).toMatchObject({ url: `${API}/v1/messageboard/boards/brd_test?teamId=team_test` })
+    expect(poster).not.toHaveProperty('name')
+    // A handle narrowed with a can asks as it's narrowed: the name is for one that reads somewhere.
+    const team = handleOn(api)
+    expect(await team.as('fixer', { can: { 'dev/': ['read'] } }).discovery()).toMatchObject({ name: 'General' })
+    // One that reads nowhere gets none, whatever the API would answer: the board isn't read for it.
+    const reads = () => api.requests.filter((made) => made === 'GET /boards/brd_test').length
+    const asked = reads()
+    expect(await team.as('fixer', { can: { 'dev/': ['post'] } }).discovery()).not.toHaveProperty('name')
+    expect(await team.as('fixer', { can: {} }).discovery()).not.toHaveProperty('name')
+    expect(reads()).toBe(asked)
+    // One on a board named by its ID still learns where it is, and no name it may not read.
+    const onSecurity = board({ backend: vercel({ team: 'team_test', board: 'brd_sec', api: API, fetch: as(api, 'user:u_jb') }) })
+    expect(await onSecurity.discovery()).toMatchObject({ name: 'Security' })
+    const posting = await onSecurity.as('fixer', { can: { 'dev/': ['post'] } }).discovery()
+    expect(posting).toMatchObject({ url: `${API}/v1/messageboard/boards/brd_sec?teamId=team_test` })
+    expect(posting).not.toHaveProperty('name')
+    // Named by its ID, it's read either way, so a credential that's narrowed itself is told it can't.
+    const byId = board({ backend: vercel({ team: 'team_test', board: 'brd_sec', api: API, fetch: (input, init = {}) => as(api, 'user:u_jb')(input, { ...init, headers: { ...Object.fromEntries(new Headers(init.headers)), 'x-board-can': 'dev/=post' } }) }) })
+    await expect(byId.discovery()).rejects.toMatchObject({ status: 403 })
+  })
+
   it("reads past the API's page of 100 after a cursor, as many as a read asks for", async () => {
     const api = fakeMessageboard()
     const team = handleOn(api)
@@ -756,6 +1079,63 @@ describe('vercel()', () => {
     // every wake, as each second's read did before it fell back, is 5 + 6.
     expect(changes - before).toBeLessThanOrEqual(channels * (1 + 6 + 1))
   }, 15_000)
+
+  it("waits in a thread on its channel's feed alone, and reads no message a feed brought", async () => {
+    const api = fakeMessageboard()
+    const team = handleOn(api)
+    for (const channel of ['dev', 'ops', 'web', 'docs']) await team.post(channel, { text: `hi ${channel}` })
+    const root = await team.post('questions', { text: 'anyone?' })
+    const count = () => ({
+      feeds: api.requests.filter((r) => /\/changes$/.test(r)).length,
+      byId: api.requests.filter((r) => /\/messages\/msg_/.test(r)).length,
+    })
+    // A wait in the thread: only `questions` has its messages, whatever else the board holds.
+    api.requests.length = 0
+    const waiting = team.poll({ re: root.id, wait: 5 })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    await team.reply(root.id, { text: 'me!' })
+    expect((await waiting).events.map((event) => event.message?.text)).toEqual(['me!'])
+    // Its channel's feed alone: where it is now, a read, the wait, and the read once it wakes. With the
+    // other four channels' feeds it is five times that.
+    expect(count().feeds).toBeLessThanOrEqual(5)
+    // Across the board, each change comes with its message: 20 posts cost no read by ID to show.
+    const { cursor } = await team.poll({})
+    for (let i = 0; i < 20; i++) await team.post(['dev', 'ops', 'web', 'docs'][i % 4]!, { text: `post ${i}` })
+    api.requests.length = 0
+    const everything = await team.poll({ after: cursor })
+    expect(everything.events.map((event) => event.message?.text)).toEqual(Array.from({ length: 20 }, (_, i) => `post ${i}`))
+    expect(count().byId).toBe(0)
+  }, 15_000)
+
+  it('waits after a message for what comes after it: not its own posting, and nothing older from a feed that runs past a page', async () => {
+    const api = fakeMessageboard()
+    const team = handleOn(api)
+    // In its thread, from the message itself, as `vb wait --re 812 --after 812` asks.
+    const root = await team.post('questions', { text: 'anyone?' })
+    expect((await team.poll({ re: root.id, after: root.id, wait: 1 })).events).toEqual([])
+    const waiting = team.poll({ re: root.id, after: root.id, wait: 5 })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    await team.reply(root.id, { text: 'me!' })
+    expect((await waiting).events.map((event) => event.message?.text)).toEqual(['me!'])
+    // The API's feed comes a page at a time from its oldest change: 60 older posts are two pages before it.
+    for (let i = 0; i < 60; i++) await team.post('busy', { text: `old ${i}` })
+    const newest = await team.post('busy', { text: 'newest' })
+    expect((await team.poll({ channel: 'busy', after: newest.id, wait: 2 })).events).toEqual([])
+    const later = team.poll({ channel: 'busy', after: newest.id, wait: 5 })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    await team.post('busy', { text: 'after it' })
+    const [event] = (await later).events
+    expect(event?.message?.text).toBe('after it')
+    // The cursor it came with goes on from there, as the `next:` a wait prints does: in another process, which holds
+    // only its time, and in this one, where a second channel with pages of history hasn't caught up yet.
+    for (let i = 0; i < 60; i++) await team.post('other', { text: `other ${i}` })
+    const question = await team.post('busy', { text: 'q' })
+    await team.reply(question.id, { text: 'answer' })
+    const [answer] = (await team.poll({ after: question.id, wait: 5 })).events
+    expect(answer?.message?.text).toBe('answer')
+    expect((await handleOn(api).poll({ after: answer!.cursor, wait: 2 })).events).toEqual([])
+    expect((await team.poll({ after: answer!.cursor, wait: 2 })).events).toEqual([])
+  }, 30_000)
 
   it('finds an older thread by labels the API can only filter after it lists, and refuses a cursor it can’t read', async () => {
     const api = fakeMessageboard()
@@ -1064,25 +1444,22 @@ describe('vercel()', () => {
       return { ran, watch }
     }
 
-    it("start no tails on a deployment whose credentials aren't its own: VERCEL_TOKEN's", async () => {
+    it("start no tails on a deployment whose credentials aren't its own: a fetch's that sends a person's", async () => {
       const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
       onTestFinished(() => {
         errors.mockRestore()
         vi.unstubAllEnvs()
-        vi.unstubAllGlobals()
       })
       const api = fakeMessageboard()
       const ada = handleOn(api, 'user:u_ada')
       await ada.post('pings', 'before it started')
-      vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => api.fetch(input, init))
-      for (const key of Object.keys(process.env)) if (/^(BOARD|VERCEL|CLAUDE|CODEX|GROK|CURSOR|PI_|AI_AGENT)/.test(key)) vi.stubEnv(key, '')
-      for (const [key, set] of Object.entries({ VERCEL: '1', VERCEL_ENV: 'production', VERCEL_ORG_ID: 'team_test', VERCEL_TOKEN: 'user:u_jb' })) vi.stubEnv(key, set)
+      for (const [key, set] of Object.entries({ VERCEL: '1', VERCEL_ENV: 'production' })) vi.stubEnv(key, set)
       const { ran, watch } = pinger()
-      const backend = nodeVercel()
+      const backend = vercel({ team: 'team_test', api: API, fetch: as(api, 'user:u_jb') })
       onTestFinished(() => backend.close())
       const team = board({ backend, url: 'https://pong.vercel.app/api/board', watch })
       await team.me()
-      await ada.post('pings', 'ping with VERCEL_TOKEN')
+      await ada.post('pings', 'ping as jb')
       await new Promise((resolve) => setTimeout(resolve, 300))
       expect(ran).toEqual([])
       // It neither read the feed nor asked to register.
@@ -1106,6 +1483,7 @@ describe('vercel()', () => {
     const report = await conformance(handleOn(api, 'project:prj_pong:production'), { withHeaders: withHeadersOn(api, 'project:prj_pong:production') })
     expect(Object.fromEntries(report.checks.filter((check) => check.group === 'sync').map((check) => [check.name, check.status]))).toEqual({
       "keeps sync's records: an import as a profile of its importer, its lookups by platform ID, a receipt, and where it's synced": 'passed',
+      "meets a platform user an import's text mentions: an actor as one who wrote would be, whom the text names by that actor's ID": 'passed',
       "queues a platform thread's events in its sync's inbox once, and leases each after the one before is acked": 'passed',
       "takes an edit of a long message in its sync's inbox, under the longest event ID the protocol allows, and refuses a longer one": 'passed',
       'hands a sync each message change as a match of its @sync watcher': 'passed',
@@ -1241,11 +1619,18 @@ describe('vercel()', () => {
     await expect(pong.cancelSchedule('sch_missing')).rejects.toMatchObject({ status: 404, code: 'schedule_not_found' })
   })
 
-  it("refuses what the API can't schedule: files, and labels on a reply", async () => {
+  it('sends a scheduled reply its labels, and reads them back on the schedule', async () => {
     const api = fakeMessageboard()
     const pong = handleOn(api, 'project:prj_pong:production')
     const root = await pong.post('pings', { text: 'root' })
-    await expect(pong.schedule({ re: root.id }, { text: 'labeled', in: '1h', labels: { kind: 'task' } })).rejects.toMatchObject({ status: 501, code: 'not_supported' })
+    const reply = await pong.schedule({ re: root.id }, { text: 'check in', in: '1h', every: '1h', times: 2, labels: { kind: 'task', check: 'in' } })
+    expect(api.schedules.get(reply.id)).toMatchObject({ threadId: root.thread, labels: { kind: 'task', check: 'in' } })
+    expect(reply.labels).toEqual({ kind: 'task', check: 'in' })
+    expect((await pong.schedules({ re: root.id })).find((s) => s.id === reply.id)?.labels).toEqual({ kind: 'task', check: 'in' })
+  })
+
+  it("refuses what the API can't schedule: files", async () => {
+    const api = fakeMessageboard()
     const backend = vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:production'), files: api.files })
     const project = { self: null, origin: { via: { kind: 'client', name: null } } } as Caller
     const signal = new AbortController().signal
@@ -1391,6 +1776,141 @@ describe('vercel()', () => {
     expect([message!.by.actor, message!.from, message!.author?.platform]).toEqual(['vercel:project:prj_pong:production+slack-eu:user:U_ADA', 'pong/slack-eu', 'slack'])
   })
 
+  it("shows a caller held to some channels an author the API doesn't name it by their ID: no handle made up from it, and no name a wider caller read", async () => {
+    const api = fakeMessageboard({ namesNarrowed: false })
+    const pong = handleOn(api, 'project:prj_pong:production')
+    await pong.register({ url: null, watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })
+    await pong.syncImport({ op: 'post', author: { id: 'slack:user:U_MALTE', handle: 'malte', name: 'Malte Ubl', avatar: null, isBot: false }, from: 'slack', channel: 'general', text: 'hi' })
+    const malte = 'vercel:project:prj_pong:production+slack:user:U_MALTE'
+    const author = async (handle: ReturnType<typeof handleOn>) => (await handle.messages({ channel: 'general' })).messages[0]!.author
+    // The deployment reads the whole board, as its sync does, and is named everyone.
+    expect(await author(pong)).toMatchObject({ id: malte, handle: 'pong/malte', name: 'Malte Ubl' })
+    // Its agent, on the same handle held to one channel, is named no one: it reads the author by ID.
+    const agent = pong.as(null, { can: { 'general/': ['read', 'post'] } })
+    expect(await author(agent)).toMatchObject({ id: malte, handle: malte })
+    // And the deployment still by name.
+    expect(await author(pong)).toMatchObject({ handle: 'pong/malte', name: 'Malte Ubl' })
+  })
+
+  it("stores the handle an agent held to a channel read on a Slack user as a mention of them, which their sync delivers natively", async () => {
+    const api = fakeMessageboard()
+    const pongSlack = fakePlatform('slack')
+    const pong = board({
+      backend: vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:production'), files: api.files }),
+      url: PONG_URL,
+      basePath: '/api/board',
+      sync: { slack: slack({ adapter: pongSlack.adapter }, channels({ C1: 'general' })) },
+    })
+    // Malte asks from Slack.
+    await pong.fetch(new Request(`${PONG_URL}/webhooks/slack`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'message', threadId: 'slack:C1:300', id: '300', text: 'can you tag me?', user: 'U_M1', name: 'malte' }) }))
+    const agent = pong.as(null, { can: { 'general/': ['read', 'post'] } })
+    await vi.waitFor(async () => expect((await agent.messages({ channel: 'general' })).messages).toHaveLength(1))
+    const [asked] = (await agent.messages({ channel: 'general' })).messages
+    const malte = 'vercel:project:prj_pong:production+slack:user:U_M1'
+    expect(asked!.author).toMatchObject({ id: malte, handle: 'pong/malte' })
+    // It answers him by the handle it read: the board stores who that is, and says so.
+    const reply = await agent.reply(asked!.id, `sure, @${asked!.author!.handle} and @nobody`)
+    expect(reply.text).toBe(`sure, @[${malte}] and @nobody`)
+    expect(reply.mentions).toEqual([
+      { written: '@pong/malte', actor: { id: malte, handle: 'pong/malte', name: 'malte' }, candidates: [] },
+      { written: '@nobody', actor: null, candidates: [] },
+    ])
+    // Slack gets its own user as a mention, and the handle no one has as it was typed.
+    await pong.fetch(new Request(`${PONG_URL}/wake`, { method: 'POST' }))
+    await vi.waitFor(() => expect(pongSlack.posts.map((post) => JSON.parse(post.text).markdown)).toEqual(['**pong**: sure, <@U_M1> and @nobody']))
+  })
+
+  it("meets a Slack user a message cc's, who never wrote: an agent held to the channel reads who they are and mentions them back, natively", async () => {
+    const api = fakeMessageboard()
+    const pongSlack = fakePlatform('slack')
+    const pong = board({
+      backend: vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:production'), files: api.files }),
+      url: PONG_URL,
+      basePath: '/api/board',
+      sync: { slack: slack({ adapter: pongSlack.adapter }, channels({ C1: 'general' })) },
+    })
+    await pong.fetch(new Request(`${PONG_URL}/webhooks/slack`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'message', threadId: 'slack:C1:300', id: '300', text: 'who knows billing?', user: 'U_ADA', name: 'ada' }) }))
+    const agent = pong.as(null, { can: { 'general/': ['read', 'post'] } })
+    await vi.waitFor(async () => expect((await agent.messages({ channel: 'general' })).messages).toHaveLength(1))
+    const [asked] = (await agent.messages({ channel: 'general' })).messages
+    // Ada cc's Grace in the thread, as the Slack provider brings a mention in: by his ID, with who he is.
+    const ada = { id: 'slack:user:U_ADA', handle: 'ada', name: 'ada', avatar: null, isBot: false }
+    const cc = { id: 'slack:user:U_G1', handle: 'grace', name: 'Grace Hopper', avatar: null, isBot: false }
+    await pong.syncImport({ op: 'post', author: ada, from: 'slack', re: asked!.id, text: 'cc @[slack:user:U_G1]', mentioned: [cc], origin: { thread: 'slack:C1:300', subthread: null, message: '301', context: null } })
+    const grace = 'vercel:project:prj_pong:production+slack:user:U_G1'
+    expect((await agent.thread(asked!.id)).replies.map((reply) => reply.text)).toEqual([`cc @[${grace}]`])
+    expect((await agent.actors()).find((actor) => actor.id === grace)).toMatchObject({ handle: 'pong/grace', name: 'Grace Hopper' })
+    // The agent answers him by the handle it read, and Slack gets its own user as a mention.
+    const reply = await agent.reply(asked!.id, '@pong/grace, over to you')
+    expect(reply.mentions).toEqual([{ written: '@pong/grace', actor: { id: grace, handle: 'pong/grace', name: 'Grace Hopper' }, candidates: [] }])
+    await pong.fetch(new Request(`${PONG_URL}/wake`, { method: 'POST' }))
+    await vi.waitFor(() => expect(pongSlack.posts.map((post) => JSON.parse(post.text).markdown)).toEqual(['**pong**: <@U_G1>, over to you']))
+  })
+
+  it("mentions a Slack user the board has never met from their ID alone: the short ID or this project's profile of them, never another project's", async () => {
+    const api = fakeMessageboard()
+    const pongSlack = fakePlatform('slack')
+    const pong = board({
+      backend: vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:production'), files: api.files }),
+      url: PONG_URL,
+      basePath: '/api/board',
+      sync: { slack: slack({ adapter: pongSlack.adapter }, channels({ C1: 'general' })) },
+    })
+    await pong.fetch(new Request(`${PONG_URL}/webhooks/slack`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'message', threadId: 'slack:C1:300', id: '300', text: 'who knows billing?', user: 'U_ADA', name: 'ada' }) }))
+    const agent = pong.as(null, { can: { 'general/': ['read', 'post'] } })
+    await vi.waitFor(async () => expect((await agent.messages({ channel: 'general' })).messages).toHaveLength(1))
+    const [asked] = (await agent.messages({ channel: 'general' })).messages
+    // None of the three has written or been mentioned on the board.
+    await agent.reply(asked!.id, 'cc @[slack:user:U_NEW], @[vercel:project:prj_pong:production+slack:user:U_KAI] and @[vercel:project:prj_other:production+slack:user:U_ZED]')
+    await pong.fetch(new Request(`${PONG_URL}/wake`, { method: 'POST' }))
+    await vi.waitFor(() => expect(pongSlack.posts.map((post) => JSON.parse(post.text).markdown)).toEqual(['**pong**: cc <@U_NEW>, <@U_KAI> and @[vercel:project:prj_other:production+slack:user:U_ZED]']))
+  })
+
+  it("names a mention of any key the board runs in a write its sync makes as a user, as a2() does", async () => {
+    const api = fakeMessageboard()
+    const pong = board({
+      backend: vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:production'), files: api.files }),
+      url: PONG_URL,
+      basePath: '/api/board',
+      sync: { slack: slack({ adapter: fakePlatform('slack').adapter }, channels({ C1: 'general' })), 'slack-eu': slack({ adapter: fakePlatform('slack').adapter }, channels({ C9: 'general' })) },
+    })
+    await pong.fetch(new Request(`${PONG_URL}/webhooks/slack`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'message', threadId: 'slack:C1:300', id: '300', text: 'hello', user: 'U_ADA', name: 'ada' }) }))
+    await vi.waitFor(async () => expect((await pong.messages({ channel: 'general' })).messages).toHaveLength(1))
+    const [asked] = (await pong.messages({ channel: 'general' })).messages
+    const ada = { id: 'slack:user:U_ADA', handle: 'ada', name: 'ada', avatar: null, isBot: false }
+    // A callback's own write, as Ada, mentions a user of each key.
+    const { message } = await pong.syncImport({ op: 'post', author: ada, from: null, re: asked!.id, text: 'cc @[slack:user:U_G1] and @[slack-eu:user:U_G2]' })
+    const owner = 'vercel:project:prj_pong:production'
+    expect((await pong.thread(asked!.id)).replies.find((reply) => reply.id === message)?.text).toBe(`cc @[${owner}+slack:user:U_G1] and @[${owner}+slack-eu:user:U_G2]`)
+  })
+
+  it("keeps an import's mention as it came where naming it under its project would outgrow a message", async () => {
+    const api = fakeMessageboard()
+    const pong = handleOn(api, 'project:prj_pong:production')
+    await pong.register({ url: null, watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })
+    const ada = { id: 'slack:user:U_ADA', handle: 'ada', name: 'ada', avatar: null, isBot: false }
+    // 10,000 characters as it came: the project's ID in the mention would make it longer.
+    const text = `${'x'.repeat(9_981)} @[slack:user:U_G1]`
+    const { message } = await pong.syncImport({ op: 'post', author: ada, from: 'slack', channel: 'general', text })
+    expect((await pong.thread(message!)).message.text === text).toBe(true)
+  })
+
+  it("asks an API that names a caller no one once, by ID and for its list, and not again on every page it reads", async () => {
+    const api = fakeMessageboard({ namesNarrowed: false })
+    const pong = handleOn(api, 'project:prj_pong:production')
+    await pong.register({ url: null, watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })
+    for (const user of ['U_ADA', 'U_BOB', 'U_MALTE'])
+      await pong.syncImport({ op: 'post', author: { id: `slack:user:${user}`, handle: user.toLowerCase(), name: user, avatar: null, isBot: false }, from: 'slack', channel: 'general', text: 'hi' })
+    const agent = pong.as(null, { can: { 'general/': ['read', 'post'] } })
+    const asked = () => api.requests.filter((request) => /^GET \S*\/actors\b/.test(request)).length
+    const before = asked()
+    await agent.messages({ channel: 'general' })
+    expect(asked() - before).toBe(2)
+    await agent.messages({ channel: 'general' })
+    await agent.messages({ channel: 'general' })
+    expect(asked() - before).toBe(2)
+  })
+
   it("puts an import's handle under its project's name, typable, from an API that names them as their platform does", async () => {
     const api = fakeMessageboard({ platformHandles: true })
     // The second project's name isn't one the API knows.
@@ -1494,7 +2014,32 @@ describe('vercel()', () => {
     await vi.waitFor(() => expect(posted.map(({ username, markdown_text }) => [username, markdown_text])).toEqual([['Julián Benegas', 'the deploy is red']]))
   })
 
-  it("resolves mentions as each project's sync posts, against its own users: two syncs' Maltes, and an email its Slack knows", async () => {
+  it("mentions a GitHub user a project's sync imported by their login, not by the handle the board gives them", async () => {
+    const api = fakeMessageboard()
+    const hub = fakePlatform('github')
+    const pong = board({
+      backend: vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:production'), files: api.files }),
+      url: PONG_URL,
+      basePath: '/api/board',
+      // It imports the repo's pull requests, and sends what's written in their threads back.
+      sync: { github: github({ adapter: hub.adapter }, async (sync) => { await repos({ 'acme/www': 'prs' })(sync); if (sync.direction === 'out') await sync.deliver() }) },
+    })
+    await pong.fetch(new Request(`${PONG_URL}/webhooks/github`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-github-event': 'pull_request', 'x-github-delivery': 'd1' },
+      body: JSON.stringify({ action: 'opened', repository: { full_name: 'acme/www' }, sender: { id: 42, login: 'ada' }, pull_request: { number: 7, title: 'Add sync', html_url: 'https://github.com/acme/www/pull/7', draft: false, merged: false } }),
+    }))
+    const julian = handleOn(api)
+    await vi.waitFor(async () => expect((await julian.messages({ channel: 'prs' })).messages).toHaveLength(1))
+    const [opened] = (await julian.messages({ channel: 'prs' })).messages
+    // On the board she's pong's profile of her, under its name.
+    expect(opened!.author).toMatchObject({ id: 'vercel:project:prj_pong:production+github:user:42', handle: 'pong/ada' })
+    await julian.reply(opened!.id, `over to @[${opened!.by.actor}]`)
+    await pong.fetch(new Request(`${PONG_URL}/wake`, { method: 'POST' }))
+    await vi.waitFor(() => expect(hub.posts.map((post) => JSON.parse(post.text).markdown)).toEqual(['**Julián Benegas**: over to @ada']))
+  })
+
+  it("delivers a mention natively through the sync whose user it names, and by name through any other: two syncs' Maltes, and an email its Slack knows", async () => {
     const api = fakeMessageboard()
     const lookupByEmail = vi.fn(async ({ email }: { email: string }) => {
       if (email !== 'ada@vercel.com') throw new Error('users_not_found')
@@ -1514,13 +2059,13 @@ describe('vercel()', () => {
     await webhook(web, WEB_URL, 'webchat', { threadId: 'slack:C9:400', id: '400', text: 'hej', user: 'U_M2', name: 'malte' })
     const julian = handleOn(api)
     await vi.waitFor(async () => expect((await julian.messages({ channel: 'general' })).messages).toHaveLength(2))
-    await julian.post('general', { text: '@malte have a look, @pong/malte and @web/malte, cc @[ada@vercel.com]' })
+    await julian.post('general', { text: '@malte have a look, @pong/malte and @web/malte, cc @[ada@vercel.com] and @[slack:user:U_M1]' })
     await pong.fetch(new Request(`${PONG_URL}/wake`, { method: 'POST' }))
     await web.fetch(new Request(`${WEB_URL}/wake`, { method: 'POST' }))
     const posted = (platform: typeof pongSlack) => platform.channelPosts.map((post) => JSON.parse(post.text).markdown).filter((text: string) => text.includes('have a look'))
     await vi.waitFor(() => expect([posted(pongSlack), posted(webSlack)]).toEqual([
-      ['**Julián Benegas**: <@U_M1> have a look, <@U_M1> and @web/malte, cc <@U_ADA>'],
-      ['**Julián Benegas**: <@U_M2> have a look, @pong/malte and <@U_M2>, cc ada@vercel.com'],
+      ['**Julián Benegas**: @malte have a look, <@U_M1> and malte, cc <@U_ADA> and <@U_M1>'],
+      ['**Julián Benegas**: @malte have a look, malte and <@U_M2>, cc ada@vercel.com and @[slack:user:U_M1]'],
     ]))
   })
 
@@ -2280,5 +2825,98 @@ describe('a request the API puts off', () => {
     const { julian, sent } = throttled((url, init) => (init?.method === 'POST' && url.pathname.endsWith('/complete') ? busy() : null))
     await expect(julian.upload({ data: new TextEncoder().encode('log'), name: 'a.log' })).rejects.toMatchObject({ status: 503 })
     expect(sent.filter(({ path }) => path.endsWith('/complete'))).toHaveLength(1)
+  })
+})
+
+describe('naming the authors on a page', () => {
+  /** Julian reading a board he and Ada wrote on, and every request for actors his reads made, each answered after `latency` ms. */
+  const reading = async (options: Parameters<typeof fakeMessageboard>[0] = {}, latency = 0) => {
+    const api = fakeMessageboard(options)
+    for (const principal of ['user:u_ada', 'user:u_jb']) await handleOn(api, principal).post('dev', { text: `from ${principal}` })
+    const inner = as(api, 'user:u_jb')
+    const asked: string[][] = []
+    const lists: string[][] = []
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const url = new URL(String(input))
+      if (url.pathname.endsWith('/actors')) (url.searchParams.has('id') ? asked : lists).push(url.searchParams.getAll('id'))
+      if (latency > 0) await new Promise((resolve) => setTimeout(resolve, latency))
+      return inner(input, init)
+    }
+    return { api, asked, lists, julian: board({ backend: vercel({ team: 'team_test', api: API, fetch }) }) }
+  }
+  const handles = (messages: { author?: { handle: string } | null }[]) => messages.map((message) => message.author?.handle).sort()
+
+  it('asks the API for them by ID in one request, and never for its whole list', async () => {
+    const { julian, asked, lists } = await reading()
+    const { messages } = await julian.messages({ channel: 'dev' })
+    expect(handles(messages)).toEqual(['ada', 'julian'])
+    expect(asked.map((ids) => [...ids].sort())).toEqual([['vercel:user:u_ada', 'vercel:user:u_jb']])
+    expect(lists).toEqual([])
+    // Whom it has named, it doesn't ask for again.
+    await julian.messages({ channel: 'dev' })
+    expect(asked).toHaveLength(1)
+  })
+
+  it('asks once for a page of threads, and once for a thread nobody here has read with its replies, on an API that takes its time', async () => {
+    const { api, julian, asked, lists } = await reading({}, 5)
+    const { threads } = await julian.threads({ channel: 'dev' })
+    expect(handles(threads.map((thread) => thread.message))).toEqual(['ada', 'julian'])
+    expect(asked).toHaveLength(1)
+    // A thread whose root and replies are all by people nothing here has named yet.
+    const { id: root } = await handleOn(api, 'user:u_val').post('dev', { text: 'new here' })
+    for (const principal of ['user:u_tom', 'user:u_kim']) await handleOn(api, principal).reply(root, { text: 'me too' })
+    const { replies } = await julian.thread(root)
+    expect(replies).toHaveLength(2)
+    expect(asked).toHaveLength(2)
+    expect(asked[1]!.sort()).toEqual(['vercel:user:u_kim', 'vercel:user:u_tom', 'vercel:user:u_val'])
+    expect(lists).toEqual([])
+  })
+
+  it("names the project a synced message came through from its importer's own actor, without the whole list, in the page's one request", async () => {
+    // An API that takes its time: naming where a message came from waits on it before its author is named.
+    const { api, julian, asked, lists } = await reading({}, 5)
+    const pong = pongBoard(api)
+    await pong.register({ url: null, watch: {}, sync: [{ key: 'slack', platform: 'slack' }] })
+    const author = { id: 'slack:user:U_ADA', handle: 'ada', name: 'Ada', avatar: null, isBot: false }
+    await pong.syncImport({ op: 'post', author, from: 'slack', channel: 'dev', text: 'from slack', origin: { thread: 'slack:C1:1', subthread: null, message: '1', context: null } })
+    const { messages } = await julian.messages({ channel: 'dev' })
+    expect(messages.map((message) => message.from).filter(Boolean)).toEqual(['pong/slack'])
+    expect(asked).toHaveLength(1)
+    expect(lists).toEqual([])
+  })
+
+  it('names them from the whole list on an API that answers no actors by ID, and never asks it by ID again', async () => {
+    const { api, julian, asked, lists } = await reading({ actorsById: false })
+    expect(handles((await julian.messages({ channel: 'dev' })).messages)).toEqual(['ada', 'julian'])
+    expect(asked).toHaveLength(1)
+    expect(lists).toHaveLength(1)
+    // Someone new, whom nothing here has named or asked for yet: found, they go by what the API calls them, not by their principal.
+    await handleOn(api, 'user:u_val').post('dev', { text: 'late' })
+    expect(handles((await julian.messages({ channel: 'dev' })).messages)).toContain('u_val')
+    expect(asked).toHaveLength(1)
+  })
+
+  it('names them from the list this once when the API refuses these IDs, and asks by ID again for the next', async () => {
+    const { api, asked, lists } = await reading()
+    const inner = as(api, 'user:u_jb')
+    let refusing = true
+    const refused = board({
+      backend: vercel({
+        team: 'team_test',
+        api: API,
+        fetch: async (input, init) => {
+          const url = new URL(String(input))
+          if (url.pathname.endsWith('/actors')) (url.searchParams.has('id') ? asked : lists).push(url.searchParams.getAll('id'))
+          if (refusing && url.searchParams.has('id')) return Response.json({ error: { code: 'bad_request', message: 'Invalid request: `id` should NOT be longer than 300 characters.' } }, { status: 400 })
+          return inner(input, init)
+        },
+      }),
+    })
+    expect(handles((await refused.messages({ channel: 'dev' })).messages)).toEqual(['ada', 'julian'])
+    expect(lists).toHaveLength(1)
+    refusing = false
+    await handleOn(api, 'user:u_val').post('dev', { text: 'late' })
+    expect(handles((await refused.messages({ channel: 'dev' })).messages)).toContain('u_val')
+    expect(asked.at(-1)).toEqual(['vercel:user:u_val'])
   })
 })

@@ -18,6 +18,7 @@ export { DEFAULT_CAN } from '../server/auth.ts'
 export { CAN_MAX } from '../contract/schemas.ts'
 export {
   compileAccess,
+  PERMISSIONS,
   parseCan,
   union,
   checkGrantChange,

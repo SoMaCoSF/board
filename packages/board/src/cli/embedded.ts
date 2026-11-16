@@ -108,6 +108,8 @@ export function vb(board: Board, argv: string[], options: VbOptions = {}): Promi
     const decoder = new TextDecoder()
     const code = await mainWith(argv, { name: 'board', commands: {} }, {
       board: (options.signal && stoppedBy(board, options.signal)) || board,
+      // A call with a signal runs on a handle of its own: its claims are the caller's handle's all the same.
+      claimsOf: board,
       write: (chunk) => void (stdout += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true })),
       error: (chunk) => void (stderr += chunk),
       readFile: options.readFile ? async (path) => options.readFile!(path) : lacking("--attach and --text-file can't read files", 'readFile'),

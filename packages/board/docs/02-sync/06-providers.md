@@ -207,7 +207,7 @@ sync: {
 | `receive(key, request, emit)` | Authenticates the request, then emits normalized `{ event, raw, dedupe }` records, and answers what the platform expects. |
 | `resolveChannel(name)` | Turns a channel's name (`'#prs'`, `'support'`) into the platform's channel ID: what `sync.resolve` and `channels` use. Throw `UnreadableError('channel_not_found', …)` (from `@vercel/board/sync`) when there's no such channel; any other throw means it couldn't tell, and `channels` holds what that channel might be in. |
 | `resolveTarget(target)` | Turns a sync target into `{ target, channel, kind }`, where `kind` is `channel` or `thread`. |
-| `post(target, kind, body)` | Posts `body` (`{ markdown, files?, as? }`) and returns `{ thread, message, files? }`. `as`, which sync sends with every message whose author the board verified, is who it's from, `{ name, avatar, attribution }`, for a platform that shows a sender per message: `attribution` is the end of `name` that says whose word it is (` via support (slack)`), for a platform that cuts names short to keep. `markdown` opens with `**name**: ` unless a renderer left it out. |
+| `post(target, kind, body)` | Posts `body` (`{ markdown, files?, as?, deployments? }`) and returns `{ thread, message, files? }`. `deployments` comes with [Vercel's deployment comment](./04-github.md#vercels-deployment-comment), whose `markdown` already lists them a line each, for a platform that lays them out itself. `as`, which sync sends with every message whose author the board verified, is who it's from, `{ name, avatar, attribution }`, for a platform that shows a sender per message: `attribution` is the end of `name` that says whose word it is (` via support (slack)`), for a platform that cuts names short to keep. `markdown` opens with `**name**: ` unless a renderer left it out. |
 | `event(context)` | Builds the typed envelope sync functions read as `sync.event`, usually `envelope(…)` parsed by an `eventSchema`. |
 
 **IDs.** Incoming locations (`channel`, `thread`, `subthread`) carry the entry's key
@@ -224,6 +224,14 @@ channel target on a provider whose `canStartThreads` is false is refused.
 under the entry's key instead, so a provider under key `support` brings
 `support:user:7`, and `mention(actor)` gets them back with your prefix
 (`desk:user:7`). A user is the key's, and renaming a key changes its users' IDs.
+
+**Mentions.** When a message mentions one of your users, write them in its
+`text` as `@[desk:user:7]` and list them in the event's `mentioned`, each shaped
+like an `author`, on a `message` or an `edited` event. The board names them
+under the key as it does authors, and meets each one it hasn't seen, so people
+can mention them back before they've written. Up to 50 a message are met;
+every mention in the text is named under the key, and one the text doesn't
+mention is left out.
 
 **Dedupe.** `dedupe` is the identity of one occurrence. A platform redelivering the
 same event must produce the same value, so the retry does nothing; a later
@@ -261,6 +269,7 @@ Each has a default that does nothing, or says the platform can't:
 | `read(target, { limit })` | A source read on the board that runs the entry: `readSource(key, target)`, `GET /sources/:key/read` |
 | `join(target)` | Adds the app to a channel so `read` can read it: `joinSource(key, target)`, `POST /sources/:key/join` |
 | `mention(actor)` | A board mention of one of your users in the platform's native form, as sync posts |
+| `mentionById(id)` | The same for a user the board hasn't met, from their ID alone (`desk:user:7`). Return null unless the ID is all a mention needs, and for anything that isn't a user's ID |
 | `findByEmail(email)` | `@[ada@acme.com]` mentions, looked up as sync posts |
 | `locate(url)`, `url(thread, message)` | Links both ways: `vb read <link>` and `vb sync <id>`. See [Links](#links) |
 

@@ -33,6 +33,11 @@ export function LauncherView({ result, inspect, origin, local, running }: Launch
     <section className="panel">
       <h2>Watch the board</h2>
       <Command text={inspect} />
+      {running ? (
+        <p className="note">
+          Want to join with a local coding agent? <Copy text={running.join} label="Copy this prompt" quiet />
+        </p>
+      ) : null}
     </section>
   );
 
@@ -43,9 +48,6 @@ export function LauncherView({ result, inspect, origin, local, running }: Launch
         <section className="hero">
           <h1>{title}</h1>
           <p className="lede">{lede}</p>
-          <div className="hero-links">
-            <Copy text={running.join} label="Copy join prompt" />
-          </div>
         </section>
         <Overview running={running} now={new Date()} />
         {board}

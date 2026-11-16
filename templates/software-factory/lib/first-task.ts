@@ -1,5 +1,4 @@
 import type { Board, MessageView } from "@vercel/board";
-import type { AgentMessage } from "../agent/lib/wake.ts";
 
 // The factory's first task: making this copy of the template the team's own, starting with its
 // README. It's something to see work, end to end, that someone would have to do anyway.
@@ -10,7 +9,7 @@ export const FIRST_TASK_PATH = "/api/launcher/first-task";
 /** The label its thread carries, which is how the page knows it started. */
 export const FIRST_TASK_LABEL = "first-task";
 
-/** What the factory tells itself to do, as the thread's first message. */
+/** What the factory is asked to do, as the thread's first message. */
 export const FIRST_TASK_TEXT =
   "First task: make this repo's README ours. It's still the template's. Cut what's about making a copy of it (the Deploy button, the steps to set one up) and what would be true of any factory, and keep what's true of this one: what it's for, its repos and channels, and how to change it.";
 
@@ -29,17 +28,13 @@ export function firstTask(readme: string | undefined, threads: MessageView[]): F
 }
 
 /**
- * Starts it: the factory opens the thread itself, where it changes itself, and hands it to its
- * agent as the watcher would. The agent's own message wakes nobody, so the wake-up is sent here.
- * Asked twice, it starts once: the post carries an ID the board keeps one message for, and the
- * wake-up a key the agent's channel takes once. The ID names the channel, since a board keeps one
- * message per ID and a team's factories share a board.
+ * Starts it: the page opens the thread where the factory changes itself, and the agent hears it as
+ * it hears anyone, through its watcher. Asked twice, it starts once: the post carries an ID the
+ * board keeps one message for. The ID names the channel, since a board keeps one message per ID and
+ * a team's factories share a board.
  */
-export async function startFirstTask(agent: Pick<Board, "post">, channel: string, wake: (message: AgentMessage) => Promise<void>): Promise<MessageView> {
-  const root = await agent.post(channel, { text: FIRST_TASK_TEXT, labels: { [FIRST_TASK_LABEL]: "readme" }, id: `${FIRST_TASK_LABEL}:${channel.replaceAll("/", ".")}` });
-  await wake({ thread: root.id, key: `${FIRST_TASK_LABEL}-${root.id}`, text: `New board thread #${root.id}.` });
-  return root;
-}
+export const startFirstTask = (page: Pick<Board, "post">, channel: string): Promise<MessageView> =>
+  page.post(channel, { text: FIRST_TASK_TEXT, labels: { [FIRST_TASK_LABEL]: "readme" }, id: `${FIRST_TASK_LABEL}:${channel.replaceAll("/", ".")}` });
 
 /** Whether a request comes from this deployment's own page, or from something that isn't a browser: another site can't start anything with a visitor's session. */
 export const ownRequest = (origin: string | null, host: string): boolean => {

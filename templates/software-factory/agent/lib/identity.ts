@@ -26,12 +26,19 @@ type Author = { principal: string; profile: string | null };
 export const WATCHER = "wake";
 
 /**
+ * The profile this factory's own page writes under, when someone asks the factory something through
+ * it: wherever a message shows who wrote it, it reads `launcher via <project>`, and not as the agent
+ * asking itself.
+ */
+export const LAUNCHER = "launcher";
+
+/**
  * Whether the agent wrote a message, or reacted: this deployment (`principal`, which its watcher
  * reads from the board), as itself. That's under no profile, as it writes now, or under one it named:
  * `factory`, as it wrote at first, or what a project's BOARD_PROFILE says. What else the deployment
- * writes isn't the agent's: its watcher's own replies, under the watcher's ID, and what its sync
- * brings in from GitHub and Slack, each under a platform's profile of who wrote it there
- * (`slack:user:U0456`), the only kind with a colon.
+ * writes isn't the agent's: its watcher's own replies, under the watcher's ID, what someone asked
+ * through its page, under the launcher's, and what its sync brings in from GitHub and Slack, each
+ * under a platform's profile of who wrote it there (`slack:user:U0456`), the only kind with a colon.
  */
 export const byAgent = (by: Author, principal: string): boolean =>
-  by.principal === principal && (by.profile === null || (!by.profile.includes(":") && by.profile !== WATCHER));
+  by.principal === principal && (by.profile === null || (!by.profile.includes(":") && by.profile !== WATCHER && by.profile !== LAUNCHER));
