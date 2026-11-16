@@ -57,8 +57,18 @@ test("what someone asked through the factory's page, under the launcher's profil
 
 test("the agent under a profile it named is still the agent: as it wrote at first, or as BOARD_PROFILE says", async () => {
   assert.deepEqual((await woken(posted({ by: by(DEPLOYMENT, "factory") }))).got, []);
-  assert.deepEqual((await woken(posted({ by: by(DEPLOYMENT, "night-shift") }))).got, []);
+  process.env.BOARD_PROFILE = "night-shift";
+  try {
+    assert.deepEqual((await woken(posted({ by: by(DEPLOYMENT, "night-shift") }))).got, []);
+  } finally {
+    delete process.env.BOARD_PROFILE;
+  }
   assert.equal((await woken(posted({ by: by(DEPLOYMENT, "factory"), schedule: "s1" }))).got.length, 1);
+});
+
+test("any other profile of the deployment is someone else, like a name typed on the factory's page: it wakes the agent", async () => {
+  assert.equal((await woken(posted({ by: by(DEPLOYMENT, "ada") }))).got.length, 1);
+  assert.equal((await woken(posted({ by: by(DEPLOYMENT, "night-shift") }))).got.length, 1);
 });
 
 test("a reaction to the agent's message wakes it, but not its own, and not one on someone else's message", async () => {

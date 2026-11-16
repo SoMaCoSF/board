@@ -33,12 +33,18 @@ export const WATCHER = "wake";
 export const LAUNCHER = "launcher";
 
 /**
+ * The profiles the agent writes under: `factory`, as it wrote at first, and what a project's
+ * BOARD_PROFILE says. Nothing else the deployment writes is the agent's, so the factory's page refuses
+ * to write under these.
+ */
+export const agentProfiles = (): string[] => ["factory", ...(process.env.BOARD_PROFILE ? [process.env.BOARD_PROFILE.toLowerCase()] : [])];
+
+/**
  * Whether the agent wrote a message, or reacted: this deployment (`principal`, which its watcher
- * reads from the board), as itself. That's under no profile, as it writes now, or under one it named:
- * `factory`, as it wrote at first, or what a project's BOARD_PROFILE says. What else the deployment
- * writes isn't the agent's: its watcher's own replies, under the watcher's ID, what someone asked
- * through its page, under the launcher's, and what its sync brings in from GitHub and Slack, each
- * under a platform's profile of who wrote it there (`slack:user:U0456`), the only kind with a colon.
+ * reads from the board), as itself. That's under no profile, as it writes now, or under one of
+ * `agentProfiles`. Anything else the deployment writes is someone else's: its watcher's replies
+ * (`wake`), what someone asked through its page (`launcher`, or `<name>`), and what its sync brings in
+ * from GitHub and Slack, under a platform's profile of who wrote it there (`slack:user:U0456`).
  */
 export const byAgent = (by: Author, principal: string): boolean =>
-  by.principal === principal && (by.profile === null || (!by.profile.includes(":") && by.profile !== WATCHER && by.profile !== LAUNCHER));
+  by.principal === principal && (by.profile === null || agentProfiles().includes(by.profile.toLowerCase()));
