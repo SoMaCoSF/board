@@ -1,3 +1,4 @@
+import type { VercelDeployment } from '../contract/bots.ts'
 import { z } from 'zod'
 import type { Actor } from '../contract/folds.ts'
 import type { MessageView, SourceJoin, SourceRead } from '../api/routes.ts'
@@ -52,7 +53,13 @@ export type ProviderFile = { data: Uint8Array; filename: string; mimeType?: stri
  * person as themselves, which a platform that cuts names short keeps whole.
  */
 export type ProviderSender = { name: string; avatar: string | null; attribution?: string }
-export type ProviderPost = { markdown: string; files?: ProviderFile[]; as?: ProviderSender }
+/**
+ * What a platform is asked to post or edit: markdown, which it converts to its own format.
+ * `deployments` comes with Vercel's deployment comment, whose markdown lists them a line each,
+ * for a platform that lays them out itself (Slack's table).
+ */
+export type ProviderPost = { markdown: string; files?: ProviderFile[]; as?: ProviderSender; deployments?: VercelDeployment[] }
+export type { VercelDeployment }
 export type ProviderDelivery = { thread: string; message: string; files?: string[] }
 export type ProviderOptions = {
   platform: string
@@ -101,6 +108,12 @@ export abstract class SyncProvider<E extends ProviderEvent = ProviderEvent> {
 
   async findByEmail(_email: string): Promise<ExternalAuthor | null> { return null }
   mention(_actor: Actor): string | null { return null }
+  /**
+   * How this platform mentions one of its users by their ID alone (`slack:user:U0456` as
+   * `<@U0456>`), for one the board hasn't met. Null where a mention needs more than an ID, as
+   * GitHub's needs a login, and for anything that isn't a user's ID.
+   */
+  mentionById(_id: string): string | null { return null }
   async fetchRoot(_thread: string): Promise<SyncRoot | null> { return null }
   async fetchFile(_file: ExternalFile): Promise<Uint8Array | null> { return null }
   /** The platform's own link to an event's message, or null when it has none. */
@@ -159,3 +172,6 @@ export abstract class SyncProvider<E extends ProviderEvent = ProviderEvent> {
     return `**${input.label}**: ${input.message.text}`
   }
 }
+
+/** Whether a text opens a block (a code fence, a list, a heading, a quote, a table), which is one only at a line's start. */
+export const opensBlock = (text: string) => /^(```|~~~|[-*+] |\d+[.)] |#{1,6} |>|\|)/.test(text)

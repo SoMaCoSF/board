@@ -6,8 +6,8 @@ import { githubScope, threadRepos } from "../../lib/github";
 import { environment } from "../sandbox";
 import { connectors, factory, repoChannels } from "../../app/api/board/[[...path]]/factory.ts";
 import { NAME } from "./identity.ts";
-import { stale } from "./tokens";
 import { agentBoard } from "./vb-tool.ts";
+import { stale } from "./tokens";
 
 // Real credentials go in the sandbox's network policy, which adds them on the way out. Anything the
 // sandbox runs can use them, so each is the least the thread needs.

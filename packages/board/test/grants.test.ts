@@ -53,6 +53,17 @@ describe('grants', () => {
     expect((await workflow('POST', '/messages', { channel: 'ci', text: 'again' })).status).toBe(403)
   })
 
+  it('grants on any channel path, the longest and its subtree included, and refuses a pattern no path could match', async () => {
+    const { person, as } = await setUp()
+    const workflow = await as(workflowToken())
+    const longest = `ci/${'a'.repeat(2045)}`
+    const set = await person('POST', '/grants', { principals: [{ kind: 'github', repository: 'acme/web' }], can: { [longest]: ['read', 'post'], [`${longest}/`]: ['read'] } })
+    expect(set.status).toBe(200)
+    expect((await workflow('POST', '/messages', { channel: longest, text: 'green' })).status).toBe(201)
+    const tooLong = await person('POST', '/grants', { principals: [{ kind: 'github', repository: 'acme/web' }], can: { [`${longest}a/`]: ['read'] } })
+    expect([tooLong.status, tooLong.body.error.code]).toEqual([400, 'invalid_request'])
+  })
+
   it('decides a channel by its most specific pattern first, then by the closest principal', async () => {
     const { owner, as } = await setUp()
     await owner('POST', '/grants', { principals: [everyone], can: { 'security/': [] } })

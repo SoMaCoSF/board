@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, beforeAll } from 'vitest'
+import { afterAll, beforeAll, vi } from 'vitest'
 import { serve } from './http.ts'
 import { localBoard, personToken } from './harness.ts'
 
@@ -20,6 +20,10 @@ export const tmp = (prefix: string) => mkdtemp(join(TEMP, prefix))
 export let server: Awaited<ReturnType<typeof serve>>
 export let url: string
 export let env: NodeJS.ProcessEnv
+
+/** A test's default time limit in every file that imports this one: they run the CLI as subprocesses, about half a second apiece, so vitest's 5s fails them whenever the runner is busy. */
+export const CLI_TIMEOUT = 20_000
+vi.setConfig({ testTimeout: CLI_TIMEOUT })
 
 /** Serves the calling file's board before its tests, and stops it after. */
 export function useBoard() {

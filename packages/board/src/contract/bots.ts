@@ -12,6 +12,8 @@ export type VercelDeployment = {
   previewUrl: string | null
   /** As Vercel wrote it, e.g. `Oct 6, 2026 8:30pm UTC`. */
   updated: string | null
+  /** The same as a time, e.g. `2026-10-06T20:30:32.400Z`, when Vercel's comment carries one. */
+  updatedAt: string | null
   skipped: boolean
 }
 
@@ -43,6 +45,7 @@ export function vercelDeployments(text: string): VercelDeployment[] | null {
     if (!project) continue
     const preview = cells[2] ? [...cells[2].matchAll(LINK)].find((link) => /preview/i.test(link[1]!)) : undefined
     const updated = cells[3]?.match(/<relative-time[^>]*>([^<]+)<\/relative-time>/)?.[1]?.trim() ?? (cells[3]?.replace(/<[^>]*>/g, '').trim() || null)
+    const time = cells[3]?.match(/<relative-time[^>]*\sdatetime="([^"]+)"/)?.[1] ?? null
     deployments.push({
       project,
       projectUrl: projectLink?.[2] ?? null,
@@ -50,6 +53,7 @@ export function vercelDeployments(text: string): VercelDeployment[] | null {
       deploymentUrl: status[2] ?? null,
       previewUrl: preview?.[2] ?? null,
       updated,
+      updatedAt: time !== null && !Number.isNaN(Date.parse(time)) ? time : null,
       skipped: skippedAt !== -1 && at > skippedAt,
     })
   }

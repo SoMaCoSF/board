@@ -94,7 +94,7 @@ describe('cli', () => {
     // At the limit, it posts.
     expect(await vb(['reply', id, '-'], {}, 'x'.repeat(10_000))).toMatchObject({ code: 0 })
     expect((await read()).replies).toHaveLength(2)
-  }, 20_000)
+  })
 
   it('refuses what a post, a reply, or a label would drop, and says how each is written', async () => {
     const id = (await vb(['post', 'notes', 'root'])).stdout.trim()
@@ -106,6 +106,16 @@ describe('cli', () => {
     // So was a second text, a title's body say, and what a filter flag was given.
     expect((await vb(['post', 'notes', 'title', 'the body'])).stderr).toMatch(/^error: post takes one text, and the body is one too many\./)
     expect((await vb(['post', 'notes', 'title', '--text', 'the body'])).stderr).toMatch(/^error: --text is a filter for read, tail, and wait\. post takes its text as an argument, in quotes\.\n/)
+    // An option only another command takes is unknown here too, not dropped: an edit can't attach or label.
+    const attach = join(await tmp('board-attach-'), 'trace.json')
+    await writeFile(attach, '{}')
+    const edit = await vb(['edit', id, 'edited', '--attach', attach])
+    expect(edit).toMatchObject({ code: 2, stdout: '', stderr: expect.stringMatching(/^error: edit can't attach files: reply with the file instead\.\n\n {2}Reply with it:\n {4}vb reply <ID> <TEXT> --attach <FILE>\n/) })
+    expect(failure(await vb(['edit', id, 'edited', '--label', 'a=b', '--json']))).toMatchObject({ reason: 'unknown_option', message: 'Unknown option --label for vb edit.' })
+    expect((await vb(['read', id, '--attach', attach])).stderr).toMatch(/^error: Unknown option --attach for vb read\./)
+    // Where it means something else, it says so: --text filters reads, and a schedule doesn't sync.
+    expect((await vb(['schedule', 'notes', 'hi', '--sync', 'slack:#x'])).stderr).toMatch(/^error: Can't use --sync with schedule\. A schedule posts where you point it\.\n/)
+    expect(JSON.parse((await vb(['read', id, '--json'])).stdout).message).toMatchObject({ text: 'root', labels: {} })
     // Stdin is the text's, never an attachment's.
     expect((await vb(['reply', id, 'see attached', '--attach', '-'])).stderr).toMatch(/^error: Can't attach -: stdin is for the message's text\./)
     expect(await replies()).toBe(0)
@@ -117,7 +127,7 @@ describe('cli', () => {
     expect((await vb(['post', 'notes', 'hi', '--label', 'owner='])).stderr).toBe('error: owner= has no value: a label needs one.\n\n  See how to use it:\n    vb post --help\n')
     // --if still takes one: it matches a label an older client left with no value.
     expect((await vb(['label', id, 'owner=bo', '--if', 'owner='])).stderr).toMatch(/^error: Can't label #\d+\.\n {2}owner isn't /)
-  }, 20_000)
+  })
 
   it("finds a Vercel project's link up to its checkout's root, where only a real .git (a HEAD, or a gitdir: file) is one", async () => {
     // A Vercel project linked above the checkout isn't this checkout's: no board, as outside one.
@@ -217,7 +227,7 @@ describe('cli', () => {
     } finally {
       await Promise.all([apex.close(), wall.close()])
     }
-  }, 20_000)
+  })
 
   it("doesn't wait on a signed-out `vercel` CLI's login flow", async () => {
     const wall = await serve(async () => new Response(null, { status: 302, headers: { location: 'https://vercel.com/sso-api?url=x' } }))
@@ -272,7 +282,7 @@ describe('cli', () => {
     } finally {
       await Promise.all([moved.close(), target.close()])
     }
-  }, 20_000)
+  })
 
   it("never reaches a board a checkout's .board/config.json names, with the environment's token or bypass", async () => {
     const seen: string[] = []
@@ -293,7 +303,7 @@ describe('cli', () => {
     } finally {
       await elsewhere.close()
     }
-  }, 20_000)
+  })
   it("replies --after a message only while it's the thread's newest, and says how to read what came after", async () => {
     const root = (await vb(['post', 'deploys', 'deploy a1b2c3 is rolling out'])).stdout.trim()
     const first = await vb(['reply', root, 'on it', '--after', root])
@@ -311,6 +321,22 @@ describe('cli', () => {
     expect(await vb(['reply', root, 'rolled back', '--after', newer])).toMatchObject({ code: 0, stderr: '' })
     // A new thread has nothing to come after.
     expect(await vb(['post', 'deploys', 'hello', '--after', root])).toMatchObject({ code: 2, stderr: expect.stringMatching(/^error: Can't use --after on a new thread\./) })
+  })
+
+  it("is told a label under board. is the board's own, as any error, and still reads and filters on one", async () => {
+    // A task, made over the API: its state is a label only the board writes.
+    const made = await fetch(`${url}/tasks`, { method: 'POST', headers: { authorization: `Bearer ${env.BOARD_TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify({ channel: 'work', text: 'fix CVE-123' }) })
+    const id = ((await made.json()) as { task: { id: string } }).task.id
+    // What a board answers 400 for is a request to write differently: exit 2, as for any of them.
+    const refused = await vb(['label', id, 'board.task=completed'])
+    expect(refused).toMatchObject({ code: 2, stdout: '', stderr: expect.stringMatching(/^error: /) })
+    expect(failure(await vb(['label', id, 'board.task=completed', '--json']))).toMatchObject({ reason: 'reserved_label' })
+    expect(failure(await vb(['label', id, '--unset', 'board.task', '--json']))).toMatchObject({ reason: 'reserved_label' })
+    expect(failure(await vb(['post', 'work', 'looks ready', '--label', 'board.task=ready', '--json']))).toMatchObject({ reason: 'reserved_label' })
+    // Nothing changed, and the label finds the task like any other.
+    const found = JSON.parse((await vb(['read', 'work', '--label', 'board.task=ready', '--json'])).stdout) as { threads: { message: { id: string; text: string; labels: Record<string, string> } }[] }
+    expect(found.threads.map((thread) => [thread.message.id, thread.message.text, thread.message.labels])).toEqual([[id, 'fix CVE-123', { 'board.task': 'ready' }]])
+    expect(await vb(['label', id, 'step=fix', '--if', 'board.task=ready'])).toMatchObject({ code: 0, stderr: '' })
   })
 
   it("labels --if its labels are as it says, and says what they are when they aren't", async () => {
@@ -343,7 +369,7 @@ describe('cli', () => {
     expect(await vb(['delete', id, '--if-revision', second])).toMatchObject({ code: 0, stderr: '' })
     expect((await read()).deleted).toBe(true)
     expect(await vb(['edit', id, 'x', '--if-revision', 'latest'])).toMatchObject({ code: 2, stderr: expect.stringMatching(/^error: --if-revision takes the message's revision, a number, and latest isn't one\./) })
-  }, 20_000)
+  })
 
   it('posts, replies, reacts, labels, and reads a thread', async () => {
     const posted = await vb(['post', 'errors-www', 'deploy failed on a1b2c3', '--label', 'status=open'])
@@ -357,6 +383,8 @@ describe('cli', () => {
     // This board syncs nowhere, so typing shows nowhere, and that's fine.
     expect(await vb(['typing', id])).toMatchObject({ code: 0, stdout: '', stderr: '' })
     expect(await vb(['typing', id, 'running', 'tests…'])).toMatchObject({ code: 0, stdout: '', stderr: '' })
+    expect(await vb(['typing', id, 'a'.repeat(50)])).toMatchObject({ code: 0, stderr: '' })
+    expect(await vb(['typing', id, 'a'.repeat(51)])).toMatchObject({ code: 2, stderr: expect.stringContaining('50') })
     expect((await vb(['label', id, 'status=investigating'])).code).toBe(0)
 
     const read = await vb(['read', id])
@@ -373,16 +401,48 @@ describe('cli', () => {
     expect([thread.message, ...thread.replies].map((m: { text: string }) => m.text)).toEqual(['deploy failed on a1b2c3', 'rolled back to d4e5f6'])
   })
 
-  it('posts a mention of a handle no one has as written, and warns about nothing', async () => {
+  it('keeps a handle no one has as typed, and warns that it mentions no one', async () => {
+    const unknown = (handle: string) => `warning: ${handle} names no one here: it stays text, and mentions no one.\n`
     const posted = await vb(['post', 'unknown-mentions', 'ping @tk about it'])
-    expect(posted).toMatchObject({ code: 0, stderr: '' })
+    expect(posted).toMatchObject({ code: 0, stderr: unknown('@tk') })
     const id = posted.stdout.trim()
-    expect(await vb(['reply', id, '@tk and @tk2, see `@code`'])).toMatchObject({ code: 0, stderr: '' })
+    // Once for each handle, and never for what's in code.
+    expect(await vb(['reply', id, '@tk and @tk2, see `@code`, and @tk again'])).toMatchObject({ code: 0, stderr: unknown('@tk') + unknown('@tk2') })
     const edited = await vb(['edit', id, 'ping @tk3', '--json'])
     expect(edited).toMatchObject({ code: 0, stderr: '' })
-    expect(JSON.parse(edited.stdout)).toEqual({ message: { id }, outcome: 'edited' })
+    expect(JSON.parse(edited.stdout)).toEqual({
+      message: { id },
+      outcome: 'edited',
+      mentions: [{ written: '@tk3', actor: null, candidates: [] }],
+      warnings: [{ reason: 'unknown_mention', message: '@tk3 names no one here: it stays text, and mentions no one.' }],
+    })
     const thread = JSON.parse((await vb(['read', id, '--json'])).stdout)
-    expect([thread.message, ...thread.replies].map((m: { text: string }) => m.text)).toEqual(['ping @tk3', '@tk and @tk2, see `@code`'])
+    expect([thread.message, ...thread.replies].map((m: { text: string }) => m.text)).toEqual(['ping @tk3', '@tk and @tk2, see `@code`, and @tk again'])
+  })
+
+  it('says the handle to write for someone who has the one typed only under a name', async () => {
+    // An agent's handle is its profile under its person's: u_julian/claude.
+    const id = (await vb(['post', 'short-mentions', 'hello', '--as', 'claude'])).stdout.trim()
+    const replied = await vb(['reply', id, 'over to @claude'])
+    expect(replied).toMatchObject({ code: 0, stderr: 'warning: @claude mentions no one here, and stays text: write @u_julian/claude.\n' })
+    expect(replied.stdout.trim().split('\n')).toHaveLength(1)
+    const thread = JSON.parse((await vb(['read', id, '--json'])).stdout)
+    expect(thread.replies.map((m: { text: string }) => m.text)).toEqual(['over to @claude'])
+  })
+
+  it('says who a handle mentions, stores them by ID, and shows them by name', async () => {
+    // A Vercel login's handle and name are its user ID, and it's known once it has written.
+    const id = (await vb(['post', 'known-mentions', 'hello'])).stdout.trim()
+    const replied = await vb(['reply', id, 'over to @u_julian', '--as', 'claude'])
+    expect(replied).toMatchObject({ code: 0, stderr: '' })
+    expect(replied.stdout.split('\n').slice(1)).toEqual(['mentioned  u_julian  @u_julian', ''])
+    const thread = JSON.parse((await vb(['read', id, '--json'])).stdout)
+    expect(thread.replies.map((m: { text: string }) => m.text)).toEqual(['over to @[vercel:user:u_julian]'])
+    expect((await vb(['read', id])).stdout).toContain('over to @u_julian')
+    // With --json, it's in the result, beside the message.
+    const again = JSON.parse((await vb(['reply', id, 'and @u_julian again', '--json'])).stdout)
+    expect(again.mentions).toEqual([{ written: '@u_julian', actor: { id: 'vercel:user:u_julian', handle: 'u_julian', name: 'u_julian' }, candidates: [] }])
+    expect(again.message).not.toHaveProperty('mentions')
   })
 
   it('says what each write did, and to which message', async () => {
@@ -443,7 +503,7 @@ describe('cli', () => {
     // The board refuses a path that isn't one, and makes nothing.
     expect(await vb(['channels', 'create', 'Made Early'])).toMatchObject({ code: 2, stdout: '', stderr: expect.stringMatching(/^error: Can't create Made Early\.\n/) })
     expect((await vb(['channels'])).stdout).not.toContain('Made Early')
-  }, 20_000) // a dozen CLI runs, which a loaded CI runner can take past the default 5s
+  })
 
   it('reads a channel as thread summaries, counting threads, and says so when the channel does not exist', async () => {
     const first = (await vb(['post', 'open-work', 'flaky test in ci\nsecond line', '--label', 'state=open'])).stdout.trim()
@@ -492,7 +552,7 @@ describe('cli', () => {
     expect(await vb(['read', 'open-wrok'])).toMatchObject({ code: 1, stdout: '', stderr: expect.stringMatching(/^error: Couldn't find channel open-wrok\. Did you mean open-work\?\n/) })
     expect(await vb(['read', 'open-work', '--text', 'nothing like this'])).toMatchObject({ code: 0, stdout: expect.stringMatching(/^open-work · 0 threads · cursor \d+\n\nnew since then: vb read open-work --text 'nothing like this' --after \d+\n$/) })
     expect(await vb(['read', 'open-work', '--messages'])).toMatchObject({ code: 2 })
-  }, 20_000)
+  })
 
   it("posts once for an idempotency key, and reads by a message's source", async () => {
     const once = await vb(['post', 'retries', 'deploy failed', '--idempotency-key', 'deploy-a1b2c3'])
@@ -513,8 +573,9 @@ describe('cli', () => {
       const { stdout } = await vb(['read', 'pings', ...args, '--json'])
       return (JSON.parse(stdout) as { threads: { message: { text: string } }[] }).threads.map((thread) => thread.message.text)
     }
-    expect(await texts(['--mentions'])).toEqual(['hey @u_julian, look'])
-    expect(await texts(['--mentions', '@u_julian'])).toEqual(['hey @u_julian, look'])
+    // The handle named one actor, so it was stored as a mention of them.
+    expect(await texts(['--mentions'])).toEqual(['hey @[vercel:user:u_julian], look'])
+    expect(await texts(['--mentions', '@u_julian'])).toEqual(['hey @[vercel:user:u_julian], look'])
   })
 
   it('filters by author, with or without the @', async () => {
@@ -574,7 +635,6 @@ describe('cli', () => {
       code: 2,
       stderr: expect.stringMatching(/^error: --avatar is the avatar of the profile --as names: pass --as too\.\n/),
     })
-    expect(await vb(['whoami'], { BOARD_AS: 'claude' })).toMatchObject({ code: 2, stderr: expect.stringMatching(/^error: BOARD_AS is BOARD_PROFILE now, and nothing reads BOARD_AS\.\n/) })
   })
 
   it("writes as you inside a coding agent, whatever its environment says, and as a profile only when one is named", async () => {
@@ -618,7 +678,7 @@ describe('cli', () => {
     expect(none).toMatchObject({ code: 1, stderr: expect.stringMatching(new RegExp(`^error: Nothing matched within 300ms\\.\n {2}Nothing came after ${reply}\\.\n`)) })
     // A channel whose name only looks like an ID is still a channel, as read takes it.
     expect((await vb(['wait', 'msg_updates', '--timeout', '300ms'])).stderr).toMatch(/^error: Nothing matched within 300ms\.\n {2}wait sees only what arrives after it starts\./)
-  }, 20_000)
+  })
 
   it('attaches files, shows them, and downloads them', async () => {
     const dir = await tmp('board-files-')
@@ -638,7 +698,12 @@ describe('cli', () => {
     expect(await vb(['download', attachment.id, saved])).toMatchObject({ code: 0, stdout: `${saved}\n` })
     expect(await readFile(saved)).toEqual(Buffer.from([137, 80, 78, 71]))
     expect(await vb(['post', 'proofs', 'x', '--attach', join(dir, 'missing.png')])).toMatchObject({ code: 2, stderr: `error: Can't attach ${join(dir, 'missing.png')}. There's no such file.\n` })
-  }, 20_000) // five CLI runs: a cold start right after install can pass the default 5s
+    // One of the 11 doesn't exist: reading the files before counting them would say so instead.
+    const eleven = [...Array.from({ length: 10 }, () => ['--attach', shot]).flat(), '--attach', join(dir, 'missing.png')]
+    const many = await vb(['reply', id, 'all of them', ...eleven])
+    expect(many.code).toBe(2)
+    expect(many.stderr).toMatch(/^error: Can't attach 11 files\. A message carries at most 10\./)
+  })
 
   it('downloads an attachment whose id starts with "-", which reads like a flag', async () => {
     // Boards minted one in 64 of these before they stopped: they're still out there.
@@ -664,7 +729,7 @@ describe('cli', () => {
     } finally {
       await files.close()
     }
-  }, 20_000)
+  })
 
 
   it('delivers all of a long read to a reader that falls behind', async () => {
@@ -837,7 +902,7 @@ describe('cli', () => {
     expect((await vb(['typing'])).code).toBe(2)
     expect((await vb(['frobnicate'])).code).toBe(2)
     expect((await vb(['inspect', '--port', 'nope'])).code).toBe(2)
-  }, 20_000)
+  })
 
   it('says a removed command is gone whatever flags it carries, and names an unknown option', async () => {
     // board 0.8's turn-end hook told agents to run `vb update --skip` or `vb update "<summary>"`.
@@ -896,7 +961,7 @@ describe('cli', () => {
     expect(id).toMatch(/^\d+$/)
     child.kill('SIGINT')
     expect(await exited).toBe(130)
-  }, 20_000)
+  })
 
   it('serves the inspector until Ctrl-C', async () => {
     const child = spawn(process.execPath, [CLI, 'inspect', '--port', '0', '--no-open'], { env })

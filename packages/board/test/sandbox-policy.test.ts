@@ -168,6 +168,11 @@ describe("sandboxPolicy() on Vercel's board", () => {
     expect((await agent.me()).actor).toBe('vercel:project:prj_pong:production+fixer')
     const root = await agent.post('dev', { text: 'on it', id: 'fix-1' })
     expect((await agent.posted('fix-1'))?.id).toBe(root.id)
+    // A message's channel is asked for by its ID through the policy too: a run that has listed nothing lists nothing for it.
+    const fresh = board({ backend: vercel({ team: 'team_test', board: 'brd_test', api: API, fetch: network.fetch, files: api.files }) })
+    api.requests.length = 0
+    expect((await fresh.thread(root.id)).message.channel).toBe('dev')
+    expect(api.requests.filter((r) => /\/channels(\/[^/]+)?$/.test(r))).toEqual([expect.stringMatching(/^GET .*\/channels\/[^/]+$/)])
     const reply = await agent.reply(root.id, 'a first look')
     await agent.edit(reply.id, 'a closer look')
     await agent.react(root.id, 'eyes')
@@ -194,6 +199,61 @@ describe("sandboxPolicy() on Vercel's board", () => {
       expect(await asked(method!, path!)).toEqual([method, path, 403, "not this board's"])
   })
 
+  it("hands it the task calls an agent's vb makes there, which are version 2 of the API's, and nothing else at that version", async () => {
+    const api = fakeMessageboard()
+    const pong = board({ backend: vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:production'), files: api.files }) })
+    const network = sandboxNetwork(await pong.as('fixer').sandboxPolicy({ token: 'project:prj_pong:production' }), (request) => api.fetch(request))
+    const agent = board({ backend: vercel({ team: 'team_test', board: 'brd_test', api: API, fetch: network.fetch }) })
+    const fixer = 'vercel:project:prj_pong:production+fixer'
+    // A queue its deployment fills and the sandbox works: what a claim does, through the policy, on a task that isn't its own.
+    const { task: fix } = await pong.tasks.create('work', { text: 'fix CVE-123 in acme/web', labels: { step: 'fix' } })
+    const claim = await agent.tasks.claim({ channel: 'work', label: { step: 'fix' }, lease: 60 })
+    expect(claim?.task).toMatchObject({ id: fix.id, task: { state: 'claimed', claim: { actor: fixer } } })
+    await (await claim!.renew(120)).release()
+    await (await agent.tasks.claim(fix.id, { lease: 60 })).block('which branch?', { kind: 'needs_input' })
+    await pong.tasks.unblock(fix.id)
+    await (await agent.tasks.claim(fix.id, { lease: 60 })).fail('no credentials')
+    await pong.tasks.reopen(fix.id)
+    await (await agent.tasks.claim(fix.id, { lease: 60 })).complete('fixed in a1b2c3')
+    // The tasks it makes are its own to change, a thread it makes one among them.
+    const { task: review } = await agent.tasks.create('work', { text: 'review the fix', needs: [fix.id] })
+    await agent.tasks.block(review.id, 'not yet')
+    await agent.tasks.unblock(review.id)
+    await agent.tasks.assign(review.id, fixer)
+    await agent.tasks.needs(review.id, [])
+    await agent.tasks.needs(review.id, [fix.id])
+    await (await agent.tasks.claim(review.id, { lease: 60 })).fail('later')
+    await agent.tasks.reopen(review.id)
+    const note = await agent.post('work', 'a thread to make a task')
+    await agent.tasks.create({ re: note.id })
+    await agent.tasks.cancel(note.id, 'not needed')
+    // And several at once, which is one call.
+    const [build, deploy] = await agent.tasks.createMany('work', [{ key: 'build', text: 'build the fix' }, { text: 'deploy it', needs: [{ key: 'build' }] }])
+    expect((await agent.tasks.list({ channel: 'work', state: 'all' })).tasks.map((task) => [task.message.id, task.message.task?.state, task.message.task?.for])).toEqual([
+      [fix.id, 'completed', null],
+      [review.id, 'ready', fixer],
+      [note.id, 'canceled', null],
+      [build!.id, 'ready', null],
+      [deploy!.id, 'waiting', null],
+    ])
+    // Its deployment's own aren't: the call is the sandbox's to make, and the API refuses it, so it gives itself none.
+    const { task: theirs } = await pong.tasks.create('work', { text: "the deployment's own" })
+    await expect(agent.tasks.assign(theirs.id, fixer)).rejects.toMatchObject({ status: 403, code: 'task_not_owned' })
+    await expect(agent.tasks.needs(theirs.id, [fix.id])).rejects.toMatchObject({ status: 403, code: 'task_not_owned' })
+    await expect(agent.tasks.cancel(theirs.id, 'mine now')).rejects.toMatchObject({ status: 403, code: 'task_not_owned' })
+    expect((await pong.thread(theirs.id)).message.task).toMatchObject({ state: 'ready', for: null })
+    // Nothing else is the sandbox's at that version: a read of one task, which vb never asks for, another change or method, another board or team.
+    const asked = async (method: string, path: string, team = 'team_test') => {
+      const response = await network.fetch(`${API}/v2/messageboard${path}?teamId=${team}`, { method, ...(method === 'GET' || method === 'DELETE' ? {} : { body: '{}' }) })
+      return [method, path, response.status, (await response.json()).error?.message]
+    }
+    const task = `/boards/brd_test/tasks/thr_${/^msg_(.+)_1$/.exec(fix.id)![1]}`
+    for (const [method, path] of [['GET', task], ['DELETE', task], ['POST', `${task}/transfer`], ['GET', `${task}/claim`], ['PUT', '/boards/brd_test/tasks'], ['GET', '/boards/brd_test/tasks/claim'], ['GET', '/boards/brd_test/tasks/batch'], ['POST', '/boards/brd_test/tasks/batch/undo'], ['GET', '/boards/brd_test'], ['GET', '/boards/brd_test/threads'], ['GET', '/boards/brd_other/tasks'], ['GET', '/me']])
+      expect(await asked(method!, path!)).toEqual([method, path, 403, "not this board's"])
+    expect(await asked('GET', '/boards/brd_test/tasks', 'team_other')).toEqual(['GET', '/boards/brd_test/tasks', 403, "not this board's"])
+    expect((await network.fetch(`${API}/v2/messageboard/boards/brd_test/tasks?teamId=team_test`)).status).toBe(200)
+  })
+
   it('holds the sandbox to its can there too, as the API holds a caller to x-board-can', async () => {
     const api = fakeMessageboard()
     const pong = board({ backend: vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:production'), files: api.files }) })
@@ -205,6 +265,13 @@ describe("sandboxPolicy() on Vercel's board", () => {
     await agent.react(root.id, 'eyes')
     await expect(agent.reply(root.id, 'not to post')).rejects.toMatchObject({ status: 403 })
     await expect(agent.post('ops', 'nor here')).rejects.toMatchObject({ status: 403 })
+    // Its tasks too: it lists what it reads, and neither makes nor claims one, which take post and label.
+    const { task } = await pong.tasks.create('dev', { text: 'a task to leave be' })
+    expect((await agent.tasks.list({ channel: 'dev' })).tasks.map((listed) => listed.message.id)).toEqual([task.id])
+    await expect(agent.tasks.create('dev', 'not to make')).rejects.toMatchObject({ status: 403 })
+    await expect(agent.tasks.claim(task.id)).rejects.toMatchObject({ status: 403 })
+    await expect(agent.tasks.claim({ channel: 'dev' })).rejects.toMatchObject({ status: 403 })
+    expect((await pong.thread(task.id)).message.task).toMatchObject({ state: 'ready', epoch: 0 })
     // Without a can, read, post, react, and label everywhere: not sync or manage, which this deployment's own credential has.
     const wider = board({ backend: vercel({ team: 'team_test', board: 'brd_test', api: API, fetch: sandboxNetwork(await pong.as('fixer').sandboxPolicy({ token: 'project:prj_pong:production' }), (request) => api.fetch(request)).fetch }) })
     expect((await wider.post('ops', 'here, yes')).by.actor).toBe('vercel:project:prj_pong:production+fixer')

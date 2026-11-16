@@ -71,6 +71,12 @@ describe('messages in Slack', () => {
     expect(sent).toEqual({ thread, message: '1700000000.000200' })
   })
 
+  it('go out without the label that sits above a text that opens a block', async () => {
+    const { provider, posted } = slackWith(['chat:write.customize'])
+    await provider.post(thread, 'thread', { markdown: `**${as.name}**:\n\n\`\`\`sh\npnpm check\n\`\`\``, as })
+    expect(posted).toEqual([expect.objectContaining({ markdown_text: '```sh\npnpm check\n```', username: as.name })])
+  })
+
   it('start a thread in a channel under its name', async () => {
     const { provider, posted } = slackWith(['chat:write.customize'])
     const sent = await provider.post('C1', 'channel', { markdown, as })

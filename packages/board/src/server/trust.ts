@@ -136,9 +136,14 @@ const storedGrant = (row: GrantRow): StoredGrant => ({ id: grantId(row.id), prin
  * repository's run with what it says of its workflow, branch (main unless it says), and event, or an issuer's token with
  * its claims. A board that verifies tokens itself looks no names up, so a name is a 400.
  */
-function principalNamed(query: Protocol['explain']['input'], team: string | null): Known {
+function principalNamed(query: Protocol['explain']['input'], team: string | null, logins: boolean): Known {
   if (query.user !== undefined) {
-    if (query.user.includes('@')) throw badRequest(`this board can't look up ${query.user}: it verifies tokens itself, so name the user by ID`)
+    if (query.user.includes('@')) {
+      if (!logins) throw badRequest(`this board can't look up ${query.user}: it verifies tokens itself, so name the user by ID`)
+      // Where people are their logins, one is the user's ID, as a grant keeps it.
+      const login = query.user.toLowerCase()
+      return { id: `vercel:user:${login}`, kind: 'person', handle: login }
+    }
     return { id: `vercel:user:${query.user}`, kind: 'person', handle: query.user }
   }
   if (query.project !== undefined) {
@@ -256,7 +261,7 @@ const namesIssuer = (principals: readonly GrantPrincipal[]) => principals.some((
  * name an oidc issuer. A removal goes by who a principal is; an add joins one the grant names
  * already. `issuers` are the ones the board's rules trust.
  */
-async function updated(identity: Identity, state: AccessState, { id, add, remove, can }: Protocol['updateGrant']['input'], issuers: readonly string[], accessIn: AccessIn, team: string | null) {
+async function updated(identity: Identity, state: AccessState, { id, add, remove, can }: Protocol['updateGrant']['input'], issuers: readonly string[], accessIn: AccessIn, team: string | null, logins: boolean) {
   const index = indexOf(id)
   const row = index === null ? undefined : state.grants[index]
   if (!row) {
@@ -270,14 +275,14 @@ async function updated(identity: Identity, state: AccessState, { id, add, remove
   const others = grantIssuers(Object.values(state.grants).filter((other) => other.id !== row.id).map(storedGrant))
   let principals = [...row.principals]
   for (const input of remove ?? []) {
-    const removal = checkPrincipal(input, [...issuers, ...others], true)
+    const removal = checkPrincipal(input, [...issuers, ...others], true, null, logins)
     const kept = principals.filter((principal) => !removes(removal, principal))
     if (kept.length === principals.length) throw badRequest(`${id} doesn't name that ${removal.kind} principal`, 'not_in_grant')
     principals = kept
   }
   for (const input of add ?? []) {
     // Checked against every issuer it would sit beside: its own grant's, and those it adds before it.
-    const added = checkPrincipal(input, [...issuers, ...others, ...grantIssuers([{ principals }])], false, team)
+    const added = checkPrincipal(input, [...issuers, ...others, ...grantIssuers([{ principals }])], false, team, logins)
     const at = principals.findIndex((principal) => joined(added, principal) !== null)
     if (at === -1) principals.push(added)
     else principals[at] = joined(added, principals[at]!)!
@@ -306,7 +311,10 @@ export function createTrust(options: {
   explain: (principal: Known, channel: string) => Promise<Decided>
   /** The board's own Vercel team, where it's known: a project a grant names is kept on it, and one explain names is taken to be on it. */
   team: () => Promise<string | null>
+  /** Whether board()'s verifier names people by their logins: a grant then names a user by one. */
+  logins?: () => boolean
 }) {
+  const logins = () => options.logins?.() ?? false
   const accessIn: AccessIn = (principal, grants) => options.accessNow(principal, grants)
   const session = createServer({ contract: accessContract, store: options.store }).session(ACCESS_SESSION)
   const read = async () => (await session.state(accessReducer)).state
@@ -330,7 +338,7 @@ export function createTrust(options: {
       const team = await options.team()
       const [row] = await whileHeadMoves(async () => {
         const { state, index } = await latest()
-        const checked = checkGrant(body, grantIssuers(Object.values(state.grants).map(storedGrant)), team)
+        const checked = checkGrant(body, grantIssuers(Object.values(state.grants).map(storedGrant)), team, logins())
         const before = Object.values(state.grants).map(storedGrant)
         const after = [...before, checked]
         await mayGrant(identity, { changed: checked }, before, after, accessIn)
@@ -346,7 +354,7 @@ export function createTrust(options: {
       const team = await options.team()
       const id = await whileHeadMoves(async () => {
         const { state, index } = await latest()
-        const event = await updated(identity, state, input, [], accessIn, team)
+        const event = await updated(identity, state, input, [], accessIn, team, logins())
         await session.append.ifLastIndex(index, event)
         return event.payload.id
       })
@@ -359,7 +367,7 @@ export function createTrust(options: {
       // A local board has no apps, so nothing lets one in, whatever its grants name.
       if (query.app !== undefined) return { channel: query.channel, pattern: null, over: [], level: null, grants: [], capped: null, can: [] }
       const { id, kind, handle, facts, scope } = identity.principal
-      const principal: Known = named ? principalNamed(query, await options.team()) : { id, kind, handle, ...(facts ? { facts } : {}), ...(scope !== undefined ? { scope } : {}) }
+      const principal: Known = named ? principalNamed(query, await options.team(), logins()) : { id, kind, handle, ...(facts ? { facts } : {}), ...(scope !== undefined ? { scope } : {}) }
       const decided = await options.explain(principal, query.channel)
       const { grants } = await read()
       // A grant names whom else it lets in: only those who may list grants see which decided.

@@ -64,6 +64,14 @@ describe('attachments', () => {
     expect(anonymous.status).toBe(401)
   })
 
+  it('carries up to 10 files on a message, and refuses more', async () => {
+    const { client, call } = await setup()
+    const ids: string[] = []
+    for (let i = 0; i < 11; i++) ids.push((await client.upload({ data: PNG, name: `shot-${i}.png`, type: 'image/png' })).id)
+    expect(await call('POST', '/messages', { channel: 'ops', text: 'too many', attachments: ids })).toMatchObject({ status: 400, body: { error: { code: 'invalid_request' } } })
+    expect((await call('POST', '/messages', { channel: 'ops', text: 'ten', attachments: ids.slice(0, 10) })).status).toBe(201)
+  })
+
   it('records only files it stored, and lets a message with files have no text', async () => {
     const { client, call } = await setup()
     const missing = await call('POST', '/messages', { channel: 'ops', text: 'here', attachments: ['AAAAAAAAAAAAAAAAAAAAAA'] })

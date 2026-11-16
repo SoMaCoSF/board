@@ -1,5 +1,5 @@
 import type { BoardEventView } from '../api/routes.ts'
-import { BoardError, createBoardClient, type BoardClient, type PostOptions, type ProfileOption, type ReplyOptions } from '../client/client.ts'
+import { BoardError, createBoardClient, eventsState, type BoardClient, type EventsOptions, type NewTaskOptions, type ProfileOption, type TaskOptions } from '../client/client.ts'
 import { derivedId } from '../client/ids.ts'
 import type { SyncProvider } from '../sync/provider.ts'
 import { SYNC, type Backend, type BoardBinding, type Caller, type SelfCaller, type Subscription, type SyncEntry } from './backend.ts'
@@ -119,7 +119,7 @@ type DefaultOptions = {
   backend?: undefined
   /**
    * How requests reach Vercel's API, with credentials it takes: a token for the team. In Node it
-   * defaults to `VERCEL_TOKEN`, the deployment's OIDC token, or your `vercel login`; elsewhere, a
+   * defaults to the deployment's OIDC token, `BOARD_TOKEN`, or your Vercel login, never `VERCEL_TOKEN`; elsewhere, a
    * browser say, pass one. A board at `BOARD_URL` gets the credentials `vb` sends it instead.
    */
   fetch?: typeof fetch
@@ -353,7 +353,7 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
     if ('identity' in caller) return handle({ ...client, events: (query, opts) => events(client, query, opts) }, () => ownUrl() ?? inProcess, caller, trigger, stop, writes)
     const via = caller.origin.via?.kind ?? 'client'
     const id = (given: string) => derivedId(`board-${via === 'watcher' ? 'watch' : via}`, caller.self ?? '', given)
-    const owned = async <T extends PostOptions | ReplyOptions>(input: string | T): Promise<string | T> =>
+    const owned = async <T extends { id?: string }>(input: string | T): Promise<string | T> =>
       typeof input === 'string' || input.id === undefined ? input : { ...input, id: await id(input.id) }
     return handle(
       {
@@ -361,6 +361,13 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
         post: async (channel, input) => client.post(channel, await owned(input)),
         reply: async (re, input) => client.reply(re, await owned(input)),
         posted: async (given) => client.posted(await id(given)),
+        // A task's new thread is a post: its `id` is this caller's own too.
+        tasks: {
+          ...client.tasks,
+          create: (async (target: string | { re: string }, input?: string | NewTaskOptions | TaskOptions) =>
+            typeof target === 'string' ? client.tasks.create(target, await owned(input as string | NewTaskOptions)) : client.tasks.create(target, input as TaskOptions | undefined)) as BoardClient['tasks']['create'],
+          createMany: async (channel, tasks, opts = {}) => client.tasks.createMany(channel, tasks, opts.id !== undefined ? { id: await id(opts.id) } : opts),
+        },
         // In-process, a request is this caller's whatever its headers say: another profile is another handle's.
         request: (path, init = {}) => {
           const { as: profile, ...rest } = init
@@ -429,6 +436,7 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
     accessNow: (principal, grants) => policy.accessNow(principal, grants),
     explain: (principal, channel) => policy.explain(principal, channel),
     project: () => policy.project(),
+    logins: policy.logins,
     handle: (caller) => handleOf(caller, null),
     url: ownUrl,
   }
@@ -439,26 +447,36 @@ export function createBoard(options: BoardOptions, runtime: Runtime): Board {
 
 /**
  * Live events for a handle, from the backend's long-poll: each page from the last cursor it saw,
- * waiting for the next. It backs off after a failure, up to 30 seconds; a 4xx throws.
+ * waiting for the next. It backs off after a failure, up to 30 seconds; a 4xx throws. `onState`
+ * hears `live` when a poll is answered and `retrying` when one failed. The first poll, and the
+ * first after a failure, ask without waiting, so it's `live` as soon as the board answers, not a
+ * quiet board's whole wait later.
  */
 async function* events(
   client: BoardClient,
   query: Parameters<BoardClient['events']>[0] = {},
-  opts: { signal?: AbortSignal } = {},
+  opts: EventsOptions = {},
 ): AsyncGenerator<BoardEventView> {
   let after = query.after
   let failures = 0
+  /** Whether the board has answered since the feed started, or since it last failed. */
+  let answered = false
+  const state = eventsState(opts.onState)
   while (!opts.signal?.aborted) {
     let page: Awaited<ReturnType<BoardClient['poll']>>
     try {
-      page = await client.poll({ ...query, ...(after !== undefined ? { after } : {}), wait: EVENTS_WAIT_S } as Parameters<BoardClient['poll']>[0], opts.signal)
+      page = await client.poll({ ...query, ...(after !== undefined ? { after } : {}), wait: answered ? EVENTS_WAIT_S : 0 } as Parameters<BoardClient['poll']>[0], opts.signal)
     } catch (error) {
       if (opts.signal?.aborted) return
       if (error instanceof BoardError && error.status >= 400 && error.status < 500) throw error
+      answered = false
+      state.failed()
       await new Promise((resolve) => setTimeout(resolve, Math.min(30_000, 500 * 2 ** failures++)))
       continue
     }
     failures = 0
+    answered = true
+    state.answered()
     for (const event of page.events) {
       yield event
       if (opts.signal?.aborted) return

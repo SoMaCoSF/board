@@ -28,69 +28,55 @@ function same(a: unknown, b: unknown): boolean {
   return keys.length === Object.keys(b).length && keys.every((key) => Object.hasOwn(b, key) && same(a[key], b[key]))
 }
 
-const DATE = /^(\d{4})-(\d{2})-(\d{2})$/
-// The zone may be left out, or written +02, +0200, or +02:00: what Vercel's API takes too.
-const TIME = /^(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:z|[+-](\d{2})(?::?(\d{2}))?)?$/i
-const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i
-const EMAIL_NAME = /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*$/i
+// What each format takes: what ajv-formats 2.1.1 takes in its full mode, which is what Vercel's
+// API takes, so a value gets one answer on a board anywhere and on Vercel's. These are that
+// library's definitions (MIT, https://github.com/ajv-validator/ajv-formats), kept as they are,
+// oddities included: a leading zero in an IPv4 address, any two digits in a time's offset. None
+// takes a millisecond on the longest message.
+const DATE = /^(\d\d\d\d)-(\d\d)-(\d\d)$/
+const DAYS = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+const TIME = /^(\d\d):(\d\d):(\d\d)(\.\d+)?(z|[+-]\d\d(?::?\d\d)?)?$/i
+const EMAIL = /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i
+const HOSTNAME = /^(?=.{1,253}\.?$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[-0-9a-z]{0,61}[0-9a-z])?)*\.?$/i
+const IPV4 = /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)$/
+const IPV6 =
+  /^((([0-9a-f]{1,4}:){7}([0-9a-f]{1,4}|:))|(([0-9a-f]{1,4}:){6}(:[0-9a-f]{1,4}|((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})|:))|(([0-9a-f]{1,4}:){5}(((:[0-9a-f]{1,4}){1,2})|:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})|:))|(([0-9a-f]{1,4}:){4}(((:[0-9a-f]{1,4}){1,3})|((:[0-9a-f]{1,4})?:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9a-f]{1,4}:){3}(((:[0-9a-f]{1,4}){1,4})|((:[0-9a-f]{1,4}){0,2}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9a-f]{1,4}:){2}(((:[0-9a-f]{1,4}){1,5})|((:[0-9a-f]{1,4}){0,3}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9a-f]{1,4}:){1}(((:[0-9a-f]{1,4}){1,6})|((:[0-9a-f]{1,4}){0,4}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(:(((:[0-9a-f]{1,4}){1,7})|((:[0-9a-f]{1,4}){0,5}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:)))$/i
+const UUID = /^(?:urn:uuid:)?[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i
+// RFC 3986's URI, with its scheme: a reference with none is no URI here.
+const URI =
+  /^(?:[a-z][a-z0-9+\-.]*:)(?:\/?\/(?:(?:[a-z0-9\-._~!$&'()*+,;=:]|%[0-9a-f]{2})*@)?(?:\[(?:(?:(?:(?:[0-9a-f]{1,4}:){6}|::(?:[0-9a-f]{1,4}:){5}|(?:[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){4}|(?:(?:[0-9a-f]{1,4}:){0,1}[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){3}|(?:(?:[0-9a-f]{1,4}:){0,2}[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){2}|(?:(?:[0-9a-f]{1,4}:){0,3}[0-9a-f]{1,4})?::[0-9a-f]{1,4}:|(?:(?:[0-9a-f]{1,4}:){0,4}[0-9a-f]{1,4})?::)(?:[0-9a-f]{1,4}:[0-9a-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?))|(?:(?:[0-9a-f]{1,4}:){0,5}[0-9a-f]{1,4})?::[0-9a-f]{1,4}|(?:(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4})?::)|[Vv][0-9a-f]+\.[a-z0-9\-._~!$&'()*+,;=:]+)\]|(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)|(?:[a-z0-9\-._~!$&'()*+,;=]|%[0-9a-f]{2})*)(?::\d*)?(?:\/(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*|\/(?:(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})+(?:\/(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*)?|(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})+(?:\/(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*)(?:\?(?:[a-z0-9\-._~!$&'()*+,;=:@/?]|%[0-9a-f]{2})*)?(?:#(?:[a-z0-9\-._~!$&'()*+,;=:@/?]|%[0-9a-f]{2})*)?$/i
+const NOT_A_FRAGMENT = /\/|:/
 
 function isDate(text: string): boolean {
   const found = DATE.exec(text)
   if (!found) return false
   const [year, month, day] = [Number(found[1]), Number(found[2]), Number(found[3])]
   const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
-  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]
-  return days !== undefined && day >= 1 && day <= days
+  return month >= 1 && month <= 12 && day >= 1 && day <= (month === 2 && leap ? 29 : DAYS[month]!)
 }
 
 function isTime(text: string): boolean {
   const found = TIME.exec(text)
   if (!found) return false
-  // A leap second, 23:59:60, is a time too.
-  return Number(found[1]) <= 23 && Number(found[2]) <= 59 && Number(found[3]) <= 60 && Number(found[4] ?? 0) <= 23 && Number(found[5] ?? 0) <= 59
+  const [hour, minute, second] = [Number(found[1]), Number(found[2]), Number(found[3])]
+  // A leap second is the day's last: 23:59:60. The zone may be left out, and its digits aren't checked.
+  return (hour <= 23 && minute <= 59 && second <= 59) || (hour === 23 && minute === 59 && second === 60)
 }
 
-/** A hostname's labels, with or without the dot that ends a full one. */
-const isHostname = (text: string) => text.length <= 253 && text.replace(/\.$/, '').split('.').every((label) => LABEL.test(label))
-const isIpv4 = (text: string) => {
-  const parts = text.split('.')
-  return parts.length === 4 && parts.every((part) => /^(?:0|[1-9]\d{0,2})$/.test(part) && Number(part) <= 255)
-}
-function isIpv6(text: string): boolean {
-  let groups = text
-  // An IPv4 address may stand for the last two groups.
-  if (text.includes('.')) {
-    const tail = text.lastIndexOf(':')
-    if (tail === -1 || !isIpv4(text.slice(tail + 1))) return false
-    groups = `${text.slice(0, tail + 1)}0:0`
-  }
-  const halves = groups.split('::')
-  if (halves.length > 2) return false
-  const parts = halves.flatMap((half) => (half === '' ? [] : half.split(':')))
-  if (!parts.every((part) => /^[0-9a-f]{1,4}$/i.test(part))) return false
-  // `::` stands for one group of zeros or more.
-  return halves.length === 2 ? parts.length <= 7 : parts.length === 8
-}
-
-/** What each format takes, each in time linear in the text. */
 const FORMATS: Readonly<Record<string, (text: string) => boolean>> = {
   date: isDate,
   time: isTime,
   'date-time': (text) => {
-    const at = text.search(/[t ]/i)
-    return at !== -1 && isDate(text.slice(0, at)) && isTime(text.slice(at + 1))
+    // A date, then a `t` or any one whitespace character, then a time.
+    const parts = text.split(/t|\s/i)
+    return parts.length === 2 && isDate(parts[0]!) && isTime(parts[1]!)
   },
-  email: (text) => {
-    const at = text.lastIndexOf('@')
-    const domain = text.slice(at + 1)
-    // A domain with a dot in it, as a mailbox on the internet has.
-    return at > 0 && EMAIL_NAME.test(text.slice(0, at)) && domain.includes('.') && !domain.endsWith('.') && isHostname(domain)
-  },
-  uri: (text) => /^[a-z][a-z0-9+.-]*:[^\s]+$/i.test(text),
-  uuid: (text) => /^(?:urn:uuid:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text),
-  hostname: isHostname,
-  ipv4: isIpv4,
-  ipv6: isIpv6,
+  email: (text) => EMAIL.test(text),
+  uri: (text) => NOT_A_FRAGMENT.test(text) && URI.test(text),
+  uuid: (text) => UUID.test(text),
+  hostname: (text) => HOSTNAME.test(text),
+  ipv4: (text) => IPV4.test(text),
+  ipv6: (text) => IPV6.test(text),
 }
 
 /** A value as a refusal shows it: its JSON, cut short. */
@@ -151,9 +137,13 @@ function problemIn(schema: unknown, value: unknown, at: string): string | null {
   if (Array.isArray(value)) {
     if (typeof schema.minItems === 'number' && value.length < schema.minItems) return `${it} must have at least ${schema.minItems} items`
     if (typeof schema.maxItems === 'number' && value.length > schema.maxItems) return `${it} must have at most ${schema.maxItems} items`
+    // One schema for every item, or a list of them, one for each place. Items past the list are
+    // free: no registry takes `additionalItems`, and Vercel's takes a list only with `minItems` and
+    // `maxItems` at its length.
+    const places = Array.isArray(schema.items) ? schema.items : null
     if (schema.items !== undefined)
-      for (let index = 0; index < value.length; index++) {
-        const problem = problemIn(schema.items, value[index], within(index))
+      for (let index = 0; index < (places ? Math.min(places.length, value.length) : value.length); index++) {
+        const problem = problemIn(places ? places[index] : schema.items, value[index], within(index))
         if (problem !== null) return problem
       }
   }

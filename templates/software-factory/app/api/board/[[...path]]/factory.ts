@@ -1,26 +1,23 @@
 import { board } from "@vercel/board";
 import { github, repos } from "@vercel/board/sync-github";
 import { channels, slack } from "@vercel/board/sync-slack";
+import { WATCHER } from "../../../../agent/lib/identity.ts";
 import { wakeAgent } from "../../../../agent/lib/wake.ts";
-import { ownRepo } from "../../../../lib/github.ts";
+import { channel, projectName } from "../../../../lib/project.ts";
+import { repoChannels, slackChannels } from "./channels.ts";
 import { appLogin, withoutForksOrOwn } from "./github.ts";
 
 // The factory's board: your team's board in Vercel's API, which keeps its messages, files, and
 // schedules. This deployment keeps nothing: it runs the board's sync and its watchers.
 
-const own = ownRepo();
+/** Which repos and Slack channels come in, and where: channels.ts is the file to edit. */
+export { repoChannels, slackChannels };
 
-/** This factory's Vercel Connect connectors. */
-export const connectors = { github: "github/factory", slack: "slack/factory" };
+/** This factory's Vercel Connect connectors, named for its Vercel project: a team has one connector per name. */
+export const connectors = { github: `github/${projectName()}`, slack: `slack/${projectName()}` };
 
-/** Each repo (`owner/name`, as GitHub writes it) and the board channel its PRs and issues come into. */
-export const repoChannels: Record<string, string> = {
-  ...(own ? { [own]: "dev/factory" } : {}),
-  // "acme/web": "dev",
-};
-
-/** Each Slack channel (a name or an ID) and the board channel it mirrors, both ways. */
-export const slackChannels: Record<string, string> = { "#factory": "dev" };
+/** What the agent hears: every message in this factory's channels, the one named for its project and the ones under it. */
+export const hears = `${channel()}/`;
 
 /** Production is on the team's default board. Anything else, your dev server included, is on one of its own, so it never answers production's threads. */
 export const boardName = process.env.VERCEL_ENV === "production" ? null : "factory-dev";
@@ -35,9 +32,8 @@ export const factory = board({
     slack: slack({ adapter: connectors.slack, join: true }, channels(slackChannels)),
   },
   watch: {
-    // Every message in dev and the channels under it. Not named for the agent: a watcher writes as
-    // a profile named for its ID, and the board never wakes a watcher for its own writes, so the
-    // agent's check-ins would never reach it.
-    wake: { tail: "dev/", run: (context) => wakeAgent(context) },
+    // A watcher writes as a profile named for its ID, and the agent as the deployment itself: the
+    // board never wakes a watcher for its own writes, so this way the agent's check-ins reach it.
+    [WATCHER]: { tail: hears, run: (context) => wakeAgent(context) },
   },
 });

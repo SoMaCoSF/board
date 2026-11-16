@@ -1,82 +1,68 @@
 import type { ReactNode } from "react";
-import { Check, Loader, Lock, Minus, X } from "lucide-react";
-import type { Fix, Status, Step } from "@/lib/setup";
+import { Check, Circle } from "lucide-react";
+import { isDone, type Step, type Task } from "@/lib/setup";
+import { Action } from "./action";
 import { Copy } from "./copy";
 
-const LABEL: Record<Status, string> = {
-  done: "done",
-  todo: "to do",
-  waiting: "waiting",
-  skipped: "optional",
-  locked: "locked",
-  error: "error",
-};
+const icon = { size: 14, strokeWidth: 2.5, role: "img" } as const;
 
-function Marker({ status, n }: { status: Status; n: number }): ReactNode {
-  const icon = { size: 14, strokeWidth: 2.5, "aria-hidden": true } as const;
-  if (status === "done") return <Check {...icon} />;
-  if (status === "waiting") return <Loader {...icon} className="spin" />;
-  if (status === "error") return <X {...icon} />;
-  if (status === "locked") return <Lock {...icon} />;
-  if (status === "skipped") return <Minus {...icon} />;
-  return <span>{n}</span>;
-}
-
-/** What to do: a line each, then each command in its own box. */
-function Fixes({ fix }: { fix: Fix[] }): ReactNode {
+/** One task: what to do, with the names in it set apart, then what helps do it: a line with its link in it, and each command in its own box. */
+function TaskItem({ task }: { task: Task }): ReactNode {
   return (
-    <ol className="fix">
-      {fix.map((item, i) => (
-        <li key={i}>
-          <p>{item.text}</p>
-          {item.commands?.map((command) => (
-            <div key={command} className="command">
-              <pre>
-                <code>{command}</code>
-              </pre>
-              <Copy text={command} />
-            </div>
-          ))}
-          {item.link ? (
-            <a className="button secondary" href={item.link.href} target="_blank" rel="noreferrer">
-              {item.link.label}
-            </a>
-          ) : null}
-        </li>
-      ))}
-    </ol>
+    <li className="task" data-done={task.done ? "" : undefined}>
+      {task.done ? <Check {...icon} aria-label="Done" /> : <Circle {...icon} aria-label="To do" />}
+      <div>
+        <p>{task.label.split("`").map((part, i) => (i % 2 ? <code key={i}>{part}</code> : part))}</p>
+        {task.hint || task.link ? (
+          <p className="hint">
+            {task.hint}
+            {task.hint && task.link ? " " : null}
+            {task.link ? (
+              <a href={task.link.href} target="_blank" rel="noreferrer">
+                {task.link.label}
+              </a>
+            ) : null}
+          </p>
+        ) : null}
+        {task.action ? <Action {...task.action} /> : null}
+        {task.commands?.map((command) => (
+          <div key={command} className="command">
+            <pre>
+              <code>{command}</code>
+            </pre>
+            <Copy text={command} />
+          </div>
+        ))}
+      </div>
+    </li>
   );
 }
 
-/** The steps, in order: the current one open with what to do, the rest in a line. */
-export function Stepper({ steps, current }: { steps: Step[]; current: string | undefined }): ReactNode {
+export function Tasks({ tasks }: { tasks: Task[] }): ReactNode {
+  return (
+    <ul className="tasks">
+      {tasks.map((task) => (
+        <TaskItem key={task.label} task={task} />
+      ))}
+    </ul>
+  );
+}
+
+/** The steps, in order, each with its tasks. */
+export function Stepper({ steps }: { steps: Step[] }): ReactNode {
   return (
     <ol className="stepper">
       {steps.map((step, i) => {
-        // Optional steps stay open too: optional, but all on display.
-        const open = step.id === current || step.status === "error" || step.status === "waiting" || (!!step.optional && step.status !== "done");
+        const done = isDone(step);
         return (
-          <li key={step.id} className="step" data-status={step.status} data-current={step.id === current ? "" : undefined}>
-            <span className="marker">
-              <Marker status={step.status} n={i + 1} />
-            </span>
+          <li key={step.id} className="step" data-done={done ? "" : undefined}>
+            <span className="marker">{done ? <Check size={14} strokeWidth={2.5} aria-hidden /> : <span>{i + 1}</span>}</span>
             <div className="step-body">
               <div className="step-head">
                 <h2>{step.title}</h2>
-                <span className="status">{LABEL[step.status]}</span>
+                {step.optional && !done ? <span className="optional">Optional</span> : null}
               </div>
-              {step.summary ? <p className="summary">{step.summary}</p> : null}
-              {open && step.rows?.length ? (
-                <dl className="rows">
-                  {step.rows.map(([label, value]) => (
-                    <div key={label}>
-                      <dt>{label}</dt>
-                      <dd>{value}</dd>
-                    </div>
-                  ))}
-                </dl>
-              ) : null}
-              {open && step.fix?.length ? <Fixes fix={step.fix} /> : null}
+              <Tasks tasks={step.tasks} />
             </div>
           </li>
         );

@@ -2,12 +2,11 @@ import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import { GeistMono } from "geist/font/mono";
 import { SiteHeader } from "@/components/site-header";
+import { ABOUT } from "@/lib/setup";
 import "./globals.css";
 
-export const metadata: Metadata = {
-  title: { default: "software factory", template: "%s · software factory" },
-  description: "A board, an agent, and a sandbox that take your team's bugs, features, and questions to pull requests.",
-};
+// The tab reads as the header does, and the description is the page's own line, not the template's pitch.
+export const metadata: Metadata = { title: "factory", description: ABOUT };
 
 export const viewport: Viewport = { colorScheme: "light dark" };
 

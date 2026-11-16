@@ -422,21 +422,44 @@ included, post to Slack and GitHub.
   `board({ backend: http(proxy, { fetch }) })`, on the internal `http()` of the
   default builds, its `fetch` sending the per-run token. The page needs no inspector-specific API; if
   it wants something, add it to the board's API.
+- **`app/board.ts` is the page's data, and nothing else is.** One handle, and
+  every read and write a `team.*` call on it. Who it writes as is
+  `team.as(profile)`: the proxy reads the board's own `x-board-profile`, and a
+  request that names none is yours. It follows the feed with `team.events`,
+  whose `onState` says whether it's connected. Its one import a user can't make
+  is `http()`.
+  If the page wants something the handle doesn't offer, leave it out and add it
+  to the handle, never to the page.
+- **Its core is the build-a-ui guide's samples.** Each `// #region guide
+  inspector/<name>.ts` in `app/board.ts` and `app/store.ts` is quoted by
+  `docs/03-guides/07-build-a-ui.md`, to the letter: `test/docs-guide.test.ts`
+  fails when either drifts, so change both.
 - **State lives in `app/store.ts`, pure and tested.** Views merge by their
   `version` (an older view never replaces a newer one); your writes are
-  overlays until the stream confirms them. Components render from it.
+  overlays until the stream confirms them. Components render from it. A claim's
+  token is a secret: it stays in `board.ts`'s memory, never in the store or in
+  storage, and the store holds only which claims are live.
+- **A view says what the board answered.** A read that fails shows the
+  board's words where its content would be, a 501 like any other. What a viewer
+  may do to a task is `store.moves`, by the board's rules; the board still
+  decides each write.
+- **Content in the sidebar, configuration in settings.** Activity, tasks, and
+  channels are the sidebar. Access, schemas, schedules, watchers, and sync are
+  tabs of one view at `/settings/<section>`, reached from the sidebar's foot.
+  Links are text, buttons act, and a view says little.
 - **The proxy acts as you, so it trusts nothing but its own page.** It binds
-  127.0.0.1, rejects any `Host` that isn't its own (DNS rebinding), requires the
+  127.0.0.1, rejects any `Host` that isn't its own (DNS rebinding), and its own
+  on a request a proxy forwarded (a caller behind one can send it), requires the
   per-run token on every `/board` request and the page's `Origin` on writes.
   Keep all of them. That's why attachments render from `blob:` URLs: the page
   fetches each file with its token, since an `<img>` can't send one.
+  `vb serve` answers it on the board's own port (`createInspector`'s handler),
+  and at a `--tailscale` host its proxy acts as the visitor Tailscale names
+  (`visitor`), never as you: one it can't name gets a 401, not your access.
 - **The bundle is built** into `dist/inspect/app.js` by `tsdown` (React
-  included), which the CLI reads where board is installed. A CLI that bundles
-  board's (`vercel board`) has no file beside it: it fetches this version's
-  from npm, checks it against `INSPECTOR_PAGE`'s SHA-256 (the build puts it in
-  place of `src/inspect/digest.ts`), and hands it to `createApp` as
-  `inspectorPage`. `pnpm test` builds first; running from source finds it in
-  `dist`.
+  included), which the standalone CLI reads where board is installed. Only it
+  has `inspect`, so no UI ships in a CLI that bundles board's (`vercel board`).
+  `pnpm test` builds first; running from source finds it in `dist`.
 - **It's Just Chat's UI, ported.** Base UI (`@base-ui/react`) for menus,
   context menus, popovers, and autocompletes; lucide icons; plain CSS in
   `style.ts` with Just Chat's tokens. Right-clicking text keeps the browser's

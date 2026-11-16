@@ -1,6 +1,5 @@
-// `inspect`: the inspector's page, as you, until Ctrl-C. Every CLI that runs board's has it, and
-// loads it only when it runs. Its page is the app's when it hands one (`createApp`'s
-// `inspectorPage`), or else the one board is installed with.
+// `inspect`: the inspector's page, as you, until Ctrl-C. Only the standalone `board` has it
+// (`local.ts`), and loads it only when it runs, with the page it's installed with.
 import { page as installed } from '../inspect/page.ts'
 import { startInspector } from '../inspect/server.ts'
 import { Failed, type CommandContext } from './main.ts'
@@ -18,34 +17,33 @@ export const stopped = () =>
     process.once('SIGTERM', done)
   })
 
-/** The page to serve, before anything starts: a run that can't have one says so, and serves nothing. */
-async function pageOf(provided: (() => Promise<string>) | undefined): Promise<string> {
-  if (provided)
-    try {
-      return await provided()
-    } catch (error) {
-      // Not `network`: the app's likeliest other failure is a page that didn't check out, which
-      // trying again doesn't fix.
-      throw new Failed({ class: 'unknown', reason: 'inspector_page_unavailable', message: `Couldn't get the inspector's page: ${(error as Error).message}` })
-    }
+/** The page to serve, before anything starts: an install without one says so, and serves nothing. */
+async function pageOf(): Promise<string> {
   const found = await installed()
   if (found === null)
     throw new Failed({
       class: 'unknown',
       reason: 'no_inspector_page',
-      message: "The inspector's page isn't beside board's CLI.",
-      next: [
-        { instruction: "An app that bundles board's CLI passes it to createApp as inspectorPage" },
-        { instruction: 'From source, build board first: pnpm --filter @vercel/board build' },
-      ],
+      message: "The inspector's page isn't installed with this CLI.",
+      next: [{ instruction: 'Reinstall or update the CLI' }],
     })
   return found
 }
 
-export async function inspect({ flags, out, portFlag, client, openBrowser, inspectorPage }: CommandContext): Promise<number> {
+/** The hosts `--allow-host`, or `--tailscale`, names: each a host, with its port when that isn't its scheme's default. */
+export function allowedHosts({ flags, usage }: Pick<CommandContext, 'flags' | 'usage'>, flag: 'allow-host' | 'tailscale' = 'allow-host'): string[] {
+  const hosts = flags[flag] ?? []
+  const bad = hosts.find((host) => !/^[a-z0-9.-]+(:\d+)?$/i.test(host))
+  if (bad !== undefined) throw usage(`--${flag} takes a host, with a port if it isn't the default, like box.tailnet.ts.net: not ${bad}.`)
+  // Written with a scheme's own port, it's the host without it too: that's how a browser sends it.
+  return [...new Set(hosts.flatMap((host) => [host, host.replace(/:(443|80)$/, '')]))]
+}
+
+export async function inspect({ flags, out, usage, portFlag, client, openBrowser }: CommandContext): Promise<number> {
   const port = portFlag()
-  const page = await pageOf(inspectorPage)
-  const inspector = await startInspector({ client: client(), page, ...(port !== undefined ? { port } : {}) })
+  const hosts = allowedHosts({ flags, usage })
+  const page = await pageOf()
+  const inspector = await startInspector({ client: client(), page, hosts, ...(port !== undefined ? { port } : {}) })
   out(`inspecting ${inspector.board} as ${who(inspector.me)} at ${inspector.url}  (Ctrl-C to stop)`)
   if (!flags['no-open']) openBrowser(inspector.url)
   await stopped()

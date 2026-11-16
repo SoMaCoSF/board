@@ -1,29 +1,14 @@
 // `@vercel/board/cli`: board's CLI, to run inside another one, as `vercel board`. It has every
-// command but `serve`, which runs a board on this machine, so no A2 reaches an app that bundles it.
-// `inspect` is in a chunk of its own, which only `inspect` loads, and its page isn't in it: the
-// app fetches the one `INSPECTOR_PAGE` names, and hands it over as `inspectorPage`.
-import { PAGE_SHA256 } from '../inspect/digest.ts'
+// command but `inspect` and `serve`, which run something on this machine, so neither the inspector
+// nor A2 reaches an app that bundles it.
 import { stoppedBy } from '../server/board.ts'
 import type { Board } from '../server/index.ts'
-import { VERSION } from '../version.ts'
 import { exitCode, failureDocument, formatFailure, type Failure, type Warning } from './failure.ts'
 import { commandWord, Failed, main, mainWith } from './main.ts'
 
 export { commandWord }
 export { commandLine, failureLines } from './failure.ts'
 export type { Failure, FailureClass, Recovery, Warning } from './failure.ts'
-
-/**
- * The inspector's page as this version of board's npm package has it, for an app that bundles
- * board's CLI and so has no file of board's beside it: `path` in `name@version`'s tarball, and its
- * SHA-256 (hex) to check what it fetched against. The build sets `sha256`; from source, it's null.
- */
-export const INSPECTOR_PAGE: { name: '@vercel/board'; version: string; path: 'dist/inspect/app.js'; sha256: string | null } = {
-  name: '@vercel/board',
-  version: VERSION,
-  path: 'dist/inspect/app.js',
-  sha256: PAGE_SHA256,
-}
 
 /**
  * Board's CLI as `appName` names it in help, usage, and errors (`vercel board`). With no board
@@ -38,10 +23,6 @@ export const INSPECTOR_PAGE: { name: '@vercel/board'; version: string; path: 'di
  * (`--scope` still wins): board asks for each only when a request needs it, so help, a typo, or
  * misuse never refreshes a login or looks a team up. With `fetch`, board's requests to Vercel's API
  * with that login go through the app's own, which adds its credentials (a DPoP proof, say).
- *
- * `inspectorPage` is the inspector's page, which `inspect` asks for when it runs: the one
- * `INSPECTOR_PAGE` names, as the app fetched it and checked it against its `sha256`. Without one,
- * `inspect` reads it beside board's files, which an app that bundles board's CLI has none of.
  */
 export function createApp(options: {
   appName: string
@@ -50,9 +31,8 @@ export function createApp(options: {
   login?: () => Promise<string>
   team?: () => Promise<string | null>
   fetch?: typeof globalThis.fetch
-  inspectorPage?: () => Promise<string>
 }): { run(args: string[]): Promise<number> } {
-  const { appName, onError, onWarning, login, team, fetch, inspectorPage } = options
+  const { appName, onError, onWarning, login, team, fetch } = options
   return {
     run: (args) =>
       main(args, {
@@ -64,7 +44,6 @@ export function createApp(options: {
         ...(login ? { login } : {}),
         ...(team ? { team } : {}),
         ...(fetch ? { fetch } : {}),
-        ...(inspectorPage ? { inspectorPage } : {}),
       }),
   }
 }
@@ -129,6 +108,8 @@ export function vb(board: Board, argv: string[], options: VbOptions = {}): Promi
     const decoder = new TextDecoder()
     const code = await mainWith(argv, { name: 'board', commands: {} }, {
       board: (options.signal && stoppedBy(board, options.signal)) || board,
+      // A call with a signal runs on a handle of its own: its claims are the caller's handle's all the same.
+      claimsOf: board,
       write: (chunk) => void (stdout += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true })),
       error: (chunk) => void (stderr += chunk),
       readFile: options.readFile ? async (path) => options.readFile!(path) : lacking("--attach and --text-file can't read files", 'readFile'),

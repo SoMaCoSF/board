@@ -76,7 +76,7 @@ describe("the CLI's commands, as data", () => {
     for (const path of every) {
       const name = path.map((command) => command.name).join(' ')
       // These hold until stopped, or run a server.
-      if (['tail', 'wait', 'serve', 'inspect', 'help'].includes(path[0]!.name)) continue
+      if (['tail', 'wait', 'serve', 'help'].includes(path[0]!.name)) continue
       const argv = path.flatMap((command, at) => [
         command.name,
         ...command.arguments.filter((argument) => argument.required || (command.argumentsBeforeSubcommand && at < path.length - 1)).map((argument) => (argument.name === 'url' ? 'http://127.0.0.1:9/api/board' : argument.name === 'id' ? '1' : 'x')),
@@ -89,7 +89,10 @@ describe("the CLI's commands, as data", () => {
   it("parses every example, which lands on its own command's page", async () => {
     for (const path of every)
       for (const example of path.at(-1)!.examples) {
-        const shown = await capture(() => main([...words(example.value), '--help'], app))
+        // What follows `--` is the command `tasks run` starts, its own `--help` included: board's goes before it.
+        const argv = words(example.value)
+        const own = argv.includes('--') ? argv.indexOf('--') : argv.length
+        const shown = await capture(() => main([...argv.slice(0, own), '--help', ...argv.slice(own)], app))
         expect(shown, example.value).toMatchObject({ code: 0, stderr: '' })
         // An alias's page is its command's, by its own name.
         const named = path.map((command) => commands.find((own) => own.aliases?.includes(command.name)) ?? command)

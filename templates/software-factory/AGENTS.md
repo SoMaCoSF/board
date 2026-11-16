@@ -25,30 +25,58 @@ pnpm build
   messages, files, and schedules, and this deployment keeps nothing. It runs the board's sync and
   its watcher, woken through `app/api/board/[[...path]]/route.ts`. Production is on the team's
   default board; a dev server or a preview is on one named `factory-dev`.
-- **Each setting lives where it's used.** The board's sync is all in
-  `app/api/board/[[...path]]/factory.ts`: its connectors, which channel each repo's PRs and issues
-  come into (`repoChannels`; this repo's own go to `dev/factory`), and which Slack channels it
-  mirrors. The agent's model, instructions, sandbox, tools, and skills are in `agent/`.
+- **Each setting lives where it's used.** Which channel each repo's PRs and issues come into, and
+  which Slack channels mirror which board channels, are in `app/api/board/[[...path]]/channels.ts`
+  (this repo's own go to `project-<name>/rsi`, which Slack's `#<project>-rsi` mirrors: where the
+  factory updates itself; each other repo gets a channel of its own beside it and a Slack
+  channel that mirrors it, both added by the onboard-repo skill). The board's sync, its
+  connectors, and its watcher are in `factory.ts` beside it. The agent's model, instructions,
+  sandbox, tools, and skills are in `agent/`.
+- **What a team keeps one of per name is named for the Vercel project** (`lib/project.ts`): the
+  Connect connectors (`github/<project>`, `slack/<project>`), that Slack channel, and its channels
+  on the team's board, all under `project-<name>`. A team's second factory gets its own, with
+  nothing to edit, and neither hears the other.
 - **Instructions are for every turn, skills for some.** `agent/lib/instructions.ts` holds the
   judgment every turn needs, with a line pointing at each skill; a procedure the agent needs only
-  sometimes (reviewing, reproducing a bug, seeing a PR through, demos) is a skill in `agent/skills/`.
+  sometimes (reviewing, reproducing a bug, opening a PR and seeing it through, demos, onboarding a repo) is a skill in `agent/skills/`.
 - **The board sees the agent only through `wakeAgent` (`agent/lib/wake.ts`).** Its `wake` watcher
-  tails `dev/`, so the agent hears every message in `dev` and under it. It hands each wake-up to
+  tails `project-<name>/`, so the agent hears every message in its own channel and under it. It hands each wake-up to
   eve's own channel (`agent/channels/eve.ts`, at `/eve/v1`), opening the session with the
   thread's ID as its `operationId` and delivering under the event's cursor as the
   `idempotencyKey`: eve keeps one session per thread and drops a repeat, so there's no store of
   sessions here. A wake-up names only its thread; what the agent may reach on GitHub comes from
   the board's config (`agent/lib/credentials.ts`).
-- **The agent acts on the board through the factory's own handle** (`agent/tools/vb.ts`), as this
-  deployment under the profile `factory`, so `vb typing` and reads reach Slack through the board's
-  sync. The watcher's ID is not the agent's profile: the board never wakes a watcher for its own
-  writes, and the agent's check-ins must reach it. The agent's `setup_steps` tool asks the setup
-  page's own `/api/launcher/steps`.
+- **The agent is this deployment, writing as itself** through the factory's own handle
+  (`agent/tools/vb.ts`), so `vb typing` and reads reach Slack through the board's sync. That handle
+  is held to the factory's own channels (`AGENT_CAN` in `agent/lib/vb-tool.ts`: read, post, react,
+  label), and the board refuses it the rest: other channels, sync's raw events, sources, grants.
+  The tool keeps no list of commands of its own. It has no profile: the board and Slack show it
+  by the Vercel project's name, not as a name "via" the project. What else the deployment writes
+  has a profile, which is how the watcher and the
+  launcher know the agent's messages (`byAgent`): its watcher's replies (`wake`), and what its sync
+  brings in. The board never wakes a watcher for its own writes, so the agent's check-ins reach
+  it. The agent's `setup_steps` tool asks the setup page's own `/api/launcher/steps`.
 - **The setup checks write nothing.** `lib/setup.ts` checks the deployment against what the board
-  route syncs and says what to do. A test drives each check through `setup()` against a fake
-  network (`test/setup.test.ts`).
-- **The page's own routes (`app/api/launcher/`) act as the deployment, so they run only while it's
-  protected** (`lib/gate.ts`), and write nothing.
+  syncs. A step is a short list of tasks, each named for what to do, done or not, with what helps
+  do it (one line, a link, commands): there are no other states. A test drives each task through
+  `setup()` against a fake network (`test/setup.test.ts`).
+- **The launcher has three faces, one check** (`lib/launcher.ts`): the page (`app/page.tsx`), the
+  same steps as markdown (`app/index.md`), and `app/api/launcher/steps` for the agent's
+  `setup_steps` tool. `/` answers the markdown to whatever doesn't ask for a page (the rewrites in
+  `next.config.ts`), so someone can tell their agent "set up" and the deployment's URL. A link to
+  `channels.ts` opens on a line found in the file as deployed, never a remembered number.
+- **The launcher writes only when asked, and as itself** (`lib/page-board.ts`): under a
+  `launcher` profile, held to opening a thread where the factory changes itself, so it reads as
+  `launcher via <project>` and the agent hears it through its watcher, as it hears anyone. It
+  starts the factory's first task (`lib/first-task.ts`, `POST /api/launcher/first-task`), offered
+  while the README is still the template's and started once however often it's asked, and it asks
+  for a repo to be onboarded (`lib/onboard.ts`, `POST /api/launcher/onboard`). Only the
+  deployment's own page or a client that isn't a browser may ask.
+- **While strangers can open the deployment, the page and `app/api/launcher/` say only how to
+  protect it,** and nothing about the factory.
+- **The deployment calls itself with its OIDC token, and no bypass secret.** The watcher reaches the
+  agent, and the agent's `setup_steps` tool the page's steps, through Deployment Protection's
+  Trusted Sources, which let a project call its own environment and no other.
 - **Real credentials never enter the sandbox.** `agent/lib/credentials.ts` puts them in its network
   policy, which swaps them in on the way out. Keep it that way.
 - **GitHub signs the agent's commits, so there's no signing key.** The sandbox's `git`

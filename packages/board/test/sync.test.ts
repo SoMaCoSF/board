@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Adapter } from 'chat'
 import { fakePlatform, withSlackClient, type WebhookPayload } from './sync-fixtures.ts'
-import { slack, type SlackEvent } from '../src/sync/slack.ts'
+import { slack, SlackProvider, type SlackEvent } from '../src/sync/slack.ts'
 import { ChatSyncProvider } from '../src/sync/chat-provider.ts'
 import type { Renderer, SyncContext } from '../src/sync/provider.ts'
 import { channels, mirror, render, type Sync, type SyncFn, type SyncUnit } from '../src/sync/fn.ts'
@@ -17,6 +17,7 @@ import { memory as boardMemory } from '../src/store/memory.ts'
 import type { MessageTables } from '../src/store/types.ts'
 import { VERCEL_BUILDING } from './vercel-fixtures.ts'
 import { fakeQueue } from './queue.ts'
+import { HttpError } from '../src/server/errors.ts'
 
 type SlackChannels = Record<string, SyncUnit<SlackEvent>>
 
@@ -142,6 +143,28 @@ describe('sync', () => {
     // Each thread delivers on its own lane, so the two roots reach Slack in either order.
     const copy = s.channelPosts.find((post) => post.text.includes('PR #12'))!
     expect(landed[0]).toEqual({ id: pr.id, external: { thread: `slack:C2:${copy.id}`, message: copy.id }, pr: 'acme/www#12' })
+  })
+
+  it("gives a text that opens a block a line of its own under its author's label, so the block is still one", async () => {
+    const { board, s } = setup()
+    const julian = caller(board.fetch, await personToken(), {})
+    const texts = ['```sh\npnpm check\n```', '- one\n- two', '1. one\n2. two', '# Checkout is down', '> as you said', '| a | b |\n| - | - |\n| 1 | 2 |', 'ran `pnpm check`']
+    for (const text of texts) await julian('POST', '/messages', { channel: 'prs', text })
+    await vi.waitFor(() => expect(s.channelPosts).toHaveLength(texts.length))
+    // Each thread delivers on its own lane, so the roots reach Slack in any order.
+    const sent = s.channelPosts.map((post) => (JSON.parse(post.text) as { markdown: string }).markdown)
+    const label = /^\*\*[^*\n]+\*\*:/.exec(sent[0]!)![0]
+    expect(sent.sort()).toEqual([...texts.slice(0, -1).map((text) => `${label}\n\n${text}`), `${label} ran \`pnpm check\``].sort())
+  })
+
+  it("does the same under the label a renderer of your own opens with, and leaves what else it writes alone", async () => {
+    const { board, s } = setup({ slackRender: ({ message, label }) => (message.labels.plain ? `${label} said:\n${message.text}` : `**${label}**: ${message.text}`) })
+    const julian = caller(board.fetch, await personToken(), {})
+    await julian('POST', '/messages', { channel: 'prs', text: '```sh\npnpm check\n```' })
+    await julian('POST', '/messages', { channel: 'prs', text: '- one\n- two', labels: { plain: 'yes' } })
+    await vi.waitFor(() => expect(s.channelPosts).toHaveLength(2))
+    const sent = s.channelPosts.map((post) => (JSON.parse(post.text) as { markdown: string }).markdown).sort()
+    expect(sent).toEqual([expect.stringMatching(/^\*\*[^*\n]+\*\*:\n\n```sh\npnpm check\n```$/), expect.stringMatching(/^[^*\n]+ said:\n- one\n- two$/)])
   })
 
   it('mirrors a Slack thread into the board, and board replies back into Slack', async () => {
@@ -980,6 +1003,128 @@ describe('sync', () => {
     expect(posted).toContain('**▲ Vercel**\n- ⏳ **[vboard-factory](https://vercel.com/vercel-internal-playground/vboard-factory)** · [Building]')
     expect(posted).not.toContain('[vc]:')
     expect(posted).not.toContain('| Project |')
+  })
+
+  it("shows Vercel's deployment comment in Slack as Vercel's own table, one message that follows Vercel's edits, where board has a Slack client to lay it out with", async () => {
+    const posted: { text: string; blocks: { type: string; text?: string; rows?: unknown[][] }[] }[] = []
+    const updated: ({ ts: string } & (typeof posted)[number])[] = []
+    const slackClient = {
+      conversations: { list: async () => ({}), info: async () => ({}), replies: async () => ({ messages: [] }) },
+      chat: {
+        postMessage: async (args: (typeof posted)[number]) => (posted.push(args), { ts: '1700000000.000900' }),
+        update: async (args: (typeof updated)[number]) => void updated.push(args),
+      },
+      auth: { test: async () => ({ response_metadata: { scopes: ['chat:write'] } }) },
+    }
+    const { board, s, webhook } = setup({ slackClient, githubClient: { rest: { pulls: { get: vi.fn() } } } })
+    Object.assign(s.adapter, { decodeThreadId: (id: string) => ({ channel: id.split(':')[1], threadTs: id.split(':')[2] ?? '' }) })
+    const julian = caller(board.fetch, await personToken())
+    const pr = { number: 43, title: 'Deploy me', html_url: 'https://github.com/vercel-labs/board/pull/43' }
+    await webhook('github', { action: 'opened', repository: { full_name: 'vercel-labs/board' }, sender: { id: 42, login: 'julianbenegas' }, pull_request: pr }, { 'x-github-event': 'pull_request', 'x-github-delivery': 'table-opened' })
+    await vi.waitFor(async () => expect(await read(julian, 'prs')).toHaveLength(1))
+    const thread = 'github:vercel-labs/board:43'
+    await webhook('github', { type: 'message', threadId: thread, id: 'vc', text: VERCEL_BUILDING, user: '35613825', name: 'vercel[bot]' })
+    await vi.waitFor(() => expect(posted).toHaveLength(1))
+
+    const text = (value: string) => ({ type: 'raw_text', text: value })
+    const rich = (...elements: unknown[]) => ({ type: 'rich_text', elements: [{ type: 'rich_text_section', elements }] })
+    const link = (label: string, url: string) => ({ type: 'link', text: label, url })
+    const row = (emoji: string, status: string) => [
+      rich(link('vboard-factory', 'https://vercel.com/vercel-internal-playground/vboard-factory')),
+      rich({ type: 'emoji', name: emoji }, { type: 'text', text: ' ' }, link(status, 'https://vercel.com/vercel-internal-playground/vboard-factory/7ZEaNBTETQjaUF4Bd1VCxbM8rR3n')),
+      rich(link('Preview', 'https://vboard-factory-git-pi-224.playground-vercel.tools')),
+      // Vercel's `2026-10-06T20:30:32.400Z`, in seconds, which Slack shows as how long ago.
+      rich({ type: 'date', timestamp: Date.UTC(2026, 9, 6, 20, 30, 32) / 1000, format: '{ago}', fallback: 'Oct 6, 2026 8:30pm UTC' }),
+    ]
+    const table = (emoji: string, status: string) => expect.objectContaining({ type: 'data_table', rows: [[text('Project'), text('Deployment'), text('Actions'), text('Updated')], row(emoji, status)] })
+    const heading = { type: 'markdown', text: '**vercel[bot] (github)**: **▲ Vercel**' }
+    expect(posted[0]!.blocks).toEqual([heading, table('large_yellow_circle', 'Building')])
+    // The pull request's own message went out as any other does, through the adapter.
+    expect(s.channelPosts).toHaveLength(1)
+    expect(s.posts).toEqual([])
+
+    // Vercel edits its one comment as the build ends: the same Slack message is replaced.
+    await webhook('github', { type: 'edit', threadId: thread, id: 'vc', text: VERCEL_BUILDING.replaceAll('Building', 'Ready').replaceAll('building', 'ready'), user: '35613825', name: 'vercel[bot]' })
+    await vi.waitFor(() => expect(updated).toHaveLength(1))
+    expect(updated[0]).toMatchObject({ ts: '1700000000.000900', blocks: [heading, table('large_green_circle', 'Ready')] })
+    expect(posted).toHaveLength(1)
+    expect(s.edits).toEqual([])
+    expect((await read(julian, 'prs'))[1]!.text).toMatch(/^\[vc\]: #/) // the board keeps what Vercel wrote
+  })
+
+  it("hands a platform's provider Vercel's deployments with Vercel's own comment, and not with a look-alike anyone posts", async () => {
+    // What a provider is asked to post: the protocol a provider of your own implements.
+    const asked = vi.spyOn(SlackProvider.prototype, 'post')
+    try {
+      const { board, s, webhook } = setup({ githubClient: { rest: { pulls: { get: vi.fn() } } } })
+      const julian = caller(board.fetch, await personToken())
+      const pr = { number: 44, title: 'Deploy me', html_url: 'https://github.com/vercel-labs/board/pull/44' }
+      await webhook('github', { action: 'opened', repository: { full_name: 'vercel-labs/board' }, sender: { id: 42, login: 'julianbenegas' }, pull_request: pr }, { 'x-github-event': 'pull_request', 'x-github-delivery': 'handed-opened' })
+      await vi.waitFor(async () => expect(await read(julian, 'prs')).toHaveLength(1))
+      await webhook('github', { type: 'message', threadId: 'github:vercel-labs/board:44', id: 'vc', text: VERCEL_BUILDING, user: '35613825', name: 'vercel[bot]' })
+      await vi.waitFor(() => expect(s.posts).toHaveLength(1))
+      await julian('POST', '/messages', { channel: 'firehose', text: VERCEL_BUILDING })
+      await vi.waitFor(() => expect(s.channelPosts).toHaveLength(2))
+      const bodies = asked.mock.calls.map(([, , body]) => body)
+      const vercels = bodies.find((body) => body.markdown.includes('▲ Vercel'))!
+      expect(vercels.deployments).toMatchObject([{ project: 'vboard-factory', status: 'Building' }])
+      // A person's copy of the same text is their text, as written.
+      const lookAlike = bodies.find((body) => body.markdown.includes('[vc]: #'))!
+      expect(lookAlike).not.toHaveProperty('deployments')
+      expect(bodies.filter((body) => body.deployments)).toHaveLength(1)
+    } finally {
+      asked.mockRestore()
+    }
+  })
+
+  it("syncs an edit to a long comment, like Vercel's deployment comment going from Building to Ready", async () => {
+    const { board, webhook } = setup({ githubClient: { rest: { pulls: { get: vi.fn() } } } })
+    const julian = caller(board.fetch, await personToken())
+    const repository = { full_name: 'vercel-labs/board' }
+    const pr = { number: 41, title: 'Deploy me', html_url: 'https://github.com/vercel-labs/board/pull/41' }
+    await webhook('github', { action: 'opened', repository, sender: { id: 42, login: 'julianbenegas' }, pull_request: pr }, { 'x-github-event': 'pull_request', 'x-github-delivery': 'long-opened' })
+    await vi.waitFor(async () => expect(await read(julian, 'prs')).toHaveLength(1))
+    const thread = 'github:vercel-labs/board:41'
+    await webhook('github', { type: 'message', threadId: thread, id: 'vc', text: VERCEL_BUILDING, user: '35613825', name: 'vercel[bot]' })
+    await vi.waitFor(async () => expect((await read(julian, 'prs'))[1]?.text).toContain('[Building]'))
+    const ready = VERCEL_BUILDING.replaceAll('Building', 'Ready').replaceAll('building', 'ready')
+    const edited = await webhook('github', { type: 'edit', threadId: thread, id: 'vc', text: ready, user: '35613825' })
+    expect(edited.status).toBe(200)
+    await vi.waitFor(async () => expect((await read(julian, 'prs'))[1]?.text).toContain('[Ready]'))
+  })
+
+  it("answers a webhook whose event the board refuses with 200, since it'd refuse a redelivery too, and one it couldn't store with 500", async () => {
+    const { board, webhook } = setup()
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const push = vi.spyOn(board.backend, 'inboxPush')
+    const message = { type: 'message', threadId: 'slack:C1:500', id: '500', text: 'hello', user: 'U_ADA' }
+    push.mockRejectedValueOnce(new HttpError(400, 'bad_request', 'Invalid request: `events[0].id` should NOT be longer than 300 characters.'))
+    expect((await webhook('slack', message)).status).toBe(200)
+    push.mockRejectedValueOnce(new HttpError(503, 'unavailable', 'the API is down'))
+    expect((await webhook('slack', message)).status).toBe(500)
+    // Once the board takes it, the redelivery lands.
+    expect((await webhook('slack', message)).status).toBe(200)
+    const julian = caller(board.fetch, await personToken())
+    await vi.waitFor(async () => expect((await read(julian, 'firehose')).map((m) => m.text)).toEqual(['hello']))
+    logged.mockRestore()
+  })
+
+  it("refuses an inbox event ID over 300 characters in-process, as Vercel's API does, and takes one of 300", async () => {
+    const { board, webhook } = setup()
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const push = board.backend.inboxPush.bind(board.backend)
+    // The board's own sync, its event's ID stretched to `length`.
+    const stretched = (length: number): typeof push => (caller, input, signal) =>
+      push(caller, { ...input, events: input.events.map((event) => ({ ...event, id: event.id.padEnd(length, 'x') })) }, signal)
+    const spy = vi.spyOn(board.backend, 'inboxPush')
+    spy.mockImplementationOnce(stretched(301))
+    expect((await webhook('slack', { type: 'message', threadId: 'slack:C1:600', id: '600', text: 'too long', user: 'U_ADA' })).status).toBe(200)
+    expect(logged).toHaveBeenCalledWith('[board] dropped an event the board refuses', expect.objectContaining({ status: 400 }))
+    spy.mockImplementationOnce(stretched(300))
+    await webhook('slack', { type: 'message', threadId: 'slack:C1:601', id: '601', text: 'just fits', user: 'U_ADA' })
+    const julian = caller(board.fetch, await personToken())
+    await vi.waitFor(async () => expect((await read(julian, 'firehose')).map((m) => m.text)).toEqual(['just fits']))
+    logged.mockRestore()
   })
 
   it('keeps a reply imported with `noSync` on the board, and still delivers the rest of its thread', async () => {

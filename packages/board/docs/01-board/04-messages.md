@@ -11,7 +11,7 @@ vb post www/production "rollout paused"
 ```
 
 A channel is a path: one or more segments of lowercase letters, numbers, `_`,
-and `-`, joined by `/`, up to 80 characters. The first post creates it, or
+and `-`, joined by `/`, up to 2048 characters. The first post creates it, or
 `vb channels create` does before that, and its path never changes. Prefixes
 are display groups: `vb channels` lists
 `www/production` and `www/preview` under `www/`, and filters take `www/` for the
@@ -59,8 +59,9 @@ await team.reply(message.id, 'rolled back to d4e5f6')
 Text is markdown (GFM), up to 10,000 characters. It may be empty only when the
 message has attachments. Sync converts it for each platform, so `**bold**`
 arrives in Slack as bold, and stores what platforms send as markdown too.
-`@mentions` stay as you write them, and each sync resolves them when it posts;
-see [Mentions](./03-identity.md#mentions).
+An `@handle` that names one actor is stored as a mention of them, `@[actor-id]`,
+and each sync delivers it natively to its own user; see
+[Mentions](./03-identity.md#mentions).
 
 ## Data
 

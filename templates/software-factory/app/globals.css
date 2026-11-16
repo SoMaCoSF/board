@@ -112,19 +112,6 @@ button {
   text-decoration: underline;
 }
 
-.crumb {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  color: var(--faint);
-  font-weight: 400;
-  text-decoration: none;
-}
-
-.crumb:hover {
-  color: var(--bright);
-}
-
 .site-nav {
   display: flex;
   align-items: center;
@@ -207,26 +194,6 @@ button {
   opacity: 1;
 }
 
-.button:disabled {
-  color: var(--faint);
-}
-
-.spin {
-  animation: spin 1.2s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    rotate: 360deg;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .spin {
-    animation: none;
-  }
-}
-
 /* ── stepper ─────────────────────────────────────────────────────── */
 
 /* Steps hang off a dashed rail, as the docs' sections hang off their rules. */
@@ -261,130 +228,96 @@ button {
   font-size: 0.85rem;
 }
 
-.step[data-status="done"] .marker {
+.step[data-done] .marker {
   border-color: var(--ink);
   background: var(--ink);
   color: var(--bg);
 }
 
-.step[data-current] .marker,
-.step[data-status="error"] .marker,
-.step[data-status="waiting"] .marker {
-  border-color: var(--bright);
-  color: var(--bright);
-}
-
-.step[data-status="skipped"] .marker,
-.step[data-status="locked"] .marker {
-  border-style: dashed;
-}
-
 .step-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.75rem;
   min-height: var(--marker);
 }
 
 .step-head h2 {
   margin: 0;
-  color: var(--ink);
+  color: var(--bright);
   font-size: 1rem;
   font-weight: 600;
 }
 
-.step[data-current] .step-head h2 {
-  color: var(--bright);
-}
-
-.step[data-status="locked"] .step-head h2,
-.step[data-status="skipped"] .step-head h2 {
-  color: var(--muted);
-}
-
-.status {
+.optional {
   margin-left: auto;
   color: var(--faint);
-  font-size: 0.8rem;
-  text-transform: uppercase;
+  font-size: 0.85rem;
 }
 
-.step[data-current] .status,
-.step[data-status="error"] .status {
-  color: var(--bright);
-}
-
-.summary {
-  margin: 0.15rem 0 0;
-  max-width: 40rem;
-}
-
-/* Columns, not colons: a row's label, then its value. */
-.rows {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  gap: 0.15rem 1.25rem;
-  margin: 0.75rem 0 0;
-}
-
-.rows > div {
-  display: contents;
-}
-
-.rows dt {
-  color: var(--faint);
-}
-
-.rows dd {
-  margin: 0;
-  overflow-wrap: anywhere;
-  color: var(--ink);
-}
-
-.fix {
-  margin: 1rem 0 0;
-  padding-left: 1.25rem;
-}
-
-.fix > li::marker {
-  color: var(--faint);
-}
-
-.fix > li + li {
-  margin-top: 0.9rem;
-}
-
-.fix p {
-  margin: 0 0 0.5rem;
-  color: var(--ink);
-}
-
-.how {
-  margin-top: 0.6rem;
-}
-
-.how summary {
-  display: inline-flex;
-  gap: 0.5rem;
-  color: var(--faint);
-  cursor: default;
+/* A step's tasks. What's left to do reads first: done ones step back, and a hint sits under its task, smaller. */
+.tasks {
+  margin: 0.4rem 0 0;
+  padding: 0;
   list-style: none;
 }
 
-.how summary::-webkit-details-marker {
-  display: none;
+.task {
+  display: grid;
+  grid-template-columns: 1rem minmax(0, 1fr);
+  gap: 0.6rem;
 }
 
-.how summary::before {
-  content: "+";
+.task + .task {
+  margin-top: 0.4rem;
 }
 
-.how[open] summary::before {
-  content: "−";
+.task > svg {
+  margin-top: 0.3rem;
+  color: var(--muted);
 }
 
-.how summary:hover {
+.task p {
+  margin: 0;
+  color: var(--ink);
+}
+
+.task[data-done] p,
+.task[data-done] > svg {
+  color: var(--faint);
+}
+
+/* A name in a task (a channel, a repo, a connector) stands out from the words around it, until it's done. */
+.task p code {
+  padding: 0.1rem 0.35rem;
+  background: var(--shade);
   color: var(--bright);
+}
+
+.task[data-done] p code {
+  padding: 0;
+  background: none;
+  color: inherit;
+}
+
+.task .hint {
+  color: var(--faint);
+  font-size: 0.9rem;
+}
+
+.hint a {
+  color: var(--muted);
+}
+
+.hint a:hover {
+  color: var(--bright);
+}
+
+.task .command {
+  margin-top: 0.5rem;
+}
+
+.task:not(:last-child) .command:last-child {
+  margin-bottom: 0.75rem;
 }
 
 /* ── code ────────────────────────────────────────────────────────── */
@@ -415,14 +348,8 @@ pre {
   scrollbar-width: thin;
 }
 
-.command + .command,
-.command + .button,
-.fix p + .button {
+.command + .command {
   margin-top: 0.5rem;
-}
-
-.next .command {
-  margin-top: 0.75rem;
 }
 
 .copy {
@@ -437,31 +364,189 @@ pre {
   cursor: default;
 }
 
-/* A single thing to do needs no number. */
-.fix:has(> li:only-child) {
-  padding-left: 0;
-  list-style: none;
-}
-
 .copy:hover {
   color: var(--bright);
 }
 
-/* ── after the steps ─────────────────────────────────────────────── */
+/* ── under the steps, and once it runs ───────────────────────────── */
 
-.next {
-  margin-top: 4rem;
+/* A section of its own: a heading, then what it holds. */
+.panel {
+  margin-top: 3rem;
 }
 
-.next h2 {
-  margin: 0 0 0.5rem;
+.panel h2,
+.setup summary {
+  margin: 0 0 0.75rem;
   color: var(--bright);
   font-size: 1rem;
   font-weight: 600;
 }
 
-.next p {
-  margin: 0 0 0.75rem;
+/* Numbers as a short list of lines, as the CLI prints one: what's counted, then the count, in two columns. */
+.stats {
+  display: grid;
+  grid-template-columns: 10rem 1fr;
+  gap: 0.3rem 1rem;
+  margin: 0;
+}
+
+/* A line's two halves sit in the list's columns, so the counts line up, from one list to the next too. */
+.stat {
+  display: contents;
+}
+
+.stat dt {
+  color: var(--muted);
+}
+
+.stat dd {
+  margin: 0;
+  color: var(--bright);
+}
+
+/* A few words to press, in a sentence. */
+.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: default;
+}
+
+.link:hover {
+  color: var(--bright);
+}
+
+/* A thing per row, and what it belongs to at the end of it. */
+.rows {
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px dashed var(--line);
+}
+
+.rows li {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.25rem 1rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px dashed var(--line);
+  color: var(--ink);
+}
+
+.rows span {
+  color: var(--faint);
+}
+
+/* Something to type, and the button that sends it, on one line: a field as wide as a command's box. */
+.onboard {
+  margin-top: 1rem;
+}
+
+.field {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.field input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--code-bg);
+  color: var(--bright);
+  font: inherit;
+}
+
+.field input::placeholder {
+  color: var(--faint);
+}
+
+.field input:focus-visible {
+  border-color: var(--muted);
+  outline: none;
+}
+
+/* As tall as the field beside it. */
+.onboard .field .button {
+  margin: 0;
+}
+
+/* A link in a note reads as the note does, underlined. */
+.note a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.note a:hover {
+  color: var(--bright);
+}
+
+.note {
+  margin: 1rem 0 0.5rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* Right under a heading, it's the section's first line. */
+h2 + .note {
+  margin-top: 0;
+}
+
+.task .button,
+.panel .button {
+  margin-top: 0.5rem;
+}
+
+.task:not(:last-child) .button:last-child {
+  margin-bottom: 0.75rem;
+}
+
+.button:disabled {
+  opacity: 0.6;
+}
+
+/* The setup's steps, folded away once the factory runs. */
+.setup summary {
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+  margin: 0;
+  list-style: none;
+  cursor: default;
+}
+
+.setup summary::-webkit-details-marker {
+  display: none;
+}
+
+.setup summary span {
+  color: var(--faint);
+  font-size: 0.85rem;
+  font-weight: 400;
+}
+
+/* It opens: a plus that turns into a minus, where the browser's own marker would be. */
+.setup summary::before {
+  width: 1ch;
+  color: var(--faint);
+  font-weight: 400;
+  content: "+";
+}
+
+.setup[open] summary::before {
+  content: "−";
+}
+
+.setup .stepper {
+  margin-top: 1rem;
 }
 
 @media (max-width: 40rem) {
@@ -473,7 +558,7 @@ pre {
     gap: 0.75rem;
   }
 
-  .status {
+  .optional {
     display: none;
   }
 }

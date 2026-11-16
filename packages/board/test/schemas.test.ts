@@ -182,6 +182,12 @@ describe('schemas', () => {
     expect((await register({ name: 's'.repeat(80), version: 99_999, schema: { type: 'object' } })).status).toBe(200)
   })
 
+  it('takes a description up to 2,000 characters, and refuses a longer one', async () => {
+    const { register } = await setUp()
+    expect(await register({ name: 'described', version: 1, description: 'x'.repeat(2001), schema: { type: 'object' } })).toMatchObject({ status: 400, body: { error: { code: 'invalid_request' } } })
+    expect((await register({ name: 'described', version: 1, description: 'x'.repeat(2000), schema: { type: 'object' } })).status).toBe(200)
+  })
+
   it('registers 500 versions, and no more', async () => {
     const { register } = await setUp()
     for (let version = 1; version <= 500; version++) expect((await register({ name: 'many', version, schema: { type: 'object' } })).status).toBe(200)

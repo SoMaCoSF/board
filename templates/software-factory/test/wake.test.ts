@@ -9,7 +9,8 @@ const DEPLOYMENT = "vercel:project:prj_factory:production";
 
 const by = (principal: string, profile: string | null) => ({ principal, profile, actor: profile ? `${principal}+${profile}` : principal });
 const ada = by("vercel:user:u_ada", null);
-const agent = by(DEPLOYMENT, "factory");
+// The agent is the deployment writing as itself: no profile.
+const agent = by(DEPLOYMENT, null);
 
 type Fields = { id?: string; re?: string | null; by?: ReturnType<typeof by>; schedule?: string };
 const posted = ({ id = "13", re = "12", by: author = ada, schedule }: Fields = {}) =>
@@ -40,9 +41,24 @@ test("the agent's own message doesn't wake it, but a check-in it scheduled does"
   assert.equal((await woken(posted({ by: agent, schedule: "s1" }))).got.length, 1);
 });
 
-test("someone else writing under the agent's profile name isn't the agent", async () => {
-  // Anyone may name a profile: only this deployment's is the agent's.
+test("what the deployment's sync brought in, and its watcher's own word, aren't the agent's: they wake it", async () => {
+  assert.equal((await woken(posted({ by: by(DEPLOYMENT, "github:user:583231") }))).got.length, 1);
+  assert.equal((await woken(posted({ by: by(DEPLOYMENT, "wake") }))).got.length, 1);
+  // And a person who names a profile after the project is still a person.
   assert.equal((await woken(posted({ by: by("vercel:user:u_ada", "factory") }))).got.length, 1);
+});
+
+test("what someone asked through the factory's page, under the launcher's profile, wakes the agent as anyone's thread does", async () => {
+  const { got } = await woken(posted({ id: "30", re: null, by: by(DEPLOYMENT, "launcher") }));
+  assert.deepEqual(got, [{ thread: "30", key: "c-30", text: "New board thread #30." }]);
+  // And a reaction the page never makes, on a message that isn't the agent's, wakes nobody.
+  assert.deepEqual((await woken(reacted(by(DEPLOYMENT, "launcher"), ada))).got, []);
+});
+
+test("the agent under a profile it named is still the agent: as it wrote at first, or as BOARD_PROFILE says", async () => {
+  assert.deepEqual((await woken(posted({ by: by(DEPLOYMENT, "factory") }))).got, []);
+  assert.deepEqual((await woken(posted({ by: by(DEPLOYMENT, "night-shift") }))).got, []);
+  assert.equal((await woken(posted({ by: by(DEPLOYMENT, "factory"), schedule: "s1" }))).got.length, 1);
 });
 
 test("a reaction to the agent's message wakes it, but not its own, and not one on someone else's message", async () => {
@@ -88,6 +104,26 @@ test("a wake-up finds the thread's session by the thread, then delivers once und
   ]);
 });
 
+test("on Vercel, a wake-up carries the deployment's OIDC token twice: for eve, and to get through its own Deployment Protection", async () => {
+  const sent: Record<string, string>[] = [];
+  const fake = (async (_url: string, init: RequestInit) => (sent.push(init.headers as Record<string, string>), new Response(JSON.stringify({ ok: true, sessionId: "wrun_a" }), { status: 200 }))) as never;
+  // Even on a project that has a bypass secret, the wake-up doesn't carry it: a preview holds that secret too.
+  const before = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+  process.env.VERCEL_AUTOMATION_BYPASS_SECRET = "shared-secret";
+  try {
+    await send(WAKE, fake, async () => "oidc-token");
+  } finally {
+    if (before === undefined) delete process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+    else process.env.VERCEL_AUTOMATION_BYPASS_SECRET = before;
+  }
+  for (const headers of sent) {
+    assert.equal(headers.authorization, "Bearer oidc-token");
+    assert.equal(headers["x-vercel-trusted-oidc-idp-token"], "oidc-token");
+    assert.equal(headers["x-vercel-protection-bypass"], undefined);
+  }
+  assert.equal(sent.length, 2);
+});
+
 test("a session that ended since it was found is replaced, and the wake-up delivered to the new one", async () => {
   const { requests, fake } = eve([
     [200, { ok: true, sessionId: "wrun_old" }],
@@ -98,6 +134,22 @@ test("a session that ended since it was found is replaced, and the wake-up deliv
   await send(WAKE, fake);
   assert.deepEqual(requests.map((request) => request.path), ["/eve/v1/session", "/eve/v1/session/wrun_old", "/eve/v1/session", "/eve/v1/session/wrun_new"]);
   assert.deepEqual(requests[3]!.body, DELIVERY);
+});
+
+test("a session that just started takes its first message a moment later: the wake-up waits, and starts nothing over", async () => {
+  // What eve answers a message sent right after the session was created.
+  const notReady: [number, object] = [409, { ok: false, code: "session_not_ready", error: "The session is not ready yet." }];
+  const { requests, fake } = eve([[202, { ok: true, sessionId: "wrun_a" }], notReady, notReady, [202, { ok: true, sessionId: "wrun_a" }]]);
+  await send(WAKE, fake, async () => null, [0, 0, 0]);
+  assert.deepEqual(requests.map((request) => request.path), ["/eve/v1/session", "/eve/v1/session/wrun_a", "/eve/v1/session/wrun_a", "/eve/v1/session/wrun_a"]);
+  assert.deepEqual(requests[3]!.body, DELIVERY);
+});
+
+test("a session that never gets ready fails the delivery, after waiting as long as it's told to", async () => {
+  const notReady: [number, object] = [409, { ok: false, code: "session_not_ready", error: "The session is not ready yet." }];
+  const { requests, fake } = eve([[202, { ok: true, sessionId: "wrun_a" }], notReady, notReady, notReady]);
+  await assert.rejects(send(WAKE, fake, async () => null, [0, 0]), /eve answered 409 to a wake-up \(session_not_ready\)/);
+  assert.equal(requests.length, 4);
 });
 
 test("a channel that refuses fails the delivery, with what it answered, and delivers nothing", async () => {

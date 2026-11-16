@@ -16,12 +16,16 @@ describe('known bot messages', () => {
         deploymentUrl: 'https://vercel.com/vercel-internal-playground/vboard-factory/7ZEaNBTETQjaUF4Bd1VCxbM8rR3n',
         previewUrl: 'https://vboard-factory-git-pi-224.playground-vercel.tools',
         updated: 'Oct 6, 2026 8:30pm UTC',
+        updatedAt: '2026-10-06T20:30:32.400Z',
         skipped: false,
       },
     ])
     const [built, skipped] = vercelDeployments(VERCEL_WITH_SKIPPED)!
     expect(built).toMatchObject({ project: 'vboard-factory', status: 'Building', skipped: false })
-    expect(skipped).toMatchObject({ project: 'vboard', status: 'Ignored', previewUrl: null, skipped: true, updated: 'Oct 6, 2026 5:25pm UTC' })
+    expect(skipped).toMatchObject({ project: 'vboard', status: 'Ignored', previewUrl: null, skipped: true, updated: 'Oct 6, 2026 5:25pm UTC', updatedAt: '2026-10-06T17:25:54.038Z' })
+    // A time Vercel wrote only in words, or one that isn't a time, is no time.
+    expect(vercelDeployments(VERCEL_BUILDING.replace(/<relative-time[^>]*>([^<]*)<\/relative-time>/, '$1'))![0]).toMatchObject({ updated: 'Oct 6, 2026 8:30pm UTC', updatedAt: null })
+    expect(vercelDeployments(VERCEL_BUILDING.replace('datetime="2026-10-06T20:30:32.400Z"', 'datetime="soon"'))![0]).toMatchObject({ updatedAt: null })
   })
 
   it('shows one line per deployment, without the marker, the HTML, or the table', () => {

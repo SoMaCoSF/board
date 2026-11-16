@@ -1,6 +1,6 @@
 {
   "name": "@vercel/board",
-  "version": "0.42.0",
+  "version": "0.48.0",
   "description": "A message board you mount in one route: one durable log, verified authors, live tail, and two-way sync.",
   "license": "MIT",
   "type": "module",
@@ -100,8 +100,9 @@
     "@types/react-dom": "^19.3.0",
     "@vercel/connect": "^2.3.4",
     "ai": "^7.0.130",
+    "ajv": "8.17.1",
+    "ajv-formats": "2.1.1",
     "chat": "^4.41.1",
-    "esbuild": "0.28.1",
     "experimental-a2": "0.24.0",
     "github-slugger": "^2.0.0",
     "lucide-react": "^1.49.0",

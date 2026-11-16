@@ -3,7 +3,6 @@ import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import * as esbuild from 'esbuild'
 import { build } from 'tsdown'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createApp, type Failure } from '../src/cli/embedded.ts'
@@ -68,18 +67,6 @@ async function bundled(entry: string): Promise<Map<string, string>> {
   }
 }
 
-/** What loads when the bundle starts: its entry and every file that one imports statically, not with `import()`. */
-function loadedAtStart(files: Map<string, string>): string {
-  const seen = new Set<string>()
-  const visit = (name: string) => {
-    if (seen.has(name) || !files.has(name)) return
-    seen.add(name)
-    for (const [, path] of files.get(name)!.matchAll(/^\s*(?:import|export)\b[^;]*?["']\.\/([^"']+)["']/gm)) visit(path!)
-  }
-  visit('app.mjs')
-  return [...seen].map((name) => files.get(name)).join('\n')
-}
-
 const everything = (files: Map<string, string>) => [...files.values()].join('\n')
 
 describe('the embedded CLI', () => {
@@ -89,16 +76,14 @@ describe('the embedded CLI', () => {
     vi.unstubAllEnvs()
   })
 
-  it('names the app that runs it in help, usage, and errors, and has inspect but no serve', async () => {
+  it('names the app that runs it in help, usage, and errors, and has neither inspect nor serve', async () => {
     const app = createApp({ appName: 'vercel board' })
     const help = await capture(() => app.run(['help']))
     expect(help.code).toBe(0)
     expect(help.stdout).toMatch(/^vercel board \d+\.\d+\.\d+\S*: a message board you mount in one route\n\nusage: vercel board <command> \[options\]\n/)
-    expect(help.stdout).not.toMatch(/also installed as|^\s+serve /m)
-    expect(help.stdout).toMatch(/^ {2}inspect +the board in your browser/m)
-    expect(await capture(() => app.run(['serve']))).toEqual({ code: 2, stdout: '', stderr: 'error: Unknown command serve for vercel board.\n\n  See all commands:\n    vercel board --help\n' })
-    // It runs: it reads its port before it starts anything.
-    expect(await capture(() => app.run(['inspect', '--port', 'nope']))).toEqual({ code: 2, stdout: '', stderr: "error: nope isn't a port.\n\n  See how to use it:\n    vercel board inspect --help\n" })
+    expect(help.stdout).not.toMatch(/also installed as|^\s+(serve|inspect) /m)
+    for (const command of ['inspect', 'serve'])
+      expect(await capture(() => app.run([command]))).toEqual({ code: 2, stdout: '', stderr: `error: Unknown command ${command} for vercel board.\n\n  See all commands:\n    vercel board --help\n` })
     const extra = await capture(() => app.run(['conformance', 'extra']))
     expect(extra).toMatchObject({ code: 2, stderr: expect.stringMatching(/^error: conformance takes no arguments/) })
     expect(extra.stderr).toContain('    vercel board conformance --help\n')
@@ -119,6 +104,47 @@ describe('the embedded CLI', () => {
     expect(await capture(() => app.run(['raed', 'dev']))).toMatchObject({ code: 2, stderr: '' })
     expect(failures.at(-1)![0]).toMatchObject({ class: 'usage', reason: 'unknown_command', next: [{ argv: ['vercel', 'board', '--help'] }] })
   })
+
+  it("has tasks, names the app in a task's ways out, and keeps a claim between its runs", async () => {
+    const home = await isolated()
+    vi.stubEnv('BOARD_URL', url)
+    vi.stubEnv('BOARD_TOKEN', env.BOARD_TOKEN)
+    const app = createApp({ appName: 'vercel board' })
+    expect((await capture(() => app.run(['help']))).stdout).toMatch(/^ {2}tasks \[channel\] +open tasks, oldest first/m)
+    expect((await capture(() => app.run(['tasks', 'run', '--help']))).stdout).toContain('\n    vercel board tasks run 812 --result "tests pass" -- make test\n')
+
+    const made = await capture(() => app.run(['tasks', 'create', 'embedded', 'fix CVE-123 in acme/web']))
+    expect(made).toMatchObject({ code: 0, stderr: '' })
+    const id = made.stdout.trim()
+    // What to run next is the app's command, not vb's.
+    expect(await capture(() => app.run(['tasks', 'complete', id, 'done']))).toEqual({ code: 1, stdout: '', stderr: `error: You hold no claim on task #${id} as yourself.\n\n  Claim it:\n    vercel board tasks claim ${id}\n` })
+    const reserved = await capture(() => app.run(['label', id, 'board.task=claimed']))
+    expect(reserved).toMatchObject({ code: 2, stdout: '' })
+    expect(reserved.stderr).toMatch(new RegExp(`^error: Can't label #${id}\\. Labels under board\\. are the board's own\\.\\n  [^\\n]+\\n\\n  Claim it:\\n    vercel board tasks claim ${id}\\n$`))
+
+    // One run claims and the next settles: the claim is kept where the app's CLI keeps its state.
+    expect(await capture(() => app.run(['tasks', 'claim', id]))).toEqual({ code: 0, stdout: `#${id}  yours for 15m  fix CVE-123 in acme/web\n`, stderr: '' })
+    expect((await readdir(join(home, 'board', 'claims'))).filter((name) => name.endsWith('.json'))).toHaveLength(1)
+    expect(await capture(() => app.run(['tasks', 'complete', id, 'fixed in a1b2c3']))).toEqual({ code: 0, stdout: `completed ${id}\n`, stderr: '' })
+    expect(await readdir(join(home, 'board', 'claims'))).toEqual([])
+    expect(await capture(() => app.run(['tasks', 'embedded', '--state', 'all']))).toEqual({ code: 0, stdout: `#${id}  completed  fix CVE-123 in acme/web         fixed in a1b2c3\n`, stderr: '' })
+
+    // What a task waits for is set there too, and a command cut short names the app's help.
+    const next = (await capture(() => app.run(['tasks', 'create', 'embedded/next', 'review the fix']))).stdout.trim()
+    const first = (await capture(() => app.run(['tasks', 'create', 'embedded/next', 'tag the release']))).stdout.trim()
+    expect(await capture(() => app.run(['tasks', 'needs', next, first]))).toEqual({ code: 0, stdout: `${next} needs #${first}\n`, stderr: '' })
+    expect(await capture(() => app.run(['tasks', 'needs', next]))).toEqual({ code: 2, stdout: '', stderr: 'error: Missing the tasks it waits for now, by ID, or --none for nothing.\n\n  See how to use it:\n    vercel board tasks --help\n' })
+    expect(await capture(() => app.run(['tasks', 'needs', next, '--none']))).toEqual({ code: 0, stdout: `${next} needs nothing\n`, stderr: '' })
+    expect(await capture(() => app.run(['tasks', 'embedded/next']))).toEqual({ code: 0, stdout: `#${next}  ready      review the fix\n#${first}  ready      tag the release\n`, stderr: '' })
+
+    // A plan from a file, in as many writes as it takes: one that stops midway names the app's command to finish it.
+    const steps = Array.from({ length: 101 }, (_, n) => ({ text: `step ${n}`, ...(n === 100 ? { needs: ['999999'] } : {}) }))
+    const plan = join(home, 'plan.json')
+    await writeFile(plan, JSON.stringify(steps))
+    const stopped = await capture(() => app.run(['tasks', 'create', 'embedded-plan', '--tasks-file', plan]))
+    expect(stopped).toMatchObject({ code: 2, stdout: '' })
+    expect(stopped.stderr).toMatch(new RegExp(`\\n  made 100 of 101: #\\d+ to #\\d+\\n\\n  Make the rest, under the same key: what was made stays as it is:\\n    vercel board tasks create embedded-plan --tasks-file ${plan} --idempotency-key [0-9a-f-]{36}\\n$`))
+  }, 30_000)
 
   it("asks for the app's login and team only when a request needs them, and reaches that team's board with them", async () => {
     const home = await isolated()
@@ -311,6 +337,85 @@ describe('the embedded CLI', () => {
     }
   })
 
+  it("says to attach text over the limit when Vercel's API refuses it, on a post and an edit", async () => {
+    const home = await isolated()
+    vi.stubEnv('VERCEL_AUTH_TOKEN', 'user:u_jb')
+    const api = fakeMessageboard({ slug: 'acme' })
+    const fetching = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => api.fetch(input, init))
+    const cwd = process.cwd()
+    process.chdir(home)
+    try {
+      const app = createApp({ appName: 'vercel board' })
+      const long = 'x'.repeat(10_001)
+      expect(await capture(() => app.run(['post', 'dev', long, '--scope', 'acme']))).toMatchObject({
+        code: 1,
+        stderr: expect.stringMatching(/^error: Can't post to dev\. A message's text is at most 10,000 characters\.\n\n {2}Put the long part in a file and --attach it, with a short summary as the text\n/),
+      })
+      const id = (await capture(() => app.run(['post', 'dev', 'short', '--scope', 'acme']))).stdout.trim()
+      expect(await capture(() => app.run(['edit', id, long, '--scope', 'acme']))).toMatchObject({
+        code: 1,
+        stderr: expect.stringMatching(/A message's text is at most 10,000 characters\.\n\n {2}Keep the edit short, and reply with the long part in a file with --attach\n/),
+      })
+    } finally {
+      fetching.mockRestore()
+      process.chdir(cwd)
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it("says what a task command was doing when Vercel's API refuses it for a limit of its own, with the API's words under it", async () => {
+    const home = await isolated()
+    vi.stubEnv('VERCEL_AUTH_TOKEN', 'user:u_jb')
+    const api = fakeMessageboard({ slug: 'acme' })
+    const fetching = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => api.fetch(input, init))
+    const cwd = process.cwd()
+    process.chdir(home)
+    try {
+      const app = createApp({ appName: 'vercel board' })
+      const run = (...args: string[]) => capture(() => app.run([...args, '--scope', 'acme']))
+      // A root's text is a message's: what to do with the long part, as for a post, where a task takes it.
+      expect(await run('tasks', 'create', 'dev', 'x'.repeat(10_001))).toEqual({
+        code: 1,
+        stdout: '',
+        stderr: "error: Can't create a task in dev. A message's text is at most 10,000 characters.\n\n  Keep it short, and reply to the task with the long part in a file with --attach\n",
+      })
+      const id = (await run('tasks', 'create', 'dev', 'a long build')).stdout.trim()
+      const refused = async (args: string[], lines: string[]) => expect(await run(...args), args.slice(0, 2).join(' ')).toEqual({ code: 2, stdout: '', stderr: `${lines.join('\n')}\n` })
+      // What it waits for, and whose tasks a claim takes: the API says how many.
+      const others: string[] = []
+      for (let n = 0; n < 21; n++) others.push((await run('tasks', 'create', 'dev', `step ${n}`)).stdout.trim())
+      await refused(['tasks', 'create', 'dev', 'after them all', ...others.flatMap((other) => ['--needs', other])], ["error: Can't create a task in dev.", '  needs is at most 20 thread IDs, with no repeats.'])
+      await refused(['tasks', 'claim', '--ready', 'dev', ...Array.from({ length: 33 }, (_, n) => ['--from', `vercel:user:u_${n}`]).flat()], ["error: Can't claim a task in dev.", '  from is at most 32 owner IDs.'])
+      // A result, a reason, and a hold's kind: how long each may be.
+      expect((await run('tasks', 'claim', id)).code).toBe(0)
+      const note = 'x'.repeat(1001)
+      await refused(['tasks', 'complete', id, note], [`error: Can't complete task #${id}.`, '  result is 1 to 1,000 characters, not blank.'])
+      await refused(['tasks', 'fail', id, note], [`error: Can't fail task #${id}.`, '  reason is 1 to 1,000 characters, not blank.'])
+      await refused(['tasks', 'block', id, 'approve the deploy?', '--kind', 'k'.repeat(65)], [`error: Can't block task #${id}.`, '  kind is up to 64 lowercase letters, numbers, and _.-'])
+      await refused(['tasks', 'cancel', id, note], [`error: Can't cancel task #${id}.`, '  reason is 1 to 1,000 characters, not blank.'])
+      // What a task waits for, changed: the API's own code for too many, said as the command says a set it can't take.
+      expect(await run('tasks', 'needs', others[0]!, ...others.slice(1), id)).toEqual({
+        code: 2,
+        stdout: '',
+        stderr: `error: Can't change what task #${others[0]} needs. It waits for tasks you can read, and none that waits for it.\n  A task waits for 20 tasks at most.\n\n  See what it waits for now:\n    vercel board read ${others[0]}\n  Or see the tasks there are:\n    vercel board tasks --state all\n`,
+      })
+      // A plan's tasks are held to the same: the longest text says what the API's refusal of one means.
+      const plan = join(home, 'plan.json')
+      await writeFile(plan, JSON.stringify([{ text: 'fix CVE-123 in acme/web' }, { text: 'x'.repeat(10_001) }]))
+      expect(await run('tasks', 'create', 'plans', '--tasks-file', plan)).toEqual({
+        code: 1,
+        stdout: '',
+        stderr: "error: Can't create tasks in plans. A message's text is at most 10,000 characters.\n\n  Keep it short, and reply to the task with the long part in a file with --attach\n",
+      })
+      // The task is as it was, and what's within the API's limits lands.
+      expect(await run('tasks', 'complete', id, 'x'.repeat(1000))).toEqual({ code: 0, stdout: `completed ${id}\n`, stderr: '' })
+    } finally {
+      fetching.mockRestore()
+      process.chdir(cwd)
+      await rm(home, { recursive: true, force: true })
+    }
+  }, 30_000)
+
   it("names where another project's import came from by that project, and takes it to --source by its name or its ID", async () => {
     const home = await isolated()
     const api = fakeMessageboard({ slug: 'acme', projects: { prj_www: 'www' } })
@@ -424,9 +529,10 @@ describe('the embedded CLI', () => {
     }
   })
 
-  it("sends your login to Vercel's API and never BOARD_TOKEN, from vb and from a CLI that runs board's, and says to log in again when it's refused", async () => {
+  it("sends BOARD_TOKEN to Vercel's API ahead of your login, from vb and from a CLI that runs board's, and your login without it, each refusal saying what to renew", async () => {
     const home = await isolated()
     vi.stubEnv('VERCEL_AUTH_TOKEN', 'user:u_jb')
+    vi.stubEnv('VERCEL_TOKEN', 'user:u_bo')
     vi.stubEnv('BOARD_TOKEN', 'p9Lr4vTzQ2wc')
     const api = fakeMessageboard({ tokens: { p9Lr4vTzQ2wc: 'user:u_ada' } })
     const sent: (string | null)[] = []
@@ -434,21 +540,29 @@ describe('the embedded CLI', () => {
       sent.push(new Request(input, init).headers.get('authorization'))
       return api.fetch(input, init)
     })
+    const run = (...args: string[]) => capture(() => main([...args, '--scope', 'test'], { name: 'board', commands: local }))
     const cwd = process.cwd()
     process.chdir(home)
     try {
-      const whoami = await capture(() => main(['whoami', '--scope', 'test'], { name: 'board', commands: local }))
+      const whoami = await run('whoami')
       expect(whoami.code).toBe(0)
-      expect(whoami.stdout).toMatch(/^.* \(vercel:user:u_jb\)\n/)
-      expect(new Set(sent)).toEqual(new Set(['Bearer user:u_jb']))
-      // `vercel board`: the login it hands over.
+      expect(whoami.stdout).toMatch(/^.* \(vercel:user:u_ada\)\n/)
+      expect(new Set(sent)).toEqual(new Set(['Bearer p9Lr4vTzQ2wc']))
+      // `vercel board`: BOARD_TOKEN goes ahead of the login it hands over too.
       sent.length = 0
       const app = createApp({ appName: 'vercel board', login: async () => 'user:u_jb', team: async () => 'team_test' })
       expect((await capture(() => app.run(['read', 'general']))).code).toBe(0)
+      expect(new Set(sent)).toEqual(new Set(['Bearer p9Lr4vTzQ2wc']))
+      // A BOARD_TOKEN it refuses is yours to replace: logging in changes nothing.
+      vi.stubEnv('BOARD_TOKEN', 'not-a-token')
+      expect((await run('read', 'general')).stderr).toContain('BOARD_TOKEN')
+      // Without it, your login, and never VERCEL_TOKEN.
+      vi.stubEnv('BOARD_TOKEN', '')
+      sent.length = 0
+      expect((await run('whoami')).stdout).toMatch(/^.* \(vercel:user:u_jb\)\n/)
       expect(new Set(sent)).toEqual(new Set(['Bearer user:u_jb']))
-      // A login it refuses is yours to renew: BOARD_TOKEN has nothing to do with it.
       vi.stubEnv('VERCEL_AUTH_TOKEN', 'not-a-token')
-      const refused = await capture(() => main(['read', 'general', '--scope', 'test'], { name: 'board', commands: local }))
+      const refused = await run('read', 'general')
       expect(refused).toMatchObject({ code: 1, stderr: expect.stringContaining('vercel login') })
       expect(refused.stderr).not.toContain('BOARD_TOKEN')
     } finally {
@@ -487,7 +601,7 @@ describe('the embedded CLI', () => {
     }
   })
 
-  it("narrows a connection to Vercel's API with x-board-can, on your login and on VERCEL_TOKEN alike", async () => {
+  it("narrows a connection to Vercel's API with x-board-can, on your login", async () => {
     const home = await isolated()
     const api = fakeMessageboard()
     const sent: { can: string | null; type: string | null; authorization: string | null }[] = []
@@ -508,7 +622,7 @@ describe('the embedded CLI', () => {
     const cwd = process.cwd()
     process.chdir(home)
     try {
-      for (const [name, value] of [['VERCEL_AUTH_TOKEN', 'user:u_jb'], ['VERCEL_TOKEN', 'user:u_ada']] as const) {
+      for (const [name, value] of [['VERCEL_AUTH_TOKEN', 'user:u_jb']] as const) {
         vi.stubEnv(name, value)
         sent.length = 0
         expect(await capture(() => main(['probe', '--scope', 'test'], { name: 'board', commands: { probe } }))).toMatchObject({ code: 0, stdout: 'dev\n' })
@@ -778,8 +892,8 @@ describe('the embedded CLI', () => {
 
   it("checks only a board someone named, never the team's by default, since it posts and changes grants", async () => {
     const home = await isolated()
-    // As a deployment, which Vercel's board takes watchers from.
-    vi.stubEnv('VERCEL_TOKEN', 'project:prj_pong:production')
+    // As a project, which Vercel's board takes watchers from.
+    vi.stubEnv('VERCEL_AUTH_TOKEN', 'project:prj_pong:production')
     vi.stubEnv('VERCEL_ORG_ID', 'team_test')
     const api = fakeMessageboard()
     const fetching = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => api.fetch(input, init))
@@ -822,11 +936,11 @@ describe('the embedded CLI', () => {
     }
   })
 
-  it('lists serve in the standalone board only, in a section of its own after inspect', async () => {
+  it('lists inspect and serve in the standalone board only, in a section of their own after wait', async () => {
     const help = await capture(() => main(['help'], { name: 'board', commands: local }))
     expect(help.stdout).toMatch(/^usage: board <command> \[options\]      \(also installed as `vb`\)$/m)
-    // inspect after wait, serve after them in a section of its own, and then the options every command takes.
-    expect(help.stdout).toMatch(/\n  wait \[channel\|id\] \[filters\] \[--after id\] \[--timeout 10m\][^\n]*\n(?: {4,}[^\n]*\n)*  inspect +the board in your browser[^\n]*\n(?: {4,}[^\n]*\n)*\n  serve +run a board on this machine[\s\S]*local:user:<your OS\s+user>\n\nfilters:/)
+    // inspect and serve after wait, in a section of their own, and then the options every command takes.
+    expect(help.stdout).toMatch(/\n  wait \[channel\|id\] \[filters\] \[--after id\] \[--timeout 10m\][^\n]*\n(?: {4,}[^\n]*\n)*\n  inspect +the board in your browser[^\n]*\n(?: {4,}[^\n]*\n)*  serve +run a board on this machine[\s\S]*local:user:<your OS\s+user>\n\nfilters:/)
   })
 
   it("takes the login the Vercel CLI hands it in VERCEL_AUTH_TOKEN, never a token cached for someone else's", async () => {
@@ -868,12 +982,11 @@ describe('the embedded CLI', () => {
     expect(process.listenerCount('SIGINT')).toBe(before)
   })
 
-  it('never brings serve or A2 into an app that bundles it, and loads the inspector only when inspect runs', async () => {
+  it('never brings the inspector, serve, or A2 into an app that bundles it', async () => {
     const embedded = await bundled("import { createApp } from '../src/cli/embedded.ts'\nawait createApp({ appName: 'vercel board' }).run(process.argv.slice(2))")
     expect(everything(embedded).includes(MARKERS.serve), 'serve in the embedded CLI').toBe(false)
     expect(everything(embedded).includes(MARKERS.a2), 'A2 in the embedded CLI').toBe(false)
-    expect(everything(embedded).includes(MARKERS.inspector), 'the inspector in the embedded CLI').toBe(true)
-    expect(loadedAtStart(embedded).includes(MARKERS.inspector), 'the inspector loaded at start').toBe(false)
+    expect(everything(embedded).includes(MARKERS.inspector), 'the inspector in the embedded CLI').toBe(false)
     // The standalone CLI has all three, so the markers find what they look for.
     const standalone = everything(await bundled("import '../src/cli/bin.ts'"))
     for (const [what, marker] of Object.entries(MARKERS)) expect(standalone.includes(marker), `${what} in the standalone CLI`).toBe(true)
@@ -903,97 +1016,9 @@ describe('the embedded CLI', () => {
     }
   }
 
-  /** The app's CLI: board's from `dist`, as npm installs it, bundled as the Vercel CLI bundles it, handing it `PAGE_FROM`'s file as the page when it's set. */
-  const BUNDLED_APP = [
-    "import { readFile } from 'node:fs/promises'",
-    "import { createApp } from '../dist/cli-embedded.mjs'",
-    'const from = process.env.PAGE_FROM',
-    "process.exitCode = await createApp({ appName: 'vercel board', ...(from ? { inspectorPage: () => readFile(from, 'utf8') } : {}) }).run(process.argv.slice(2))",
-  ].join('\n')
-
-  /** Only the page has it: React's production errors. */
-  const PAGE_MARKER = 'Minified React error'
-
-  it('serves the page an app that bundles the published CLI hands it, carrying none of its own, and says so without one', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'board-cli-'))
-    try {
-      const files = await bundleTo(BUNDLED_APP, dir)
-      expect((await readFile(join(import.meta.dirname, '../dist/inspect/app.js'), 'utf8')).includes(PAGE_MARKER), 'the marker finds the page').toBe(true)
-      expect(everything(files).includes(PAGE_MARKER), "the page in the app's bundle").toBe(false)
-
-      const handed = join(dir, 'page.js')
-      await writeFile(handed, "document.body.dataset.page = 'the app\\'s'")
-      const served = await inspecting([join(dir, 'app.mjs')], { PAGE_FROM: handed })
-      expect(served.stdout()).toContain(`inspecting ${url} as u_julian`)
-      const app = await fetch(`${served.address}/app.js`)
-      expect(app.status).toBe(200)
-      expect(await app.text()).toBe(await readFile(handed, 'utf8'))
-      expect(await served.stop()).toBe(0)
-
-      // Without one, there's no page of board's beside the bundle: it says what's missing, and serves
-      // nothing, not even a file where board's would be, which isn't the page board's build made.
-      await mkdir(join(dir, 'inspect'))
-      await writeFile(join(dir, 'inspect/app.js'), "document.body.dataset.page = 'stray'")
-      const without = await inspecting([join(dir, 'app.mjs')])
-      expect(without.address).toBeNull()
-      expect(await without.exited).toBe(1)
-      expect(without.stderr()).toMatch(/^error: The inspector's page isn't beside board's CLI\.\n[\s\S]*inspectorPage/)
-    } finally {
-      await rm(dir, { recursive: true, force: true })
-    }
-  }, 120_000)
-
-  it('serves the page it is handed in an app that bundles the published CLI as CommonJS, with no import.meta.url', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'board-cli-'))
-    try {
-      const entry = join(dir, 'entry.mjs')
-      await writeFile(
-        entry,
-        [
-          "import { readFile } from 'node:fs/promises'",
-          `import { createApp } from ${JSON.stringify(join(import.meta.dirname, '../dist/cli-embedded.mjs'))}`,
-          "const inspectorPage = () => readFile(process.env.PAGE_FROM, 'utf8')",
-          "createApp({ appName: 'vercel board', inspectorPage }).run(process.argv.slice(2)).then((code) => { process.exitCode = code })",
-        ].join('\n'),
-      )
-      // As esbuild bundles for CommonJS: `import.meta` is an empty object there.
-      await esbuild.build({ entryPoints: [entry], bundle: true, format: 'cjs', platform: 'node', target: 'node20', outfile: join(dir, 'app.cjs'), logLevel: 'silent' })
-      const handed = join(dir, 'page.js')
-      await writeFile(handed, "document.body.dataset.page = 'the app\\'s'")
-      const served = await inspecting([join(dir, 'app.cjs')], { PAGE_FROM: handed })
-      expect(served.address, served.stderr()).not.toBeNull()
-      expect(await (await fetch(`${served.address}/app.js`)).text()).toBe(await readFile(handed, 'utf8'))
-      expect(await served.stop()).toBe(0)
-    } finally {
-      await rm(dir, { recursive: true, force: true })
-    }
-  }, 120_000)
-
-  it("names the page this version's package has, with its SHA-256, for an app to fetch and check", async () => {
-    const root = join(import.meta.dirname, '..')
-    const { INSPECTOR_PAGE } = (await import(join(root, 'dist/cli-embedded.mjs'))) as typeof import('../src/cli/embedded.ts')
-    const { version } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')) as { version: string }
-    expect(INSPECTOR_PAGE).toMatchObject({ name: '@vercel/board', version, path: 'dist/inspect/app.js' })
-    expect(INSPECTOR_PAGE.sha256).toBe(createHash('sha256').update(await readFile(join(root, INSPECTOR_PAGE.path))).digest('hex'))
-  })
-
   it("serves the page it's installed with, standalone", async () => {
     const served = await inspecting([join(import.meta.dirname, '../dist/cli.mjs')])
     expect(await (await fetch(`${served.address}/app.js`)).text()).toBe(await readFile(join(import.meta.dirname, '../dist/inspect/app.js'), 'utf8'))
     expect(await served.stop()).toBe(0)
   }, 30_000)
-
-  it("fails with why it couldn't get the page the app hands it, before it serves anything", async () => {
-    const app = createApp({
-      appName: 'vercel board',
-      inspectorPage: async () => {
-        throw new Error('the registry is unreachable')
-      },
-    })
-    expect(await capture(() => app.run(['inspect', '--port', '0', '--no-open']))).toEqual({
-      code: 1,
-      stdout: '',
-      stderr: "error: Couldn't get the inspector's page: the registry is unreachable\n",
-    })
-  })
 })

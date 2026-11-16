@@ -17,7 +17,7 @@ export type WebhookPayload =
       files?: { name: string; mimeType: string; url: string; size?: number }[]
     }
   | { type: 'delete'; threadId: string; id: string }
-  | { type: 'edit'; threadId: string; id: string; text: string; user: string }
+  | { type: 'edit'; threadId: string; id: string; text: string; user: string; name?: string }
   | { type: 'reaction'; threadId: string; messageId: string; emoji: string; added: boolean; user: string; raw?: unknown }
 
 /** A platform adapter driven by test payloads, recording everything posted to it. */
@@ -51,7 +51,7 @@ export function fakePlatform(name: string, extend: (adapter: Adapter) => void = 
         await chat.processMessageDeleted({ adapter, threadId: body.threadId, channelId: adapter.channelIdFromThreadId(body.threadId), messageId: body.id, raw: {} }, options)
       else if (body.type === 'edit')
         await chat.processMessageUpdated(
-          { adapter, threadId: body.threadId, message: createTestMessage(body.id, body.text, { threadId: body.threadId, author: author(body.user) }) },
+          { adapter, threadId: body.threadId, message: createTestMessage(body.id, body.text, { threadId: body.threadId, author: author(body.user, body.name) }) },
           options,
         )
       else if (body.type === 'message')
