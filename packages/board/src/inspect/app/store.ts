@@ -488,8 +488,6 @@ export type Viewer = {
   may(permission: 'post' | 'label' | 'manage', channel: string): boolean
   /** `manage` at `*`: what registering a schema and listing grants need. */
   manages: boolean
-  /** `manage` at each of a grant's patterns, and at each of yours under them: what the board asks to revoke it. */
-  revokes(can: Readonly<Record<string, unknown>>): boolean
 }
 
 /**

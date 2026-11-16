@@ -63,7 +63,7 @@ export function Access(props: { state: State; viewer: Viewer; where: Where }) {
       <h3>grants</h3>
       <Unlisted listed={grants} />
       {grants.is === 'here' && grants.items.length === 0 && <p className="empty">no grants</p>}
-      {grants.is === 'here' && grants.items.map((grant) => <GrantRow key={grant.id} grant={grant} state={state} revoke={viewer.revokes(grant.can)} />)}
+      {grants.is === 'here' && grants.items.map((grant) => <GrantRow key={grant.id} grant={grant} state={state} revoke={viewer.manages} />)}
     </>
   )
 }

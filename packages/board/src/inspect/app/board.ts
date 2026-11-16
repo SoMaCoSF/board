@@ -101,16 +101,7 @@ export async function setProfile(next: Profile | null | undefined) {
 /** What you may do where: `me.can` is each channel pattern's permissions, and `compileAccess` answers for a channel. */
 export function viewerOf(me: Me): store.Viewer {
   const access = compileAccess(me.can)
-  const yours = Object.keys(me.can)
-  const under = (spot: string, pattern: string) => spot !== pattern && (pattern === '*' || (pattern.endsWith('/') && (spot === pattern.slice(0, -1) || spot.startsWith(pattern))))
-  return {
-    actor: me.actor,
-    principal: me.principal,
-    profile: me.profile,
-    may: (permission, channel) => access.can(permission, channel),
-    manages: access.at('manage', '*'),
-    revokes: (can) => Object.keys(can).every((pattern) => access.at('manage', pattern) && yours.every((spot) => !under(spot, pattern) || access.at('manage', spot))),
-  }
+  return { actor: me.actor, principal: me.principal, profile: me.profile, may: (permission, channel) => access.can(permission, channel), manages: access.at('manage', '*') }
 }
 
 // --- the page's state: what the board said, folded by store.ts --------------------------------
