@@ -1123,6 +1123,16 @@ export async function createServe(context: BoardContext): Promise<Serve> {
     return { version: VERSION, url, audience: url, team_id: teamId, project_id: projectId, sync }
   }
 
+  /**
+   * Without `url`, a token's audience is the request's own origin, which only a host the sender can't
+   * choose makes safe: Vercel's, or this machine's, where a board is being developed. Anywhere else
+   * a proxy can pass on the caller's `Host`, and a token made for another board would match.
+   */
+  function hostIsTrusted(url: URL): boolean {
+    const env = typeof process === 'undefined' ? undefined : process.env
+    return env?.VERCEL === '1' || env?.NODE_ENV !== 'production' || /^(localhost|127\.0\.0\.1|\[::1\])$/.test(url.hostname)
+  }
+
   async function dispatch(request: Request, injected: Caller | PlatformCaller | null): Promise<Response> {
     try {
       const url = new URL(request.url)
@@ -1157,6 +1167,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
       if (target.kind === 'protocol' && typeof (backend[target.name] as unknown) !== 'function') throw notFound(`no route: ${request.method} ${url.pathname}`)
       // A sync callback's client does everything but its own writes as sync.
       const own = injected && 'platform' in injected ? engine!.caller : injected
+      if (!own && options.url === undefined && !hostIsTrusted(url)) throw new HttpError(501, 'no_url', "this board doesn't know its own URL, which a token's audience must match: pass `url` to board()")
       const asked = own ? null : requestOf(request, boardUrl)
       const caller: Caller = own ?? (await callerOf(asked!))
       if (target.kind === 'board') return await serve(target.name, caller, request, url, match.params)

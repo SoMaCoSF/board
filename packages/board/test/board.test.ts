@@ -549,4 +549,24 @@ describe('its URL', () => {
       vi.unstubAllEnvs()
     }
   })
+
+  it("won't take a token's audience from a host a caller chose, in production off Vercel", async () => {
+    const token = await personToken('u_julian', 'https://board.example.com/api/board')
+    const call = (board: ReturnType<typeof testBoard>, origin: string) =>
+      board.fetch(new Request(`${origin}/api/board/me`, { headers: { authorization: `Bearer ${token}` } }))
+    vi.stubEnv('NODE_ENV', 'production')
+    try {
+      const inferring = testBoard({ url: undefined })
+      const refused = await call(inferring, 'https://board.example.com')
+      expect([refused.status, (await refused.json()).error.code]).toEqual([501, 'no_url'])
+      // This machine is where a board is made, and a board that says its URL has nothing to infer.
+      expect((await call(inferring, 'http://127.0.0.1:4100')).status).toBe(401)
+      expect((await call(testBoard({ url: 'https://board.example.com/api/board' }), 'https://board.example.com')).status).toBe(200)
+      // Vercel says which host a request came to.
+      vi.stubEnv('VERCEL', '1')
+      expect((await call(inferring, 'https://board.example.com')).status).toBe(200)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
 })
