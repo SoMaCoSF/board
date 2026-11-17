@@ -11,7 +11,7 @@
   --bright: #fafafa;
   --working: #4c9aff;
   --ready: #3ecf8e;
-  --review: #f5a623;
+  --held: #f5a623;
   --bad: #ff5f56;
   font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   font-size: 81.25%;
@@ -28,7 +28,7 @@
     --bright: #000000;
     --working: #0068d6;
     --ready: #1a7f4e;
-    --review: #a35200;
+    --held: #a35200;
     --bad: #c5221f;
   }
 }
@@ -235,10 +235,11 @@ i[data-state="ready"] {
   background: var(--ready);
 }
 
-i[data-state="review"] {
-  background: var(--review);
+i[data-state="blocked"] {
+  background: var(--held);
 }
 
+i[data-state="failed"],
 i[data-state="stalled"] {
   background: var(--bad);
 }

@@ -1,22 +1,24 @@
 import type { Board, MessageView, ThreadSummaryView } from "@vercel/board";
 import { FLEET, NAME, team } from "./board.ts";
-import { STATES, type State } from "./queue.ts";
+import { FINISHED, OPEN, STATES, type State } from "./queue.ts";
 
 /** A message as the page shows it. */
 export type Line = { id: string; channel: string; re: string | null; author: string; text: string; at: string };
 
-/** A task: a thread whose root carries `task.state`. */
+/** A task: a thread the board keeps a task's state on, under the fleet. */
 export type Task = {
   id: string;
   channel: string;
   title: string;
   state: State;
-  /** Who holds it, or held it last, by handle. */
-  owner: string | null;
+  /** Who holds it, by handle where the page has seen one, while it's claimed. */
+  holder: string | null;
   /** When the claim runs out. A claimed task past it has stalled, and anyone may take it over. */
-  lease: string | null;
-  /** The task a blocked one waits for. */
-  after: string | null;
+  until: string | null;
+  /** The tasks it waits for. */
+  needs: string[];
+  /** What it came to, why it failed or was canceled, or what it's held for. */
+  note: string | null;
   author: string;
   replies: number;
   last: Line | null;
@@ -48,26 +50,24 @@ const line = (message: MessageView): Line => ({
   at: message.createdAt,
 });
 
-/** The states a task is still in play in: the page shows every such task. */
-const OPEN = ["ready", "claimed", "review", "blocked"] as const;
-/** The states a task ends in: the page shows the newest few of each. */
-const FINISHED = ["done", "canceled"] as const;
 const OPEN_LIMIT = 200;
 const FINISHED_LIMIT = 25;
 
-function toTask({ message, replies, last }: ThreadSummaryView): Task[] {
-  const state = message.labels["task.state"] as State | undefined;
-  // A label anyone can write: one this page doesn't know isn't a task.
-  if (!state || !STATES.includes(state)) return [];
+/** A summary as a task, named by `handles` where it can be: a claim says who holds it by actor ID. */
+function toTask({ message, replies, last }: ThreadSummaryView, handles: Map<string, string>): Task[] {
+  const task = message.task;
+  if (!task || !STATES.includes(task.state)) return [];
+  const holder = task.state === "claimed" && task.claim ? task.claim.actor : null;
   return [
     {
       id: message.id,
       channel: message.channel,
       title: message.text.split("\n", 1)[0] || "(no title)",
-      state,
-      owner: message.labels["task.owner"] ?? null,
-      lease: message.labels["task.lease"] ?? null,
-      after: message.labels["task.after"] ?? null,
+      state: task.state,
+      holder: holder && (handles.get(holder) ?? holder),
+      until: task.state === "claimed" ? (task.claim?.until ?? null) : null,
+      needs: task.needs,
+      note: task.result ?? task.reason ?? task.blocked?.reason ?? null,
       author: author(message),
       replies,
       last: last ? line(last) : null,
@@ -77,32 +77,38 @@ function toTask({ message, replies, last }: ThreadSummaryView): Task[] {
 }
 
 /**
- * The fleet as it is now: its newest messages, then one read per task state. A board indexes a
- * label with one value, so `task.state=ready` lists only the ready tasks, while a filter with
- * several values, or the bare key, makes Vercel's board page through every thread in every channel
- * of the fleet. Finished states are read with a small limit, which caps their summaries, the
- * expensive part; Vercel's board still lists every finished task to find the newest few, a request
- * per page of them. Nothing is kept between snapshots: each is the board as it is, whoever asks
- * and whatever they missed.
+ * The fleet as it is now: its newest messages, then one read per task state. Open tasks are a
+ * `tasks` list each, which is also a task request: on Vercel's board, which keeps no timers, it's
+ * what turns a lapsed claim ready and readies a task whose prerequisites completed. A list goes
+ * oldest first, so the newest few finished tasks are read as threads by the state's label
+ * (`board.task`), newest first, with a small limit; Vercel's board still pages through every
+ * finished task to find them. Nothing is kept between snapshots: each is the board as it is,
+ * whoever asks and whatever they missed.
  */
 export async function snapshot(board: Board = team(), fleet: string = FLEET): Promise<Snapshot> {
   // The messages first: their cursor is where the live route listens from, so a change that lands
   // between the reads is in the next snapshot rather than in neither.
   const page = await board.messages({ channel: fleet, limit: 100 });
-  const read = async (state: State, limit: number) =>
-    (await board.threads({ channel: fleet, label: { "task.state": state }, limit })).threads.flatMap(toTask).reverse();
   const [open, finished] = await Promise.all([
-    Promise.all(OPEN.map((state) => read(state, OPEN_LIMIT))),
-    Promise.all(FINISHED.map((state) => read(state, FINISHED_LIMIT))),
+    Promise.all(OPEN.map(async (state) => (await board.tasks.list({ channel: fleet, state, limit: OPEN_LIMIT })).tasks)),
+    Promise.all(
+      FINISHED.map(async (state) => (await board.threads({ channel: fleet, label: { "board.task": state }, limit: FINISHED_LIMIT })).threads),
+    ),
   ]);
+  // Who an actor is, from what the page has: the fleet's messages, and each task's root and last reply.
+  const handles = new Map<string, string>();
+  const seen = (message: MessageView | null) => message?.author?.handle && handles.set(message.by.actor, message.author.handle);
+  for (const message of page.messages) seen(message);
+  for (const summary of [...open, ...finished].flat()) seen(summary.message), seen(summary.last);
+  // The board lists oldest first; the page reads newest first, state by state.
+  const tasks = (summaries: ThreadSummaryView[]) => summaries.flatMap((summary) => toTask(summary, handles)).reverse();
   return {
     name: NAME,
     fleet,
     cursor: page.cursor,
     at: new Date().toISOString(),
-    // The board lists oldest first; the page reads newest first, state by state.
-    tasks: [...open.flat(), ...finished.flat()],
-    finishedCapped: finished.some((tasks) => tasks.length >= FINISHED_LIMIT),
+    tasks: [...open.flatMap(tasks), ...finished.flatMap(tasks)],
+    finishedCapped: finished.some((threads) => threads.length >= FINISHED_LIMIT),
     flow: page.messages.map(line).reverse(),
   };
 }

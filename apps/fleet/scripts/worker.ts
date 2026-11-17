@@ -1,45 +1,39 @@
 // A stand-in agent, to watch the page move without spending tokens: node scripts/worker.ts [name]
 // It does what JOIN.md tells a real agent to do (claim, log, renew, finish) and sleeps where a real
 // one would work. STEP_MS sets how long each step takes (3 s by default). Stop it with Ctrl-C.
-import { FLEET, team } from "../lib/board.ts";
-import { claim, finish, renew, review } from "../lib/queue.ts";
+import { FLEET, FROM, team } from "../lib/board.ts";
+import { claim, finish, renew } from "../lib/queue.ts";
 
 const name = process.argv[2] ?? `worker-${Math.random().toString(36).slice(2, 6)}`;
 const board = team().as(name);
-const me = (await board.me()).handle ?? name;
+const me = await board.me();
 const step = Number(process.env.STEP_MS ?? 3_000);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// Whose tasks it takes: FLEET_FROM's, or its own person's when that's unset.
+const from = FROM.length > 0 ? FROM : [me.principal];
 
-console.log(`${me} is working ${FLEET}`);
+console.log(`${me.handle ?? name} is working ${FLEET}`);
 for (;;) {
-  // Someone else's finished work comes first: a review readies what waits for it.
-  const reviews = await board.threads({ channel: FLEET, label: { "task.state": "review" } });
-  const theirs = reviews.threads.find(({ message }) => message.labels["task.owner"] !== me);
-  if (theirs && (await review(board, theirs.message.id, "done", FLEET))) {
-    await board.reply(theirs.message.id, "Reviewed: the result holds. Done.");
-    console.log(`reviewed ${theirs.message.id}`);
-    continue;
-  }
-
-  const { threads } = await board.threads({ channel: FLEET, label: { "task.state": "ready" } });
-  if (threads.length === 0) {
+  const { tasks, cursor } = await board.tasks.list({ channel: FLEET, state: "ready" });
+  // A task text is instructions: take them only from whom the fleet trusts, and never review your own work.
+  const fit = tasks.filter(({ message }) => message.task && from.includes(message.task.owner) && message.task.by !== me.actor);
+  if (fit.length === 0) {
     // Nothing to take: block until something in the fleet changes, then look again. Waiting from
-    // where the first read stood catches what landed while this loop was looking.
-    await board.wait({ channel: FLEET, after: reviews.cursor }, { timeout: "1m" });
+    // where the list stood catches what landed while this loop was looking.
+    await board.wait({ channel: FLEET, after: cursor }, { timeout: "1m" });
     continue;
   }
-  const { message } = threads[Math.floor(Math.random() * threads.length)]!;
-  const token = await claim(board, message.id, me);
-  if (!token) continue; // someone was first
+  const { message } = fit[Math.floor(Math.random() * fit.length)]!;
+  let held = await claim(board, message.id);
+  if (!held) continue; // someone was first
 
   const title = message.text.split("\n", 1)[0];
   console.log(`claimed ${message.id}  ${title}`);
   await board.reply(message.id, "[progress] Claimed. Plan: reproduce, change, verify, report.");
-  let held = true;
   for (const note of ["[progress] Reproduced it. Working on the change.", "[progress] Change made. Verifying."]) {
     await sleep(step);
-    // A lost claim means someone took the task over: stop, and write nothing more to its state.
-    if (!(held = await renew(board, message.id, token))) break;
+    // A lost claim means someone took the task over: stop, and settle nothing.
+    if (!(held = await renew(held))) break;
     await board.reply(message.id, note);
   }
   if (!held) {
@@ -47,9 +41,13 @@ for (;;) {
     continue;
   }
   await sleep(step);
-  const state = Math.random() < 0.5 ? "review" : "done";
-  if (await finish(board, message.id, token, state, FLEET)) {
-    await board.reply(message.id, state === "review" ? "Ready for review: the change is verified." : "Done: verified.");
-    console.log(`${state} ${message.id}`);
+  if (!(await finish(held, "complete", "verified"))) continue;
+  console.log(`completed ${message.id}`);
+  // Half the work asks for a second pair of eyes: a review is a task that needs this one, for another agent.
+  if (!title?.startsWith("Review") && Math.random() < 0.5) {
+    const { task } = await board.tasks.create(message.channel, { text: `Review: ${title}\n\nCheck ${message.id}'s change holds.`, needs: [message.id] });
+    await board.reply(message.id, `Done: verified. Review queued as ${task.id}.`);
+  } else {
+    await board.reply(message.id, "Done: verified.");
   }
 }

@@ -5,7 +5,7 @@ import { create } from "../lib/queue.ts";
 
 const board = team().as("coordinator");
 
-const TASKS: { channel: string; slug: string; title: string; brief: string; after?: string }[] = [
+const TASKS: { channel: string; slug: string; title: string; brief: string; needs?: string }[] = [
   {
     channel: "fixes",
     slug: "login-redirect",
@@ -17,7 +17,7 @@ const TASKS: { channel: string; slug: string; title: string; brief: string; afte
     slug: "login-redirect-review",
     title: "Review the /login redirect fix",
     brief: "Try to get past the new check. Say what you tried in the thread.",
-    after: "login-redirect",
+    needs: "login-redirect",
   },
   {
     channel: "fixes",
@@ -53,12 +53,13 @@ const TASKS: { channel: string; slug: string; title: string; brief: string; afte
 
 const ids = new Map<string, string>();
 for (const task of TASKS) {
-  const after = task.after ? ids.get(task.after) : undefined;
-  const id = await create(board, `${FLEET}${task.channel}`, { title: task.title, brief: task.brief, key: `fleet-seed-${task.slug}`, after });
+  const needs = task.needs ? [ids.get(task.needs)!] : [];
+  const id = await create(board, `${FLEET}${task.channel}`, { title: task.title, brief: task.brief, key: `fleet-seed-${task.slug}`, needs });
   ids.set(task.slug, id);
   console.log(`${id}  ${FLEET}${task.channel}  ${task.title}`);
 }
 
+console.log(`queued as ${(await board.me()).principal}: agents of anyone else take these with FLEET_FROM set to it`);
 await board.post(`${FLEET}general`, {
   text: "The queue is open. Paste JOIN.md into your coding agent to take a task.",
   id: "fleet-seed-welcome",

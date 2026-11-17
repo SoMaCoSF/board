@@ -15,8 +15,8 @@ importers:
   apps/fleet:
     dependencies:
       '@vercel/board':
-        specifier: ^0.39.0
-        version: 0.39.0(@chat-adapter/github@4.41.1(ai@7.0.130(zod@4.6.5))(zod@4.6.5))(@chat-adapter/linear@4.41.1(ai@7.0.130(zod@4.6.5))(graphql@17.0.2)(zod@4.6.5))(@chat-adapter/slack@4.41.1(ai@7.0.130(zod@4.6.5))(debug@4.4.3)(zod@4.6.5))(@vercel/connect@2.3.4)(chat@4.41.1(ai@7.0.130(zod@4.6.5))(zod@4.6.5))
+        specifier: ^0.49.0
+        version: 0.49.0(@chat-adapter/github@4.41.1(ai@7.0.130(zod@4.6.5))(zod@4.6.5))(@chat-adapter/linear@4.41.1(ai@7.0.130(zod@4.6.5))(graphql@17.0.2)(zod@4.6.5))(@chat-adapter/slack@4.41.1(ai@7.0.130(zod@4.6.5))(debug@4.4.3)(zod@4.6.5))(@vercel/connect@2.3.4)(chat@4.41.1(ai@7.0.130(zod@4.6.5))(zod@4.6.5))
       geist:
         specifier: ^1.7.2
         version: 1.7.2(next@16.3.8(@types/node@26.6.3)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))
@@ -1389,8 +1389,8 @@ packages:
       pg:
         optional: true
 
-  '@vercel/board@0.39.0':
-    resolution: {integrity: sha512-lED80x45IU4dbXiDVAvXXk0C9BtyCwFFpJwEW02Ls2enzyr8xhVG5Zh3HonJvufadBfPdcPu+X7TChOcecJyhQ==}
+  '@vercel/board@0.49.0':
+    resolution: {integrity: sha512-Y04PxQBOrBH4XpHS+5rNii56LKnJGhQxUeayDgD2AZ57txuA52JTpcbhLatocoWRRolrCExbKD+92ez963IE5g==}
     engines: {node: '>=22.18'}
     hasBin: true
     peerDependencies:
@@ -1683,9 +1683,6 @@ packages:
 
   ajv@8.17.1:
     resolution: {integrity: sha512-B/gBuNg5SiMTrPkC+A2+cW0RszwxYmn6VYxB/inlBStS5nx6xHIt/ehKRhIMhqusl7a8LjQoZnjCs5vhwxOQ1g==}
-
-  ajv@8.20.0:
-    resolution: {integrity: sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==}
 
   anynum@1.0.1:
     resolution: {integrity: sha512-N6//FLET/tXYNM/F6ABca1oH6fWB+KlTt909Le28WMDBk8oaT4vY17DCrwg2MvmuqUKt3Ni4N5dGJ/EoBgcO6A==}
@@ -4073,8 +4070,8 @@ snapshots:
   '@modelcontextprotocol/sdk@1.31.0(zod@4.6.5)':
     dependencies:
       '@hono/node-server': 2.1.3(hono@4.13.12)
-      ajv: 8.20.0
-      ajv-formats: 3.0.1(ajv@8.20.0)
+      ajv: 8.17.1
+      ajv-formats: 3.0.1(ajv@8.17.1)
       content-type: 1.0.5
       cors: 2.8.6
       cross-spawn: 7.0.6
@@ -4534,7 +4531,7 @@ snapshots:
       ioredis: 5.11.1
       pg: 8.23.1
 
-  '@vercel/board@0.39.0(@chat-adapter/github@4.41.1(ai@7.0.130(zod@4.6.5))(zod@4.6.5))(@chat-adapter/linear@4.41.1(ai@7.0.130(zod@4.6.5))(graphql@17.0.2)(zod@4.6.5))(@chat-adapter/slack@4.41.1(ai@7.0.130(zod@4.6.5))(debug@4.4.3)(zod@4.6.5))(@vercel/connect@2.3.4)(chat@4.41.1(ai@7.0.130(zod@4.6.5))(zod@4.6.5))':
+  '@vercel/board@0.49.0(@chat-adapter/github@4.41.1(ai@7.0.130(zod@4.6.5))(zod@4.6.5))(@chat-adapter/linear@4.41.1(ai@7.0.130(zod@4.6.5))(graphql@17.0.2)(zod@4.6.5))(@chat-adapter/slack@4.41.1(ai@7.0.130(zod@4.6.5))(debug@4.4.3)(zod@4.6.5))(@vercel/connect@2.3.4)(chat@4.41.1(ai@7.0.130(zod@4.6.5))(zod@4.6.5))':
     dependencies:
       '@vercel/oidc': 3.8.9
       jose: 6.2.12
@@ -4714,9 +4711,9 @@ snapshots:
     optionalDependencies:
       ajv: 8.17.1
 
-  ajv-formats@3.0.1(ajv@8.20.0):
+  ajv-formats@3.0.1(ajv@8.17.1):
     optionalDependencies:
-      ajv: 8.20.0
+      ajv: 8.17.1
     optional: true
 
   ajv@8.17.1:
@@ -4725,14 +4722,6 @@ snapshots:
       fast-uri: 3.1.8
       json-schema-traverse: 1.0.0
       require-from-string: 2.0.2
-
-  ajv@8.20.0:
-    dependencies:
-      fast-deep-equal: 3.1.3
-      fast-uri: 3.1.8
-      json-schema-traverse: 1.0.0
-      require-from-string: 2.0.2
-    optional: true
 
   anynum@1.0.1: {}
 

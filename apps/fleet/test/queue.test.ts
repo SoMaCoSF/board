@@ -1,151 +1,110 @@
 // The queue's promises, on a board in memory: node --test test/*.test.ts
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import { board as makeBoard, type Board } from "@vercel/board";
 import { local } from "@vercel/board/backend-local";
-import { claim, create, finish, renew, review } from "../lib/queue.ts";
+import { claim, create, finish, renew } from "../lib/queue.ts";
 
 const fresh = (): Board => makeBoard({ backend: local({ memory: true }) });
-const labels = async (board: Board, id: string) => (await board.thread(id)).message.labels;
+const state = async (board: Board, id: string) => (await board.thread(id)).message.task?.state;
 let n = 0;
-const task = (board: Board, after?: string) => create(board, "fleet/fixes", { title: `task ${++n}`, key: `key-${n}`, after });
+const task = (board: Board, needs?: string[]) => create(board, "fleet/fixes", { title: `task ${++n}`, key: `key-${n}`, needs });
 
-test("a retried create posts one task", async () => {
+test("a retried create makes one task", async () => {
   const board = fresh();
   const first = await create(board, "fleet/fixes", { title: "Fix the redirect", brief: "Same-origin only.", key: "fix-redirect" });
   const again = await create(board, "fleet/fixes", { title: "Fix the redirect", brief: "Same-origin only.", key: "fix-redirect" });
   assert.equal(again, first);
-  const { threads } = await board.threads({ channel: "fleet/fixes" });
-  assert.equal(threads.length, 1);
-  assert.equal(threads[0]!.message.text, "Fix the redirect\n\nSame-origin only.");
-  assert.equal(threads[0]!.message.labels["task.state"], "ready");
+  const { tasks } = await board.tasks.list({ channel: "fleet/" });
+  assert.deepEqual(
+    tasks.map(({ message }) => [message.text, message.task?.state]),
+    [["Fix the redirect\n\nSame-origin only.", "ready"]],
+  );
 });
 
 test("of many agents claiming one task at once, one gets it", async () => {
   const board = fresh();
   const id = await task(board);
-  const agents = ["ada", "grace", "linus", "ken", "barbara", "edsger", "margaret", "dennis"];
-  const tokens = await Promise.all(agents.map((agent) => claim(board, id, agent)));
-  const winners = agents.filter((_, i) => tokens[i] !== null);
-  assert.equal(winners.length, 1);
-  const now = await labels(board, id);
-  assert.equal(now["task.state"], "claimed");
-  assert.equal(now["task.owner"], winners[0]);
-  assert.equal(now["task.claim"], tokens.find((token) => token !== null));
+  const agents = ["ada", "grace", "linus", "ken", "barbara", "edsger", "margaret", "dennis"].map((name) => board.as(name));
+  const claims = await Promise.all(agents.map((agent) => claim(agent, id)));
+  const won = claims.filter((held) => held !== null);
+  assert.equal(won.length, 1);
+  const { message } = await board.thread(id);
+  assert.equal(message.task?.state, "claimed");
+  assert.equal(message.task?.claim?.actor, (await agents[claims.indexOf(won[0]!)]!.me()).actor);
 });
 
-test("a claim holds for about ten minutes, and a renewal moves its end later", async () => {
+test("a renewal moves the end of the claim later", async () => {
   const board = fresh();
-  const id = await task(board);
-  const before = Date.now();
-  const token = await claim(board, id, "ada");
-  assert.ok(token);
-  const first = Date.parse((await labels(board, id))["task.lease"]!);
-  assert.ok(first >= before + 9 * 60_000 && first <= Date.now() + 11 * 60_000, `lease ends ${first - before} ms out`);
+  const held = await claim(board, await task(board));
+  assert.ok(held);
   await new Promise((resolve) => setTimeout(resolve, 1_100)); // a lease is kept to the second
-  assert.equal(await renew(board, id, token), true);
-  assert.ok(Date.parse((await labels(board, id))["task.lease"]!) > first);
+  const renewed = await renew(held);
+  assert.ok(renewed);
+  assert.ok(Date.parse(renewed.until) > Date.parse(held.until));
 });
 
-test("a task taken over fences out the agent that held it", async () => {
+test("a stalled task is taken over, and the agent that held it can't settle it", async (t) => {
   const board = fresh();
   const id = await task(board);
-  const old = await claim(board, id, "ada");
+  const old = await claim(board.as("ada"), id);
   assert.ok(old);
-  const held = await labels(board, id);
-  // The takeover JOIN.md gives: all three conditions, so one taker wins.
-  await board.label(id, {
-    set: { "task.owner": "grace", "task.claim": "graces-claim", "task.lease": "2999-01-01T00:00:00.000Z" },
-    if: { "task.state": "claimed", "task.claim": old, "task.lease": held["task.lease"]! },
-  });
-  assert.equal(await renew(board, id, old), false);
-  assert.equal(await finish(board, id, old, "done", "fleet/"), false);
-  const now = await labels(board, id);
-  assert.equal(now["task.state"], "claimed");
-  assert.equal(now["task.owner"], "grace");
-  assert.equal(now["task.lease"], "2999-01-01T00:00:00.000Z");
+  assert.equal(await claim(board.as("grace"), id), null, "a live claim holds it");
+
+  // The lease runs out on the board's clock.
+  mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  t.after(() => mock.timers.reset());
+  mock.timers.tick(Date.parse(old.until) - Date.now() + 1_000);
+
+  const taken = await claim(board.as("grace"), id);
+  assert.ok(taken, "anyone may take over a lapsed claim");
+  assert.equal(await renew(old), null);
+  assert.equal(await finish(old, "complete", "late"), false);
+  const { message } = await board.thread(id);
+  assert.equal(message.task?.state, "claimed");
+  assert.equal(message.task?.claim?.actor, (await board.as("grace").me()).actor);
 });
 
-test("a done task readies the tasks that waited for it, and no others", async () => {
+test("a completed task readies the tasks that waited for it, and no others", async () => {
   const board = fresh();
   const first = await task(board);
   const other = await task(board);
-  const waits = await task(board, first);
-  const waitsForOther = await task(board, other);
-  assert.equal((await labels(board, waits))["task.state"], "blocked");
-  assert.equal(await claim(board, waits, "grace"), null, "a blocked task can't be claimed");
+  const waits = await task(board, [first]);
+  const waitsForOther = await task(board, [other]);
+  assert.equal(await state(board, waits), "waiting");
+  assert.equal(await claim(board, waits), null, "a waiting task can't be claimed");
 
-  const token = await claim(board, first, "ada");
-  assert.ok(token);
-  assert.equal(await finish(board, first, token, "done", "fleet/"), true);
+  const held = await claim(board, first);
+  assert.ok(held);
+  assert.equal(await finish(held, "complete", "fixed"), true);
 
-  const done = await labels(board, first);
-  assert.equal(done["task.state"], "done");
-  assert.equal(done["task.owner"], "ada", "a done task still says who did it");
-  assert.equal(done["task.claim"], undefined);
-  assert.equal(done["task.lease"], undefined);
-  assert.equal((await labels(board, waits))["task.state"], "ready");
-  assert.equal((await labels(board, waitsForOther))["task.state"], "blocked");
+  const { message } = await board.thread(first);
+  assert.deepEqual([message.task?.state, message.task?.result], ["completed", "fixed"]);
+  assert.equal(await state(board, waits), "ready");
+  assert.equal(await state(board, waitsForOther), "waiting");
 });
 
-test("a done task readies all of its dependents, however many, and only the queue's", async () => {
+test("a failed task keeps what waits for it waiting", async () => {
   const board = fresh();
-  const first = await task(board);
-  const waiting: string[] = [];
-  for (let i = 0; i < 130; i++) waiting.push(await task(board, first));
-  // Another queue on the same board, whose task happens to name this one.
-  const elsewhere = await create(board, "other/fixes", { title: "not this queue's", key: "elsewhere", after: first });
-
-  const token = await claim(board, first, "ada");
-  assert.ok(token);
-  assert.equal(await finish(board, first, token, "done", "fleet/"), true);
-
-  const { threads } = await board.threads({ channel: "fleet/", label: { "task.state": "ready" }, limit: 500 });
-  assert.deepEqual(threads.map(({ message }) => message.id).sort(), [...waiting].sort());
-  assert.equal((await labels(board, elsewhere))["task.state"], "blocked");
+  const fix = await task(board);
+  const review = await task(board, [fix]);
+  const held = await claim(board, fix);
+  assert.ok(held);
+  assert.equal(await finish(held, "fail", "can't reproduce"), true);
+  const { message } = await board.thread(fix);
+  assert.deepEqual([message.task?.state, message.task?.reason], ["failed", "can't reproduce"]);
+  assert.equal(await state(board, review), "waiting");
 });
 
-test("a task in review readies what waits for it only once a reviewer says done", async () => {
-  const board = fresh();
-  const first = await task(board);
-  const waits = await task(board, first);
-  const token = await claim(board, first, "ada");
-  assert.ok(token);
-  assert.equal(await finish(board, first, token, "review", "fleet/"), true);
-  assert.equal((await labels(board, first))["task.state"], "review");
-  assert.equal((await labels(board, waits))["task.state"], "blocked");
-
-  assert.equal(await review(board, first, "done", "fleet/"), true);
-  assert.equal((await labels(board, first))["task.state"], "done");
-  assert.equal((await labels(board, waits))["task.state"], "ready");
-  assert.equal(await review(board, first, "ready", "fleet/"), false, "a second verdict comes too late");
-  assert.equal((await labels(board, first))["task.state"], "done");
-});
-
-test("a review that sends a task back makes it claimable again, by anyone", async () => {
+test("an agent that gives a task back leaves it ready for anyone, and its claim settles nothing", async () => {
   const board = fresh();
   const id = await task(board);
-  const token = await claim(board, id, "ada");
-  assert.ok(token);
-  await finish(board, id, token, "review", "fleet/");
-  assert.equal(await review(board, id, "ready", "fleet/"), true);
-  const back = await labels(board, id);
-  assert.equal(back["task.state"], "ready");
-  assert.equal(back["task.owner"], undefined);
-  assert.ok(await claim(board, id, "grace"));
-});
-
-test("an agent that gives a task back leaves it ready, with no trace of the claim", async () => {
-  const board = fresh();
-  const id = await task(board);
-  const token = await claim(board, id, "ada");
-  assert.ok(token);
-  assert.equal(await finish(board, id, token, "ready", "fleet/"), true);
-  const back = await labels(board, id);
-  assert.deepEqual(
-    { state: back["task.state"], owner: back["task.owner"], claim: back["task.claim"], lease: back["task.lease"] },
-    { state: "ready", owner: undefined, claim: undefined, lease: undefined },
-  );
-  assert.equal(await renew(board, id, token), false, "the old token no longer holds it");
-  assert.ok(await claim(board, id, "grace"));
+  const held = await claim(board.as("ada"), id);
+  assert.ok(held);
+  assert.equal(await finish(held, "release"), true);
+  const { message } = await board.thread(id);
+  assert.deepEqual([message.task?.state, message.task?.claim], ["ready", null]);
+  assert.equal(await renew(held), null, "the old claim no longer holds it");
+  assert.equal(await finish(held, "complete"), false);
+  assert.ok(await claim(board.as("grace"), id));
 });

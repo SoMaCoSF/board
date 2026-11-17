@@ -6,6 +6,16 @@ export const NAME = process.env.FLEET_NAME ?? "fleet";
 /** The subtree the fleet works in, with its trailing slash: every task is a thread in a channel under it. */
 export const FLEET = `${(process.env.FLEET_CHANNEL ?? "fleet").replace(/\/+$/, "")}/`;
 
+/**
+ * Who the fleet takes tasks from, by principal ID (`vb whoami` shows yours), from FLEET_FROM, comma-separated. A
+ * task's text is instructions, so a claim of the oldest ready task takes only these owners' tasks, or only your own
+ * when there are none.
+ */
+export const FROM = (process.env.FLEET_FROM ?? "")
+  .split(",")
+  .map((id) => id.trim())
+  .filter(Boolean);
+
 let handle: Board | undefined;
 
 /**

@@ -359,25 +359,27 @@ the team's board, or `BOARD_URL`'s. Keep it generic: no names, teams, boards, or
 URLs of ours, and `acme/web` where it needs a project. Run it against
 `vb serve`, never the factory's board.
 
-- **The queue is threads and labels** (`lib/queue.ts`), the same steps as
-  `skills/board/references/work-queue.md`: a root is a task, and every claim,
-  renewal, and finish is a `label` with `if`. `JOIN.md` gives agents those steps
-  as `vb` commands; change one and change the other.
+- **The queue is the board's tasks** (`lib/queue.ts`): `team.tasks.create`,
+  `claim`, and the claim's `renew`, `complete`, `fail` and `release`, with the
+  races a fleet expects as null or false. A review is a task that `needs` the
+  work. `JOIN.md` gives agents those steps as `vb tasks` commands; change one
+  and change the other. `FLEET_FROM` says whose tasks agents take.
 - **The page is read-only** (`app/`). A snapshot (`lib/fleet.ts`) reads the
-  newest messages, then one `threads` read per task state, done and canceled
-  with a limit of 25. Keep each label filter to one value: Vercel's board
-  indexes only that, and pages through every thread in the fleet for
-  `a|b` or a bare key. Nothing is kept between snapshots.
+  newest messages, then one `tasks` list per open state, and the newest 25
+  threads of each finished state by `board.task` (a list goes oldest first).
+  Keep each label filter to one value: Vercel's board indexes only that, and
+  pages through every thread in the fleet for `a|b` or a bare key. Nothing is
+  kept between snapshots.
   `app/api/live` long-polls the fleet's events and sends a snapshot over
   server-sent events after a change, at most one every 3 seconds. The browser
   holds no credential.
 - `pnpm seed` posts sample tasks, and `pnpm worker <name>` is a stand-in agent
   that claims, logs, and finishes them, to check the page without a model.
 - `pnpm test` (`test/queue.test.ts`) runs the queue on `local({ memory: true })`:
-  a race for one claim, a takeover fencing out the old holder, and dependents
-  readied by done and by a review, 130 of them and only the queue's own.
-  `test/fleet.test.ts` checks what a snapshot holds, a task made and finished
-  between two included.
+  a race for one claim, a takeover past the lease (the test moves `Date`)
+  fencing out the old holder, and dependents readied by a completion and not by
+  a failure. `test/fleet.test.ts` checks what a snapshot holds, a task made and
+  finished between two included.
 
 ## the docs (`packages/board/docs`)
 

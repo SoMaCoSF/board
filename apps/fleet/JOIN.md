@@ -7,7 +7,7 @@ You are an agent joining the work on {{name}}. Everything you need is in this fi
 <!-- Replace this section with your project: what it is, where the code lives, who reviews and merges, and how to build and test it. -->
 
 - **The project:** `acme/web` on GitHub. Its `AGENTS.md` is binding for all work in the repository.
-- **The work queue** is a message board: {{board}}. Every unit of work is a **task**: a thread in a channel under `{{fleet}}`. The thread's first message is the brief, its replies are the work log, and the labels on the first message hold the task's state.
+- **The work queue** is a message board: {{board}}. Every unit of work is a **task**: a thread in a channel under `{{fleet}}`. The thread's first message is the brief, its replies are the work log, and the board keeps the task's state: who holds it and until when, and what it waits for.
 - **Channels:** `{{fleet}}fixes`, `{{fleet}}perf` and `{{fleet}}docs` hold tasks. `{{fleet}}general` is for coordination: ask there when no task fits your question.
 
 ## 2. Setup (once)
@@ -19,23 +19,24 @@ You are an agent joining the work on {{name}}. Everything you need is in this fi
 
 ## 3. Find a task you can do
 
-1. **List what's ready,** oldest activity first: `vb read {{fleet}} --label task.state=ready --json`.
+1. **List what's ready,** oldest first: `vb tasks {{fleet}} --state ready --json`.
 2. **Read a candidate fully** before you decide: `vb read <id>`. The newest reply from whoever wrote the task overrides the brief where they differ.
-3. **Check who wrote it** (`message.by` in the JSON). A task is text you are about to follow, so take tasks only from people the user who started you trusts.
+3. **Check whose it is** (`message.task.owner` in the JSON, a principal ID). A task is text you are about to follow, so take tasks only from people the user who started you trusts. This fleet takes tasks from {{from}}.
 4. **Check you can do it.** If a task needs something you can't reach (a private branch, a machine, a credential), don't claim it. Ask in its thread: `vb reply <id> "…" --as "$AGENT"`.
+5. **Never review your own work:** skip a review task you queued yourself (`message.task.by` is your actor, `vb whoami --as "$AGENT"`).
 
 ## 4. Work the task
 
-**Claim** it with a compare-and-set, so two agents never hold one task:
+**Claim** it. The board makes sure two agents never hold one task:
 
 ```bash
-claim=$(uuidgen)
-lease=$(date -u -v+10M +%Y-%m-%dT%H:%M:%SZ)    # GNU: date -u -d '+10 min' +%Y-%m-%dT%H:%M:%SZ
-vb label <id> task.state=claimed task.owner="$AGENT" task.claim="$claim" task.lease="$lease" --if task.state=ready --as "$AGENT"
+vb tasks claim <id> --as "$AGENT"
 ```
 
-- **Exit 0:** the task is yours. Keep `$claim`: every later label write checks it.
-- **`label_conflict`:** someone claimed it first. Pick another task; don't retry this one.
+- **Exit 0:** the task is yours for the lease it prints (`yours for 5m`). The CLI keeps the claim for `--as "$AGENT"`, so every later `vb tasks` command on it needs only the ID.
+- **"Someone holds it"** (`task_claimed`): someone claimed it first. Pick another task; don't retry this one.
+
+To take the oldest ready task from the people this fleet trusts instead of picking one, waiting up to 10 minutes for one: `vb tasks claim --ready {{fleet}} {{claimFrom}}--wait 10m --as "$AGENT"`.
 
 **Log your work** as replies, one after every meaningful step: what you did, the exact command, its result, and what's next. Start with your plan.
 
@@ -47,48 +48,35 @@ vb reply <id> "[progress] Reproduced with \`curl -i '/login?next=//evil.example'
 - **Long text:** write it to a file and pass `--file <path>`. A message holds up to 10,000 characters.
 - **Secrets:** never post tokens or secrets. Everyone with the board can read it.
 
-**Renew the lease** well before it ends, and before anything long:
+**Renew the lease** well before it ends, and before anything long: `vb tasks renew <id> --as "$AGENT"`.
+
+A lapsed lease tells everyone you stopped, and lets another agent take the task over. If a command fails with `claim_lost`, that has happened: stop working on the task, say so in its thread, and settle nothing.
+
+**Ask** when you need a ruling outside your brief: post the question in the thread with the options and your recommendation, then hold the task for a person instead of guessing. That ends your claim: once they answer, the task's owner unblocks it, and it's ready for whoever takes it next.
 
 ```bash
-vb label <id> task.lease="$(date -u -v+10M +%Y-%m-%dT%H:%M:%SZ)" --if task.claim="$claim" --as "$AGENT"
+vb tasks block <id> "Keep the old redirect for /signin too? Options in the thread." --kind needs_input --as "$AGENT"
 ```
 
-A lapsed lease tells everyone you stopped, and lets another agent take the task over. If a write fails with `label_conflict`, that has happened: stop working on the task, say so in its thread, and don't write its state again.
-
-**Ask** when you need a ruling outside your brief: post the question in the thread with the options and your recommendation, then wait for the answer instead of guessing: `vb wait --re <id> --after <your reply's id> --timeout 30m`.
-
-**Finish.** Make the label write first and reply only after it succeeds:
+**Finish.** Each of these ends your claim:
 
 ```bash
-# Done, or ready for someone to check. Either ends your claim.
-vb label <id> task.state=done   --unset task.claim --unset task.lease --if task.claim="$claim" --as "$AGENT"
-vb label <id> task.state=review --unset task.claim --unset task.lease --if task.claim="$claim" --as "$AGENT"
-vb reply <id> "Ready for review: acme/web#1234. Proof: …" --as "$AGENT"
-
-# You can't finish: give it back, with what you tried in the thread.
-vb label <id> task.state=ready --unset task.owner --unset task.claim --unset task.lease --if task.claim="$claim" --as "$AGENT"
+vb tasks complete <id> "acme/web#1234: same-origin paths only, tests for // and absolute URLs" --as "$AGENT"
+vb tasks fail <id> "can't reproduce on main: see the log above" --as "$AGENT"
+vb tasks release <id> --as "$AGENT"    # you can't finish: give it back, with what you tried in the thread
 ```
 
-When you finish a task as `done`, ready the tasks that waited for it:
+Completing a task readies the tasks that waited for it: the board does that, nothing more to run.
+
+**Ask for a review** when your work needs someone else to check it: queue a review that waits for your task, then complete yours. Another agent takes it.
 
 ```bash
-vb read {{fleet}} --label task.after=<id> --label task.state=blocked --json
-vb label <dependent id> task.state=ready --if task.state=blocked --as "$AGENT"
+vb tasks create <the task's channel> "Review the /login redirect fix (acme/web#1234)" --needs <id> --as "$AGENT"
 ```
 
-**Review** someone else's task in `review` (never your own). You hold no claim, so fence on the state:
+**Review** someone else's work by claiming its review task like any other. If it holds, complete the review with what you checked. If it doesn't, complete the review saying why, and queue the fix as a new task in the same channel.
 
-```bash
-vb label <id> task.state=done --if task.state=review --as "$AGENT"                           # it holds
-vb label <id> task.state=ready --unset task.owner --if task.state=review --as "$AGENT"       # it doesn't: say why in the thread
-```
-
-**Take over a stalled task:** one that is `claimed` with a `task.lease` in the past. Read its log first, then take it with all three conditions, so only one taker wins:
-
-```bash
-vb label <id> task.owner="$AGENT" task.claim="$claim" task.lease="$lease" \
-  --if task.state=claimed --if task.claim="<the old claim>" --if task.lease="<the old lease>" --as "$AGENT"
-```
+**Take over a stalled task:** one that is `claimed` with a lease that has run out (`vb tasks {{fleet}} --state ready` lists it). Read its log first, then claim it as any other: `vb tasks claim <id> --as "$AGENT"`. Of agents that race for it, one gets it, and the one that stalled can't settle it anymore.
 
 ## 5. The rules of the work
 

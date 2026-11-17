@@ -1,119 +1,75 @@
-import { randomUUID } from "node:crypto";
-import { BoardError, type Board } from "@vercel/board";
+import { BoardError, type Board, type ClaimedTask } from "@vercel/board";
 
-// The work queue, as the board skill's work-queue reference has it: a thread's root is the task,
-// its replies are the work log, and the root's labels hold the state. Every claim and every write
-// after it is a compare-and-set on those labels, so two agents never hold one task. JOIN.md gives
-// agents the same steps as CLI commands; the scripts here take them from code.
+// The work queue is the board's tasks: a thread's root is the task, its replies are the work log,
+// and the board keeps its state, its claim and lease, and what it waits for. The board fences every
+// claim, so two agents never hold one task, and an agent that stalled past its lease can't settle a
+// task someone has since taken over. These turn the races a fleet expects into null or false and
+// throw everything else. JOIN.md gives agents the same steps as `vb tasks` commands.
 
-export const STATES = ["ready", "claimed", "review", "blocked", "done", "canceled"] as const;
+/** A task's states, as the board names them. */
+export const STATES = ["waiting", "ready", "claimed", "blocked", "completed", "failed", "canceled"] as const;
 export type State = (typeof STATES)[number];
+/** The states a task is still in play in. */
+export const OPEN = ["waiting", "ready", "claimed", "blocked"] as const satisfies readonly State[];
+/** The states a task ends in. */
+export const FINISHED = ["completed", "failed", "canceled"] as const satisfies readonly State[];
 
-/** How long a claim holds without a renewal. A crashed agent keeps a task this long at most. */
-export const LEASE_MS = 10 * 60_000;
+/** True for a 409 that means someone else got there first, or the claim is over. */
+const raced = (error: unknown, ...codes: string[]) => error instanceof BoardError && codes.includes(error.code);
 
-const lease = () => new Date(Date.now() + LEASE_MS).toISOString();
-
-/** True when the board refused the write because a label wasn't what `if` said. */
-const lost = (error: unknown) => error instanceof BoardError && error.code === "label_conflict";
-
-/** A task: its first line is the title, the rest the brief. `key` makes a retried create land once. */
+/**
+ * A task: its first line is the title, the rest the brief. `key` makes a retried create land once,
+ * and `needs` makes it wait until each of those tasks has completed.
+ */
 export async function create(
   board: Board,
   channel: string,
-  task: { title: string; brief?: string; key: string; after?: string },
+  task: { title: string; brief?: string; key: string; needs?: string[] },
 ): Promise<string> {
-  const message = await board.post(channel, {
+  const { task: root } = await board.tasks.create(channel, {
     text: task.brief ? `${task.title}\n\n${task.brief}` : task.title,
-    labels: task.after ? { "task.state": "blocked", "task.after": task.after } : { "task.state": "ready" },
     id: task.key,
+    ...(task.needs?.length ? { needs: task.needs } : {}),
   });
-  return message.id;
+  return root.id;
 }
 
-/** Claims a ready task for `owner`. The token fences every later write, or null: someone was first. */
-export async function claim(board: Board, id: string, owner: string): Promise<string | null> {
-  const token = randomUUID();
+/**
+ * Claims task `id`: a ready one, or a claimed one whose lease ran out, which is how a stalled task
+ * is taken over. Null when it can't be had now: someone holds it, it waits for another task or a
+ * person, it's someone else's to claim, or it's finished.
+ */
+export async function claim(board: Board, id: string): Promise<ClaimedTask | null> {
   try {
-    await board.label(id, {
-      set: { "task.state": "claimed", "task.owner": owner, "task.claim": token, "task.lease": lease() },
-      if: { "task.state": "ready" },
-    });
-    return token;
+    return await board.tasks.claim(id);
   } catch (error) {
-    if (lost(error)) return null;
+    if (raced(error, "task_claimed", "task_waiting", "task_blocked", "task_assigned", "task_finished")) return null;
     throw error;
   }
 }
 
-/** Extends the lease. False: the claim is someone else's now, so stop working on the task. */
-export async function renew(board: Board, id: string, token: string): Promise<boolean> {
+/** Extends the lease. Null: the claim is over (taken over, or past its lease), so stop working on the task. */
+export async function renew(held: ClaimedTask): Promise<ClaimedTask | null> {
   try {
-    await board.label(id, { set: { "task.lease": lease() }, if: { "task.claim": token } });
+    return await held.renew();
+  } catch (error) {
+    if (raced(error, "claim_lost")) return null;
+    throw error;
+  }
+}
+
+/**
+ * Ends the claim: `complete` with what it came to, which readies the tasks that waited for it;
+ * `fail` with why; or `release` to give it back. False: the claim was lost, and nothing changed.
+ */
+export async function finish(held: ClaimedTask, how: "complete" | "fail" | "release", note?: string): Promise<boolean> {
+  try {
+    if (how === "complete") await held.complete(note);
+    else if (how === "fail") await held.fail(note ?? "gave up");
+    else await held.release();
     return true;
   } catch (error) {
-    if (lost(error)) return false;
+    if (raced(error, "claim_lost")) return false;
     throw error;
-  }
-}
-
-/**
- * Ends the claim: `done`, `review` for someone to check it, or `ready` to give it back. A done task
- * readies the tasks under `scope` that waited for it. False: the claim was lost, and nothing changed.
- */
-export async function finish(board: Board, id: string, token: string, state: "done" | "review" | "ready", scope: string): Promise<boolean> {
-  try {
-    await board.label(id, {
-      set: { "task.state": state },
-      unset: state === "ready" ? ["task.owner", "task.claim", "task.lease"] : ["task.claim", "task.lease"],
-      if: { "task.claim": token },
-    });
-  } catch (error) {
-    if (lost(error)) return false;
-    throw error;
-  }
-  if (state === "done") await release(board, id, scope);
-  return true;
-}
-
-/**
- * A reviewer's verdict. It holds no claim, so it fences on the state: a late review can't overwrite
- * a task someone already moved. False: the task wasn't in review anymore.
- */
-export async function review(board: Board, id: string, verdict: "done" | "ready", scope: string): Promise<boolean> {
-  try {
-    await board.label(id, {
-      set: { "task.state": verdict },
-      unset: verdict === "ready" ? ["task.owner"] : [],
-      if: { "task.state": "review" },
-    });
-  } catch (error) {
-    if (lost(error)) return false;
-    throw error;
-  }
-  if (verdict === "done") await release(board, id, scope);
-  return true;
-}
-
-/** How many dependents one read asks for. A readied task leaves the list, so the next read has the rest. */
-const PAGE = 100;
-
-/**
- * Readies every blocked task under `scope` (the queue's channels, `fleet/`) that waited for `id`.
- * The scope keeps the read to the queue: without it, a board lists every channel the caller can
- * read. A task someone already moved stays as it is.
- */
-async function release(board: Board, id: string, scope: string): Promise<void> {
-  // Each pass readies what it lists, so the passes end. The cap is for a board that keeps listing them.
-  for (let pass = 0; pass < 50; pass++) {
-    const { threads } = await board.threads({ channel: scope, label: { "task.after": id, "task.state": "blocked" }, limit: PAGE });
-    for (const { message } of threads) {
-      await board
-        .label(message.id, { set: { "task.state": "ready" }, if: { "task.state": "blocked" } })
-        .catch((error: unknown) => {
-          if (!lost(error)) throw error;
-        });
-    }
-    if (threads.length < PAGE) return;
   }
 }
