@@ -580,6 +580,38 @@ describe('vercel()', () => {
     expect(await read(forgetting)).toEqual({ found: expected, threads: 3, pages: 1, feeds: 2 })
   })
 
+  it("never costs a filtered read of a channel more requests than reading its longer threads one by one", async () => {
+    /** A channel with `before` posts, 3 long threads (one mentioning Ada), 200 more posts, and `recent` long threads after them. */
+    const lobby = async (before: number, recent: number) => {
+      const api = fakeMessageboard({ inlineThreadMessages: true, inlineActors: true })
+      await handleOn(api, 'user:u_ada').post('lobby', { text: 'hi all' })
+      const team = handleOn(api)
+      for (let i = 0; i < before; i++) await team.post('lobby', { text: `early ${i}` })
+      for (const text of ['@ada an old question', 'an old note', 'another old note']) {
+        const root = await team.post('lobby', { text })
+        for (const reply of ['bump', 'bump again']) await team.reply(root.id, { text: reply })
+      }
+      for (let i = 0; i < 200; i++) await team.post('lobby', { text: `filler ${i}` })
+      for (let i = 0; i < recent; i++) {
+        const root = await team.post('lobby', { text: `question ${i}` })
+        for (const text of ['one', 'two', 'three']) await team.reply(root.id, { text })
+      }
+      const fresh = board({ backend: vercel({ team: 'team_test', api: API, fetch: as(api, 'user:u_val'), files: api.files }) })
+      api.requests.length = 0
+      const { threads } = await fresh.threads({ channel: 'lobby', mentions: 'vercel:user:u_ada' })
+      // What reading the longer threads cost: by themselves, and a page at a time (the feed's head, which every read takes, apart).
+      const alone = api.requests.filter((r) => /\/threads\/[^/]+\/messages$/.test(r)).length
+      const paged = api.requests.filter((r) => r === 'GET /boards/brd_test/messages').length + api.requests.filter((r) => r === 'GET /boards/brd_test/changes').length - 1
+      return { found: threads.map((thread) => thread.message.text), cost: alone + paged }
+    }
+    // 300 posts ahead of the old threads: the feed would take pages to reach them, so they're read one by one, as on `main`.
+    expect(await lobby(300, 0)).toEqual({ found: ['@[vercel:user:u_ada] an old question'], cost: 3 })
+    // With 6 more after them, the latest page holds those, and what it saves pays for reading on to the old ones.
+    const busy = await lobby(300, 6)
+    expect(busy.found).toEqual(['@[vercel:user:u_ada] an old question'])
+    expect(busy.cost).toBeLessThan(9)
+  }, 30_000)
+
   it('misses nothing posted while a filtered read lists threads: its cursor is from before the list', async () => {
     const api = fakeMessageboard({ inlineThreadMessages: true })
     const val = handleOn(api, 'user:u_val')

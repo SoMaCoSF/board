@@ -1862,26 +1862,29 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
   }
 
   /**
-   * The threads their list didn't bring whole, by ID, with all their messages, read a channel at a time and not a
-   * thread at a time, for a channel where two or more need reading: its latest page of messages (`GET /messages`),
-   * then, for threads older than that page, its feed from its oldest change kept, each change with its message as it
-   * is now. The feed is read only while it can still cover two or more of them, and for fewer pages than the
-   * threads it has yet to cover. A thread neither covers (one older than the feed keeps, or whose deleted messages
-   * they leave out) isn't in the answer, and is read by itself.
+   * The threads their list didn't bring whole, by ID, with all their messages, read a channel at a time where that
+   * costs fewer requests than reading them one by one, and never more. The channel's latest page of messages (`GET
+   * /messages`) is read when the thread list shows it holds all of two or more of them: every message since one
+   * began is in a thread active since, and those threads hold 100 at most. Then, for the older ones, it reads
+   * forward from the channel's oldest change kept (`GET /changes`, each change with its message as it is now, and
+   * on from there `GET /messages?after=`, 100 a page), a page at a time only while what's been read and the next
+   * page, with every thread still missing read by itself, stays within one request a thread. A thread neither
+   * covers (older than the feed keeps, or whose deleted messages they leave out) isn't in the answer, and is read
+   * by itself.
    */
   async function fromPages(who: Who, threads: { thread: ApiThread; channel: ApiChannel }[], signal: AbortSignal): Promise<Map<string, ApiMessage[]>> {
-    const unread = new Map<string, { channel: ApiChannel; threads: ApiThread[] }>()
+    const byChannel = new Map<string, { channel: ApiChannel; all: ApiThread[]; unread: ApiThread[] }>()
     for (const { thread, channel } of threads) {
-      if (whole(thread)) continue
-      const found = unread.get(channel.id) ?? { channel, threads: [] }
-      found.threads.push(thread)
-      unread.set(channel.id, found)
+      const found = byChannel.get(channel.id) ?? { channel, all: [], unread: [] }
+      found.all.push(thread)
+      if (!whole(thread)) found.unread.push(thread)
+      byChannel.set(channel.id, found)
     }
     const out = new Map<string, ApiMessage[]>()
     await Promise.all(
-      [...unread.values()]
-        .filter((found) => found.threads.length > 1)
-        .map(async ({ channel, threads }) => {
+      [...byChannel.values()]
+        .filter((found) => found.unread.length > 1)
+        .map(async ({ channel, all, unread }) => {
           const held = new Map<string, Map<number, ApiMessage>>()
           const hold = (message: ApiMessage) => {
             const own = held.get(message.threadId) ?? new Map<number, ApiMessage>()
@@ -1894,25 +1897,41 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
             for (let sequence = 1; sequence <= thread.messageCount; sequence++) if (!own?.has(sequence)) return false
             return true
           }
-          const page = await reading<{ messages: ApiMessage[] }>(who, await onBoard(who, '/messages'), { query: { channelId: channel.id, limit: String(PAGE_MAX) }, signal })
-          for (const message of page.messages) hold(message)
-          let wanted = threads.filter((thread) => !covered(thread))
-          // A page that isn't full is the whole channel: the feed has nothing it doesn't.
-          if (page.messages.length === PAGE_MAX && wanted.length > 1) {
-            const path = await onBoard(who, '/changes')
-            const budget = wanted.length - 1
-            let cursor: string | undefined
-            for (let pages = 0; pages < budget && wanted.length > 1; pages++) {
-              const feed = await reading<{ events: ApiChange[]; cursor: string; caughtUp?: boolean }>(who, path, { query: { channelId: channel.id, include: 'message', ...(cursor ? { cursor } : {}) }, signal })
-              for (const change of feed.events) if (change.currentMessage && change.type.startsWith('message.')) hold(change.currentMessage)
-              cursor = feed.cursor
-              // A thread begun before the oldest change the feed keeps isn't all in it.
-              const kept = pages === 0 ? feed.events[0]?.createdAt : undefined
-              wanted = wanted.filter((thread) => !covered(thread) && !(kept !== undefined && thread.createdAt < kept))
-              if (feed.events.length === 0 || feed.caughtUp) break
-            }
+          // How many messages there are at most since `thread` began: all of those of every thread active since.
+          const since = (thread: ApiThread) => all.reduce((sum, other) => (other.lastActivityAt >= thread.createdAt ? sum + other.messageCount : sum), 0)
+          const messages = await onBoard(who, '/messages')
+          let spent = 0
+          if (unread.filter((thread) => since(thread) <= PAGE_MAX).length > 1) {
+            const page = await reading<{ messages: ApiMessage[] }>(who, messages, { query: { channelId: channel.id, limit: String(PAGE_MAX) }, signal })
+            spent++
+            for (const message of page.messages) hold(message)
           }
-          for (const thread of threads) if (covered(thread)) out.set(thread.id, [...held.get(thread.id)!.values()].sort((a, b) => a.sequence - b.sequence))
+          let wanted = unread.filter((thread) => !covered(thread))
+          let cursor: string | undefined
+          // The next page only while it could still cover two, and were it to cover none, the read, with every thread it
+          // doesn't have read by itself, still costs no more than one request a thread.
+          const alone = () => unread.filter((thread) => !covered(thread)).length
+          while (wanted.length > 1 && spent + 1 + alone() <= unread.length) {
+            let more: boolean
+            if (cursor === undefined) {
+              const feed = await reading<{ events: ApiChange[]; cursor: string; caughtUp?: boolean }>(who, await onBoard(who, '/changes'), { query: { channelId: channel.id, include: 'message' }, signal })
+              for (const change of feed.events) if (change.currentMessage && change.type.startsWith('message.')) hold(change.currentMessage)
+              // A thread begun before the oldest change the feed keeps isn't all in it.
+              const kept = feed.events[0]?.createdAt
+              if (kept !== undefined) wanted = wanted.filter((thread) => thread.createdAt >= kept)
+              more = feed.events.length > 0 && !feed.caughtUp
+              cursor = feed.cursor
+            } else {
+              const page = await reading<{ messages: ApiMessage[]; cursor: string }>(who, messages, { query: { channelId: channel.id, after: cursor, limit: String(PAGE_MAX) }, signal })
+              for (const message of page.messages) hold(message)
+              more = page.messages.length === PAGE_MAX
+              cursor = page.cursor
+            }
+            spent++
+            wanted = wanted.filter((thread) => !covered(thread))
+            if (!more) break
+          }
+          for (const thread of unread) if (covered(thread)) out.set(thread.id, [...held.get(thread.id)!.values()].sort((a, b) => a.sequence - b.sequence))
         }),
     )
     return out
