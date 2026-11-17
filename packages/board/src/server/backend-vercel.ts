@@ -1864,8 +1864,8 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
   /**
    * The threads their list didn't bring whole, by ID, with all their messages, read a channel at a time where that
    * costs fewer requests than reading them one by one, and never more. The channel's latest page of messages (`GET
-   * /messages`) is read when the thread list shows it holds all of two or more of them: every message since one
-   * began is in a thread active since, and those threads hold 100 at most. Then, for the older ones, it reads
+   * /messages`) is read when the thread list shows it holds all of one of them at least: every message since it
+   * began is in a thread active since, and there are 100 of those at most. Then, for the older ones, it reads
    * forward from the channel's oldest change kept (`GET /changes`, each change with its message as it is now, and
    * on from there `GET /messages?after=`, 100 a page), a page at a time only while what's been read and the next
    * page, with every thread still missing read by itself, stays within one request a thread. A thread neither
@@ -1897,11 +1897,13 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
             for (let sequence = 1; sequence <= thread.messageCount; sequence++) if (!own?.has(sequence)) return false
             return true
           }
-          // How many messages there are at most since `thread` began: all of those of every thread active since.
-          const since = (thread: ApiThread) => all.reduce((sum, other) => (other.lastActivityAt >= thread.createdAt ? sum + other.messageCount : sum), 0)
+          // How many messages there are at most since `thread` began: all of every thread begun since, and all but the
+          // first of every older one active since.
+          const since = (thread: ApiThread) =>
+            all.reduce((sum, other) => (other.lastActivityAt < thread.createdAt ? sum : sum + other.messageCount - (other.createdAt < thread.createdAt ? 1 : 0)), 0)
           const messages = await onBoard(who, '/messages')
           let spent = 0
-          if (unread.filter((thread) => since(thread) <= PAGE_MAX).length > 1) {
+          if (unread.some((thread) => since(thread) <= PAGE_MAX)) {
             const page = await reading<{ messages: ApiMessage[] }>(who, messages, { query: { channelId: channel.id, limit: String(PAGE_MAX) }, signal })
             spent++
             for (const message of page.messages) hold(message)
