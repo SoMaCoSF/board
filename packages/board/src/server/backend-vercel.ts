@@ -1873,7 +1873,8 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       threads = (await Promise.all(listed.map(async (channel) => (await threadsOf(who, channel, filters, signal)).map((thread) => ({ thread, channel }))))).flat()
     }
     const narrow = await narrowOf(who, filters)
-    const paged = await fromPages(who, threads, signal)
+    // A list narrowed by a label isn't the channel's, so it can't say what the channel's latest page holds.
+    const paged = await fromPages(who, threads, indexed(filters) === undefined, signal)
     const read: { thread: ApiThread; channel: ApiChannel; all: ApiMessage[] }[] = []
     for (const { thread, channel } of threads) read.push({ thread, channel, all: whole(thread) ?? paged.get(thread.id) ?? (await threadMessages(who, thread.id, signal)) })
     narrow.mentions?.ahead(read.flatMap(({ all }) => all.map((message) => message.text)))
@@ -1893,7 +1894,8 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
   /**
    * The threads their list didn't bring whole, by ID, with all their messages, read a channel at a time where that
    * costs fewer requests than reading them one by one, and never more. The channel's latest page of messages (`GET
-   * /messages`) is read when the thread list shows it holds all of one of them at least: every message since it
+   * /messages`) is read when the thread list, when it lists every thread of the channel (`listsChannel`), shows it holds all of
+   * one of them at least: every message since it
    * began is in a thread active since, and there are 100 of those at most. Then, for the older ones, it reads
    * forward from the channel's oldest change kept (`GET /changes`, each change with its message as it is now, and
    * on from there `GET /messages?after=`, 100 a page), a page at a time only while what's been read and the next
@@ -1901,7 +1903,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
    * covers (older than the feed keeps, or whose deleted messages they leave out) isn't in the answer, and is read
    * by itself.
    */
-  async function fromPages(who: Who, threads: { thread: ApiThread; channel: ApiChannel }[], signal: AbortSignal): Promise<Map<string, ApiMessage[]>> {
+  async function fromPages(who: Who, threads: { thread: ApiThread; channel: ApiChannel }[], listsChannel: boolean, signal: AbortSignal): Promise<Map<string, ApiMessage[]>> {
     const byChannel = new Map<string, { channel: ApiChannel; all: ApiThread[]; unread: ApiThread[] }>()
     for (const { thread, channel } of threads) {
       const found = byChannel.get(channel.id) ?? { channel, all: [], unread: [] }
@@ -1932,7 +1934,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
             all.reduce((sum, other) => (other.lastActivityAt < thread.createdAt ? sum : sum + other.messageCount - (other.createdAt < thread.createdAt ? 1 : 0)), 0)
           const messages = await onBoard(who, '/messages')
           let spent = 0
-          if (unread.some((thread) => since(thread) <= PAGE_MAX)) {
+          if (listsChannel && unread.some((thread) => since(thread) <= PAGE_MAX)) {
             const page = await reading<{ messages: ApiMessage[] }>(who, messages, { query: { channelId: channel.id, limit: String(PAGE_MAX) }, signal })
             spent++
             for (const message of page.messages) hold(message)

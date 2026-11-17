@@ -645,14 +645,17 @@ describe('vercel()', () => {
   })
 
   it("never costs a filtered read of a channel more requests than reading its longer threads one by one", async () => {
-    /** A channel with `before` posts, 3 long threads (one mentioning Ada), 200 more posts, and `recent` long threads after them. */
-    const lobby = async (before: number, recent: number) => {
+    /**
+     * A channel with `before` posts, 3 long threads (one mentioning Ada), 200 more posts, and `recent` long threads after
+     * them, read for her mentions; `labeled`, with the old threads labeled `state=open` and read by that label too.
+     */
+    const lobby = async (before: number, recent: number, labeled = false) => {
       const api = fakeMessageboard({ inlineThreadMessages: true, inlineActors: true })
       await handleOn(api, 'user:u_ada').post('lobby', { text: 'hi all' })
       const team = handleOn(api)
       for (let i = 0; i < before; i++) await team.post('lobby', { text: `early ${i}` })
       for (const text of ['@ada an old question', 'an old note', 'another old note']) {
-        const root = await team.post('lobby', { text })
+        const root = await team.post('lobby', { text, ...(labeled ? { labels: { state: 'open' } } : {}) })
         for (const reply of ['bump', 'bump again']) await team.reply(root.id, { text: reply })
       }
       for (let i = 0; i < 200; i++) await team.post('lobby', { text: `filler ${i}` })
@@ -662,7 +665,7 @@ describe('vercel()', () => {
       }
       const fresh = board({ backend: vercel({ team: 'team_test', api: API, fetch: as(api, 'user:u_val'), files: api.files }) })
       api.requests.length = 0
-      const { threads } = await fresh.threads({ channel: 'lobby', mentions: 'vercel:user:u_ada' })
+      const { threads } = await fresh.threads({ channel: 'lobby', mentions: 'vercel:user:u_ada', ...(labeled ? { label: { state: 'open' } } : {}) })
       // What reading the longer threads cost: by themselves, and a page at a time (the feed's head, which every read takes, apart).
       const alone = api.requests.filter((r) => /\/threads\/[^/]+\/messages$/.test(r)).length
       const paged = api.requests.filter((r) => r === 'GET /boards/brd_test/messages').length + api.requests.filter((r) => r === 'GET /boards/brd_test/changes').length - 1
@@ -674,6 +677,8 @@ describe('vercel()', () => {
     const busy = await lobby(300, 6)
     expect(busy.found).toEqual(['@[vercel:user:u_ada] an old question'])
     expect(busy.cost).toBeLessThan(9)
+    // A list narrowed by a label doesn't show what else the channel holds, so it reads no page on its word.
+    expect(await lobby(0, 0, true)).toEqual({ found: ['@[vercel:user:u_ada] an old question'], cost: 3 })
   }, 30_000)
 
   it('misses nothing posted while a filtered read lists threads: its cursor is from before the list', async () => {
