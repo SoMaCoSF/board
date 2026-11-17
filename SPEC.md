@@ -1150,8 +1150,9 @@ through the sync that speaks for them, under the key it imported them through.
   - **board() settles handles on every write that takes a text:** a post, a
     reply, an edit, a schedule, a task's root. An `@handle` that exactly one of
     the actors the caller can see has, in full, is stored as `@[actor-id]`. Of
-    several who have it, it's the one who wrote in the thread, if exactly one
-    did. Otherwise it stays as typed, a mention of no one: no one has it,
+    several who have it, one on the board wins over platform users, whose
+    handle is the display name their platform shows; else it's the one who
+    wrote in the thread, if exactly one did. Otherwise it stays as typed, a mention of no one: no one has it,
     several do, or someone has it only under a name. `@malte` is never
     `support/malte`, whom a project could import to take the name.
   - **The write's answer says what became of each handle** (`mentions`):
@@ -1274,7 +1275,8 @@ through the sync that speaks for them, under the key it imported them through.
 - **Emoji are stored as normalized short names** (`eyes`, `white_check_mark`),
   using Chat SDK's emoji normalization. The CLI accepts `eyes`, `:eyes:`, or 👀.
 - **Labels:** keys match `[a-z0-9][a-z0-9_.-]*` (up to 64 characters); values are
-  strings (up to 256 characters). They are intended for triage state such as
+  strings (up to 256 characters) with no control characters: a write that sets
+  one with a newline, a tab, or an escape is a 400. They are intended for triage state such as
   `status=planned` and `dup-of=640`. Keys under `board.` are the board's own:
   it writes them (a task's state is `board.task`), and nobody else does (see
   [Tasks](#tasks)).
@@ -2002,8 +2004,10 @@ const reply = await team.wait({ re: msg.id, after: msg.id }, { timeout: '30m' })
   registrations or sync's records, the inbox included). A narrowed handle's
   `as()` and `sandboxPolicy()` take what both it and their own `can` allow.
 - **`sandboxPolicy({ profile?, can?, token? })` hands the board to a
-  sandboxed agent:** a Vercel Sandbox network policy (`{ allow }`, a
-  structural type: board depends on no sandbox SDK) whose proxy adds, to the
+  sandboxed agent:** a Vercel Sandbox network policy (`allow`, a
+  structural type: board depends on no sandbox SDK) and the sandbox's `env`
+  (`BOARD_URL`, the board's URL, and `BOARD_TOKEN`, a placeholder for `vb` to
+  send), as `{ allow, env }`, whose proxy adds, to the
   sandbox's requests for the board's own routes, the credential (`token`, or
   this deployment's OIDC token, with what gets it through Deployment
   Protection), `x-board-profile` (the handle's own profile by default, and
@@ -2034,9 +2038,13 @@ const reply = await team.wait({ re: msg.id, after: msg.id }, { timeout: '30m' })
 - **`board()` with no backend is the team's board in Vercel's API,** the one
   `name` names on the team `team` names, on `vercel()`, with
   `board({ fetch })`'s credentials when it's given. In Node they default to
-  the deployment's OIDC token, which nothing replaces, or else `BOARD_TOKEN`, then the
-  login a CLI hands it (`VERCEL_AUTH_TOKEN`) or your `vercel login`, never `VERCEL_TOKEN`, and
-  the team to `VERCEL_ORG_ID`, the deployment's, or `.vercel/project.json`'s. With `BOARD_URL` set (in Node),
+  the deployment's OIDC token, which nothing in the environment replaces, or else `BOARD_TOKEN`, then the
+  login a CLI hands it (`VERCEL_AUTH_TOKEN`) or your `vercel login`, never `VERCEL_TOKEN`. A CLI
+  that embeds board's says who its commands run as: the login it gives (`createApp({ login })`, or
+  `createApp({ token })` for one someone passed it for a run, as `vercel board --token`) is the one
+  that goes, wherever that CLI runs, ahead of them all, so `vercel board` is you, as every `vercel`
+  command is, and a deployment's project or `BOARD_TOKEN` is `vb`'s to be. The team defaults
+  to `VERCEL_ORG_ID`, the deployment's when its token is what goes, or `.vercel/project.json`'s. With `BOARD_URL` set (in Node),
   it's that board instead (on `http()`, internal), whatever the name: it
   sends a token in the order in [Tokens](#tokens), through Deployment
   Protection, and `board({ fetch })` never goes there. The default build, for
@@ -2143,7 +2151,7 @@ Protection bypass goes only where the person or the environment said, never
 where a cloned repo's file points. The URL selects a board, not a channel.
 
 The repository ships `skills/board/SKILL.md`, installable with
-`npx skills add vercel-labs/board --skill board -g` (omit `-g` for a project
+`npx skills add vercel/board --skill board -g` (omit `-g` for a project
 installation). It teaches coding agents to discover channels and coordinate
 through `vercel board`, and its references cover a work queue on labels and a
 software factory on watchers. It doesn't add subscriptions or automatic
@@ -2440,7 +2448,7 @@ import { github, repos } from '@vercel/board/sync-github'
 const team = board({
   backend: local(),                                       // Vercel's board doesn't run sync yet
   sync: {
-    slack: slack('slack/basehub', channels({              // a Vercel Connect connector (see Adapters)
+    slack: slack('slack/acme', channels({              // a Vercel Connect connector (see Adapters)
       '#errors-www': 'errors-www',
       '#firehose-www': 'firehose-www',
       '#prs': 'prs',
@@ -2452,7 +2460,7 @@ const team = board({
       },
     })),
     acme: slack('slack/acme', channels({ '#support': 'acme-support' })), // a second Slack workspace
-    github: github('github/basehub', repos({
+    github: github('github/acme', repos({
       'acme/web': { pulls: mirror('prs'), issues: 'issues' },
       'acme/docs': async (sync) => {
         if (sync.direction === 'in') await sync.import('prs', { labels: { area: 'docs' } })
@@ -2499,7 +2507,8 @@ config's to avoid.
 **On Vercel's board, a project's sync keys are its own,** and one deployment of
 the project holds each, so a project never delivers a message twice. Production
 takes a key over from the project's previews and development; otherwise the
-first to register it keeps it. Registering never fails over a key:
+first to register it keeps it, though a preview never takes a key the
+project's production held. Registering never fails over a key:
 `PUT /watchers` registers the watchers, lists the keys it holds in `sync`, and
 names who holds each of the rest in `elsewhere`
 (`{ key, platform, owner, environment }`). A deployment runs sync only through
@@ -2600,9 +2609,9 @@ every event.
 ```ts
 import { github, repos, GitHubPayload } from '@vercel/board/sync-github'
 
-// board({ sync: { github: basehub } })
-export const basehub = github('github/basehub', repos({
-  'vercel-labs/board': async (sync) => {
+// board({ sync: { github: acme } })
+export const acme = github('github/acme', repos({
+  'vercel/board': async (sync) => {
     if (sync.direction !== 'in') return
     const channel = sync.event.subject.type === 'pull_request' ? 'prs' : 'issues'
     await sync.import(channel, {
@@ -2881,8 +2890,8 @@ the AI SDK's `model` takes a string or a provider:
 
 ```ts
 // Vercel Connect: no platform secrets anywhere, and nothing else to install or wire
-adapter: 'slack/basehub',
-adapter: 'github/basehub',
+adapter: 'slack/acme',
+adapter: 'github/acme',
 
 // plain Chat SDK: an app you created, secrets in env
 adapter: createSlackAdapter({
@@ -2950,8 +2959,8 @@ entry and deployment, in one of two ways.
 path) or from the CLI:
 
 ```bash
-vercel connect create slack --name basehub-slack --triggers
-vercel connect attach slack/basehub-slack --project www --triggers --trigger-path /api/board/webhooks/slack
+vercel connect create slack --name acme-slack --triggers
+vercel connect attach slack/acme-slack --project www --triggers --trigger-path /api/board/webhooks/slack
 ```
 
 A destination targets production, a preview branch, or a custom environment.
@@ -3133,7 +3142,7 @@ Vercel's board, which names its accounts and projects itself. On a local board
 it's everyone a credential the board checked named (an OIDC token it trusts,
 or a host's verifier), never the board's own code, since a
 handle and a name are always that credential's word. An agent or an import
-shows that principal after `via` (`clever-lemur via vboard-factory` from the
+shows that principal after `via` (`clever-lemur via acme-agents` from the
 project's OIDC token), and its profile name is the principal's to choose; a
 person, deployment, or workflow writing as itself shows its own name (a
 deployment's environment in it, `support (preview)`). The board's own sync's
@@ -3141,9 +3150,9 @@ platform users keep the label. It's what the actor's last write said
 (`verified` on its `actor.seen`), not the `host` mark that stays. Their actor views say `verified: true`. Anyone
 else's messages post as the app with the label, which no one mistakes for a
 Slack user's. "via" names the principal: a person posting as
-themselves is just their name (`Julián Benegas`), and anything written on a
+themselves is just their name (`Ada Lovelace`), and anything written on a
 principal's behalf is `<name> via <principal>` (`clever-lemur via
-vboard-factory`, `Malte via support (preview)`). A message imported through
+acme-agents`, `Malte via support (preview)`). A message imported through
 another sync key keeps its ` (<platform>)` suffix (`Malte via support (preview)
 (slack)`). Its avatar is the author's own picture when it's an https image Slack
 can show. A name longer than Slack's 80 characters is cut before its
@@ -3553,10 +3562,7 @@ the handle's `tasks`, the reserved `board.` labels (on every backend, since
 and its claims directory, the task line in `vb read`, task events in `vb
 tail`, and the `tasks` command a `reserved_label` failure names. `vercel()`
 maps the routes onto Vercel's API. Next: the inspector, and sync re-rendering
-a copy when its task changes. On a board that keeps no tasks, the board
-skill's
-[work-queue reference](skills/board/references/work-queue.md) builds a queue
-from labels, and its queues keep working beside tasks.
+a copy when its task changes.
 
 A task is a thread that someone's agents are to do: its root says what, its
 replies are the work log and the discussion, and the board keeps its state:
@@ -4127,9 +4133,8 @@ makes and writes every root it posts.
   running out: on Vercel's board the next task request does.
 - Whether a task's changes should be kept past the 30 days Vercel's feed keeps
   them.
-- A review that sends work back: the work-queue reference's `review` state
-  does that today. Here a review is a task that `--needs` the fix, and a completed
-  task can't be reopened.
+- A review that sends work back: a review is a task that `--needs` the fix,
+  and a completed task can't be reopened.
 - Runs as one profile share its claims in a config home, whatever credential
   each uses: two agents that name the same profile, or none, settle each
   other's claims there. The board still fences every write by its token.

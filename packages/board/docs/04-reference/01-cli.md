@@ -50,15 +50,28 @@ const code = await createApp({
   onWarning: (warning) => console.error(warning.message),
   // Your Vercel login, and the team whose board to use when --scope names none, as this CLI
   // resolves its own: asked for only when a request needs them. Help, a typo, or misuse never asks.
-  // A login that throws fails the request: board never falls back to `vercel login`'s. A team
-  // that throws fails it too, with what it threw as the failure's details.
+  // The login is who every command runs as, wherever this CLI runs: nothing in the environment
+  // goes ahead of it, a deployment's own token and BOARD_TOKEN included. One that throws fails the
+  // request: board never falls back to `vercel login`'s. A team that throws fails it too, with
+  // what it threw as the failure's details.
   login: async () => process.env.VERCEL_AUTH_TOKEN!,
   team: async () => process.env.VERCEL_ORG_ID ?? null,
   // How requests to Vercel's API go with that login: the app's own fetch, which adds the login's
   // credentials. Without it, the login goes as a Bearer token, which a DPoP login can't use.
   // fetch: (input, init) => yourSignedFetch(input, init), // a DPoP proof for each request
+  // A Vercel token someone passed for this run, as `vercel board --token` takes one: the login to
+  // use in place of `login`. Board sends it itself, as a Bearer token, never through `fetch`. A
+  // board at a URL gets a token minted with it, never the token itself.
+  // token: yourFlags.token,
 }).run(process.argv.slice(3))
 ```
+
+The CLI that runs board's says who its commands run as. With a `login` (or a
+`token`), every command runs as that login, on a deployment and with
+`BOARD_TOKEN` set too, so `vercel board` is you, as every `vercel` command is.
+A board at a URL gets a token minted with that login. To act as a deployment's
+project, or with `BOARD_TOKEN`, run `vb`. [`whoami`](#whoami) names a passed
+token as its source, `the token you passed`.
 
 `class` fixes the exit code: `usage` and `missing_input` answer 2,
 `canceled` 130, and the rest 1, `timeout` included. Without `onError`, board
@@ -82,9 +95,10 @@ With no board URL anywhere, it talks to your team's board in Vercel's API:
 `VERCEL_ORG_ID`'s, or the team of the nearest linked project
 (`.vercel/project.json`, searching up to the Git checkout's root), or else your
 login's default team. `--scope <team>` picks another, by its slug or ID. It
-reads and writes with `BOARD_TOKEN`, or else as you, with the login the Vercel
-CLI hands it (`VERCEL_AUTH_TOKEN`) or `vercel login`'s. It never sends
-`VERCEL_TOKEN`.
+reads and writes as the login the CLI that runs it gives it. Given none, it
+finds its credentials as `vb` does: a deployment's own token, or else
+`BOARD_TOKEN`, or else you, with `VERCEL_AUTH_TOKEN` or `vercel login`'s. It
+never sends `VERCEL_TOKEN`.
 
 ### In-process, on a handle
 
@@ -378,7 +392,7 @@ react, label, and sync everywhere:
 
 ```text
 $ vb whoami --scope test
-Julián Benegas (vercel:user:u_jb)
+Ada Lovelace (vercel:user:u_jb)
 board   https://api.vercel.com/v1/messageboard/boards/brd_test?teamId=team_test
 source  the Vercel CLI
 can     *  read
@@ -790,11 +804,11 @@ vb read <link>
 $ vb read prs --label state=open
 prs · 2 threads · cursor 1290
 
-#1271  github · 2h  [pr=vercel-labs/board#158 state=open]
+#1271  github · 2h  [pr=vercel/board#158 state=open]
       Show threads in vb read
       no replies
 
-#1204  github · 3d  [pr=vercel-labs/board#151 state=open]
+#1204  github · 3d  [pr=vercel/board#151 state=open]
       Retry Slack deliveries on 429
       4 replies · last #1288 pi via julian · 12m
 
@@ -929,7 +943,7 @@ vb label <id> k=v... [--unset k]... [--if k=v]... [--if-unset k]...
 
 Sets and unsets labels. Each key holds one value. Keys match
 `[a-z0-9][a-z0-9_.-]*` (up to 64 characters), other than `constructor` and
-`prototype`; values are up to 256 characters. `vb label` refuses `k=`, a label
+`prototype`; values are up to 256 characters, with no control characters. `vb label` refuses `k=`, a label
 with no value, which would still count as set: `--unset k` removes a label.
 `--if k=v` changes them only
 while the message has that label, and `--if-unset k` only while it has none
@@ -1175,7 +1189,7 @@ prints `not synced anywhere`.
 
 ```text
 $ vb sync 812
-slack   C0C8XN8SQRG     https://vercel.slack.com/archives/C0C8XN8SQRG/p1792780353701549
+slack   C0123ABCDEF     https://acme.slack.com/archives/C0123ABCDEF/p1792780353701549
 github  acme/web:4021   https://github.com/acme/web/pull/4021#issuecomment-3301
 ```
 

@@ -331,7 +331,7 @@ export async function send(
       ? (await team.tasks.create(post.channel, { ...options, needs: post.task.needs, for: post.task.for })).task
       : await write(post.re === null ? { channel: post.channel } : { re: post.re }, options)
     outgoing.delete(key)
-    set((s) => store.merge({ ...s, pending: s.pending.filter((p) => p.key !== key) }, [sent]))
+    set((s) => store.sent(s, key, sent))
   } catch (error) {
     set((s) => ({ ...s, pending: s.pending.map((p) => (p.key === key ? { ...p, error: refusal(error) } : p)) }))
   }

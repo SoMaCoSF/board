@@ -148,7 +148,7 @@ class Refused extends Error {
 
 /** Vercel accounts the fake knows, by user ID: how the API names a person (their username, then their name). */
 const ACCOUNTS: Record<string, { username: string; name: string }> = {
-  u_jb: { username: 'julian', name: 'Julián Benegas' },
+  u_jb: { username: 'julian', name: 'Ada Lovelace' },
   u_ada: { username: 'ada', name: 'Ada Lovelace' },
 }
 
@@ -278,6 +278,7 @@ type Shared = {
   threadsLimit: boolean
   /** How many reads of a channel's feed it took: one it refused for a parameter isn't one. */
   feedReads: number
+  matchMessages: boolean
   accounts: Accounts
   directory: Directory
   now: () => number
@@ -1552,7 +1553,7 @@ function fakeBoard(shared: Shared, boardId: string) {
           }
           const shown = free.map((m) => {
             const message = messageNamed((m.change as { messageId: string }).messageId)
-            return { id: m.id, watcher: m.watcher, threadId: m.threadId, lease: m.lease, attempt: m.attempts, event: { ...m.change, ...(message ? { currentMessage: show(message) } : {}) } }
+            return { id: m.id, watcher: m.watcher, threadId: m.threadId, lease: m.lease, attempt: m.attempts, event: { ...m.change, ...(message && shared.matchMessages ? { currentMessage: show(message) } : {}) } }
           })
           return { matches: shown }
         }
@@ -2446,6 +2447,8 @@ export function fakeMessageboard(
     channelNames?: boolean
     /** True for an API that answers a read's actors with it (`with=actors`), as `GET /actors?id=` names them. Vercel's doesn't yet: `with` is 400 there. */
     inlineActors?: boolean
+    /** False for an API that hands out matches without their message (`currentMessage`), as Vercel's does for a thread moved to a channel the registrant can't read. */
+    matchMessages?: boolean
     /** Credentials the API takes, by their bearer, whatever it looks like: the principal each is, as `as()` names it. */
     tokens?: Record<string, string>
     /** An import's author is the platform user alone (`principal: { type: 'external' }`), as Vercel's API named them before platform profiles. */
@@ -2500,6 +2503,7 @@ export function fakeMessageboard(
     inlineActors: options.inlineActors ?? false,
     threadsLimit: options.threadsLimit ?? true,
     feedReads: 0,
+    matchMessages: options.matchMessages ?? true,
     externalImports: options.externalImports ?? false,
     actorsById: options.actorsById ?? true,
     namesNarrowed: options.namesNarrowed ?? true,

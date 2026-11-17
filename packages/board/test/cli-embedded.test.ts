@@ -612,7 +612,7 @@ describe('the embedded CLI', () => {
       const roles = fakeMessageboard({ roles: { u_jb: 'owner', u_ada: 'viewer' } })
       fetching.mockImplementation(async (input, init) => roles.fetch(input, init))
       const owner = await capture(() => main(['whoami', '--scope', 'test'], { name: 'board', commands: local }))
-      expect(owner).toMatchObject({ code: 0, stdout: expect.stringMatching(/^Julián Benegas \(vercel:user:u_jb\)\n/) })
+      expect(owner).toMatchObject({ code: 0, stdout: expect.stringMatching(/^Ada Lovelace \(vercel:user:u_jb\)\n/) })
       expect(owner.stdout).not.toMatch(/^(can|token) /m)
       vi.stubEnv('VERCEL_AUTH_TOKEN', 'user:u_ada')
       const viewer = await capture(() => main(['whoami', '--scope', 'test'], { name: 'board', commands: local }))
@@ -624,7 +624,7 @@ describe('the embedded CLI', () => {
     }
   })
 
-  it("sends BOARD_TOKEN to Vercel's API ahead of your login, from vb and from a CLI that runs board's, and your login without it, each refusal saying what to renew", async () => {
+  it("sends BOARD_TOKEN to Vercel's API ahead of your login, from vb and from a CLI that runs board's with no login of its own, and your login without it, each refusal saying what to renew", async () => {
     const home = await isolated()
     vi.stubEnv('VERCEL_AUTH_TOKEN', 'user:u_jb')
     vi.stubEnv('VERCEL_TOKEN', 'user:u_bo')
@@ -643,9 +643,9 @@ describe('the embedded CLI', () => {
       expect(whoami.code).toBe(0)
       expect(whoami.stdout).toMatch(/^.* \(vercel:user:u_ada\)\n/)
       expect(new Set(sent)).toEqual(new Set(['Bearer p9Lr4vTzQ2wc']))
-      // `vercel board`: BOARD_TOKEN goes ahead of the login it hands over too.
+      // A CLI that runs board's and gives it no login finds its credentials as vb does.
       sent.length = 0
-      const app = createApp({ appName: 'vercel board', login: async () => 'user:u_jb', team: async () => 'team_test' })
+      const app = createApp({ appName: 'vercel board', team: async () => 'team_test' })
       expect((await capture(() => app.run(['read', 'general']))).code).toBe(0)
       expect(new Set(sent)).toEqual(new Set(['Bearer p9Lr4vTzQ2wc']))
       // A BOARD_TOKEN it refuses is yours to replace: logging in changes nothing.
@@ -660,6 +660,103 @@ describe('the embedded CLI', () => {
       const refused = await run('read', 'general')
       expect(refused).toMatchObject({ code: 1, stderr: expect.stringContaining('vercel login') })
       expect(refused.stderr).not.toContain('BOARD_TOKEN')
+    } finally {
+      fetching.mockRestore()
+      process.chdir(cwd)
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it("runs as the login an app gives it wherever the app runs, on the app's team: a deployment's own token and BOARD_TOKEN go only from an app that gives none", async () => {
+    const home = await isolated()
+    // On a deployment of another team's project, with a BOARD_TOKEN too: each is someone else.
+    const part = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url')
+    const oidc = `${part({ alg: 'none' })}.${part({ owner_id: 'team_deployment', exp: Math.floor(Date.now() / 1000) + 3600 })}.`
+    const onDeployment = () => {
+      for (const [key, set] of Object.entries({ VERCEL: '1', VERCEL_OIDC_TOKEN: oidc, BOARD_TOKEN: 'p9Lr4vTzQ2wc' })) vi.stubEnv(key, set)
+    }
+    onDeployment()
+    const tokens = { [oidc]: 'project:prj_pong:production', p9Lr4vTzQ2wc: 'user:u_bo' }
+    // The login's team's board, and the deployment's team's.
+    const boards = { team_test: fakeMessageboard({ tokens }), team_deployment: fakeMessageboard({ teamId: 'team_deployment', tokens }) }
+    const sent: string[] = []
+    const fetching = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const request = new Request(input, init)
+      const team = new URL(request.url).searchParams.get('teamId')
+      const bearer = request.headers.get('authorization')
+      sent.push(`${bearer === `Bearer ${oidc}` ? "the deployment's token" : bearer} on ${team ?? 'no team'}`)
+      return boards[team === 'team_deployment' ? 'team_deployment' : 'team_test'].fetch(input, init)
+    })
+    const whoami = async (app: ReturnType<typeof createApp>) => {
+      sent.length = 0
+      const ran = await capture(() => app.run(['whoami', '--json']))
+      return { ...(ran.code === 0 ? (JSON.parse(ran.stdout) as { principal: string; source: string }) : { failed: ran.stderr }), sent: [...new Set(sent)] }
+    }
+    const cwd = process.cwd()
+    process.chdir(home)
+    try {
+      // The app's login, on the app's team.
+      const app = createApp({ appName: 'vercel board', login: async () => 'user:u_jb', team: async () => 'team_test' })
+      expect(await whoami(app)).toMatchObject({ principal: 'vercel:user:u_jb', source: 'the Vercel CLI', sent: ['Bearer user:u_jb on team_test'] })
+      // Off a deployment, BOARD_TOKEN doesn't go ahead of it either.
+      vi.stubEnv('VERCEL', '')
+      vi.stubEnv('VERCEL_OIDC_TOKEN', '')
+      expect(await whoami(app)).toMatchObject({ principal: 'vercel:user:u_jb', sent: ['Bearer user:u_jb on team_test'] })
+      onDeployment()
+      // A login with no team isn't on the team the deployment's token names: that's the team of a token that didn't go.
+      expect(await whoami(createApp({ appName: 'vercel board', login: async () => 'user:u_jb' }))).toMatchObject({ principal: 'vercel:user:u_jb', sent: ['Bearer user:u_jb on no team'] })
+      // An app that gives no login finds its credentials as vb does: the deployment's own token, on the team it names.
+      expect(await whoami(createApp({ appName: 'vercel board' }))).toMatchObject({ principal: 'vercel:project:prj_pong:production', source: 'Vercel OIDC', sent: ["the deployment's token on team_deployment"] })
+      // A login Vercel's API refuses is the one to renew, whatever BOARD_TOKEN holds.
+      const refused = await capture(() => createApp({ appName: 'vercel board', login: async () => 'not-a-token', team: async () => 'team_test' }).run(['read', 'general']))
+      expect(refused).toMatchObject({ code: 1, stderr: expect.stringContaining('vercel login') })
+      expect(refused.stderr).not.toContain('BOARD_TOKEN')
+    } finally {
+      fetching.mockRestore()
+      process.chdir(cwd)
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it("sends the token an app was passed to Vercel's API itself, in place of the app's login, and says it's the one to replace when it's refused", async () => {
+    const home = await isolated()
+    // On a deployment, with a BOARD_TOKEN too: each is someone else, and so is the app's login.
+    const part = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url')
+    const oidc = `${part({ alg: 'none' })}.${part({ owner_id: 'team_test', exp: Math.floor(Date.now() / 1000) + 3600 })}.`
+    for (const [key, set] of Object.entries({ VERCEL: '1', VERCEL_OIDC_TOKEN: oidc, BOARD_TOKEN: 'p9Lr4vTzQ2wc' })) vi.stubEnv(key, set)
+    const api = fakeMessageboard({ tokens: { [oidc]: 'project:prj_pong:production', p9Lr4vTzQ2wc: 'user:u_bo', w3Nc8sJd1hFy: 'user:u_ada' } })
+    const sent: (string | null)[] = []
+    const fetching = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      sent.push(new Request(input, init).headers.get('authorization'))
+      return api.fetch(input, init)
+    })
+    // The app's fetch adds its own login's credentials to whatever it sends, as `vercel board`'s does.
+    const appFetch: typeof fetch = (input, init) => {
+      const headers = new Headers(init?.headers)
+      headers.set('authorization', 'Bearer user:u_jb')
+      return globalThis.fetch(input, { ...init, headers })
+    }
+    const app = (token?: string) => createApp({ appName: 'vercel board', team: async () => 'team_test', login: async () => 'user:u_jb', fetch: appFetch, ...(token ? { token } : {}) })
+    const whoami = async (token?: string) => JSON.parse((await capture(() => app(token).run(['whoami', '--json']))).stdout) as { principal: string; source: string }
+    const cwd = process.cwd()
+    process.chdir(home)
+    try {
+      expect(await whoami('w3Nc8sJd1hFy')).toMatchObject({ principal: 'vercel:user:u_ada', source: 'the token you passed' })
+      expect(new Set(sent)).toEqual(new Set(['Bearer w3Nc8sJd1hFy']))
+      // Off a deployment, BOARD_TOKEN doesn't go ahead of it either.
+      vi.stubEnv('VERCEL', '')
+      vi.stubEnv('VERCEL_OIDC_TOKEN', '')
+      expect(await whoami('w3Nc8sJd1hFy')).toMatchObject({ principal: 'vercel:user:u_ada' })
+      // It's the run's: the next one, passed none, is the app's login again, through the app's fetch: the one a passed token never takes.
+      sent.length = 0
+      expect(await whoami()).toMatchObject({ principal: 'vercel:user:u_jb', source: 'the Vercel CLI' })
+      expect(new Set(sent)).toEqual(new Set(['Bearer user:u_jb']))
+      vi.stubEnv('VERCEL', '1')
+      vi.stubEnv('VERCEL_OIDC_TOKEN', oidc)
+      // One Vercel's API refuses is yours to replace: neither logging in nor BOARD_TOKEN changes what's passed.
+      const refused = await capture(() => app('not-a-token').run(['read', 'general']))
+      expect(refused).toMatchObject({ code: 1, stderr: expect.stringContaining('Pass a token it accepts') })
+      expect(refused.stderr).not.toMatch(/vercel login|BOARD_TOKEN/)
     } finally {
       fetching.mockRestore()
       process.chdir(cwd)

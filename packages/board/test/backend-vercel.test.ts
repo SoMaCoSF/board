@@ -271,7 +271,7 @@ describe('vercel()', () => {
     const { id } = await julian.post('dev', { text: 'hi' })
     await julian.as('claude').reply(id, { text: 'hello' })
     const { message, replies } = await julian.thread(id)
-    expect(message.author).toMatchObject({ kind: 'person', handle: 'julian', name: 'Julián Benegas' })
+    expect(message.author).toMatchObject({ kind: 'person', handle: 'julian', name: 'Ada Lovelace' })
     expect(replies[0]!.author).toMatchObject({ kind: 'agent', handle: 'julian/claude', name: 'claude' })
     // Someone who first writes after the names were read is named too.
     await handleOn(api, 'user:u_ada').reply(id, { text: 'me too' })
@@ -322,7 +322,7 @@ describe('vercel()', () => {
     const julian = board({ backend: vercel({ team: 'team_test', api: API, fetch: flaky }) })
     const { id } = await julian.post('dev', { text: 'hi' })
     expect(failing).toBe(false)
-    expect((await julian.thread(id)).message.author).toMatchObject({ handle: 'julian', name: 'Julián Benegas' })
+    expect((await julian.thread(id)).message.author).toMatchObject({ handle: 'julian', name: 'Ada Lovelace' })
     // Someone new, several times: each of their messages, read side by side, is named.
     const ada = handleOn(api, 'user:u_ada')
     for (const text of ['one', 'two', 'three']) await ada.post('dev', { text })
@@ -331,18 +331,18 @@ describe('vercel()', () => {
   })
 
   it('shows a renamed person by their new name once they write again and a few minutes pass', async () => {
-    const accounts = { u_jb: { username: 'julian', name: 'Julián Benegas' } }
+    const accounts = { u_jb: { username: 'julian', name: 'Ada Lovelace' } }
     const api = fakeMessageboard({ accounts })
     const julian = handleOn(api)
     const { id } = await julian.post('dev', { text: 'hi' })
     expect((await julian.thread(id)).message.author).toMatchObject({ handle: 'julian' })
     // The API records the new name when they next write.
-    accounts.u_jb = { username: 'jules', name: 'Jules Benegas' }
+    accounts.u_jb = { username: 'jules', name: 'Jules Verne' }
     await julian.reply(id, { text: 'renamed' })
     const clock = vi.spyOn(Date, 'now')
     try {
       clock.mockReturnValue(Date.now() + 6 * 60_000)
-      expect((await julian.thread(id)).message.author).toMatchObject({ handle: 'jules', name: 'Jules Benegas' })
+      expect((await julian.thread(id)).message.author).toMatchObject({ handle: 'jules', name: 'Jules Verne' })
     } finally {
       clock.mockRestore()
     }
@@ -501,6 +501,70 @@ describe('vercel()', () => {
     await val.post('dev', { text: 'not this one' })
     await val.post('dev', { text: `@${me.handle} this one` })
     expect((await waiting).events.map((event) => event.message?.text)).toEqual([`@${me.handle} this one`])
+  }, 15_000)
+
+  it('finds a mention board() settled to an actor ID by the handle it was written as, naming the mentioned in one request', async () => {
+    const api = fakeMessageboard({ inlineThreadMessages: true, inlineActors: true })
+    const julian = handleOn(api)
+    // Two actors who wrote somewhere else, so nothing a read of dev answers names them.
+    await julian.as('claude').post('other', { text: 'hi' })
+    await handleOn(api, 'user:u_ada').post('other', { text: 'hi' })
+    // And a project's agent, whom the API names under the project (`pong/claude`).
+    await pongBoard(api).as('claude').post('other', { text: 'hi' })
+    const val = handleOn(api, 'user:u_val')
+    const asking = await val.post('dev', { text: '@julian/claude can you look?' })
+    await val.post('dev', { text: 'and @ada, can you?' })
+    await val.post('dev', { text: '@nobody-here, anyone?' })
+    await val.post('dev', { text: '@[vercel:user:u_zed+claude] are you there?' })
+    const pinging = await val.post('dev', { text: '@pong/claude ping' })
+    // What's stored is the ID each handle settled to.
+    expect(asking.text).toBe('@[vercel:user:u_jb+claude] can you look?')
+    expect(pinging.text).toBe('@[vercel:project:prj_pong:production+claude] ping')
+    const inner = as(api, 'user:u_val')
+    const asked: string[][] = []
+    const lists: number[] = []
+    let failing = false
+    const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input))
+      if (url.pathname.endsWith('/actors')) (url.searchParams.has('id') ? asked.push(url.searchParams.getAll('id').sort()) : lists.push(1))
+      if (failing && url.pathname.endsWith('/actors')) return Response.json({ error: { code: 'internal_error', message: 'Something went wrong.' } }, { status: 500 })
+      return inner(input, init)
+    }) as typeof globalThis.fetch
+    /** A read in a process of its own, as each `vb read --mentions` is. */
+    const fresh = () => board({ backend: vercel({ team: 'team_test', api: API, fetch }) })
+    const texts = (messages: { text: string }[]) => messages.map((message) => message.text)
+    // By the handle as written, by the person it's under, and by its ID: the same message.
+    expect(texts((await fresh().threads({ channel: 'dev', mentions: 'julian/claude' })).threads.map((thread) => thread.message))).toEqual([asking.text])
+    expect(asked).toEqual([['vercel:project:prj_pong:production+claude', 'vercel:user:u_ada', 'vercel:user:u_jb+claude', 'vercel:user:u_zed+claude']])
+    expect(texts((await fresh().messages({ channel: 'dev', mentions: 'julian' })).messages)).toEqual([asking.text])
+    expect(texts((await fresh().messages({ channel: 'dev', mentions: 'vercel:user:u_jb+claude' })).messages)).toEqual([asking.text])
+    expect(texts((await fresh().threads({ mentions: 'ada' })).threads.map((thread) => thread.message))).toEqual(['and @[vercel:user:u_ada], can you?'])
+    // A handle that settled to no one is still matched as written.
+    expect(texts((await fresh().messages({ channel: 'dev', mentions: 'nobody-here' })).messages)).toEqual(['@nobody-here, anyone?'])
+    // A project's agent by the API's handle for it, and by its project; neither it nor an ID the API names no one by is a bare `claude`.
+    expect(texts((await fresh().messages({ channel: 'dev', mentions: 'pong/claude' })).messages)).toEqual([pinging.text])
+    expect(texts((await fresh().messages({ channel: 'dev', mentions: 'pong' })).messages)).toEqual([pinging.text])
+    expect(texts((await fresh().messages({ channel: 'dev', mentions: 'claude' })).messages)).toEqual([])
+    // An ID asks for no one: it matches as written.
+    asked.length = 0
+    expect(texts((await fresh().messages({ channel: 'dev', mentions: 'vercel:user:u_jb+claude' })).messages)).toEqual([asking.text])
+    expect(asked).toEqual([])
+    // A wait for a mention wakes on one settled to an ID.
+    const waiting = fresh().poll({ channel: 'dev', mentions: 'julian/claude', wait: 5 })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    await val.post('dev', { text: '@ada not this one' })
+    await val.post('dev', { text: '@julian/claude this one' })
+    expect((await waiting).events.map((event) => event.message?.text)).toEqual(['@[vercel:user:u_jb+claude] this one'])
+    // Never the whole list: the mentioned are asked for by ID.
+    expect(lists).toEqual([])
+    // A read of the actors that fails fails the poll, which reads the same change again and finds the mention.
+    const { cursor } = await fresh().poll({ channel: 'dev' })
+    await val.post('dev', { text: '@pong/claude again' })
+    const later = fresh()
+    failing = true
+    await expect(later.poll({ channel: 'dev', mentions: 'pong', after: cursor })).rejects.toMatchObject({ status: 500 })
+    failing = false
+    expect((await later.poll({ channel: 'dev', mentions: 'pong', after: cursor })).events.map((event) => event.message?.text)).toEqual(['@[vercel:project:prj_pong:production+claude] again'])
   }, 15_000)
 
   it('filters a channel by what its messages say without reading the threads its list brought whole', async () => {
@@ -1681,6 +1745,29 @@ describe('vercel()', () => {
     await vi.waitFor(async () => expect((await pong.thread(ping.id)).replies.map((reply) => [reply.text, reply.by.actor])).toEqual([['pong', 'vercel:project:prj_pong:development+pings']]))
   })
 
+  it('hands out each match with the message the pull brought, and reads one by ID only where the pull brought none', async () => {
+    for (const [name, value] of Object.entries({ VERCEL: '1', VERCEL_ENV: 'development', VERCEL_TARGET_ENV: 'development', VERCEL_GIT_COMMIT_REF: '' })) vi.stubEnv(name, value)
+    onTestFinished(() => void vi.unstubAllEnvs())
+    const handedOut = async (matchMessages: boolean) => {
+      const api = fakeMessageboard({ matchMessages, channelNames: true })
+      const ran: string[] = []
+      const backend = vercel({ team: 'team_test', api: API, fetch: as(api, 'project:prj_pong:development') })
+      onTestFinished(() => backend.close())
+      const pong = board({ backend, url: 'https://pong.example/api/board', watch: { pings: { tail: 'pings', run: async ({ event }) => void ran.push(event.message!.text) } } })
+      await pong.me()
+      await vi.waitFor(() => expect(api.registrations.has('vercel:project:prj_pong:development')).toBe(true))
+      const ada = handleOn(api, 'user:u_ada')
+      api.requests.length = 0
+      for (let i = 0; i < 5; i++) await ada.post('pings', `ping ${i}`)
+      await vi.waitFor(() => expect(ran).toHaveLength(5))
+      // Which messages were read by ID: the fallback reads each match's, the first sometimes twice.
+      return { ran, byId: new Set(api.requests.filter((request) => /^GET .*\/messages\/msg_[^/]*$/.test(request))).size }
+    }
+    const pings = ['ping 0', 'ping 1', 'ping 2', 'ping 3', 'ping 4']
+    expect(await handedOut(true)).toEqual({ ran: pings, byId: 0 })
+    expect(await handedOut(false)).toEqual({ ran: pings, byId: 5 })
+  })
+
   it('registers its path from a custom environment and a preview with no branch, and never pulls on its own there', async () => {
     onTestFinished(() => void vi.unstubAllEnvs())
     for (const [environment, env] of [
@@ -2382,7 +2469,7 @@ describe('vercel()', () => {
     await julian.post('general', { text: 'not yours', labels: { owner: 'vercel:project:prj_pong:preview+slack:user:U_ADA' } })
     await pong.fetch(new Request(`${PONG_URL}/wake`, { method: 'POST' }))
     await vi.waitFor(() =>
-      expect(s.channelPosts.map((post) => JSON.parse(post.text).markdown).sort()).toEqual(['**Julián Benegas**: not yours', 'yours · <@U_ADA>']),
+      expect(s.channelPosts.map((post) => JSON.parse(post.text).markdown).sort()).toEqual(['**Ada Lovelace**: not yours', 'yours · <@U_ADA>']),
     )
   })
 
@@ -2412,7 +2499,7 @@ describe('vercel()', () => {
     await pong.fetch(new Request(`${PONG_URL}/wake`, { method: 'POST' }))
     await handleOn(api).post('general', { text: 'the deploy is red' })
     await pong.fetch(new Request(`${PONG_URL}/wake`, { method: 'POST' }))
-    await vi.waitFor(() => expect(posted.map(({ username, markdown_text }) => [username, markdown_text])).toEqual([['Julián Benegas', 'the deploy is red']]))
+    await vi.waitFor(() => expect(posted.map(({ username, markdown_text }) => [username, markdown_text])).toEqual([['Ada Lovelace', 'the deploy is red']]))
   })
 
   it("mentions a GitHub user a project's sync imported by their login, not by the handle the board gives them", async () => {
@@ -2437,7 +2524,7 @@ describe('vercel()', () => {
     expect(opened!.author).toMatchObject({ id: 'vercel:project:prj_pong:production+github:user:42', handle: 'pong/ada' })
     await julian.reply(opened!.id, `over to @[${opened!.by.actor}]`)
     await pong.fetch(new Request(`${PONG_URL}/wake`, { method: 'POST' }))
-    await vi.waitFor(() => expect(hub.posts.map((post) => JSON.parse(post.text).markdown)).toEqual(['**Julián Benegas**: over to @ada']))
+    await vi.waitFor(() => expect(hub.posts.map((post) => JSON.parse(post.text).markdown)).toEqual(['**Ada Lovelace**: over to @ada']))
   })
 
   it("delivers a mention natively through the sync whose user it names, and by name through any other: two syncs' Maltes, and an email its Slack knows", async () => {
@@ -2465,8 +2552,8 @@ describe('vercel()', () => {
     await web.fetch(new Request(`${WEB_URL}/wake`, { method: 'POST' }))
     const posted = (platform: typeof pongSlack) => platform.channelPosts.map((post) => JSON.parse(post.text).markdown).filter((text: string) => text.includes('have a look'))
     await vi.waitFor(() => expect([posted(pongSlack), posted(webSlack)]).toEqual([
-      ['**Julián Benegas**: @malte have a look, <@U_M1> and malte, cc <@U_ADA> and <@U_M1>'],
-      ['**Julián Benegas**: @malte have a look, malte and <@U_M2>, cc ada@vercel.com and @[slack:user:U_M1]'],
+      ['**Ada Lovelace**: @malte have a look, <@U_M1> and malte, cc <@U_ADA> and <@U_M1>'],
+      ['**Ada Lovelace**: @malte have a look, malte and <@U_M2>, cc ada@vercel.com and @[slack:user:U_M1]'],
     ]))
   })
 
@@ -2834,7 +2921,7 @@ describe("each project's sync keys on Vercel's API", () => {
     const julian = handleOn(api)
     const root = await julian.post('general', { text: 'checkout is down' })
     await Promise.all([support.wake(), www.wake()])
-    await vi.waitFor(() => expect([markdown(supportSlack.channelPosts), markdown(wwwSlack.channelPosts)]).toEqual([['**Julián Benegas**: checkout is down'], ['**Julián Benegas**: checkout is down']]))
+    await vi.waitFor(() => expect([markdown(supportSlack.channelPosts), markdown(wwwSlack.channelPosts)]).toEqual([['**Ada Lovelace**: checkout is down'], ['**Ada Lovelace**: checkout is down']]))
     // Ada answers in www's Slack thread: www imports it, and support's Slack gets it.
     const webhook = await www.webhook('slack', { threadId: `slack:C_WWW:${wwwSlack.channelPosts[0]!.id}`, id: '500', text: 'on it', user: 'U_ADA', name: 'Ada' })
     expect(webhook.status).toBe(200)
@@ -2938,7 +3025,7 @@ describe("each project's sync keys on Vercel's API", () => {
     expect(read).not.toHaveBeenCalled()
     await handleOn(api).post('general', { text: 'deploy failed' })
     await Promise.all([production.wake(), preview.wake()])
-    await vi.waitFor(() => expect(markdown(productionSlack.channelPosts)).toEqual(['**Julián Benegas**: deploy failed']))
+    await vi.waitFor(() => expect(markdown(productionSlack.channelPosts)).toEqual(['**Ada Lovelace**: deploy failed']))
     await vi.waitFor(() => expect(ran).toEqual(['deploy failed']))
     // It registers again once its last registration is old: still not its key, and nothing more to say.
     const now = Date.now.bind(Date)
@@ -3040,10 +3127,10 @@ describe("each project's sync keys on Vercel's API", () => {
     const julian = handleOn(api)
     const root = await julian.post('general', { text: 'deploy failed' })
     await production.wake()
-    await vi.waitFor(() => expect(markdown(productionSlack.channelPosts)).toEqual(['**Julián Benegas**: deploy failed']))
+    await vi.waitFor(() => expect(markdown(productionSlack.channelPosts)).toEqual(['**Ada Lovelace**: deploy failed']))
     await julian.reply(root.id, { text: 'rolled back' })
     await Promise.all([production.wake(), preview.wake()])
-    await vi.waitFor(() => expect(markdown(productionSlack.posts)).toEqual(['**Julián Benegas**: rolled back']))
+    await vi.waitFor(() => expect(markdown(productionSlack.posts)).toEqual(['**Ada Lovelace**: rolled back']))
     await preview.wake()
     await new Promise((resolve) => setTimeout(resolve, 200))
     expect([previewSlack.channelPosts, previewSlack.posts]).toEqual([[], []])
@@ -3095,7 +3182,7 @@ describe("each project's sync keys on Vercel's API", () => {
     await vi.waitFor(async () => expect((await julian.messages({ channel: 'general' })).messages.map((message) => message.text)).toEqual(['from slack']))
     const root = await julian.post('general', { text: 'deploy failed' })
     await production.wake()
-    await vi.waitFor(() => expect(markdown(s.channelPosts)).toEqual(['**Julián Benegas**: deploy failed']))
+    await vi.waitFor(() => expect(markdown(s.channelPosts)).toEqual(['**Ada Lovelace**: deploy failed']))
     // Its targets name no project: each is the reader's own.
     expect((await julian.sync(root.id)).targets.map(({ key, target }) => [key, target])).toEqual([['slack', 'slack:C_SUP']])
   })

@@ -7,7 +7,7 @@ import { withMentions } from '../api/tail.ts'
 import { BoardError, type ClaimedTask, type Filters, type ProfileOption, type TaskInBatch, type Written } from '../client/client.ts'
 import type { Mentioned } from '../contract/mentions.ts'
 import { createTasksInChunks, TasksInChunksError } from '../client/chunks.ts'
-import { boardUrl, connect, environmentProfile, handFetch, handLogin, vercelProjectFile } from '../client/node.ts'
+import { boardUrl, connect, environmentProfile, handFetch, handLogin, handToken, PASSED, vercelProjectFile } from '../client/node.ts'
 import { http } from '../backend-http/index.ts'
 import { credentialed, credentialSource, handTeam, vercel } from '../backend-vercel/index.ts'
 import { board as boardAt, type Board } from '../server/index.ts'
@@ -198,8 +198,17 @@ export type App = {
   onError?: (failure: Failure, mode: { json: boolean }) => void
   /** Shows a warning, outside `--json` (where it's in the result's `warnings`); without it, the CLI prints `warning: …`. */
   onWarning?: (warning: Warning) => void
-  /** Your Vercel login, asked for only when a request needs it: the app's own, refreshed when it's asked. */
+  /**
+   * Your Vercel login, asked for only when a request needs it: the app's own, refreshed when it's
+   * asked. It's who every command runs as, wherever the app runs: nothing the environment holds
+   * goes ahead of it, a deployment's own token and `BOARD_TOKEN` included.
+   */
   login?: () => Promise<string>
+  /**
+   * A Vercel token someone passed the app for this run (`vercel board --token`): the login to use
+   * in place of `login`. Board sends it itself, as a Bearer token, never through `fetch`.
+   */
+  token?: string
   /**
    * How board's requests to Vercel's API go with that login: the app's own fetch, which adds the
    * login's credentials (a DPoP proof, say). Without it, board sends the login as a Bearer token.
@@ -228,6 +237,8 @@ let typed: string[] = []
 let warnings: Warning[] = []
 /** The board this run reached by its URL, for a failure to name. */
 let reached: string | null = null
+/** Where the credential this run sent came from, as `whoami` says it, for a refusal to say which to replace. */
+let sent: () => string | null = () => null
 /** How long the message text this run sends is, for a backend's refusal of it to say what to do instead. */
 let sentLength = 0
 
@@ -938,8 +949,12 @@ function failureOf(error: unknown): Failure {
       'auth',
       'login_required',
       "The board didn't accept your credentials.",
-      // A token you passed is yours to replace: logging in changes nothing while BOARD_TOKEN is set. Vercel's board reads it off a deployment.
-      process.env.BOARD_TOKEN && ((reached && !vercelBoard(reached)) || credentialSource() === 'BOARD_TOKEN') ? [{ instruction: 'Pass a token it accepts in BOARD_TOKEN, or unset it' }] : [{ instruction: 'Log in again', argv: ['vercel', 'login'] }],
+      // A token you passed is yours to replace, and so is BOARD_TOKEN: logging in changes nothing while either is the one sent.
+      sent() === PASSED
+        ? [{ instruction: 'Pass a token it accepts' }]
+        : sent() === 'BOARD_TOKEN'
+          ? [{ instruction: 'Pass a token it accepts in BOARD_TOKEN, or unset it' }]
+          : [{ instruction: 'Log in again', argv: ['vercel', 'login'] }],
     )
   if (status === 403) return theirs('permission', 'permission_denied', `You can't ${doing()}.`)
   if (status === 404) {
@@ -1031,6 +1046,7 @@ function connection(url: string | undefined = flags.url, options: { token?: stri
   const configured = url ?? (team === undefined && name === undefined ? configuredUrl() : null)
   if (configured === null) {
     const board = boardAt({ backend: vercel({ ...(team !== undefined ? { team } : {}), ...sending(options.token, options.can, options.headers) }), ...(name !== undefined ? { name, ensure: flags.ensure === true } : {}) })
+    sent = credentialSource
     return { url: null, transport: { source: credentialSource }, board: profile !== undefined ? board.as(profile) : board }
   }
   const at = configured.replace(/\/+$/, '')
@@ -1039,11 +1055,13 @@ function connection(url: string | undefined = flags.url, options: { token?: stri
   const onVercel = vercelBoard(at)
   if (onVercel) {
     const board = boardAt({ backend: vercel({ ...onVercel, ...sending(options.token, options.can, options.headers) }) })
+    sent = credentialSource
     return { url: at as string | null, transport: { source: credentialSource }, board: profile !== undefined ? board.as(profile) : board }
   }
   const extra = { ...options.headers, ...(options.can !== undefined ? { 'x-board-can': options.can } : {}) }
   const transport = connect(at, { ...(options.token !== undefined ? { token: options.token } : {}), ...(Object.keys(extra).length > 0 ? { fetch: withHeaders(extra) } : {}) })
   const board = boardAt({ backend: http(at, { fetch: transport.fetch }) })
+  sent = transport.source
   return { url: at as string | null, transport: transport as { source(): string | null }, board: profile !== undefined ? board.as(profile) : board }
 }
 
@@ -2549,12 +2567,14 @@ const context = (): CommandContext => ({
 export async function main(argv: string[], options: App): Promise<number> {
   // The app's login and team are the run's, and only the run's.
   handLogin(options.login ?? null)
+  handToken(options.token ?? null)
   handTeam(options.team ?? null)
   handFetch(options.fetch ?? null)
   try {
     return await runOnce(argv, options)
   } finally {
     handLogin(null)
+    handToken(null)
     handTeam(null)
     handFetch(null)
   }
@@ -2567,6 +2587,7 @@ async function runOnce(argv: string[], options: App): Promise<number> {
   positionals = []
   warnings = []
   reached = null
+  sent = () => null
   sentLength = 0
   self = null
   try {
