@@ -559,8 +559,13 @@ describe('its URL', () => {
       const inferring = testBoard({ url: undefined })
       const refused = await call(inferring, 'https://board.example.com')
       expect([refused.status, (await refused.json()).error.code]).toEqual([501, 'no_url'])
-      // This machine is where a board is made, and a board that says its URL has nothing to infer.
-      expect((await call(inferring, 'http://127.0.0.1:4100')).status).toBe(401)
+      // A proxy can forward a loopback Host chosen by a remote caller too.
+      const loopbackToken = await personToken('u_julian', 'http://127.0.0.1:4100/api/board')
+      const spoofed = await inferring.fetch(new Request('http://127.0.0.1:4100/api/board/me', {
+        headers: { authorization: `Bearer ${loopbackToken}` },
+      }))
+      expect([spoofed.status, (await spoofed.json()).error?.code]).toEqual([501, 'no_url'])
+      expect((await call(inferring, 'http://127.0.0.1:4100')).status).toBe(501)
       expect((await call(testBoard({ url: 'https://board.example.com/api/board' }), 'https://board.example.com')).status).toBe(200)
       // Vercel says which host a request came to.
       vi.stubEnv('VERCEL', '1')
