@@ -520,6 +520,7 @@ describe('vercel()', () => {
         threads: threads.map((thread) => thread.message.text).sort(),
         messages: messages.map((message) => message.text).sort(),
         read: api.requests.filter((r) => /\/threads\/[^/]+\/messages$/.test(r)).length,
+        pages: api.requests.filter((r) => /\/messages$/.test(r) && !/\/threads\//.test(r)).length,
       }
     }
     const inline = await found(true)
@@ -528,10 +529,55 @@ describe('vercel()', () => {
     expect(inline.threads).toEqual(today.threads)
     expect(inline.messages).toEqual(today.messages)
     expect(inline.threads).toHaveLength(14)
-    // A thread's messages are read only for the two that have more than their list brings, once per read.
-    expect(inline.read).toBe(4)
-    // Vercel's API before `include=messages` lists none, so each thread is read, as before.
-    expect(today.read).toBe(60)
+    // The two longer than their list shows come from the channel's page of messages, one a read, and no thread is read by itself.
+    expect(inline).toMatchObject({ read: 0, pages: 2 })
+    // Vercel's API before `include=messages` lists none: every thread comes from that page, still one a read.
+    expect(today).toMatchObject({ read: 0, pages: 2 })
+  })
+
+  it("filters a channel's longer threads by their mentions from its latest messages and its feed, not a thread at a time", async () => {
+    const api = fakeMessageboard({ inlineThreadMessages: true, inlineActors: true })
+    await handleOn(api, 'user:u_ada').post('lobby', { text: 'hi all' })
+    const team = handleOn(api)
+    // Three threads, one mentioning her, then 200 posts: their messages are older than the channel's latest 100.
+    const old: { id: string }[] = []
+    for (const text of ['@ada an old question', 'an old note', 'another old note']) {
+      const root = await team.post('lobby', { text })
+      for (const reply of ['bump', 'bump again']) await team.reply(root.id, { text: reply })
+      old.push(root)
+    }
+    for (let i = 0; i < 200; i++) await team.post('lobby', { text: `filler ${i}` })
+    // Six threads with three replies each, every other one mentioning her in its last reply.
+    const asking = []
+    for (let i = 0; i < 6; i++) {
+      const root = await team.post('lobby', { text: `question ${i}` })
+      for (const text of ['one', 'two', i % 2 === 0 ? '@ada what do you think?' : 'three']) await team.reply(root.id, { text })
+      if (i % 2 === 0) asking.push(root.text)
+    }
+    const expected = ['@[vercel:user:u_ada] an old question', ...asking]
+    /** A read as a process of its own, as each `vb read --mentions` is, through `fetch`: what it found, and the requests it made. */
+    const read = async (fetch = as(api, 'user:u_val')) => {
+      const fresh = board({ backend: vercel({ team: 'team_test', api: API, fetch, files: api.files }) })
+      api.requests.length = 0
+      const { threads } = await fresh.threads({ channel: 'lobby', mentions: 'vercel:user:u_ada' })
+      return {
+        found: threads.map((thread) => thread.message.text),
+        threads: api.requests.filter((r) => /\/threads\/[^/]+\/messages$/.test(r)).length,
+        pages: api.requests.filter((r) => r === 'GET /boards/brd_test/messages').length,
+        feeds: api.requests.filter((r) => r === 'GET /boards/brd_test/changes').length,
+      }
+    }
+    // The six from the channel's latest page of messages, and the old three from the first page of its feed, where there were nine reads.
+    expect(await read()).toEqual({ found: expected, threads: 0, pages: 1, feeds: 2 })
+    // A feed that no longer keeps how the old threads began: they're read by themselves, and it isn't read again for them.
+    const forgetting = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input))
+      const response = await as(api, 'user:u_val')(input, init)
+      if (!url.pathname.endsWith('/changes') || url.searchParams.has('from') || url.searchParams.has('cursor')) return response
+      const feed = (await response.json()) as { events: { messageId?: string }[] }
+      return Response.json({ ...feed, events: feed.events.slice(feed.events.findIndex((change) => change.messageId === old[2]!.id) + 1) })
+    }) as typeof fetch
+    expect(await read(forgetting)).toEqual({ found: expected, threads: 3, pages: 1, feeds: 2 })
   })
 
   it('misses nothing posted while a filtered read lists threads: its cursor is from before the list', async () => {
