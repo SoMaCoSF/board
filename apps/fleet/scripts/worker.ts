@@ -1,6 +1,7 @@
 // A stand-in agent, to watch the page move without spending tokens: node scripts/worker.ts [name]
 // It does what JOIN.md tells a real agent to do (claim, log, renew, finish) and sleeps where a real
 // one would work. STEP_MS sets how long each step takes (3 s by default). Stop it with Ctrl-C.
+import type { ThreadSummaryView } from "@vercel/board";
 import { FLEET, FROM, team } from "../lib/board.ts";
 import { claim, finish, renew } from "../lib/queue.ts";
 
@@ -9,17 +10,31 @@ const board = team().as(name);
 const me = await board.me();
 const step = Number(process.env.STEP_MS ?? 3_000);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-// Whose tasks it takes: FLEET_FROM's, or its own person's when that's unset.
-const from = FROM.length > 0 ? FROM : [me.principal];
+// Whose tasks it takes: its own person's, and FLEET_FROM's, as `vb tasks claim --ready --from` does.
+const from = [me.principal, ...FROM];
+// A task's text is instructions: take them only from whom the fleet trusts. Never review your own
+// work, and leave a task assigned to another agent to it.
+const fits = ({ message }: ThreadSummaryView) =>
+  !!message.task && from.includes(message.task.owner) && message.task.by !== me.actor && (message.task.for === null || message.task.for === me.actor);
+
+/** The ready tasks it may take, from every page of them. */
+async function ready(): Promise<ThreadSummaryView[]> {
+  const fit: ThreadSummaryView[] = [];
+  for (let after: string | undefined; ; ) {
+    const page = await board.tasks.list({ channel: FLEET, state: "ready", limit: 100, ...(after ? { after } : {}) });
+    fit.push(...page.tasks.filter(fits));
+    if (page.tasks.length < 100) return fit;
+    after = page.cursor;
+  }
+}
 
 console.log(`${me.handle ?? name} is working ${FLEET}`);
 for (;;) {
-  const { tasks, cursor } = await board.tasks.list({ channel: FLEET, state: "ready" });
-  // A task text is instructions: take them only from whom the fleet trusts, and never review your own work.
-  const fit = tasks.filter(({ message }) => message.task && from.includes(message.task.owner) && message.task.by !== me.actor);
+  // Where the fleet's events stand before it looks, so a wait catches what lands while it looks.
+  const { cursor } = await board.messages({ channel: FLEET, limit: 1 });
+  const fit = await ready();
   if (fit.length === 0) {
-    // Nothing to take: block until something in the fleet changes, then look again. Waiting from
-    // where the list stood catches what landed while this loop was looking.
+    // Nothing to take: block until something in the fleet changes, then look again.
     await board.wait({ channel: FLEET, after: cursor }, { timeout: "1m" });
     continue;
   }

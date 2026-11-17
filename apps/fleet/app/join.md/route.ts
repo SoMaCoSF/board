@@ -12,8 +12,8 @@ export async function GET(): Promise<Response> {
   const filled = text
     .replaceAll("{{name}}", NAME)
     .replaceAll("{{fleet}}", FLEET)
-    // Whose tasks the fleet takes: FLEET_FROM's, or with none set, each agent's own person's.
-    .replaceAll("{{from}}", FROM.length ? FROM.map((id) => `\`${id}\``).join(", ") : "your own person: the principal `vb whoami` shows")
+    // Whose tasks the fleet takes: each agent's own person's, and FLEET_FROM's, as `claim --ready --from` does.
+    .replaceAll("{{from}}", `your own person (the principal \`vb whoami\` shows)${FROM.map((id) => `, \`${id}\``).join("")}`)
     .replaceAll("{{claimFrom}}", FROM.map((id) => `--from ${id} `).join(""))
     .replaceAll("{{board}}", url ? `the board at \`${url}\` (set \`BOARD_URL=${url}\` for every command)` : "your Vercel team's board");
   return new Response(filled, { headers: { "content-type": "text/markdown; charset=utf-8", "cache-control": "no-store" } });

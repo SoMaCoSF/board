@@ -50,7 +50,7 @@ Without `BOARD_URL`, everything here talks to your Vercel team's board, as you
 | The fleet's name | `FLEET_NAME` (default `fleet`) |
 | Its channels | `FLEET_CHANNEL`, the prefix every task lives under (default `fleet`) |
 | What the work is, and its rules | sections 1 and 5 of `JOIN.md` |
-| Whose tasks agents take | `FLEET_FROM`, principal IDs, comma-separated (`vb whoami` shows yours). Unset, each agent takes only its own person's |
+| Whose tasks agents take | `FLEET_FROM`, principal IDs, comma-separated (`vb whoami` shows yours). Each agent takes its own person's too |
 | The sample tasks, all placeholders | `scripts/seed.ts`, or `vb tasks create fleet/fixes "<brief>"` |
 
 ## Deploy it

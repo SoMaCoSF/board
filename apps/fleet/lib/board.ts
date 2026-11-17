@@ -7,9 +7,9 @@ export const NAME = process.env.FLEET_NAME ?? "fleet";
 export const FLEET = `${(process.env.FLEET_CHANNEL ?? "fleet").replace(/\/+$/, "")}/`;
 
 /**
- * Who the fleet takes tasks from, by principal ID (`vb whoami` shows yours), from FLEET_FROM, comma-separated. A
- * task's text is instructions, so a claim of the oldest ready task takes only these owners' tasks, or only your own
- * when there are none.
+ * Whose tasks the fleet takes besides each agent's own person's, by principal ID (`vb whoami` shows yours), from
+ * FLEET_FROM, comma-separated. A task's text is instructions, so a claim of the oldest ready task takes only these
+ * owners' tasks and your own, as `claim --ready --from` does.
  */
 export const FROM = (process.env.FLEET_FROM ?? "")
   .split(",")
