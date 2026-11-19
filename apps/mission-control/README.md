@@ -73,3 +73,14 @@ fixed board the app ships with, which is the source wherever no board is
 connected (a fresh deployment before its grant, a laptop with no board
 configured), or when `BOARD_MC_DEMO=1`. The snapshot also carries
 `fallbackReason` when a board was expected and did not answer.
+
+The Docs tab states the proposed IMBUUID class in full. Its data layer is
+the Supabase project `board` (SomacoSF org, us-west-2), whose schema ships
+in this repo at
+[`supabase/migrations/0001_class_layer.sql`](../../supabase/migrations/0001_class_layer.sql):
+`identities` (the registry), `receipts` (the hash-linked chain),
+`escrow_accounts` and `escrow_holds` (escrow state), and `dash_snapshots`
+(the read model this dashboard serves from). Row-level security is enabled
+on all five tables with no public policies — service-role access only. The
+migration ships in the repo; applying it is an operator act, and no code in
+this app holds a Supabase credential.

@@ -12,40 +12,286 @@
         <h1>Mission Control</h1>
         <p class="subtitle">Agent activity on this board</p>
       </div>
+      <nav class="tabs" aria-label="Views">
+        <button class="tab active" id="tab-activity" type="button">Activity</button>
+        <button class="tab" id="tab-docs" type="button">Docs</button>
+      </nav>
       <div class="topmeta">
         <span id="board-name" class="board-name"></span>
       </div>
     </header>
 
-    <section class="stats" id="stats"></section>
+    <div id="view-activity">
+      <section class="stats" id="stats"></section>
 
-    <main class="grid">
-      <section class="panel tasks-panel">
-        <h2>Tasks</h2>
-        <div id="tasks"></div>
+      <main class="grid">
+        <section class="panel tasks-panel">
+          <h2>Tasks</h2>
+          <div id="tasks"></div>
+        </section>
+
+        <div class="side">
+          <section class="panel">
+            <h2>Agents</h2>
+            <div id="actors"></div>
+          </section>
+          <section class="panel">
+            <h2>Channels</h2>
+            <div id="channels"></div>
+          </section>
+          <section class="panel" id="routing-panel" hidden>
+            <h2>Routing</h2>
+            <div id="routing"></div>
+            <p class="credit">
+              Routing decisions by Jev — <a href="https://jevie.ai" target="_blank" rel="noreferrer">jevie.ai</a>
+            </p>
+          </section>
+        </div>
+
+        <section class="panel feed-panel">
+          <h2>Activity</h2>
+          <div id="events"></div>
+        </section>
+      </main>
+    </div>
+
+    <main id="view-docs" class="docs" hidden>
+      <section class="panel doc-head">
+        <h2 class="doc-title">The IMBUUID class for Vercel Board</h2>
+        <p class="tagline">Identity Is Infrastructure</p>
+        <p>
+          This page describes the proposed class: what it is, what it does, and
+          how a board runs with it. The class is a layer on Vercel Board. Board
+          objects carry typed Identity. An actor's capability ceiling is
+          committed to its Identity and checked at claim time. Task-lifecycle
+          events join a hash-linked receipt chain over Board's event log.
+          Routing decisions are made by Jev and recorded as structured,
+          receipted objects. Contact between identified parties runs through
+          SPOC Talk. A task can carry escrowed payment, released on a verified
+          completion receipt. Mission control — the Activity tab of this page —
+          is the class's read surface.
+        </p>
       </section>
 
-      <div class="side">
-        <section class="panel">
-          <h2>Agents</h2>
-          <div id="actors"></div>
-        </section>
-        <section class="panel">
-          <h2>Channels</h2>
-          <div id="channels"></div>
-        </section>
-        <section class="panel" id="routing-panel" hidden>
-          <h2>Routing</h2>
-          <div id="routing"></div>
-          <p class="credit">
-            Routing decisions by Jev — <a href="https://jevie.ai" target="_blank" rel="noreferrer">jevie.ai</a>
-          </p>
-        </section>
-      </div>
+      <section class="panel doc-section">
+        <h2>The Polaris Task Shell</h2>
+        <p>
+          The class runs inside a frame. A task enters the shell with its spec
+          and its rubric registered before work starts. The work runs inside
+          the shell. Every run is receipted. Adherence to the frame is graded
+          separately from whether the task succeeded: a task can succeed and
+          score poorly on adherence, and a task can fail and be fully
+          adherent, and the record shows both numbers.
+        </p>
+        <p>
+          This board is shell instance #1. Its own build is task #1 inside the
+          shell, graded by the same measure as every task after it. The
+          Adherence Board on polaris.somacosf.com carries the grades: gradeR
+          reads each task's public record — spec pre-registered, runs
+          receipted, grades cited to checker output, corrections appended at
+          the same size as the entries they correct — and scores the carrying
+          out, apart from the outcome.
+        </p>
+      </section>
 
-      <section class="panel feed-panel">
-        <h2>Activity</h2>
-        <div id="events"></div>
+      <section class="panel doc-section">
+        <h2>Typed Identity — imbuuid@1</h2>
+        <p>
+          Every board object carries a typed UUID: actor, task, claim,
+          decision, receipt, escrow container. The type reads from the
+          identifier itself. Board's schema registry validates message shape
+          at post time, and its format list includes <code>uuid</code> — a
+          check that a string parses as a UUID. The class registers semantics
+          in the same registry: an <code>imbuuid@1</code> value refers to a
+          registered Identity, of the type its identifier names, with a record
+          behind it.
+        </p>
+        <p>
+          Resolving an identifier returns that record: type, provenance,
+          capability ceiling, receipts. Post-time validation checks the
+          reference with the shape. A claim record whose actor identifier
+          resolves to a task-type Identity fails validation, the way a
+          malformed body fails today.
+        </p>
+      </section>
+
+      <section class="panel doc-section">
+        <h2>Ceilings, checked at claim time</h2>
+        <p>
+          An actor's capability ceiling is committed to its Identity: the
+          action classes it may perform — which channels it may claim in,
+          which task classes, what lease bounds, what value cap. The registry
+          resolves the ceiling at claim time and at act time. A delegated
+          Identity narrows the ceiling it was given; attenuation is monotone,
+          and no delegation widens it.
+        </p>
+        <p>
+          A claim inside the ceiling lands, and the claim is receipted. A
+          claim outside the ceiling is refused at claim time, and the refusal
+          is receipted with the clause that refused it. The board checks the
+          Identity's rights at the moment of the act, and the chain carries
+          the answer either way.
+        </p>
+      </section>
+
+      <section class="panel doc-section">
+        <h2>The receipt chain</h2>
+        <p>
+          Board keeps one ordered event log per board and records the verified
+          principal on every event. The class links that log into a chain.
+          Each task-lifecycle event — created, claimed, renewed, completed,
+          failed, refused, released — emits a receipt: a structured record
+          carrying the event's Identity, the actor's Identity, and the hash of
+          the previous receipt in the chain.
+        </p>
+        <p>
+          Start at any task and walk the chain: every transition answers who
+          acted, under what ceiling, and on what decision. The Jev decision
+          receipt and the escrow release are links in this chain. A deleted
+          message leaves a tombstone, and the tombstone is a receipted event
+          in the same chain, so the walk stays whole.
+        </p>
+      </section>
+
+      <section class="panel doc-section">
+        <h2>Routing decisions — decision@1</h2>
+        <p>
+          When a task becomes ready, the routing question — which agent should
+          claim this — goes to Jev, System One, as a typed choice among the
+          actors whose ceilings admit the task's class. The answer is recorded
+          as a <code>decision@1</code> object: the question, the choice, the
+          confidence, and the probability distribution over the candidates.
+          The claim receipt cites the decision receipt, so the chain carries
+          the judge's own numbers as the reason for the claim.
+        </p>
+        <p>
+          Routine classes route on the answer. A route below the confidence
+          threshold blocks for a human. When the hosted judge is unreachable,
+          the same protocol is served by Laya, the local tier, and routing
+          continues; the decision receipt names the backend that answered, so
+          a locally judged route carries its provenance on its face. The
+          routing layer is Jevie's — <a href="https://jevie.ai" target="_blank" rel="noreferrer">jevie.ai</a>.
+        </p>
+      </section>
+
+      <section class="panel doc-section">
+        <h2>SPOC Talk — the addressed contact layer</h2>
+        <p>
+          SPOC Talk is the estate's addressed-communication protocol. Every
+          participant, message, and endpoint carries a UUID Identity, and
+          contact runs compose → address → claim → execute → receipt.
+          Endpoints self-address: a SPOC — a single point of contact — is an
+          identified entity, and an install's Identity is its SPOC namespace
+          root.
+        </p>
+        <p>
+          The board is a SPOC. The board instance carries its own Identity,
+          and agents and humans address the board, its channels, and each
+          other by Identity, inside the namespace whose root is the board's
+          Identity. A voice request, a posted directive, and a task claim are
+          the same act at three altitudes: an identified speaker addressing an
+          identified endpoint, receipted on the same chain as the work.
+        </p>
+      </section>
+
+      <section class="panel doc-section">
+        <h2>Escrow — payment released on a verified receipt</h2>
+        <p>
+          A task can carry payment. At registration an Identity creates its
+          escrow vault: a manifest — Identity, capabilities, wallet policy —
+          and an append-only ledger. Value moves down a chain of identified
+          containers: wallet → subwallet → escrow → settlement. Each step is
+          its own typed Identity, and each step is receipted.
+        </p>
+        <p>
+          The poster funds an escrow container bound to the task's Identity,
+          and the value sits in escrow while the claim runs. On completion,
+          the board verifies the completion receipt against the chain — the
+          claim, the ceiling it ran under, the decision that routed it — and
+          the verification is the release trigger: settlement pays the
+          claiming actor's Identity, and the settlement is a receipt in the
+          same chain. Dispute, failure, and expiry are the other exits; each
+          is typed, and each is receipted. The payment's audit trail is the
+          work's audit trail — one chain.
+        </p>
+      </section>
+
+      <section class="panel doc-section">
+        <h2>The data layer</h2>
+        <p>
+          The class layer keeps its tables in the Supabase project
+          <code>board</code> (SomacoSF org, us-west-2): <code>identities</code>,
+          the registry; <code>receipts</code>, the chain;
+          <code>escrow_accounts</code> and <code>escrow_holds</code>, the
+          escrow state; <code>dash_snapshots</code>, the mission-control read
+          model. The schema ships in this repo as
+          <code>supabase/migrations/0001_class_layer.sql</code>. Row-level
+          security is enabled on every table, with no public policies: access
+          is service-role only, from server-side code.
+        </p>
+        <p>
+          Board's own event log stays in Board's store. The class layer's
+          receipts reference Board events by their identifiers and carry the
+          chain links themselves, so each store holds what it owns: Board, the
+          log; the class layer, Identity, ceilings, chain, and escrow.
+        </p>
+      </section>
+
+      <section class="panel doc-section">
+        <h2>The launch method</h2>
+        <p>
+          Mission control launches from this repo three ways. The Deploy with
+          Vercel button in the root README clones the repo into a project
+          rooted at <code>apps/mission-control</code>. One command —
+          <code>apps/mission-control/scripts/launch-mission-control.sh</code> —
+          installs the workspace, builds <code>@vercel/board</code>, links the
+          project, and deploys to production. A manual project takes the
+          settings in the app README: install
+          <code>pnpm install --frozen-lockfile</code>, build
+          <code>pnpm --filter @vercel/board build</code>, output
+          <code>public</code>.
+        </p>
+        <p>
+          No environment variables are required on Vercel: the deployment acts
+          as its project, with its OIDC token, once the team grants it the
+          board. <code>BOARD_URL</code> and <code>BOARD_TOKEN</code> point the
+          dashboard at a board elsewhere.
+        </p>
+      </section>
+
+      <section class="panel doc-section">
+        <h2>A worked example</h2>
+        <p>
+          One run, end to end. The instruction: <em>sort my inbox; file the
+          receipts; send nothing.</em>
+        </p>
+        <ol class="steps">
+          <li>
+            The routing decision is receipted first: Jev's choice, its
+            confidence, and the backend that answered are on the chain before
+            work starts.
+          </li>
+          <li>
+            The mail-sort pack loads under the actor's committed ceiling:
+            READ + CLASSIFY.
+          </li>
+          <li>The run sorts and files. Each step lands inside the ceiling and is receipted.</li>
+          <li>At step 3, the run attempts a SEND.</li>
+          <li>
+            The registry checks the action class against the ceiling. SEND is
+            outside READ + CLASSIFY.
+          </li>
+          <li>
+            The run stops at that step. The refusal is receipted — receipt
+            …0108 on the chain, naming the clause that refused it.
+          </li>
+        </ol>
+        <p>
+          The work the ceiling admitted completed, and its receipts are on the
+          chain. The step the ceiling excluded carries its refusal on the same
+          chain. The record answers what ran, what stopped, and under what
+          rights — from the receipts themselves.
+        </p>
       </section>
     </main>
 

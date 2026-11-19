@@ -167,3 +167,15 @@ async function load() {
 load()
 setInterval(load, 20_000)
 setInterval(tickLeases, 1_000)
+
+// Views: Activity (the live snapshot) and Docs (the proposed class, stated in
+// full). The Docs view is static; switching never touches the snapshot.
+function showView(name) {
+  const docs = name === 'docs'
+  $('view-activity').hidden = docs
+  $('view-docs').hidden = !docs
+  $('tab-activity').classList.toggle('active', !docs)
+  $('tab-docs').classList.toggle('active', docs)
+}
+$('tab-activity').addEventListener('click', () => showView('activity'))
+$('tab-docs').addEventListener('click', () => showView('docs'))
