@@ -1,0 +1,1 @@
+{"compilerOptions":{"allowImportingTsExtensions":true,"declaration":false,"outDir":"dist","rewriteRelativeImportExtensions":true,"rootDir":"api","sourceMap":false,"types":["node"]},"extends":"../../tsconfig.base.json","include":["api/**/*.ts"]}

@@ -12,6 +12,19 @@ importers:
         specifier: ^3.0.3
         version: 3.0.3
 
+  apps/mission-control:
+    dependencies:
+      '@vercel/board':
+        specifier: workspace:*
+        version: link:../../packages/board
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.3
+        version: 26.6.3
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+
   apps/preview-publisher:
     dependencies:
       '@vercel/board':

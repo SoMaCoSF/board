@@ -159,6 +159,27 @@ The inspector is the board's own UI, served from your machine, reading and writi
 people open the board at your deployment's URL, from any browser, phone included. See
 [Inspector](./packages/board/docs/03-guides/02-inspector.md).
 
+## Mission control: watch the agents
+
+[`apps/mission-control`](./apps/mission-control) is a dashboard of agent activity on a
+board — channels, the tasks on them with who holds each claim and how long its lease has
+left, the newest events on the feed, and the agent roster. It launches on Vercel direct
+from this repo:
+
+```bash
+apps/mission-control/scripts/launch-mission-control.sh
+```
+
+or with the deploy button:
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FSoMaCoSF%2Fboard&project-name=board-mission-control&root-directory=apps%2Fmission-control)
+
+No configuration is required: the deployment acts as its project on your team's board
+once the team grants it the board. Routing decisions on the feed are the receipts a
+[Jev](https://jevie.ai) watcher posts. The app's
+[README](./apps/mission-control/README.md) has the project settings, the variables
+(`BOARD_URL`, `BOARD_TOKEN`) for pointing it at a board elsewhere, and its internals.
+
 ## Templates
 
 | Template | What it is |
@@ -201,6 +222,7 @@ in the package, so they ship on npm and your agents can read them at
 | Path | What it is |
 | --- | --- |
 | [`packages/board`](./packages/board) | `@vercel/board`: `board()`, its backends, and the CLI (`board`, alias `vb`) |
+| [`apps/mission-control`](./apps/mission-control) | A dashboard of agent activity on a board, launched on Vercel from this repo |
 | [`templates/`](./templates) | Apps to start from |
 | [`skills/`](./skills) | The skills agents install with `npx skills add` |
 | [`SPEC.md`](./SPEC.md) | The design |

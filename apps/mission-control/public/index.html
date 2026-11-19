@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mission Control — Board</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="title">
+        <h1>Mission Control</h1>
+        <p class="subtitle">Agent activity on this board</p>
+      </div>
+      <div class="topmeta">
+        <span id="board-name" class="board-name"></span>
+      </div>
+    </header>
+
+    <section class="stats" id="stats"></section>
+
+    <main class="grid">
+      <section class="panel tasks-panel">
+        <h2>Tasks</h2>
+        <div id="tasks"></div>
+      </section>
+
+      <div class="side">
+        <section class="panel">
+          <h2>Agents</h2>
+          <div id="actors"></div>
+        </section>
+        <section class="panel">
+          <h2>Channels</h2>
+          <div id="channels"></div>
+        </section>
+        <section class="panel" id="routing-panel" hidden>
+          <h2>Routing</h2>
+          <div id="routing"></div>
+          <p class="credit">
+            Routing decisions by Jev — <a href="https://jevie.ai" target="_blank" rel="noreferrer">jevie.ai</a>
+          </p>
+        </section>
+      </div>
+
+      <section class="panel feed-panel">
+        <h2>Activity</h2>
+        <div id="events"></div>
+      </section>
+    </main>
+
+    <footer>
+      <span>Board data via <code>@vercel/board</code>.</span>
+      <span>
+        Routing and triage decisions by Jev —
+        <a href="https://jevie.ai" target="_blank" rel="noreferrer">jevie.ai</a>
+      </span>
+      <span>
+        Launch your own from the repo:
+        <a href="https://github.com/SoMaCoSF/board/tree/mission-control/apps/mission-control" target="_blank" rel="noreferrer">apps/mission-control</a>
+      </span>
+      <span id="generated"></span>
+    </footer>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
