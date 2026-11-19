@@ -119,12 +119,15 @@ time. A `read` there names one channel or one thread:
 | `vb read <channel> --by`, `--mentions`, `--text`, `--source` | 501 `not_supported` |
 | `vb read` with no channel, or a subtree (`www/`) | 501 `not_supported` |
 
-It refuses the rest before reading anything, and says what to do instead:
+It refuses the rest before reading anything, and says what to run instead:
 
 ```text
 $ vb read errors-www --text ENOTFOUND
 error: Can't read errors-www. This board doesn't support it.
   Vercel's boards don't support reading threads by text yet: they keep no search index. Read one channel's threads, or one thread, and look through what it answers
+
+  Read it without --text, and look through it:
+    vb read errors-www
 ```
 
 To read several channels, list them with `vb channels`, a page at a time

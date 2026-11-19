@@ -59,9 +59,17 @@ function rerun(...extra: string[]): string[] {
   return [...cli(), ...(at === -1 ? [...typed, ...extra] : [...typed.slice(0, at), ...extra, ...typed.slice(at)])]
 }
 
-/** A command line without `options` and their values. */
+/** A command line without `options` and their values: a bare `--mentions` has none, so what follows it stays. */
 const without = (argv: string[], ...options: string[]): string[] =>
-  argv.filter((arg, at) => !options.some((option) => arg === option || argv[at - 1] === option || arg.startsWith(`${option}=`)))
+  argv.filter(
+    (arg, at) =>
+      !options.some(
+        (option) =>
+          arg === option ||
+          arg.startsWith(`${option}=`) ||
+          (argv[at - 1] === option && !((OPTIONS as Record<string, { optionalValue?: true }>)[option.slice(2)]?.optionalValue && arg.startsWith('-'))),
+      ),
+  )
 
 /**
  * This run's command line without `options`, with `extra` in their place: both before any `--`,
@@ -1015,7 +1023,7 @@ function failureOf(error: unknown): Failure {
           ? [{ instruction: 'Pass a token it accepts in BOARD_TOKEN, or unset it' }]
           : [{ instruction: 'Log in again', argv: ['vercel', 'login'] }],
     )
-  if (status === 403) return theirs('permission', 'permission_denied', `You can't ${doing()}.`)
+  if (status === 403) return theirs('permission', 'permission_denied', `You can't ${doing()}.`, refusedRecoveries())
   if (status === 404) {
     const thing = missing()
     // What it names says it, and the board's "message not found: 812" says no more.
@@ -1051,9 +1059,55 @@ function failureOf(error: unknown): Failure {
     return theirs('rate_limit', 'rate_limited', `Can't ${doing()}. Too many requests to the board.`, [
       { instruction: wait !== undefined ? `Wait ${waitFor(wait)}, then run it again` : 'Wait a minute, then run it again' },
     ])
-  if (status === 501) return theirs('platform', specific('not_supported'), `Can't ${doing()}. This board doesn't support it.`)
+  if (status === 501) return theirs('platform', specific('not_supported'), `Can't ${doing()}. This board doesn't support it.`, unsupportedRecoveries())
   if (code === 'unreachable') return theirs('network', 'network_error', "Couldn't reach the board.")
   return theirs('platform', 'api_error', `Failed to ${doing()}.`)
+}
+
+/** The options that say which board this run is on, and as whom, as typed: what a way out to another command keeps. */
+const onThisBoard = (): string[] => [
+  ...(flags.url !== undefined ? ['--url', flags.url] : []),
+  ...((flags.scope ?? flags.team) !== undefined ? ['--scope', (flags.scope ?? flags.team)!] : []),
+  ...(flags.name !== undefined ? ['--name', flags.name] : []),
+  ...(flags.as ? ['--as', flags.as] : []),
+]
+
+/** Where to go from a 403: what you may do on this board, and who can let you do more. */
+const refusedRecoveries = (): Recovery[] => [
+  { instruction: 'See what you can do on this board', argv: [...cli(), 'whoami', ...onThisBoard()] },
+  { instruction: "Or ask someone who manages the board's grants to give you access" },
+]
+
+/** The filters a board answers 501 to on a read when it keeps no index of them, as Vercel's does. */
+const UNINDEXED = ['--by', '--mentions', '--source', '--text']
+
+/**
+ * What to run instead of what a board answered 501 to, by what this run asked for: the same without
+ * the part a board may not do (a read's search filters or its every channel, a post's `--sync`, a
+ * schedule's files). Nothing when it asked for none of them.
+ */
+function unsupportedRecoveries(): Recovery[] {
+  const { command, args } = current
+  const given = (option: string) => (flags as Record<string, unknown>)[option.slice(2)] !== undefined
+  if (command === 'read') {
+    const filtered = UNINDEXED.filter(given)
+    const target = args[0]
+    const whole = target === undefined || (target.endsWith('/') && !isMessageRef(target))
+    if (!filtered.length && !whole) return []
+    const argv = rerunWithout(filtered)
+    if (whole) {
+      // One channel in place of every one (or every one under a prefix), whose names the channel list has.
+      const at = argv.indexOf(positionals[0]!, cli().length)
+      argv.splice(at + 1, target === undefined ? 0 : 1, '<CHANNEL>')
+    }
+    return [
+      ...(whole ? [{ instruction: 'See the channels', argv: [...cli(), 'channels', ...(target !== undefined ? [target] : []), ...onThisBoard()] }] : []),
+      { instruction: whole ? `Read one channel at a time${filtered.length ? `, without ${filtered.join(' or ')}` : ''}` : `Read it without ${filtered.join(' or ')}, and look through it`, argv },
+    ]
+  }
+  if ((command === 'post' || command === 'reply') && given('--sync')) return [{ instruction: 'Post it without --sync', argv: rerunWithout(['--sync']) }]
+  if (command === 'schedule' && given('--attach')) return [{ instruction: 'Schedule the text without its files', argv: rerunWithout(['--attach']) }]
+  return []
 }
 
 /** `42s`, `2m`: a wait the way people say it. */
