@@ -243,11 +243,16 @@ let sent: () => string | null = () => null
 /** How long the message text this run sends is, for a backend's refusal of it to say what to do instead. */
 let sentLength = 0
 
-/** The help `words` ask for: a command's page when they name one (`read`, `sources read`), or else every command. */
+/**
+ * The help `words` ask for: a command's page when they name one (`read`, `sources read`), or with
+ * none, every command. A word that names no command is unknown, as it is without `--help`.
+ */
 function help(words: readonly string[] = []): string {
   const own = Object.values(app.commands).map((command) => command.spec)
   const path = commandPath(words, [...commands, ...own])
-  return path ? commandHelp(app.name, path) : rootHelp({ name: app.name, commands: own }, VERSION)
+  if (path) return commandHelp(app.name, path)
+  if (words[0] !== undefined && words[0] !== 'help') throw unknownCommand(words[0])
+  return rootHelp({ name: app.name, commands: own }, VERSION)
 }
 
 /** How messages name this CLI: `vb` for the standalone one, as they always have, or the app's own name. */
@@ -1952,19 +1957,26 @@ async function run(command: string | undefined, args: string[]): Promise<number>
     default: {
       const own = app.commands[command]
       if (own) return own.run(args, context())
-      const names = [...commands.flatMap((known) => [known.name, ...(known.aliases ?? [])]), ...Object.keys(app.commands)]
-      const guess = closest(command, names)
-      // What people and agents type for a command that goes by another name here.
-      const said = Object.hasOwn(OTHER_NAMES, command.toLowerCase()) ? OTHER_NAMES[command.toLowerCase()] : undefined
-      throw usage(`Unknown command ${command} for ${named()}.${said ? '' : guess ? ` Did you mean ${guess}?` : ''}`, {
-        reason: 'unknown_command',
-        next: [
-          ...(said ? [{ instruction: said.instruction, argv: [...cli(), ...said.argv] }] : []),
-          { instruction: 'See all commands', argv: [...cli(), '--help'] },
-        ],
-      })
+      throw unknownCommand(command)
     }
   }
+}
+
+/** Every name a command runs by here: board's, their aliases, and the app's own. */
+const commandNames = () => [...commands.flatMap((known) => [known.name, ...(known.aliases ?? [])]), ...Object.keys(app.commands)]
+
+/** `command` names nothing here: the closest that does, or what it goes by here. */
+function unknownCommand(command: string): Failed {
+  const guess = closest(command, commandNames())
+  // What people and agents type for a command that goes by another name here.
+  const said = Object.hasOwn(OTHER_NAMES, command.toLowerCase()) ? OTHER_NAMES[command.toLowerCase()] : undefined
+  return usage(`Unknown command ${command} for ${named()}.${said ? '' : guess ? ` Did you mean ${guess}?` : ''}`, {
+    reason: 'unknown_command',
+    next: [
+      ...(said ? [{ instruction: said.instruction, argv: [...cli(), ...said.argv] }] : []),
+      { instruction: 'See all commands', argv: [...cli(), '--help'] },
+    ],
+  })
 }
 
 /** What `tasks` does to a task, by the word after it: any other word is a channel to list. */
