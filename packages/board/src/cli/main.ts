@@ -2035,13 +2035,29 @@ const PLAN_KEYS = ['key', 'text', 'labels', 'needs', 'for', 'noSync', 'attachmen
 /** The help page that says what a plan holds. */
 const planHelp = (): Recovery => ({ instruction: 'See what a plan takes', argv: [...cli(), 'tasks', 'create', '--help'] })
 
-/** One of a plan task's `needs`: a task that's there, by its ID as text or as a number, or `{ "key": … }` for one of the plan's own. */
+/** One of a plan task's `needs`: a task that's there, by its ID as text, as a number, or as `{ "id": … }`, or `{ "key": … }` for one of the plan's own. */
 function isNeed(need: unknown): boolean {
   if (typeof need === 'string') return need.replace(/^#/, '').length > 0
   if (typeof need === 'number') return Number.isSafeInteger(need) && need >= 0
   if (typeof need !== 'object' || need === null) return false
   const keys = Object.keys(need)
-  return keys.length === 1 && keys[0] === 'key' && typeof (need as { key: unknown }).key === 'string'
+  if (keys.length !== 1) return false
+  const value = (need as Record<string, unknown>)[keys[0]!]
+  if (keys[0] === 'id') return typeof value === 'string' && isNeed(value)
+  return keys[0] === 'key' && typeof value === 'string'
+}
+
+/** A need as the board takes it: an ID as it is, or `{ "key": … }`, which a bare string is when it's a key of the plan's own. */
+function boardNeed(need: unknown, keys: ReadonlySet<string>): unknown {
+  if (typeof need === 'string' && keys.has(need)) return { key: need }
+  return idNeed(need)
+}
+
+function idNeed(need: unknown): unknown {
+  if (typeof need === 'string') return need.replace(/^#/, '')
+  if (typeof need === 'number') return String(need)
+  if (typeof need === 'object' && need !== null && 'id' in need) return idNeed(need.id)
+  return need
 }
 
 /**
@@ -2068,7 +2084,7 @@ function checkPlan(plan: Record<string, unknown>[], where: string): void {
     const odd = task.needs.find((need) => !isNeed(need))
     if (odd !== undefined) {
       const said = JSON.stringify(odd)
-      throw usage(`Task ${at + 1} of ${where} needs ${said.length > 60 ? `${said.slice(0, 59)}…` : said}, which isn't a task's ID or {"key": "…"}.`, { next: [planHelp()] })
+      throw usage(`Task ${at + 1} of ${where} needs ${said.length > 60 ? `${said.slice(0, 59)}…` : said}. A need is a key of the plan's own, like "fix" or {"key": "fix"}, or a task's ID as vb prints it or as {"id": "…"}.`, { next: [planHelp()] })
     }
   }
 }
@@ -2097,9 +2113,10 @@ async function planFrom(path: string, board: Board): Promise<TaskInBatch[]> {
   // A profile's name is the caller's own profile, as --for takes one: an actor's ID goes as it is.
   const named = plan.some((task) => typeof task.for === 'string' && !task.for.includes(':'))
   const principal = named ? (await board.me()).principal : ''
+  const keys = new Set(plan.flatMap((task) => (typeof task.key === 'string' ? [task.key] : [])))
   return plan.map((task) => ({
     ...task,
-    ...(Array.isArray(task.needs) ? { needs: task.needs.map((need) => (typeof need === 'string' ? need.replace(/^#/, '') : typeof need === 'number' ? String(need) : need)) } : {}),
+    ...(Array.isArray(task.needs) ? { needs: task.needs.map((need) => boardNeed(need, keys)) } : {}),
     ...(typeof task.for === 'string' && !task.for.includes(':') ? { for: profileActor(principal, task.for) } : {}),
   })) as TaskInBatch[]
 }
