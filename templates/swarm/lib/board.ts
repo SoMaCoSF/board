@@ -19,18 +19,16 @@ export const runChannel = (slug: string) => `${SWARM}${slug}`;
 export const agentName = (n: number) => `agent-${n}`;
 
 /**
- * How many profiles the agents write under. Vercel's board gives one caller 20 profiles and never
- * forgets one, and every agent writes as this project: so agents share 16 of them, and the rest stay
- * free (`launcher` is one).
+ * The one profile every agent writes under: `agent via <project>`, however many agents a run has.
+ * Not the project itself, which the app trusts (a run, its state, its control thread): an agent, or
+ * code its sandbox runs, could otherwise edit them. Not a profile per agent either: Vercel's board
+ * gives one caller 20 profiles and never forgets one. Each agent's own name (`agentName`) is in what
+ * it writes and on its task's `worker` label, and two agents never take one task: a claim is a token.
  */
-export const PROFILES = 16;
+export const AGENT_PROFILE = "agent";
 
-/**
- * The profile agent `n` writes under on the board: `agent-1` to `agent-16`, shared round the pool,
- * so agent 17 writes as `agent-1`. Two agents under one profile hold claims of their own (a claim is
- * a token, not a name), so they never take one task.
- */
-export const profileOf = (n: number) => `agent-${((n - 1) % PROFILES) + 1}`;
+/** The profile agent `n` writes under: the same for every agent. */
+export const profileOf = (_n: number) => AGENT_PROFILE;
 
 let handle: Board | undefined;
 
@@ -41,5 +39,5 @@ let handle: Board | undefined;
  */
 export const team = (): Board => (handle ??= board(BOARD ? { name: BOARD } : {}));
 
-/** The profile what people write from the page goes under: \`launcher via <project>\`, so it reads as a person's, not the deployment's own log. */
+/** The profile what people write from the page goes under: `launcher via <project>`, so it reads as a person's, not the deployment's own log. */
 export const LAUNCHER = "launcher";
