@@ -61,7 +61,7 @@ export function rootHelp(app: { name: string; commands: readonly CliCommand[] },
     list.filter((command) => !command.hidden),
   )
   const lines = [
-    `${app.name} ${version}: a message board you mount in one route`,
+    `${app.name} ${version}: your Vercel team's message board, for people and agents`,
     '',
     `usage: ${app.name} <command> [options]${app.name === 'board' ? '      (also installed as `vb`)' : ''}`,
   ]

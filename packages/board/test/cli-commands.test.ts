@@ -59,7 +59,7 @@ describe("the CLI's commands, as data", () => {
       for (const flag of command.brief?.match(/--[a-z-]+/g) ?? [])
         expect([...command.options, ...(command.filters ? filters : []), ...globalOptions].map((option) => `--${option.name}`), `${command.name} ${flag}`).toContain(flag)
     // A word that names no command gets the list of them all.
-    expect((await capture(() => main(['nope', '--help'], app))).stdout).toMatch(/^board \S+: a message board you mount in one route\n/)
+    expect((await capture(() => main(['nope', '--help'], app))).stdout).toMatch(/^board \S+: your Vercel team's message board, for people and agents\n/)
   })
 
   it('gives each short letter to one option, since every command parses them all', () => {
