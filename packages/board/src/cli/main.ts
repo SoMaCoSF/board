@@ -2035,10 +2035,21 @@ const PLAN_KEYS = ['key', 'text', 'labels', 'needs', 'for', 'noSync', 'attachmen
 /** The help page that says what a plan holds. */
 const planHelp = (): Recovery => ({ instruction: 'See what a plan takes', argv: [...cli(), 'tasks', 'create', '--help'] })
 
-/** One of a plan task's `needs`: a task that's there, by its ID as text or as a number, or `{ "key": … }` for one of the plan's own. */
+/** A task that's there, by its ID as text or as a number. */
+const isId = (need: unknown): need is string | number =>
+  typeof need === 'string' ? need.replace(/^#/, '').length > 0 : typeof need === 'number' && Number.isSafeInteger(need) && need >= 0
+
+/** A need written `{ "id": … }`, as a task's ID is in what the board answers: the ID it holds. */
+const idIn = (need: unknown): string | number | undefined => {
+  if (typeof need !== 'object' || need === null || Array.isArray(need)) return undefined
+  const keys = Object.keys(need)
+  const id = (need as { id?: unknown }).id
+  return keys.length === 1 && keys[0] === 'id' && isId(id) ? id : undefined
+}
+
+/** One of a plan task's `needs`: a task that's there, by its ID, as it is or as `{ "id": … }`, or `{ "key": … }` for one of the plan's own. */
 function isNeed(need: unknown): boolean {
-  if (typeof need === 'string') return need.replace(/^#/, '').length > 0
-  if (typeof need === 'number') return Number.isSafeInteger(need) && need >= 0
+  if (isId(need) || idIn(need) !== undefined) return true
   if (typeof need !== 'object' || need === null) return false
   const keys = Object.keys(need)
   return keys.length === 1 && keys[0] === 'key' && typeof (need as { key: unknown }).key === 'string'
@@ -2050,6 +2061,7 @@ function isNeed(need: unknown): boolean {
  * without a word: here the file can say which task, and the key that was meant.
  */
 function checkPlan(plan: Record<string, unknown>[], where: string): void {
+  const keys = new Set(plan.flatMap((task) => (typeof task.key === 'string' ? [task.key] : [])))
   for (const [at, task] of plan.entries()) {
     const unknown = Object.keys(task).find((name) => !PLAN_KEYS.includes(name))
     if (unknown !== undefined) {
@@ -2070,7 +2082,19 @@ function checkPlan(plan: Record<string, unknown>[], where: string): void {
       const said = JSON.stringify(odd)
       throw usage(`Task ${at + 1} of ${where} needs ${said.length > 60 ? `${said.slice(0, 59)}…` : said}, which isn't a task's ID or {"key": "…"}.`, { next: [planHelp()] })
     }
+    // An `id` that's one of the plan's own keys could be either: it says which to write.
+    const id = task.needs.map(idIn).find((id) => typeof id === 'string' && keys.has(id.replace(/^#/, '')))
+    if (id !== undefined) {
+      const key = String(id).replace(/^#/, '')
+      throw usage(`Task ${at + 1} of ${where} needs {"id": ${JSON.stringify(id)}}, and ${JSON.stringify(key)} is a key of the plan's own. For that task, write {"key": ${JSON.stringify(key)}}.`, { next: [planHelp()] })
+    }
   }
+}
+
+/** A need as a batch sends it: an ID as text, without its `#`, or a key of the plan's own as it is. */
+function sentNeed(need: unknown): unknown {
+  const id = idIn(need) ?? need
+  return typeof id === 'string' ? id.replace(/^#/, '') : typeof id === 'number' ? String(id) : id
 }
 
 /** The tasks a plan's `--file` holds: a JSON array, from the file or from stdin for `-`. An ID may be written `#812`, and `for` as a profile's name. */
@@ -2099,7 +2123,7 @@ async function planFrom(path: string, board: Board): Promise<TaskInBatch[]> {
   const principal = named ? (await board.me()).principal : ''
   return plan.map((task) => ({
     ...task,
-    ...(Array.isArray(task.needs) ? { needs: task.needs.map((need) => (typeof need === 'string' ? need.replace(/^#/, '') : typeof need === 'number' ? String(need) : need)) } : {}),
+    ...(Array.isArray(task.needs) ? { needs: task.needs.map(sentNeed) } : {}),
     ...(typeof task.for === 'string' && !task.for.includes(':') ? { for: profileActor(principal, task.for) } : {}),
   })) as TaskInBatch[]
 }

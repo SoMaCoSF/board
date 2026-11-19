@@ -1141,7 +1141,7 @@ $ vb tasks work/ --state all --limit 2
   text, labels?, needs?, for?, noSync?, attachments? }`, from a file, or from
   stdin for `-`. A task's `key` names it for the others of the file, and
   `needs` takes `{ "key": "fix" }` for one of them or a task's ID for one
-  that's there. `for` takes a profile's name. A key a task doesn't take is
+  that's there, as it is (`"812"`) or as `{ "id": "812" }`. `for` takes a profile's name. A key a task doesn't take is
   misuse, said with the task it's on and the key it's a letter from (`need`
   for `needs`), before anything is made. Text, `--label`, `--needs`, `--for`,
   `--claim`, and `--no-sync` are one task's, so they don't go with it.

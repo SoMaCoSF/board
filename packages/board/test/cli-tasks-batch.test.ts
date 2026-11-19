@@ -160,6 +160,28 @@ describe('vb tasks create --file', () => {
     expect(rows(await ok(['tasks', 'create', 'typos', '--file', whole])).map((row) => row.replace(/\s+/g, ' ').split(' ').slice(1, 2))).toEqual([['ready'], ['waiting']])
   }, 60_000)
 
+  it('takes a need written {"id": …}, as the board writes a task\'s ID, and asks which is meant when it is a key of the plan', async () => {
+    const before = await create('ids', 'cut the release branch')
+    const path = await planFile([
+      { key: 'fix', text: 'fix CVE-123 in acme/web' },
+      { text: 'ship it', needs: [{ key: 'fix' }, { id: before }, { id: `#${before}` }, { id: Number(before) }] },
+    ])
+    const [fix, ship] = rows(await ok(['tasks', 'create', 'ids', '--file', path])).map(idOf)
+    expect((await task(ship!)).task).toMatchObject({ state: 'waiting', needs: [before, fix] })
+    // An ID that is also one of the plan's keys could be either task: it says what to write for the plan's.
+    const both = await planFile([{ key: 'fix', text: 'fix it' }, { text: 'review it', needs: [{ id: 'fix' }] }])
+    const refused = await vb(['tasks', 'create', 'ids', '--file', both])
+    expect([refused.code, refused.stdout, refused.stderr.split('\n')[0]!.replace(both, 'plan.json')]).toEqual([
+      2,
+      '',
+      'error: Task 2 of plan.json needs {"id": "fix"}, and "fix" is a key of the plan\'s own. For that task, write {"key": "fix"}.',
+    ])
+    // An `id` with anything else, or one that's no ID, is no need.
+    for (const odd of [{ id: '' }, { id: true }, { id: 'fix', key: 'fix' }])
+      expect((await vb(['tasks', 'create', 'ids', '--file', await planFile([{ text: 'review it', needs: [odd] }])])).stderr).toMatch(/needs .*, which isn't a task's ID/)
+    expect(rows(await ok(['tasks', 'ids']))).toHaveLength(3)
+  }, 60_000)
+
   it("says what to do with a task's text the board won't take, and makes none of its batch", async () => {
     const path = await planFile([{ text: 'fix CVE-123 in acme/web' }, { text: 'x'.repeat(10_001) }], 'long.json')
     const refused = await vb(['tasks', 'create', 'long', '--file', path])
