@@ -1797,6 +1797,11 @@ describe("vercel()'s tasks", () => {
         const asked = inlineTaskMessages ? ['messages'] : n === 0 ? ['messages', null] : [null]
         expect([inlineTaskMessages, n, lists, byId]).toEqual([inlineTaskMessages, n, asked, inlineTaskMessages ? 0 : 2])
       }
+      // Lists that start together, before any knows what the API takes, each answer the same.
+      const fresh = handleOn(fakeMessageboard({ inlineTaskMessages }), 'user:u_jb')
+      await fresh.tasks.create('work', { text: 'one' })
+      const together = await Promise.all([1, 2, 3].map(() => fresh.tasks.list({ channel: 'work' })))
+      expect(together.map(({ tasks }) => tasks.length)).toEqual([1, 1, 1])
     }
   })
 

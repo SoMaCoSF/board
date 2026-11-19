@@ -3540,9 +3540,11 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       let from: { after?: string; cursor?: string } = after !== undefined ? { after } : {}
       // The last active are anywhere in the list, which goes by when each was made: it's read to its end.
       while (query.latest || found.length < limit) {
-        const page = await api<{ tasks: ApiTaskOf[]; cursor: string | null }>(who, 'GET', path, { version: 2, query: { ...asked, ...from, ...(tasksWithMessages ? { include: 'messages' } : {}) }, signal }).catch((error: unknown) => {
+        // What this request asks, which a list running beside it may change before it's answered.
+        const including = tasksWithMessages
+        const page = await api<{ tasks: ApiTaskOf[]; cursor: string | null }>(who, 'GET', path, { version: 2, query: { ...asked, ...from, ...(including ? { include: 'messages' } : {}) }, signal }).catch((error: unknown) => {
           // An API from before `include=messages` refuses it: the page is asked again without, and each latest reply read by ID.
-          if (tasksWithMessages && unknownParameter(error, 'include')) {
+          if (including && unknownParameter(error, 'include')) {
             tasksWithMessages = false
             return null
           }
