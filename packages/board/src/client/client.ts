@@ -613,14 +613,17 @@ export function createBoardClient(options: ClientOptions) {
       type Listed = { actors: (Actor & Pick<ActorView, 'verified'>)[] }
       if (query.id === undefined) return (await call<Listed>('GET', '/actors')).actors
       const ids = [...new Set(query.id)]
-      const pages = await Promise.all(
-        Array.from({ length: Math.ceil(ids.length / ACTORS_BY_ID_MAX) }, (_, page) => {
-          const params = new URLSearchParams(ids.slice(page * ACTORS_BY_ID_MAX, (page + 1) * ACTORS_BY_ID_MAX).map((id) => ['id', id]))
-          return call<Listed>('GET', `/actors?${params}`)
-        }),
-      )
+      const batches = Array.from({ length: Math.ceil(ids.length / ACTORS_BY_ID_MAX) }, (_, n) => ids.slice(n * ACTORS_BY_ID_MAX, (n + 1) * ACTORS_BY_ID_MAX))
+      const named = (batch: string[]) => call<Listed>('GET', `/actors?${new URLSearchParams(batch.map((id) => ['id', id]))}`).then((page) => page.actors)
+      // The first answer says whether the board narrows by ID: one that named someone it wasn't asked for answers
+      // everyone, so it's the whole answer, and the rest aren't asked for.
+      const first = batches.length > 0 ? await named(batches[0]!) : []
+      const asked = new Set(batches[0])
+      const narrows = first.every((actor) => asked.has(actor.id))
+      const found = narrows ? [...first, ...(await Promise.all(batches.slice(1).map(named))).flat()] : first
       const wanted = new Set(ids)
-      return pages.flatMap((page) => page.actors).filter((actor) => wanted.has(actor.id))
+      const seen = new Set<string>()
+      return found.filter((actor) => wanted.has(actor.id) && !seen.has(actor.id) && Boolean(seen.add(actor.id)))
     },
 
     /**

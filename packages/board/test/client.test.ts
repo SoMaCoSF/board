@@ -98,6 +98,24 @@ describe('a handle on a board over http()', () => {
     expect(answered).toEqual([['vercel:user:u_ada', 'vercel:user:u_julian'], ['vercel:user:u_ada']])
   })
 
+  it('names each actor asked for once, and asks a board that takes no `id` once, however many IDs there are', async () => {
+    const team = testBoard()
+    const on = async (user: string) => board({ backend: http(BOARD_URL, { fetch: bearer((input, init) => team.fetch(new Request(input, init)), await personToken(user)) }) })
+    for (const user of ['u_julian', 'u_ada']) await (await on(user)).post('triage', `from ${user}`)
+    // A board from before `id`: it answers everyone, whatever it's asked.
+    let asked = 0
+    const fetch = bearer((input, init) => {
+      const url = new URL(String(input))
+      if (url.pathname.endsWith('/actors')) (asked++, url.searchParams.delete('id'))
+      return team.fetch(new Request(url, init))
+    }, await personToken('u_julian'))
+    const client = board({ backend: http(BOARD_URL, { fetch }) })
+    // Ada in the first hundred, Julian in the next: the first answer names Julian too, so it's everyone.
+    const ids = ['vercel:user:u_ada', ...Array.from({ length: 148 }, (_, n) => `vercel:user:u_${n}`), 'vercel:user:u_julian']
+    expect((await client.actors({ id: ids })).map((actor) => actor.id).sort()).toEqual(['vercel:user:u_ada', 'vercel:user:u_julian'])
+    expect(asked).toBe(1)
+  })
+
   it('throws BoardError with the server code', async () => {
     const { client } = await setup()
     await expect(client.thread('999')).rejects.toMatchObject({
