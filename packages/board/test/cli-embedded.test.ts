@@ -311,6 +311,41 @@ describe('the embedded CLI', () => {
     }
   })
 
+  it("says to run it again in seconds when Vercel's API rate-limits it, the same wait with --json", async () => {
+    const home = await isolated()
+    vi.stubEnv('VERCEL_AUTH_TOKEN', 'user:u_jb')
+    const api = fakeMessageboard({ slug: 'acme' })
+    // The API's 429: its whole minute, whatever its limit has left.
+    const fetching = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) =>
+      /\/threads$/.test(new URL(String(input)).pathname)
+        ? Promise.resolve(Response.json({ error: { code: 'rate_limited', message: 'Too many requests' } }, { status: 429, headers: { 'retry-after': '60', 'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 60), 'x-ratelimit-limit': '600' } }))
+        : api.fetch(input, init),
+    )
+    const cwd = process.cwd()
+    process.chdir(home)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] })
+    try {
+      const app = createApp({ appName: 'vercel board' })
+      const read = async (...more: string[]) => {
+        const done = capture(() => app.run(['read', 'general', '--scope', 'acme', ...more]))
+        await vi.advanceTimersByTimeAsync(40_000)
+        return done
+      }
+      const shown = await read()
+      expect(shown.code).not.toBe(0)
+      expect(shown.stderr).toContain('Wait 15s, then run it again')
+      expect(shown.stderr).toContain('a try a few seconds later usually gets through')
+      expect(shown.stderr).not.toMatch(/Wait (6\d|1m)/)
+      const json = await read('--json')
+      expect(JSON.parse(json.stderr || json.stdout)).toMatchObject({ status: 'error', reason: 'rate_limited', data: { error: { retryAfter: 15 } } })
+    } finally {
+      vi.useRealTimers()
+      fetching.mockRestore()
+      process.chdir(cwd)
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
   it("takes a team board's message ID as it prints one, bare, wherever a channel or a message goes", async () => {
     const home = await isolated()
     vi.stubEnv('VERCEL_AUTH_TOKEN', 'user:u_jb')

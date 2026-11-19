@@ -3425,6 +3425,50 @@ describe('a request the API puts off', () => {
     expect(posts(sent)).toHaveLength(5)
   })
 
+  it('spreads its tries at random between each wait and twice it, so callers put off together come back apart', async () => {
+    for (const [random, waits] of [
+      [0, [1000, 2000, 4000, 8000]],
+      [0.999, [1999, 3998, 7996, 15992]],
+    ] as const) {
+      timers()
+      vi.spyOn(Math, 'random').mockReturnValue(random)
+      onTestFinished(() => void vi.restoreAllMocks())
+      const { julian, sent } = throttled((url, init) => (init?.method === 'POST' && url.pathname.endsWith('/threads') ? tooMany() : null))
+      const posting = julian.post('dev', { text: 'hi' }).catch((error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(40_000)
+      await posting
+      const at = sent.filter(({ method, path }) => method === 'POST' && path.endsWith('/threads')).map((post) => post.at)
+      expect(at.slice(1).map((time, n) => time - at[n]!)).toEqual(waits)
+      vi.useRealTimers()
+    }
+  })
+
+  it('says to try again in seconds when the API asks for its whole minute, which its limit refills all through', async () => {
+    timers()
+    /** The API's `x-ratelimit-reset`, `seconds` after each 429 it answers. */
+    const resetIn = (seconds: number) => String(Math.floor(Date.now() / 1000) + seconds)
+    const limited = (headers: Record<string, string> | (() => Record<string, string>)) =>
+      throttled((url, init) =>
+        init?.method === 'POST' && url.pathname.endsWith('/threads')
+          ? Response.json({ error: { code: 'rate_limited', message: 'Too many requests' } }, { status: 429, headers: typeof headers === 'function' ? headers() : headers })
+          : null,
+      )
+    const refused = async (headers: Record<string, string> | (() => Record<string, string>)) => {
+      const posting = limited(headers).julian.post('dev', { text: 'hi' }).catch((error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(40_000)
+      return posting
+    }
+    for (const minute of [{ 'retry-after': '60' }, () => ({ 'retry-after': '60', 'x-ratelimit-reset': resetIn(60), 'x-ratelimit-limit': '600' })])
+      expect(await refused(minute)).toMatchObject({
+        status: 429,
+        retryAfter: 15,
+        message: expect.stringMatching(/for all its agents and profiles together, and refills as the minute goes: a try a few seconds later usually gets through\.$/),
+      })
+    // A wait under the whole minute is the API's own, and is what it says.
+    expect(await refused({ 'retry-after': '7' })).toMatchObject({ retryAfter: 7 })
+    expect(await refused(() => ({ 'retry-after': '60', 'x-ratelimit-reset': resetIn(40) }))).toMatchObject({ retryAfter: 40 })
+  })
+
   it("answers a 503 at once for a write the API couldn't tell it had seen", async () => {
     const { julian, sent } = throttled((url, init) => (init?.method === 'POST' && url.pathname.endsWith('/complete') ? busy() : null))
     await expect(julian.upload({ data: new TextEncoder().encode('log'), name: 'a.log' })).rejects.toMatchObject({ status: 503 })
