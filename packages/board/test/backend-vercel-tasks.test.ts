@@ -1771,6 +1771,14 @@ describe("vercel()'s tasks", () => {
     // Without it, the first made.
     expect((await julian.tasks.list({ channel: 'queue', state: 'all', limit: 3 })).tasks.map((task) => task.message.id)).toEqual(made.slice(0, 3))
     await expect(julian.tasks.list({ channel: 'queue', latest: true, after: made[0]! })).rejects.toMatchObject({ status: 400, code: 'invalid_request' })
+
+    // On an API that sends each task's reply with the list, a latest list still doesn't ask: it would be every page's.
+    const inlined = handleOn(fakeMessageboard({ inlineTaskMessages: true }))
+    for (let n = 0; n < 30; n++) await inlined.reply((await inlined.tasks.create('queue', { text: `task ${n}` })).task.id, 'progress')
+    inlined.sent.length = 0
+    expect((await inlined.tasks.list({ channel: 'queue', state: 'all', latest: true, limit: 2 })).tasks.map((task) => task.last?.text)).toEqual(['progress', 'progress'])
+    expect(inlined.sent.filter((request) => request.path === '/tasks').map((request) => request.query.include ?? null)).toEqual([null, null])
+    expect(inlined.sent.filter((request) => request.path.startsWith('/messages/'))).toHaveLength(2)
   })
 
   it("reads each task's latest reply with the list on an API that sends it, and apart, by ID, on one that doesn't", async () => {
