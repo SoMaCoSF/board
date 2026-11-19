@@ -2156,14 +2156,22 @@ function printClaim(task: MessageView, claim: { epoch: number; until: string }, 
  */
 async function heldBy(board: Board, claims: Claims, id: string) {
   const stored = await claims.get(id)
-  if (!stored)
+  if (stored) return board.tasks.held(id, stored)
+  const none = `You hold no claim on task ${ref(id)} as ${writesAs() ?? 'yourself'}.`
+  const claim: Recovery = { instruction: 'Claim it', argv: [...cli(), 'tasks', 'claim', id, ...asTyped()] }
+  // A claim of one that's held or finished would be refused too: what it is says the step that comes first, or that there's none.
+  const task = await board.thread(id).then(({ message }) => message.task, () => undefined)
+  const see: Recovery = { instruction: 'See where it stands', argv: [...cli(), 'read', id] }
+  if (task?.state === 'blocked')
     throw new Failed({
       class: 'conflict',
       reason: 'claim_not_held',
-      message: `You hold no claim on task ${ref(id)} as ${writesAs() ?? 'yourself'}.`,
-      next: [{ instruction: 'Claim it', argv: [...cli(), 'tasks', 'claim', id, ...asTyped()] }],
+      message: `${none} It's held for a person: claim it once the hold lifts.`,
+      next: [{ instruction: 'As its owner, lift the hold, then claim it', argv: [...cli(), 'tasks', 'unblock', id] }, see],
     })
-  return board.tasks.held(id, stored)
+  if (task?.state === 'completed' || task?.state === 'failed' || task?.state === 'canceled')
+    throw new Failed({ class: 'conflict', reason: 'claim_not_held', message: `${none} It's ${task.state} already.`, next: [see] })
+  throw new Failed({ class: 'conflict', reason: 'claim_not_held', message: none, next: [claim] })
 }
 
 /** A write a claim makes. One the board answers `claim_lost` is over: the CLI forgets it, and the failure says how to claim again. */
