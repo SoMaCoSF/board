@@ -1422,7 +1422,7 @@ async function run(command: string | undefined, args: string[]): Promise<number>
         const working = task ? [...(task.claim ? [task.claim.actor] : []), ...(task.owner !== thread.message.by.principal ? [task.owner] : [])] : []
         // And a text mentions people by ID, who show by name.
         const unnamed = [...new Set([...reactionNames([thread.message, ...replies]), ...working, ...mentionedIn([thread.message, ...replies])])].filter((id) => !authors.has(id))
-        const listed = unnamed.length ? (await board.actors().catch(() => [])).filter((a) => unnamed.includes(a.id)) : []
+        const listed = unnamed.length ? await board.actors({ id: unnamed }).catch(() => []) : []
         const known = new Map(listed.map((a) => [a.id, actorName(a)]))
         out(formatThreads([thread.message, ...replies], known, new Map(listed.map((a) => [a.id, a.handle]))))
         if (!narrowed) for (const schedule of thread.schedules ?? []) out(formatSchedule(schedule, { pad: '  ' }))
@@ -1473,7 +1473,7 @@ async function run(command: string | undefined, args: string[]): Promise<number>
         const roots = page.threads.map(({ message }) => message)
         const wrote = new Set(page.threads.flatMap(({ message, last }) => (last ? [message.by.actor, last.by.actor] : [message.by.actor])))
         const unnamed = mentionedIn(roots).filter((id) => !wrote.has(id))
-        const handles = new Map(unnamed.length ? (await client().actors().catch(() => [])).filter((a) => unnamed.includes(a.id)).map((a) => [a.id, a.handle]) : [])
+        const handles = new Map(unnamed.length ? (await board.actors({ id: unnamed }).catch(() => [])).map((a) => [a.id, a.handle]) : [])
         out(formatThreadSummaries(page.threads, { channel: !target || target.endsWith('/'), handles }))
       }
       // A page that isn't all of them says where the rest are. Without --after, they're older: --before the

@@ -469,6 +469,39 @@ describe('the embedded CLI', () => {
     }
   })
 
+  it("shows someone a text mentions by ID by their handle, asking Vercel's API for them by ID, never for every actor", async () => {
+    const home = await isolated()
+    const api = fakeMessageboard({ slug: 'acme' })
+    const on = (principal: string) => board({ backend: vercel({ team: 'team_test', api: 'http://localhost', fetch: as(api, principal) }) })
+    // Val is on the board, but wrote nothing in general.
+    await on('user:u_val').post('dev', { text: 'elsewhere' })
+    const root = await on('user:u_ada').post('general', { text: 'can @[vercel:user:u_val] look?' })
+    const lists: string[][] = []
+    const fetching = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = new URL(String(input))
+      if (url.pathname.endsWith('/actors')) lists.push(url.searchParams.getAll('id'))
+      return api.fetch(input, init)
+    })
+    const cwd = process.cwd()
+    process.chdir(home)
+    try {
+      vi.stubEnv('VERCEL_AUTH_TOKEN', 'user:u_jb')
+      const app = createApp({ appName: 'vercel board' })
+      for (const target of ['general', root.id]) {
+        lists.length = 0
+        const read = await capture(() => app.run(['read', target, '--scope', 'acme']))
+        expect(read).toMatchObject({ code: 0, stdout: expect.stringContaining('can @u_val look?') })
+        // One request names Val, and none lists everyone.
+        expect(lists.filter((ids) => ids.includes('vercel:user:u_val'))).toHaveLength(1)
+        expect(lists.filter((ids) => ids.length === 0)).toEqual([])
+      }
+    } finally {
+      fetching.mockRestore()
+      process.chdir(cwd)
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
   it('shows a deployment by its project, with its environment outside production, or by its ID where the API names it by that', async () => {
     for (const [projectIdHandles, production, preview] of [
       [false, 'www', 'www (preview)'],

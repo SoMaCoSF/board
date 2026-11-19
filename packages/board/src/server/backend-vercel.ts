@@ -3112,9 +3112,16 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       const { created } = await ensureChannel(whoOf(caller), path)
       return { channel: { path }, created }
     },
-    async actors(caller, _input, signal) {
+    async actors(caller, { id: only }, signal) {
       const who = whoOf(caller)
-      const views = await all<ApiActorView>(who, await onBoard(who, '/actors'), 'actors', {}, signal)
+      // A few by ID, asked for with everyone else named in this turn, or kept from a read that named them: never the
+      // whole list, a request a page of it, for them. An API that doesn't answer by ID gives its list, kept to them.
+      const wanted = only ? [...new Set(only)] : null
+      const named = wanted && namesById ? await Promise.all(wanted.map((id) => byId(who, id, true))) : null
+      const views =
+        named && !named.includes(null)
+          ? named.filter((view) => view !== undefined && view !== null)
+          : (await all<ApiActorView>(who, await onBoard(who, '/actors'), 'actors', {}, signal)).filter((view) => !wanted || wanted.includes(view.id))
       const names = projectNamesOf(views.map((view) => [view.id, view] as const))
       const listed = views.map((actor) => {
         const { profile } = actorParts(actor.id)

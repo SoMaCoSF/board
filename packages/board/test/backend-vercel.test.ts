@@ -3482,6 +3482,15 @@ describe('naming the authors on a page', () => {
     expect(lists).toEqual([])
   })
 
+  it('names the actors asked for by ID in one request, or from the whole list on an API that answers no actors by ID', async () => {
+    for (const actorsById of [true, false]) {
+      const { julian, asked, lists } = await reading({ actorsById })
+      const found = await julian.actors({ id: ['vercel:user:u_ada', 'vercel:user:u_nobody'] })
+      expect(found.map((actor) => [actor.id, actor.handle])).toEqual([['vercel:user:u_ada', 'ada']])
+      expect([asked.length, lists.length]).toEqual(actorsById ? [1, 0] : [1, 1])
+    }
+  })
+
   it('names them from the whole list on an API that answers no actors by ID, and never asks it by ID again', async () => {
     const { api, julian, asked, lists } = await reading({ actorsById: false })
     expect(handles((await julian.channel('dev').messages()).messages)).toEqual(['ada', 'julian'])

@@ -45,6 +45,7 @@ import type {
   ThreadView,
   TypingResult,
 } from '../api/routes.ts'
+import { ACTORS_BY_ID_MAX } from '../api/routes.ts'
 import type { Actor } from '../contract/folds.ts'
 import type { Mentioned } from '../contract/mentions.ts'
 import { ATTACHMENT_BYTES_MAX, DIRECT_UPLOAD_BYTES_MAX, typeOf } from '../contract/files.ts'
@@ -604,7 +605,23 @@ export function createBoardClient(options: ClientOptions) {
       const made = await call<{ channel: ChannelView; created: boolean }>('POST', '/channels', { body: { path } })
       return { ...made, grants: [own.grant, closed.grant] }
     },
-    actors: async () => (await call<{ actors: (Actor & Pick<ActorView, 'verified'>)[] }>('GET', '/actors')).actors,
+    /**
+     * The board's actors, or with `id`, only the ones it names, in a request a hundred: someone the board doesn't
+     * have, or you may not see, is left out. A board from before `id` answers everyone.
+     */
+    actors: async (query: { id?: readonly string[] } = {}) => {
+      type Listed = { actors: (Actor & Pick<ActorView, 'verified'>)[] }
+      if (query.id === undefined) return (await call<Listed>('GET', '/actors')).actors
+      const ids = [...new Set(query.id)]
+      const pages = await Promise.all(
+        Array.from({ length: Math.ceil(ids.length / ACTORS_BY_ID_MAX) }, (_, page) => {
+          const params = new URLSearchParams(ids.slice(page * ACTORS_BY_ID_MAX, (page + 1) * ACTORS_BY_ID_MAX).map((id) => ['id', id]))
+          return call<Listed>('GET', `/actors?${params}`)
+        }),
+      )
+      const wanted = new Set(ids)
+      return pages.flatMap((page) => page.actors).filter((actor) => wanted.has(actor.id))
+    },
 
     /**
      * One channel, by its whole name: a board lists messages a channel at a time, never across channels. Its

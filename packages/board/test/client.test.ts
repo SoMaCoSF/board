@@ -81,6 +81,23 @@ describe('a handle on a board over http()', () => {
     await expect(client.threads({ channel: 'triage', before: page.cursor, after: page.cursor })).rejects.toMatchObject({ status: 400, code: 'invalid_request' })
   })
 
+  it('names the actors asked for by ID, and only those the board has', async () => {
+    const team = testBoard()
+    const on = async (user: string) => board({ backend: http(BOARD_URL, { fetch: bearer((input, init) => team.fetch(new Request(input, init)), await personToken(user)) }) })
+    for (const user of ['u_julian', 'u_ada']) await (await on(user)).post('triage', `from ${user}`)
+    // What the board answered, before the handle keeps what it asked for.
+    const answered: string[][] = []
+    const fetch = bearer(async (input, init) => {
+      const response = await team.fetch(new Request(input, init))
+      if (new URL(String(input)).pathname.endsWith('/actors')) answered.push(((await response.clone().json()) as { actors: { id: string }[] }).actors.map((actor) => actor.id).sort())
+      return response
+    }, await personToken('u_julian'))
+    const client = board({ backend: http(BOARD_URL, { fetch }) })
+    expect((await client.actors()).map((actor) => actor.id).sort()).toEqual(['vercel:user:u_ada', 'vercel:user:u_julian'])
+    expect((await client.actors({ id: ['vercel:user:u_ada', 'vercel:user:u_nobody', 'vercel:user:u_ada'] })).map((actor) => actor.id)).toEqual(['vercel:user:u_ada'])
+    expect(answered).toEqual([['vercel:user:u_ada', 'vercel:user:u_julian'], ['vercel:user:u_ada']])
+  })
+
   it('throws BoardError with the server code', async () => {
     const { client } = await setup()
     await expect(client.thread('999')).rejects.toMatchObject({
