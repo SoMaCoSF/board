@@ -80,7 +80,7 @@ function summarize(event: BoardEventView, actorName: string | null, taskText: st
 /** The feed's newest events, once: `events({ last })` sends them first, then follows live. */
 async function recentEvents(client: BoardHandle): Promise<BoardEventView[]> {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 4000)
+  const timer = setTimeout(() => controller.abort(), 2500)
   const out: BoardEventView[] = []
   try {
     for await (const event of client.events({ last: EVENT_LIMIT }, { signal: controller.signal })) {
