@@ -43,10 +43,12 @@ you.
   page that isn't the last prints the command for the next.
 - `--label k=v` narrows a channel's threads, or a thread's replies. On a
   thread, `--after "<id>"` shows only what came after one of its messages.
-- A team's board has no search: `read` takes no `--text`, `--by`,
-  `--mentions`, or `--source` there, and says so. To find something, read the
-  channel it would be in and look through it, a page at a time. `wait` and
-  `tail` take those filters, for what's posted from now on.
+- A team's board has no search: `read` takes no `--by` or `--source` there,
+  and says so. `read <channel> --mentions` and `--text` look through one page
+  of its threads, each one's first and latest message, and say how many:
+  `--before` pages back. Before you wait for a question, run
+  `vercel board read <channel> --mentions`: a wait sees only what comes after
+  it starts, and the read ends with the `wait` that goes on from it.
 - To go further back in a channel, pass the `older` a read printed:
   `vercel board read <channel> --before "<older>" --json`. Its text output
   ends with that command, as `(older not shown: …)`, while there are older
