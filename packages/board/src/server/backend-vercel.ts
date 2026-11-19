@@ -73,6 +73,8 @@ type ApiTaskOf = ApiTask & {
   messageCount: number
   lastActivityAt: number
   lastMessage?: { id: string; sequence: number; createdAt: number; createdBy: ApiActor }
+  /** With `include=messages` on a task list: its newest message when it has replies, as it is now. */
+  latestMessage?: ApiMessage
 }
 type ApiThread = {
   id: string
@@ -1820,6 +1822,8 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
 
   /** Whether the API lists threads with their first and newest messages (`include=messages`): until it refuses the parameter, it's asked. */
   let threadsWithMessages = true
+  /** Whether the API lists tasks with their newest messages (`include=messages`): until it refuses the parameter, it's asked. */
+  let tasksWithMessages = true
   /** Whether the API takes how many threads a page holds (`limit`): until it refuses the parameter, it's asked. */
   let threadsByLimit = true
   /** Whether a page of threads was answered, so what the thread list takes is known: until one is, reads of it wait for the first. */
@@ -2872,6 +2876,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     messageCount: task.messageCount,
     lastActivityAt: task.lastActivityAt,
     ...(task.lastMessage ? { lastMessage: task.lastMessage } : {}),
+    ...(task.latestMessage ? { latestMessage: task.latestMessage } : {}),
     createdAt: task.message.createdAt,
     createdBy: task.message.createdBy,
     rootMessage: firstOf(task),
@@ -3535,9 +3540,15 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       let from: { after?: string; cursor?: string } = after !== undefined ? { after } : {}
       // The last active are anywhere in the list, which goes by when each was made: it's read to its end.
       while (query.latest || found.length < limit) {
-        const page = await api<{ tasks: ApiTaskOf[]; cursor: string | null }>(who, 'GET', path, { version: 2, query: { ...asked, ...from }, signal }).catch((error: unknown) => {
+        const page = await api<{ tasks: ApiTaskOf[]; cursor: string | null }>(who, 'GET', path, { version: 2, query: { ...asked, ...from, ...(tasksWithMessages ? { include: 'messages' } : {}) }, signal }).catch((error: unknown) => {
+          // An API from before `include=messages` refuses it: the page is asked again without, and each latest reply read by ID.
+          if (tasksWithMessages && unknownParameter(error, 'include')) {
+            tasksWithMessages = false
+            return null
+          }
           throw taskRefusal(error)
         })
+        if (!page) continue
         for (const task of page.tasks) if ((query.latest || found.length < limit) && matching(task)) found.push(task)
         if (!page.cursor) break
         from = { cursor: page.cursor }
@@ -3545,8 +3556,8 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       // Only what it answers is built: the list says when each was last active, so the rest cost no reads.
       // A sort keeps ties as they came, in the order they were made.
       const kept = query.latest ? [...found].sort((a, b) => a.lastActivityAt - b.lastActivityAt).slice(-limit) : found
-      // Each task comes with its first message: only its latest reply is read apart, by reference, and the page's
-      // authors are named together, as a page of threads' are.
+      // Each task comes with its first message, and its latest reply where the API sends it: on an API that doesn't,
+      // that reply is read apart, by reference. The page's authors are named together, as a page of threads' are.
       const tasks = await summaries(who, await Promise.all(kept.map(async (task) => ({ thread: listedOf(task), channel: await channelById(who, task.channelId) }))), signal)
       const last = found.at(-1)
       return { tasks, cursor: last ? idAt(last.id, 1) : none.cursor }
