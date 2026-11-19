@@ -3727,8 +3727,9 @@ that task, a `claim --ready` that found nothing ready there, or a list.
   under 5 minutes, so a lease of 5 minutes or less is what it says everywhere.
   The claim's `until` says what it gave, and `vb tasks claim` prints it: the
   example's `yours for 15m` is `local()`'s, and on Vercel's API, whose cap is 5
-  minutes, the default comes back `yours for 5m`. `renew` extends it, and `run`
-  renews for you.
+  minutes, the default comes back `yours for 5m`. A `--lease` the board cut
+  gets a `short_lease` warning that says what it gave. `renew` extends it, and
+  `run` renews for you.
 - **The CLI holds the claim for whoever it writes as.** A claim answers
   `{ epoch, token }`, and the CLI keeps both in `~/.config/board/claims/`, per
   board, task, and profile (`--as`). So `renew`, `release`, `complete`,

@@ -151,7 +151,7 @@ export const options = {
   ready: { type: 'boolean', description: 'the oldest ready task in a channel, or under a prefix (work/)' },
   from: { type: 'string', multiple: true, value: 'id', description: "with --ready: take this owner's tasks too, by their ID" },
   wait: { type: 'string', value: 'duration', description: 'with --ready: how long to wait for one, e.g. 10m' },
-  lease: { type: 'string', value: 'duration', description: 'how long to hold it: 30s to 1h (default: 15m, or what the board gives)' },
+  lease: { type: 'string', value: 'duration', description: 'how long to hold it: 30s to 1h asked, and a board may give less, as Vercel\'s gives 5m at most (default: 15m, or what the board gives)' },
   result: { type: 'string', value: 'text', description: 'what it came to, when the command exits 0' },
   kind: { type: 'string', value: 'kind', description: 'what the hold is for: needs_input, awaiting_approval' },
   pool: { type: 'boolean', description: 'back to anyone who may claim it' },

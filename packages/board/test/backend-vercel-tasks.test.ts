@@ -1811,6 +1811,18 @@ describe("vercel()'s tasks", () => {
 })
 
 describe("vb's tasks on Vercel's board", () => {
+  it('warns when the API gives a claim less than --lease asked for, and not when it gives it all', async () => {
+    const api = fakeMessageboard()
+    const julian = handleOn(api)
+    const { task } = await julian.tasks.create('work', { text: 'a long build' })
+    const hour = await vb(julian, ['tasks', 'claim', task.id, '--lease', '1h'])
+    expect(hour.code).toBe(0)
+    expect(hour.stderr).toBe(`warning: The board gave this claim 5m, not the 1h asked for: renew it before then with vb tasks renew ${task.id}, or let tasks run renew it.\n`)
+    const json = await vb(julian, ['tasks', 'renew', task.id, '--lease', '30m', '--json'])
+    expect(JSON.parse(json.stdout).warnings).toEqual([{ reason: 'short_lease', message: expect.stringContaining('gave this claim 5m, not the 30m asked for') }])
+    expect(await vb(julian, ['tasks', 'renew', task.id, '--lease', '2m'])).toMatchObject({ code: 0, stderr: '' })
+    expect(await vb(julian, ['tasks', 'renew', task.id])).toMatchObject({ code: 0, stderr: '' })
+  })
   it("says the API's own refusal under what the command was doing, where the API serves no task routes", async () => {
     const api = fakeMessageboard({ tasks: false })
     const julian = handleOn(api)

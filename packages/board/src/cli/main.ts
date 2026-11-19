@@ -22,7 +22,7 @@ import { explainPrincipalOf, explanationLine, GrantMisuse, grantCanOf, KINDS, pa
 import { formatSchema, formatSchemas } from './schemas.ts'
 import { parseSchemaId } from '../contract/data-schemas.ts'
 import { block } from '../contract/blocks.ts'
-import { actorName, claimLine, formatAccess, formatConformance, formatEvent, formatGrants, grantRow, formatSchedule, formatTasks, mentionedIn, reactionNames, formatSourceRead, formatSynced, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
+import { actorName, claimLine, formatAccess, formatConformance, formatEvent, formatGrants, grantRow, formatSchedule, formatTasks, mentionedIn, reactionNames, formatSourceRead, formatSynced, formatThreadSummaries, formatThreads, span, terminalText, who } from './format.ts'
 import { fileClaims, memoryClaims, tokenClaims, type Claims } from './claims.ts'
 import { runCommand } from './run.ts'
 import { AGENTS, allowRules, cliOf, disallow, installedHook, tilde, uninstallHook, type HookAgent } from './hooks.ts'
@@ -2104,6 +2104,15 @@ async function planFrom(path: string, board: Board): Promise<TaskInBatch[]> {
   })) as TaskInBatch[]
 }
 
+/** Says so when a board gave a claim less than `--lease` asked for: Vercel's gives 5 minutes at most. */
+function shortLease(id: string, until: string) {
+  const asked = seconds('lease')
+  if (asked === undefined) return
+  const given = Date.parse(until) - Date.now()
+  if (given + 10_000 >= asked * 1000) return
+  warn({ reason: 'short_lease', message: `The board gave this claim ${span(Math.round(given / 10_000) * 10_000)}, not the ${flags.lease} asked for: renew it before then with ${commandLine([...cli(), 'tasks', 'renew', id])}, or let tasks run renew it.` })
+}
+
 /** `--claim`, on `tasks create`: a flag there (`optionsFor`), where a grant's takes a value. */
 const claimFlag = () => (flags as { claim?: unknown }).claim === true
 
@@ -2146,6 +2155,7 @@ function printTask(task: MessageView, outcome: string, more: object = {}) {
 
 /** A claim: the task, how long it's yours, and what it is. With `--json`, the task and the claim, without its token, which the CLI keeps. */
 function printClaim(task: MessageView, claim: { epoch: number; until: string }, more: object = {}) {
+  shortLease(task.id, claim.until)
   if (flags.json) result({ task, claim: { epoch: claim.epoch, until: claim.until }, ...more })
   else out(claimLine(task, claim.until))
 }
