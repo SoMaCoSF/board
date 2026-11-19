@@ -118,6 +118,14 @@ describe("vb tasks, with the claim it keeps", () => {
     await ok(['tasks', 'claim', id], await bo())
     const held = await vb(['tasks', 'block', id, 'wait'])
     expect(held).toMatchObject({ code: 1, stderr: expect.stringMatching(new RegExp(`^error: Can't block task #${id}\\. Someone holds it\\.\\n`)) })
+    // One that waits for a task says so, as a claim of it would be refused until that completes.
+    const after = await create('holds', 'smoke test prod', ['--needs', id])
+    expect(await vb(['tasks', 'complete', after, 'passed'])).toEqual({
+      code: 1,
+      stdout: '',
+      stderr: `error: You hold no claim on task #${after} as yourself. It waits for what it needs (#${id}): claim it once those complete.\n\n  See what it waits for:\n    vb read ${after}\n`,
+    })
+    expect(failure(await vb(['tasks', 'claim', after, '--json'])).reason).toBe('task_waiting')
     // Once it's finished, there's no claim to take.
     await ok(['tasks', 'complete', id, 'deployed'], await bo())
     expect(failure(await vb(['tasks', 'complete', id, 'deployed', '--json']))).toMatchObject({ reason: 'claim_not_held', message: `You hold no claim on task #${id} as yourself. It's completed already.`, next: [{ argv: ['vb', 'read', id] }] })

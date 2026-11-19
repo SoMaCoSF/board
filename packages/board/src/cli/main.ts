@@ -2159,7 +2159,7 @@ async function heldBy(board: Board, claims: Claims, id: string) {
   if (stored) return board.tasks.held(id, stored)
   const none = `You hold no claim on task ${ref(id)} as ${writesAs() ?? 'yourself'}.`
   const claim: Recovery = { instruction: 'Claim it', argv: [...cli(), 'tasks', 'claim', id, ...asTyped()] }
-  // A claim of one that's held or finished would be refused too: what it is says the step that comes first, or that there's none.
+  // A claim of one that's held, waiting, or finished would be refused too: what it is says the step that comes first, or that there's none.
   const task = await board.thread(id).then(({ message }) => message.task, () => undefined)
   const see: Recovery = { instruction: 'See where it stands', argv: [...cli(), 'read', id] }
   if (task?.state === 'blocked')
@@ -2169,6 +2169,15 @@ async function heldBy(board: Board, claims: Claims, id: string) {
       message: `${none} It's held for a person: claim it once the hold lifts.`,
       next: [{ instruction: 'As its owner, lift the hold, then claim it', argv: [...cli(), 'tasks', 'unblock', id] }, see],
     })
+  if (task?.state === 'waiting') {
+    const needs = task.needs.map(ref)
+    throw new Failed({
+      class: 'conflict',
+      reason: 'claim_not_held',
+      message: `${none} It waits for what it needs${needs.length ? ` (${needs.join(', ')})` : ''}: claim it once those complete.`,
+      next: [{ instruction: 'See what it waits for', argv: [...cli(), 'read', id] }],
+    })
+  }
   if (task?.state === 'completed' || task?.state === 'failed' || task?.state === 'canceled')
     throw new Failed({ class: 'conflict', reason: 'claim_not_held', message: `${none} It's ${task.state} already.`, next: [see] })
   throw new Failed({ class: 'conflict', reason: 'claim_not_held', message: none, next: [claim] })
