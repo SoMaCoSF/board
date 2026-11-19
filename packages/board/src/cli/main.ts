@@ -2177,11 +2177,35 @@ async function withClaim<T>(claims: Claims, id: string, write: () => Promise<T>)
 }
 
 /**
+ * `--label` on `claim --ready` and `run --ready`: each an exact `key=value`, the one thing a claim
+ * matches. The list's `key=a|b` and bare `key` would match nothing, or the value `a|b`, and wait
+ * out its `--wait` without a word: they're refused, with the claim of one value and the list.
+ */
+function readyLabels(values: string[], target: string, verb: 'claim' | 'run'): Record<string, string> {
+  for (const value of values) {
+    const at = value.indexOf('=')
+    const options = at > 0 ? value.slice(at + 1).split('|') : []
+    if (at > 0 && options.length < 2) continue
+    const key = at > 0 ? value.slice(0, at) : value
+    const listed = { instruction: "See what's ready, and their labels", argv: [...cli(), 'tasks', target, '--state', 'ready', '--label', value] }
+    if (at <= 0)
+      throw usage(`--label on ${verb} --ready takes key=value: ${value} has no value, and a claim matches one exactly.`, { next: [listed] })
+    // The same command with the first value alone, the label written as it was.
+    const one = `${key}=${options[0]}`
+    const again = [...cli(), ...typed.map((arg, index) => (arg === value && typed[index - 1] === '--label' ? one : arg === `--label=${value}` ? `--label=${one}` : arg))]
+    throw usage(`--label on ${verb} --ready takes one value: ${value} has ${options.length}, and a claim matches one exactly.`, {
+      next: [{ instruction: `Claim one with ${one}`, argv: again }, listed],
+    })
+  }
+  return labelPairs(values)
+}
+
+/**
  * Claims a task for this run, by its ID or with `--ready` the oldest ready one in `target`, and
  * keeps the claim. With nothing ready it fails: `nothing_ready`, or `timeout` once `--wait` ran
  * out, as `wait` does. Stopped while it waits, it answers the exit code instead.
  */
-async function claimFor(board: Board, claims: Claims, target: string | undefined): Promise<ClaimedTask | number> {
+async function claimFor(board: Board, claims: Claims, target: string | undefined, verb: 'claim' | 'run'): Promise<ClaimedTask | number> {
   const lease = seconds('lease')
   if (!flags.ready) {
     for (const given of ['label', 'from', 'wait'] as const)
@@ -2202,7 +2226,7 @@ async function claimFor(board: Board, claims: Claims, target: string | undefined
     claim = await board.tasks.claim(
       {
         channel: target,
-        ...(flags.label?.length ? { label: labelPairs(flags.label) } : {}),
+        ...(flags.label?.length ? { label: readyLabels(flags.label, target, verb) } : {}),
         // Owners by their IDs: a handle names no owner.
         ...(flags.from?.length ? { from: flags.from } : {}),
         ...(wait !== undefined ? { wait } : {}),
@@ -2339,7 +2363,7 @@ async function tasks(args: string[]): Promise<number> {
     if (rest.length > 1) throw usage(`tasks claim takes one ${flags.ready ? 'channel' : 'task'}: ${rest[1]} is one too many.`)
     if (!flags.ready && rest[0] === undefined) throw usage('Missing the task to claim: its ID, or --ready and a channel.', { reason: 'missing_arguments' })
     const { board, claims } = tasksOn()
-    const claim = await claimFor(board, claims, rest[0])
+    const claim = await claimFor(board, claims, rest[0], 'claim')
     if (typeof claim === 'number') return claim
     printClaim(claim.task, claim)
     return 0
@@ -2357,7 +2381,7 @@ async function tasks(args: string[]): Promise<number> {
     // It runs a command on this machine, and holds every other call for as long as it runs.
     if (io.board) throw usage("tasks run isn't available in-process: it runs a command on this machine.", { reason: 'not_available', next: [] })
     const { board, claims } = tasksOn()
-    const claim = await claimFor(board, claims, before[0])
+    const claim = await claimFor(board, claims, before[0], 'run')
     if (typeof claim === 'number') return claim
     const id = claim.task.id
     const lease = seconds('lease')

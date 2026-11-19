@@ -1136,7 +1136,8 @@ $ vb tasks work/ --state all --limit 2
   and on the list. `assign <id> <profile>` names one of the task's owner's.
 - **`--ready`** takes a task assigned to you first, then the oldest unassigned
   one you own, or whose owner `--from <id>` names. `--wait` holds until one is
-  ready.
+  ready. Its `--label` is an exact `key=value`: the list's `key=a|b` and bare
+  `key` are misuse there, said with the claim of one value.
 - **`--file <path>`** makes a plan: a JSON array of tasks, each `{ key?,
   text, labels?, needs?, for?, noSync?, attachments? }`, from a file, or from
   stdin for `-`. A task's `key` names it for the others of the file, and
