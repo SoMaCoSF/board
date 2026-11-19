@@ -2187,12 +2187,16 @@ function readyLabels(values: string[], target: string, verb: 'claim' | 'run'): R
     const options = at > 0 ? value.slice(at + 1).split('|') : []
     if (at > 0 && options.length < 2) continue
     const key = at > 0 ? value.slice(0, at) : value
+    if (at === 0) throw usage(`--label on ${verb} --ready takes key=value, and ${value} has no key before its =.`)
     const listed = { instruction: "See what's ready, and their labels", argv: [...cli(), 'tasks', target, '--state', 'ready', '--label', value] }
-    if (at <= 0)
+    if (at === -1)
       throw usage(`--label on ${verb} --ready takes key=value: ${value} has no value, and a claim matches one exactly.`, { next: [listed] })
-    // The same command with the first value alone, the label written as it was.
+    // The same command with the first value alone, the label written as it was. What follows `--` is run's
+    // command, which it hands over as it is: the same text there is the command's own, and stays.
     const one = `${key}=${options[0]}`
-    const again = [...cli(), ...typed.map((arg, index) => (arg === value && typed[index - 1] === '--label' ? one : arg === `--label=${value}` ? `--label=${one}` : arg))]
+    const dash = typed.indexOf('--')
+    const ours = (index: number) => dash === -1 || index < dash
+    const again = [...cli(), ...typed.map((arg, index) => (!ours(index) ? arg : arg === value && typed[index - 1] === '--label' ? one : arg === `--label=${value}` ? `--label=${one}` : arg))]
     throw usage(`--label on ${verb} --ready takes one value: ${value} has ${options.length}, and a claim matches one exactly.`, {
       next: [{ instruction: `Claim one with ${one}`, argv: again }, listed],
     })

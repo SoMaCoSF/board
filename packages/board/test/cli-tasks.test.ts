@@ -220,6 +220,12 @@ describe('vb tasks', () => {
     const claim = failure(await vb(['tasks', 'run', '--ready', 'roles', '--label=role=worker|reviewer', '--json', '--', 'true'])).next![0]!
     expect(claim.argv).toEqual(['vb', 'tasks', 'run', '--ready', 'roles', '--label=role=worker', '--json', '--', 'true'])
     expect(JSON.parse((await ok(claim.argv.slice(1))))).toMatchObject({ task: { id: worker } })
+    // The command after -- is run's to hand over as it is: the same label there is its own, and stays.
+    const own = failure(await vb(['tasks', 'run', '--ready', 'roles', '--label', 'role=worker|reviewer', '--json', '--', 'echo', '--label', 'role=worker|reviewer', '--label=role=worker|reviewer']))
+    expect(own.next![0]!.argv).toEqual(['vb', 'tasks', 'run', '--ready', 'roles', '--label', 'role=worker', '--json', '--', 'echo', '--label', 'role=worker|reviewer', '--label=role=worker|reviewer'])
+    // One with no key says so, not that it has no value.
+    const keyless = await vb(['tasks', 'claim', '--ready', 'roles', '--label', '=worker'])
+    expect([keyless.code, keyless.stderr.split('\n')[0]]).toEqual([2, 'error: --label on claim --ready takes key=value, and =worker has no key before its =.'])
   }, 60_000)
 
   it('waits for a task that becomes ready, and stops quietly on Ctrl-C', async () => {

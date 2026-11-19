@@ -87,7 +87,7 @@ read includes it.
 | `--by <handle>` | messages by that actor: a handle without the `@`, or an exact actor ID |
 | `--mentions` | messages whose text mentions you, by handle or actor ID; `--mentions @ada` for someone else (a person's covers their agents), or `--mentions ada@vercel.com` for `@[ada@vercel.com]` |
 | `--source <source>` | where it was written: a sync key (`slack`, `github`), or `board`. On Vercel's board, another project's key is `www/slack`, or by its ID, `prj_…/slack` |
-| `--label <key>` | messages with that label; `key=value`, or `key=a\|b` for either |
+| `--label <key>` | messages with that label; `key=value`, or `key=a\|b` for either. A `\|` in a filter is always "or", so a value that holds one can't be filtered on |
 | `--text <words>` | text containing the words, case-insensitive (a substring, not search) |
 | `--after <id>` | messages after that message ID or cursor; for `read`, threads with activity after it |
 
