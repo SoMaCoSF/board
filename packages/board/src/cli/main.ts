@@ -1993,10 +1993,13 @@ function seconds(flag: 'wait' | 'lease'): number | undefined {
  */
 async function createPlan(target: string, text: string | undefined, path: string): Promise<number> {
   if (isMessageRef(target)) throw usage(`--file holds a plan, which starts threads in a channel, and ${ref(target)} is a thread.`)
-  const own = text !== undefined ? 'text' : (['label', 'needs', 'for', 'claim', 'lease', 'no-sync'] as const).find((name) => (flags as Record<string, unknown>)[name] !== undefined && (flags as Record<string, unknown>)[name] !== false)
-  if (own !== undefined) throw usage(`${own === 'text' ? 'Text' : `--${own}`} is one task's: with --file, each task in the file has its own.`)
+  if (text !== undefined) throw usage("Text is one task's: with --file, each task in the file has its own.")
+  // What the file holds comes first: one task's text in it means these options are that task's, on stdin.
+  const parsed = await planSource(path)
+  const own = (['label', 'needs', 'for', 'claim', 'lease', 'no-sync'] as const).find((name) => (flags as Record<string, unknown>)[name] !== undefined && (flags as Record<string, unknown>)[name] !== false)
+  if (own !== undefined) throw usage(`--${own} is one task's: with --file, each task in the file has its own.`)
   const board = client()
-  const tasks = await planFrom(path, board)
+  const tasks = await planFrom(parsed, path, board)
   // Each root is a message: the longest says what a backend's refusal of one's text means, as for a task made alone.
   sentLength = Math.max(0, ...tasks.map((task) => (typeof task.text === 'string' ? task.text.length : 0)))
   const key = flags['idempotency-key'] ?? crypto.randomUUID()
@@ -2073,8 +2076,12 @@ function checkPlan(plan: Record<string, unknown>[], where: string): void {
   }
 }
 
-/** The tasks a plan's `--file` holds: a JSON array, from the file or from stdin for `-`. An ID may be written `#812`, and `for` as a profile's name. */
-async function planFrom(path: string, board: Board): Promise<TaskInBatch[]> {
+/**
+ * What a plan's `--file` holds, as JSON: the file, or stdin for `-`. Prose is the likeliest slip,
+ * --file carried over from post, where it's the text: it says the same command with the file on
+ * stdin, `-` as the text, and the options it was given.
+ */
+async function planSource(path: string): Promise<unknown> {
   const where = path === '-' ? 'stdin' : path
   let source: string
   if (path === '-') source = await io.stdin()
@@ -2083,13 +2090,17 @@ async function planFrom(path: string, board: Board): Promise<TaskInBatch[]> {
     if (!data) throw usage(`Can't read ${path}. There's no such file.`, { reason: 'file_not_found', next: [] })
     source = new TextDecoder().decode(data)
   }
-  let parsed: unknown
   try {
-    parsed = JSON.parse(source)
+    return JSON.parse(source)
   } catch {
-    // The likeliest slip is --file carried over from post, where it's the text.
-    throw usage(`${where} isn't JSON: --file on tasks create is a plan of tasks.`, { next: [{ instruction: "For one task's text, pass it, or - to read it from stdin" }, planHelp()] })
+    const piped = `${commandLine(rerunWithout(['--file'], '-'))}${path === '-' ? '' : ` < ${commandLine([path])}`}`
+    throw usage(`${where} isn't JSON: --file on tasks create is a plan of tasks.`, { next: [{ instruction: `One task's text goes on stdin, as -: ${piped}` }, planHelp()] })
   }
+}
+
+/** The tasks a plan's `--file` holds: a JSON array. An ID may be written `#812`, and `for` as a profile's name. */
+async function planFrom(parsed: unknown, path: string, board: Board): Promise<TaskInBatch[]> {
+  const where = path === '-' ? 'stdin' : path
   const shape = 'A plan is a JSON array of tasks: [{"key": "fix", "text": "…"}, {"text": "…", "needs": [{"key": "fix"}]}].'
   if (!Array.isArray(parsed) || parsed.length === 0 || parsed.some((task) => typeof task !== 'object' || task === null || Array.isArray(task))) throw usage(`${where} holds no tasks. ${shape}`, { next: [planHelp()] })
   const plan = parsed as (Record<string, unknown> & { needs?: unknown; for?: unknown })[]
