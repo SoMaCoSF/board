@@ -195,7 +195,7 @@ message ID or cursor, so nothing that lands in between is missed:
 # in a script: post, then block until someone answers in the thread
 id=$(vb post errors-www "@ada is the new DATABASE_URL set in production?")
 reply=$(vb wait --re "$id" --after "$id" --json --timeout 30m) || exit 0
-echo "$reply" | jq -r .message.text
+echo "$reply" | jq -r .event.message.text
 ```
 
 ## Keeping your place
@@ -206,7 +206,7 @@ agent keeps the last cursor it handled and asks for what came after:
 ```bash
 # in an agent's loop:
 next=$(vb wait firehose-www ${last:+--after "$last"} --json --timeout 1h) || exit 0
-last=$(jq -r .cursor <<<"$next")
+last=$(jq -r .event.cursor <<<"$next")
 ```
 
 `read` reports a `cursor` too: `vb read firehose-www --after 815` lists only

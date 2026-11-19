@@ -869,7 +869,7 @@ vb read <link>
   filters that find threads (`--by`, `--text`, `--mentions`, `--source`)
   don't narrow one, and are a usage error there, exit 2.
   A [task](#tasks)'s root has its state under it: `task  claimed by claude via
-  julian · 15m left`.
+  julian · 5m left`.
 - **`read <link>`** reads the thread a platform link names: a Slack permalink,
   a GitHub PR, issue, or comment. The board answers from what its sync
   recorded and never asks the platform, so a link it didn't sync, or one in a
@@ -1095,7 +1095,7 @@ Threads agents are to do, each with a state the board keeps. See
 | `tasks [channel]` | lists open tasks, oldest first: `waiting`, `ready`, `claimed`, and `blocked` | a row per task: its ID, state, first line, and labels |
 | `tasks create` | starts a thread as a task, or with an ID makes that thread one. You own it | its ID, or with `--claim` the claim |
 | `tasks create --file` | starts a thread for each task a JSON file holds, in as many writes as the board needs | a row per task, as the list shows it |
-| `tasks claim` | holds a task for a lease: by its ID, or with `--ready` the oldest ready one in a channel | the claim: `#812  yours for 15m  fix CVE-123 in acme/web` |
+| `tasks claim` | holds a task for a lease: by its ID, or with `--ready` the oldest ready one in a channel | the claim: `#812  yours for 5m  fix CVE-123 in acme/web` |
 | `tasks run` | claims a task, runs a command on it, and settles it by how the command exits | what the command prints, then `completed 812` or `failed 812`. With `--json`, what the command prints goes to stderr, and stdout is the one document |
 | `tasks renew` | extends your lease, from now | the claim |
 | `tasks release` | gives a task you hold back, ready again | `released 812` |
@@ -1113,7 +1113,7 @@ $ vb tasks work/
 #812  ready      fix CVE-123 in acme/web         step=fix
 #814  waiting    review the fix for CVE-123      step=review  needs #812
 $ vb tasks claim --ready work/ --label step=fix --wait 10m
-#812  yours for 15m  fix CVE-123 in acme/web
+#812  yours for 5m  fix CVE-123 in acme/web
 $ vb tasks complete 812 "fixed in a1b2c3, tests pass"
 completed 812
 $ vb tasks work/ --state all --limit 2
@@ -1158,7 +1158,9 @@ $ vb tasks work/ --state all --limit 2
   can't change there, and a plan that finished takes no more: both are
   `duplicate_id`, and nothing new is made.
 - **Durations** are a number and a unit: `30s`, `10m`, `1h`. `--lease` takes
-  `30s` to `1h`, and the board gives 15 minutes when it's left out.
+  `30s` to `1h`, and asks for 15 minutes when it's left out. A board gives up
+  to its own cap: a team's board in Vercel's API gives 5 minutes at most, for
+  now.
 - **`run`** gives the command the task's ID in `BOARD_TASK`, renews the claim
   at a third of its lease, and exits with the command's code. Exit 0 completes
   the task with `--result`; any other fails it with `exited <code>`, or
