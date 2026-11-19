@@ -563,7 +563,8 @@ examples:
   react with eyes
     board react 812 eyes
 
-options every command takes: board help
+global:   --json  --as <profile>  --scope <team>  --url <url>
+          and the rest every command takes: board help
 ```
 
 ## Access
