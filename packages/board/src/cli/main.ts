@@ -238,6 +238,8 @@ let typed: string[] = []
 let warnings: Warning[] = []
 /** The board this run reached by its URL, for a failure to name. */
 let reached: string | null = null
+/** The team whose default board this run reached, nothing naming one of its boards: `--scope`'s, or the one the environment finds. */
+let teamDefault: { team: string | undefined } | null = null
 /** Where the credential this run sent came from, as `whoami` says it, for a refusal to say which to replace. */
 let sent: () => string | null = () => null
 /** How long the message text this run sends is, for a backend's refusal of it to say what to do instead. */
@@ -1104,6 +1106,7 @@ function connection(url: string | undefined = flags.url, options: { token?: stri
   // A name names a team's board as --scope does, so it goes before BOARD_URL too.
   const configured = url ?? (team === undefined && name === undefined ? configuredUrl() : null)
   if (configured === null) {
+    if (name === undefined) teamDefault = { team }
     const board = boardAt({ backend: vercel({ ...(team !== undefined ? { team } : {}), ...sending(options.token, options.can, options.headers) }), ...(name !== undefined ? { name, ensure: flags.ensure === true } : {}) })
     sent = credentialSource
     return { url: null, transport: { source: credentialSource }, board: profile !== undefined ? board.as(profile) : board }
@@ -1460,8 +1463,14 @@ async function run(command: string | undefined, args: string[]): Promise<number>
             class: 'not_found',
             reason: 'channel_not_found',
             message: `Couldn't find channel ${target}.${guess ? ` Did you mean ${guess}?` : ''}`,
-            details: ['A channel appears with its first post: one nobody has posted in yet is not there to read.'],
-            next: [{ instruction: 'See its channels', argv: [...cli(), 'channels'] }],
+            details: [
+              'A channel appears with its first post: one nobody has posted in yet is not there to read.',
+              ...(teamDefault ? [`This is ${teamDefault.team ?? 'the team'}'s default board: --name reads another of its boards.`] : []),
+            ],
+            next: [
+              { instruction: 'See its channels', argv: [...cli(), 'channels', ...(teamDefault?.team !== undefined ? ['--scope', teamDefault.team] : [])] },
+              ...(teamDefault ? [{ instruction: "Read it on another of the team's boards", argv: rerun('--name', '<BOARD>') }] : []),
+            ],
           })
         }
       }
@@ -2708,6 +2717,7 @@ async function runOnce(argv: string[], options: App): Promise<number> {
   positionals = []
   warnings = []
   reached = null
+  teamDefault = null
   sent = () => null
   sentLength = 0
   self = null

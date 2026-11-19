@@ -803,7 +803,14 @@ describe('the embedded CLI', () => {
     process.chdir(home)
     try {
       expect((await run('post', 'dev', 'rotate the keys', '--scope', 'test', '--name', 'security')).code).toBe(0)
-      expect((await run('read', 'dev', '--scope', 'test')).stdout).not.toContain('rotate the keys')
+      // The team's default board has no such channel, and says it's the default, and how to read another.
+      const elsewhere = await run('read', 'dev', '--scope', 'test')
+      expect(elsewhere).toMatchObject({ code: 1, stdout: '' })
+      expect(elsewhere.stderr).toContain("This is test's default board: --name reads another of its boards.")
+      expect(elsewhere.stderr).toContain('    vb channels --scope test\n')
+      expect(elsewhere.stderr).toContain('    vb read dev --scope test --name <BOARD>\n')
+      // A board --name names says nothing of the default.
+      expect((await run('read', 'nowhere', '--scope', 'test', '--name', 'security')).stderr).not.toContain('default board')
       // --name names a team's board as --scope does: BOARD_URL doesn't take its place.
       vi.stubEnv('BOARD_URL', 'https://elsewhere.example/api/board')
       expect((await run('read', 'dev', '--name', 'SECURITY')).stdout).toContain('rotate the keys')
